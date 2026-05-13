@@ -63,6 +63,7 @@ class _FeatureToggles:
     completion: bool = True
     code_actions: bool = True
     goto_definition: bool = True
+    code_lens: bool = False    # opt-in; can clutter dense files
 
 
 _features = _FeatureToggles()
@@ -344,6 +345,31 @@ def _resolve_hover(
         return None
     _, asr = trees
     expected = path.name
+
+    # Function / subroutine *definition* (header line). Checked before
+    # Var/Variable because LFortran emits synthetic ``Var`` nodes for
+    # the formal args on the header line; without this they'd shadow
+    # the function-name hover.
+    for n in walk(asr):
+        if not isinstance(n, dict):
+            continue
+        if n.get("node") not in ("Function", "Subroutine"):
+            continue
+        loc = n.get("loc") or {}
+        fn = loc.get("first_filename")
+        if isinstance(fn, str) and Path(fn).name != expected:
+            continue
+        if loc.get("first_line") != line_1based:
+            continue
+        if not _loc_contains(loc, line_1based, col_1based, expected):
+            continue
+        name = n.get("fields", {}).get("name")
+        if not isinstance(name, str):
+            continue
+        sig = result.signatures.get(name)
+        if sig is None:
+            continue
+        return _hover_signature(name, sig)
 
     # First try derived-type member access; it's more specific than plain Var.
     for node in _walk_member_nodes(asr):
@@ -851,6 +877,7 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         _features.completion = bool(opts.get("completionEnabled", True))
         _features.code_actions = bool(opts.get("codeActionsEnabled", True))
         _features.goto_definition = bool(opts.get("gotoDefinitionEnabled", True))
+        _features.code_lens = bool(opts.get("codeLensEnabled", False))
     log.info(
         "DimFort LSP initialised; folders=%s features=%s",
         folders,
@@ -1203,18 +1230,24 @@ def _code_action(
         # append at end-of-line.
         comment_col = _comment_column(line)
         insert_col = comment_col if comment_col is not None else len(line)
-        # Position for the new text (0-based).
-        pos = lsp.Position(line=target_line_idx, character=insert_col)
-        edit_text = "  !< @unit{}"
+        # Use a command (handled by the VSCode extension) so the cursor
+        # lands inside the braces ready for typing. Plain LSP TextEdits
+        # can't position the cursor; non-VSCode clients that don't have
+        # the `dimfort.insertSnippet` command registered would see this
+        # action as a no-op — acceptable for v1.
+        snippet = "  !< @unit{$0}"
         action = lsp.CodeAction(
             title=f"DimFort: Add @unit{{}} to {', '.join(decl.names)}",
             kind=lsp.CodeActionKind.QuickFix,
-            edit=lsp.WorkspaceEdit(
-                changes={
-                    params.text_document.uri: [
-                        lsp.TextEdit(range=lsp.Range(start=pos, end=pos), new_text=edit_text)
-                    ]
-                }
+            command=lsp.Command(
+                title="DimFort: insert @unit{} snippet",
+                command="dimfort.insertSnippet",
+                arguments=[
+                    params.text_document.uri,
+                    target_line_idx,
+                    insert_col,
+                    snippet,
+                ],
             ),
         )
         actions.append(action)
@@ -1234,6 +1267,69 @@ def _last_scan_declarations(path: Path):
         return scan_file(path).declarations
     except OSError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# CodeLens — signature shown above function/subroutine definitions.
+# ---------------------------------------------------------------------------
+
+
+@server.feature(
+    lsp.TEXT_DOCUMENT_CODE_LENS,
+    lsp.CodeLensOptions(resolve_provider=False),
+)
+def _code_lens(
+    ls: LanguageServer, params: lsp.CodeLensParams
+) -> list[lsp.CodeLens] | None:
+    if not _features.code_lens:
+        return None
+    with _last_result_lock:
+        result = _last_result
+    if result is None:
+        return None
+    path = _uri_to_path(params.text_document.uri)
+    if path is None:
+        return None
+    trees = result.trees.get(path.resolve())
+    if trees is None:
+        return None
+    _, asr = trees
+
+    expected = path.name
+    lenses: list[lsp.CodeLens] = []
+    seen_lines: set[int] = set()
+    for n in walk(asr):
+        if not isinstance(n, dict):
+            continue
+        if n.get("node") not in ("Function", "Subroutine"):
+            continue
+        loc = n.get("loc") or {}
+        fn = loc.get("first_filename")
+        if isinstance(fn, str) and Path(fn).name != expected:
+            continue
+        first_line = loc.get("first_line")
+        if not isinstance(first_line, int):
+            continue
+        if first_line in seen_lines:
+            continue
+        seen_lines.add(first_line)
+        name = n.get("fields", {}).get("name")
+        if not isinstance(name, str):
+            continue
+        sig = result.signatures.get(name)
+        if sig is None:
+            continue
+        title = _sig_render_md(name, sig).replace("`", "")  # plain text only
+        lenses.append(
+            lsp.CodeLens(
+                range=lsp.Range(
+                    start=lsp.Position(line=first_line - 1, character=0),
+                    end=lsp.Position(line=first_line - 1, character=0),
+                ),
+                command=lsp.Command(title=title, command=""),
+            )
+        )
+    return lenses or None
 
 
 def _comment_column(line: str) -> int | None:
