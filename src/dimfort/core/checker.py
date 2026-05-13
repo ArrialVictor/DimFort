@@ -2,33 +2,38 @@
 
 Consumes:
 
-- An LFortran ASR tree (a ``dict`` from JSON).
+- An LFortran ASR tree (the semantic view, JSON ``dict``).
+- Optionally, an LFortran AST tree (the parse view, also JSON
+  ``dict``) — needed to recover intrinsic function names, which ASR
+  exposes only as numeric ids.
 - A ``{var_name: unit_text}`` map produced by :mod:`dimfort.core.attach`.
-- Optionally, a :class:`UnitTable` for resolving the unit strings; the
-  default loaded by :mod:`dimfort.core.unit_config` is used otherwise.
 
 Produces a list of :class:`Diagnostic`s.
 
-This is the v1 slice. Currently handles:
+Currently handles:
 
 - ``H001`` — assignment LHS unit must match RHS unit.
-- ``H002`` — ``+`` / ``-`` operands must share a dimension.
+- ``H002`` — ``+`` / ``-`` operands, or same-unit intrinsic args
+  (``min``, ``max``, ``mod``, …) with mismatched dimensions.
+- ``H003`` — intrinsic that requires a dimensionless argument
+  (``exp``, ``log``, trigonometry, …) given a non-dimensionless one.
 - Expressions: ``Var``, ``RealConstant``, ``IntegerConstant``,
-  ``RealBinOp`` (Add / Sub / Mul / Div / Pow with integer exponent),
-  ``IntegerBinOp`` (same ops), and ``RealUnaryMinus``.
+  ``RealBinOp`` and ``IntegerBinOp`` (Add / Sub / Mul / Div / Pow
+  with integer exponent), unary minus, and the intrinsics covered by
+  the category sets below.
 
-Not yet handled (returns "unknown unit" → checks are skipped on the
-affected expressions):
+Not yet handled (these still resolve to "unknown unit" so checks on
+the surrounding expression are silently skipped):
 
-- Intrinsic function calls (``sqrt``, ``exp``, …).
-- User-defined function and subroutine calls.
+- User-defined function and subroutine calls (H004 — coming).
 - Derived-type field access (``b%v``).
 - Rational exponents in ``Pow``.
-- Array operations, intent propagation, generic interfaces.
+- Array operations and intent propagation.
+- Generic interfaces.
 
 An expression with any unknown sub-unit returns ``None`` to avoid
 false-positive diagnostics — better to under-report than over-report
-while the implementation is incomplete.
+while the implementation grows.
 """
 from __future__ import annotations
 
@@ -65,10 +70,55 @@ CODES: dict[str, CodeSpec] = {
     "H002": CodeSpec(
         "H002", Severity.ERROR, "operands have different dimensions"
     ),
+    "H003": CodeSpec(
+        "H003", Severity.ERROR, "intrinsic argument must be dimensionless"
+    ),
     "U002": CodeSpec(
         "U002", Severity.ERROR, "unit annotation could not be parsed"
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# Intrinsic categories (ported from V4)
+# ---------------------------------------------------------------------------
+
+# Require dimensionless input; produce dimensionless output.
+DIMENSIONLESS_INTRINSICS: frozenset[str] = frozenset({
+    "exp", "log", "log10",
+    "sin", "cos", "tan",
+    "asin", "acos", "atan",
+    "sinh", "cosh", "tanh",
+})
+
+# Raise the argument's unit to a fixed exponent. Keys are intrinsic
+# names; values are the exponent to apply.
+TRANSFORMING_INTRINSICS: dict[str, Fraction] = {
+    "sqrt": Fraction(1, 2),
+    "abs": Fraction(1),
+}
+
+# Result has the first argument's unit; remaining args (if any) don't
+# constrain it. Covers kind conversions and ``sign(a, b)``.
+TRANSPARENT_INTRINSICS: frozenset[str] = frozenset({
+    "floor", "ceiling", "nint", "int", "real", "dble", "sign",
+    "aimag", "anint",
+})
+
+# All listed args must share a unit; result has that unit. For
+# ``merge(tsource, fsource, mask)`` only the first two args are
+# compared (the third is logical).
+SAME_UNIT_ARG_INTRINSICS: frozenset[str] = frozenset({
+    "min", "max", "mod", "modulo", "merge",
+})
+
+# Result = unit_of(arg[0]) * unit_of(arg[1]).
+PRODUCT_INTRINSICS: frozenset[str] = frozenset({"dot_product", "matmul"})
+
+# Reductions over an array; result has the array element's unit.
+REDUCTION_INTRINSICS: frozenset[str] = frozenset({
+    "sum", "minval", "maxval",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -109,13 +159,51 @@ _DIV_OP = "Div"
 _POW_OP = "Pow"
 
 
+_INTRINSIC_NODES = frozenset({
+    "IntrinsicElementalFunction",
+    "IntrinsicArrayFunction",
+    "IntrinsicScalarFunction",
+})
+
+
+def _dimensionless() -> Unit:
+    return Unit(ZERO_DIM, factor=Fraction(1))
+
+
+def collect_intrinsic_names(ast: dict) -> dict[tuple[int, int], str]:
+    """Build a ``{(line, column): name}`` map from AST ``FuncCallOrArray`` nodes.
+
+    ASR identifies intrinsics by a numeric id; the human-readable name
+    is only preserved in the AST. The two trees share source positions,
+    so a join by ``(first_line, first_column)`` recovers names.
+    """
+    out: dict[tuple[int, int], str] = {}
+    for n in walk(ast):
+        if not isinstance(n, dict) or n.get("node") != "FuncCallOrArray":
+            continue
+        loc = n.get("loc") or {}
+        line = loc.get("first_line")
+        col = loc.get("first_column")
+        func = n.get("fields", {}).get("func")
+        if isinstance(line, int) and isinstance(col, int) and isinstance(func, str):
+            out[(line, col)] = func
+    return out
+
+
 class _Resolver:
     """Recursive unit resolver. Accumulates diagnostics in ``self.diags``."""
 
-    def __init__(self, var_units: dict[str, Unit], table: UnitTable, file: str):
+    def __init__(
+        self,
+        var_units: dict[str, Unit],
+        table: UnitTable,
+        file: str,
+        intrinsic_names: dict[tuple[int, int], str] | None = None,
+    ):
         self.var_units = var_units
         self.table = table
         self.file = file
+        self.intrinsic_names = intrinsic_names or {}
         self.diags: list[Diagnostic] = []
 
     # ---- top-level dispatch ------------------------------------------------
@@ -125,15 +213,16 @@ class _Resolver:
         if kind == "Var":
             return self.var_units.get(_var_name(node))
         if kind in ("RealConstant", "IntegerConstant"):
-            # Numeric literals are dimensionless.
-            return Unit(ZERO_DIM, factor=Fraction(1))
+            return _dimensionless()
         if kind in ("RealBinOp", "IntegerBinOp"):
             return self._binop(node)
         if kind in ("RealUnaryMinus", "IntegerUnaryMinus"):
             inner = node.get("fields", {}).get("arg")
             return self.resolve(inner) if isinstance(inner, dict) else None
-        # Anything else (FunctionCall, IntrinsicElementalFunction, etc.) is
-        # not handled in v1 → unknown unit.
+        if kind in _INTRINSIC_NODES:
+            return self._intrinsic(node)
+        # User-defined FunctionCall, derived-type access, etc. are not yet
+        # supported → unknown unit.
         return None
 
     # ---- arithmetic --------------------------------------------------------
@@ -204,6 +293,94 @@ class _Resolver:
             return None
         return base.pow(n)
 
+    # ---- intrinsics --------------------------------------------------------
+
+    def _intrinsic(self, node: dict) -> Unit | None:
+        loc = node.get("loc") or {}
+        key = (loc.get("first_line"), loc.get("first_column"))
+        name = self.intrinsic_names.get(key)
+        if name is None:
+            return None
+        args = node.get("fields", {}).get("args") or []
+        arg_nodes = [a for a in args if isinstance(a, dict)]
+
+        if name in DIMENSIONLESS_INTRINSICS:
+            for a in arg_nodes:
+                u = self.resolve(a)
+                if u is None or equal_dim(u, _dimensionless()):
+                    continue
+                start, end = _loc_positions(a)
+                self.diags.append(
+                    Diagnostic(
+                        file=self.file,
+                        start=start,
+                        end=end,
+                        severity=CODES["H003"].severity,
+                        code="H003",
+                        message=(
+                            f"intrinsic {name!r} requires a dimensionless "
+                            f"argument; got "
+                            f"{format_unit(u, table=self.table)}"
+                        ),
+                    )
+                )
+            return _dimensionless()
+
+        if name in TRANSFORMING_INTRINSICS:
+            if not arg_nodes:
+                return None
+            base = self.resolve(arg_nodes[0])
+            if base is None:
+                return None
+            exp = TRANSFORMING_INTRINSICS[name]
+            try:
+                return base.pow(exp)
+            except (UnitError, ValueError):
+                return None
+
+        if name in TRANSPARENT_INTRINSICS:
+            return self.resolve(arg_nodes[0]) if arg_nodes else None
+
+        if name in SAME_UNIT_ARG_INTRINSICS:
+            compared = arg_nodes[:2] if name == "merge" else arg_nodes
+            units = [self.resolve(a) for a in compared]
+            known = [u for u in units if u is not None]
+            if len(known) < 2:
+                return known[0] if known else None
+            first = known[0]
+            for u in known[1:]:
+                if not equal_dim(first, u):
+                    start, end = _loc_positions(node)
+                    self.diags.append(
+                        Diagnostic(
+                            file=self.file,
+                            start=start,
+                            end=end,
+                            severity=CODES["H002"].severity,
+                            code="H002",
+                            message=(
+                                f"intrinsic {name!r} arguments have different "
+                                f"dimensions: "
+                                f"{format_unit(first, table=self.table)} vs "
+                                f"{format_unit(u, table=self.table)}"
+                            ),
+                        )
+                    )
+                    return None
+            return first
+
+        if name in PRODUCT_INTRINSICS:
+            if len(arg_nodes) < 2:
+                return None
+            a = self.resolve(arg_nodes[0])
+            b = self.resolve(arg_nodes[1])
+            return a * b if a is not None and b is not None else None
+
+        if name in REDUCTION_INTRINSICS:
+            return self.resolve(arg_nodes[0]) if arg_nodes else None
+
+        return None  # unknown intrinsic — keep unit unknown
+
 
 # ---------------------------------------------------------------------------
 # Public entry point
@@ -243,10 +420,17 @@ def check(
     asr: dict,
     var_units_text: dict[str, str],
     *,
+    ast: dict | None = None,
     table: UnitTable | None = None,
     file: str | None = None,
 ) -> list[Diagnostic]:
-    """Walk an ASR and produce homogeneity diagnostics."""
+    """Walk an ASR and produce homogeneity diagnostics.
+
+    When ``ast`` is supplied, intrinsic function calls are recognised
+    by name and their unit semantics are enforced. Without ``ast`` the
+    checker treats every intrinsic as "unknown unit" and silently skips
+    checks on expressions containing them.
+    """
     active_table = table if table is not None else _units_mod.DEFAULT_TABLE
     if active_table is None:
         raise RuntimeError(
@@ -255,7 +439,8 @@ def check(
     src_file = file or "<asr>"
 
     var_units, diags = _resolve_var_units(var_units_text, active_table, src_file)
-    resolver = _Resolver(var_units, active_table, src_file)
+    intrinsic_names = collect_intrinsic_names(ast) if ast is not None else {}
+    resolver = _Resolver(var_units, active_table, src_file, intrinsic_names)
 
     for asn in _walk_assignments(asr):
         target = asn.get("fields", {}).get("target")

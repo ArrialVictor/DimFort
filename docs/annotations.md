@@ -159,13 +159,21 @@ The semantic checker layers add the **H-series** on top:
 | Code  | Severity | Meaning |
 |-------|----------|---------|
 | H001  | error    | Assignment LHS unit doesn't match RHS unit. |
-| H002  | error    | `+` / `-` operands have different dimensions. |
-| H003  | error    | *(planned)* intrinsic argument must be dimensionless. |
-| H004  | error    | *(planned)* function-call argument unit mismatch. |
+| H002  | error    | `+` / `-` operands, or same-unit intrinsic args (`min`, `max`, `mod`, …) have different dimensions. |
+| H003  | error    | Intrinsic that requires a dimensionless argument (`exp`, `log`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `log10`) given something else. |
+| H004  | error    | *(planned)* user-defined function-call argument unit mismatch. |
 
-H001 and H002 are implemented for the basic expression forms (`Var`,
-numeric constants, `Add` / `Sub` / `Mul` / `Div`, `Pow` with integer
-exponent). Intrinsics (`sqrt`, `exp`, trigonometry, reductions),
-user-defined function calls, and derived-type field access are not
-yet handled; expressions involving them currently resolve to "unknown
-unit" and the checker skips them rather than risk a false positive.
+Intrinsics handled:
+
+| Category          | Intrinsics                                              | Unit semantics |
+|-------------------|---------------------------------------------------------|----------------|
+| Dimensionless     | `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh` | arg must be `1`; result is `1`. H003 on violation. |
+| Transforming      | `sqrt`, `abs`                                           | result is `arg^(1/2)` for sqrt, `arg^1` for abs. |
+| Transparent       | `floor`, `ceiling`, `nint`, `int`, `real`, `dble`, `sign`, `aimag`, `anint` | result = first arg's unit. |
+| Same-unit args    | `min`, `max`, `mod`, `modulo`, `merge`                  | every arg shares one unit (merge: only first two); result is that unit. H002 on mismatch. |
+| Product           | `dot_product`, `matmul`                                 | result = `arg[0] * arg[1]`. |
+| Reduction         | `sum`, `minval`, `maxval`                               | result = element unit. |
+
+User-defined function calls and derived-type field access are not yet
+handled; expressions involving them resolve to "unknown unit" and the
+checker skips them rather than risk a false positive.
