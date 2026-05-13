@@ -18,8 +18,8 @@ force = mass * velocity            ! diagnosed: force unit is kg, expected kg*m/
 > scanner, attachment pass, the full H-series checker (H001–H004),
 > intrinsics, user-defined function and subroutine calls, derived-type
 > field access, rational `**` exponents, multi-file worksets, and a
-> diagnostic-publishing LSP server (`dimfort lsp`). The on-disk cache
-> and LSP hovers are still to come.
+> workspace-aware LSP server with live-edit diagnostics and hover
+> (`dimfort lsp`). The on-disk cache is still to come.
 
 ## Install
 

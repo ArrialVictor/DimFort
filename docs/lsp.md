@@ -11,21 +11,31 @@ It speaks LSP over stdio, the wire format every common editor expects.
 
 ## What's wired up
 
-- **Diagnostics** on `textDocument/didOpen` and `textDocument/didSave`.
-  The full pipeline runs (scan → attach → check); results are published
-  as LSP `Diagnostic`s with our familiar codes (H001–H004, U001–U010,
-  U002).
-- Diagnostics are cleared on `textDocument/didClose`.
+- **Diagnostics**:
+  - On `textDocument/didOpen` and `didSave` — immediate re-check.
+  - On `textDocument/didChange` — re-check with a 400 ms debounce, so
+    unsaved buffer edits flow through the pipeline as you type.
+  - Cleared on `textDocument/didClose`.
+- **Workspace-aware**. The server captures workspace folders on
+  `initialize` and runs the pipeline over **every** Fortran source it
+  finds under them. Cross-file behaviour (`use mod_other`, H004 on a
+  call to a function defined in another file) lights up correctly in
+  the editor exactly as it does on the command line.
+- **Hover** (`textDocument/hover`). Point at a variable name (either
+  its declaration or a use site) and the editor shows
+  `**name** — unit \`m/s\`` (or "no unit annotation" if the variable
+  was declared without one). Derived-type member accesses (`b%v`)
+  produce `**particle%v** — unit \`m/s\``.
 
-## What isn't yet
+## Limitations
 
-- **No `didChange` reactivity.** The server re-checks on save only.
-  Cheap to add when we want it.
-- **No hover.** Showing the resolved unit of a variable or expression
-  is the next obvious feature.
-- **No workspace-wide scan.** Each open file is treated as a one-file
-  workset. Cross-file H004 / module-resolved access does not yet flow
-  through the LSP — coming when we add workspace folder traversal.
+- **In-memory edits to file A trigger a check of every file** in the
+  workspace. The pipeline is fast on small projects but will need a
+  per-file cache for LMDZ-scale codebases.
+- **No completion, no go-to-definition.** Out of scope for now.
+- **`use` resolution across files relies on the LFortran ``-c``
+  compile step**, which is alpha. Files that LFortran can't load show
+  up as `U007`; that's the same surface as the CLI.
 
 ## Editor setup
 
@@ -37,8 +47,6 @@ Point the `dimfort.executable` setting at your DimFort install
 (typically a virtualenv).
 
 ### Neovim (built-in LSP)
-
-No extension needed — register the server directly:
 
 ```lua
 vim.lsp.config.dimfort = {

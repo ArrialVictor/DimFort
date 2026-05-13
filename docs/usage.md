@@ -96,8 +96,10 @@ Pre-alpha. Working pipeline pieces:
   module files first (in dependency order, via a retry-loop) so
   `use` statements resolve, then aggregates unit tables and function
   signatures across files before checking each one
-- a working LSP server (`dimfort lsp`) that publishes diagnostics on
-  open and on save — wire it up in your editor following
+- a working LSP server (`dimfort lsp`) — workspace-aware (cross-file
+  diagnostics in the editor), debounced live editing on every
+  keystroke, and hover info showing the resolved unit of a variable or
+  derived-type field. Wire it up in your editor following
   [docs/lsp.md](lsp.md); a VSCode extension scaffold lives next to
   the repo at `Homogeneity/vscode-extension/`
 - end-to-end CLI: `dimfort check FILE [FILE …]` runs the full pipeline
