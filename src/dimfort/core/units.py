@@ -229,8 +229,23 @@ def base_symbols(table: UnitTable | None = None) -> tuple[str, ...]:
     return tuple(name or fallback[i] for i, name in enumerate(out))
 
 
+_SUPERSCRIPTS = {
+    "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴",
+    "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹", "-": "⁻",
+}
+
+
+def _to_super(s: str) -> str:
+    return "".join(_SUPERSCRIPTS.get(c, c) for c in s)
+
+
 def format_unit(u: Unit, *, show_factor: bool = False, table: UnitTable | None = None) -> str:
-    """Render ``u`` as a human-readable expression."""
+    """Render ``u`` as a human-readable expression.
+
+    Uses Unicode superscripts (``²``, ``³``, …) for integer exponents
+    and ``×`` for multiplication. Rational exponents fall back to
+    ``^(p/q)`` since superscript fractions look messy.
+    """
     names = base_symbols(table)
     pos_terms: list[str] = []
     neg_terms: list[str] = []
@@ -241,18 +256,18 @@ def format_unit(u: Unit, *, show_factor: bool = False, table: UnitTable | None =
         if mag == 1:
             term = sym
         elif isinstance(mag, int):
-            term = f"{sym}^{mag}"
+            term = sym + _to_super(str(mag))
         else:
             term = f"{sym}^({mag})"
         (pos_terms if exp > 0 else neg_terms).append(term)
-    body = "*".join(pos_terms) if pos_terms else "1"
+    body = "×".join(pos_terms) if pos_terms else "1"
     if neg_terms:
-        denom = "*".join(neg_terms)
+        denom = "×".join(neg_terms)
         if len(neg_terms) > 1:
             denom = f"({denom})"
         body = f"{body}/{denom}"
     if show_factor and u.factor != 1:
-        return f"{u.factor}*{body}" if body != "1" else f"{u.factor}"
+        return f"{u.factor}×{body}" if body != "1" else f"{u.factor}"
     return body
 
 
