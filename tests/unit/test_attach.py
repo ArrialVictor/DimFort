@@ -192,6 +192,37 @@ def test_single_line_declaration_is_not_u010():
     assert res.intermediate_continuations == []
 
 
+# ---------- derived-type field annotations ---------------------------------
+
+
+def test_field_annotation_goes_into_field_units_not_var_units():
+    scan = _scan(
+        annotations=[RawAnnotation(AnnotationKind.POST, 2, 20, "kg")],
+        declarations=[
+            DeclarationSite(2, 2, ("m",), enclosing_type="particle"),
+        ],
+    )
+    res = attach(scan)
+    assert res.var_units == {}
+    assert res.field_units == {("particle", "m"): "kg"}
+
+
+def test_field_and_local_with_same_name_dont_collide():
+    scan = _scan(
+        annotations=[
+            RawAnnotation(AnnotationKind.POST, 2, 20, "kg"),   # field
+            RawAnnotation(AnnotationKind.POST, 5, 20, "m"),     # local
+        ],
+        declarations=[
+            DeclarationSite(2, 2, ("m",), enclosing_type="particle"),
+            DeclarationSite(5, 5, ("m",), enclosing_type=None),
+        ],
+    )
+    res = attach(scan)
+    assert res.var_units == {"m": "m"}
+    assert res.field_units == {("particle", "m"): "kg"}
+
+
 def test_pre_and_post_disagree_records_conflict():
     scan = _scan(
         annotations=[

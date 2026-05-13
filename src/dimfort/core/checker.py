@@ -217,12 +217,14 @@ class _Resolver:
         file: str,
         intrinsic_names: dict[tuple[int, int], str] | None = None,
         functions: dict[str, FuncSig] | None = None,
+        field_units: dict[tuple[str, str], Unit] | None = None,
     ):
         self.var_units = var_units
         self.table = table
         self.file = file
         self.intrinsic_names = intrinsic_names or {}
         self.functions = functions or {}
+        self.field_units = field_units or {}
         self.diags: list[Diagnostic] = []
 
     # ---- top-level dispatch ------------------------------------------------
@@ -242,7 +244,9 @@ class _Resolver:
             return self._intrinsic(node)
         if kind == "FunctionCall":
             return self._function_call(node)
-        # Derived-type access, generic dispatch, etc. are not yet supported
+        if kind == "StructInstanceMember":
+            return self._struct_member(node)
+        # Generic dispatch and a few other niche forms remain unsupported
         # → unknown unit, no diagnostic.
         return None
 
@@ -456,6 +460,33 @@ class _Resolver:
         self._check_call_args(node, sig, name)
         return sig.return_unit
 
+    # ---- derived-type field access -----------------------------------------
+
+    def _struct_member(self, node: dict) -> Unit | None:
+        """Resolve ``b%field``'s unit.
+
+        ASR encodes the qualified field as ``<index>_<typename>_<fieldname>``
+        before a ``(SymbolTable<n>)`` suffix. We strip the suffix, peel
+        off the leading ``<digits>_``, then try every known type-name
+        prefix and look the remainder up in :attr:`field_units`.
+        """
+        if not self.field_units:
+            return None
+        m_field = node.get("fields", {}).get("m")
+        if not isinstance(m_field, str):
+            return None
+        qualified = m_field.split(" ", 1)[0]
+        # Strip the leading numeric index, e.g. "1_particle_m" → "particle_m".
+        if "_" in qualified:
+            head, rest = qualified.split("_", 1)
+            if head.isdigit():
+                qualified = rest
+        # Try every known type as a prefix.
+        for (type_name, field_name), unit in self.field_units.items():
+            if qualified == f"{type_name}_{field_name}":
+                return unit
+        return None
+
     def check_subroutine_call(self, node: dict) -> None:
         """Same arg-unit check as a function call, but as a statement.
 
@@ -558,15 +589,18 @@ def check(
     var_units_text: dict[str, str],
     *,
     ast: dict | None = None,
+    field_units_text: dict[tuple[str, str], str] | None = None,
     table: UnitTable | None = None,
     file: str | None = None,
 ) -> list[Diagnostic]:
     """Walk an ASR and produce homogeneity diagnostics.
 
     When ``ast`` is supplied, intrinsic function calls are recognised
-    by name and their unit semantics are enforced. Without ``ast`` the
-    checker treats every intrinsic as "unknown unit" and silently skips
-    checks on expressions containing them.
+    by name and their unit semantics are enforced. ``field_units_text``
+    carries derived-type field annotations from
+    :func:`dimfort.core.attach.attach`; without it, ``b%field``
+    accesses resolve to "unknown unit" and the surrounding checks are
+    silently skipped.
     """
     active_table = table if table is not None else _units_mod.DEFAULT_TABLE
     if active_table is None:
@@ -576,10 +610,32 @@ def check(
     src_file = file or "<asr>"
 
     var_units, diags = _resolve_var_units(var_units_text, active_table, src_file)
+    field_units: dict[tuple[str, str], Unit] = {}
+    for (type_name, field_name), text in (field_units_text or {}).items():
+        try:
+            field_units[(type_name, field_name)] = _units_mod.parse(text, active_table)
+        except UnitError as exc:
+            diags.append(
+                Diagnostic(
+                    file=src_file,
+                    start=Position(0, 0),
+                    end=Position(0, 0),
+                    severity=CODES["U002"].severity,
+                    code="U002",
+                    message=(
+                        f"unit annotation for {type_name}%{field_name}: {exc}"
+                    ),
+                )
+            )
     intrinsic_names = collect_intrinsic_names(ast) if ast is not None else {}
     functions = collect_function_signatures(asr, var_units)
     resolver = _Resolver(
-        var_units, active_table, src_file, intrinsic_names, functions
+        var_units,
+        active_table,
+        src_file,
+        intrinsic_names,
+        functions,
+        field_units,
     )
 
     for asn in _walk_assignments(asr):

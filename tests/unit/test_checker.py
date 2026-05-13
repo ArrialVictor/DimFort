@@ -395,6 +395,82 @@ def test_unknown_function_skips_check_silently():
     assert diags == []
 
 
+# ---------------------- derived-type field access -----------------------------
+
+
+def _struct_member(receiver: str, type_name: str, field_name: str) -> dict:
+    """A StructInstanceMember node accessing `<receiver>%<field_name>`.
+
+    The qualified `m` field follows LFortran's
+    ``<index>_<typename>_<field>`` convention.
+    """
+    return {
+        "node": "StructInstanceMember",
+        "fields": {
+            "v": _var(receiver),
+            "m": f"1_{type_name}_{field_name} (SymbolTable0)",
+        },
+        "loc": {"first_line": 10, "first_column": 1, "last_line": 10, "last_column": 1},
+    }
+
+
+def test_struct_member_read_resolves_to_field_unit():
+    # `tot = b%m` — both sides kg → ok.
+    asr = _prog([_assign(_var("tot"), _struct_member("b", "particle", "m"))])
+    diags = check(
+        asr,
+        {"tot": "kg"},
+        field_units_text={("particle", "m"): "kg"},
+        file="t.f90",
+    )
+    assert diags == []
+
+
+def test_struct_member_read_unit_mismatch_emits_h001():
+    asr = _prog([_assign(_var("tot"), _struct_member("b", "particle", "m"))])
+    diags = check(
+        asr,
+        {"tot": "m"},                                      # local m: metres
+        field_units_text={("particle", "m"): "kg"},        # field m: kilograms
+        file="t.f90",
+    )
+    assert any(d.code == "H001" for d in diags)
+
+
+def test_struct_member_write_unit_mismatch_emits_h001():
+    # `b%m = mass`  where mass is kg and b%m is kg → ok.
+    asr = _prog([_assign(_struct_member("b", "particle", "m"), _var("mass"))])
+    diags = check(
+        asr,
+        {"mass": "kg"},
+        field_units_text={("particle", "m"): "kg"},
+        file="t.f90",
+    )
+    assert diags == []
+
+
+def test_struct_member_write_with_wrong_unit_emits_h001():
+    asr = _prog([_assign(_struct_member("b", "particle", "m"), _var("len"))])
+    diags = check(
+        asr,
+        {"len": "m"},
+        field_units_text={("particle", "m"): "kg"},
+        file="t.f90",
+    )
+    assert any(d.code == "H001" for d in diags)
+
+
+def test_struct_member_unknown_field_is_silent():
+    asr = _prog([_assign(_var("y"), _struct_member("b", "particle", "z"))])
+    diags = check(
+        asr,
+        {"y": "kg"},
+        field_units_text={("particle", "m"): "kg"},  # only m is annotated
+        file="t.f90",
+    )
+    assert diags == []
+
+
 def test_function_with_no_annotated_return_does_not_drive_h001():
     fn = _function("opaque", args=["x"], return_name="opaque")
     call = _function_call("opaque", [_var("v")])

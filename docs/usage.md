@@ -89,12 +89,15 @@ Pre-alpha. Working pipeline pieces:
   Fortran intrinsics (`sqrt`, `abs`, `exp`, `log`, trig family,
   `min`/`max`/`mod`/`merge`, `dot_product`/`matmul`,
   `sum`/`minval`/`maxval`, the kind-conversion family)
+- derived-type field access (`b%v`) both as a read and as an
+  assignment target, with field annotations declared inside the
+  `type :: …` block
 - end-to-end CLI: `dimfort check FILE [FILE …]` runs the full pipeline
   and reports diagnostics in `file:line: severity: code message` form
 
-Not yet implemented: derived-type field access (`b%v`), rational `Pow`
-exponents (`m^(1/2)` in source), multi-file module dependency
-resolution as a true pre-pass, the LSP server, and the on-disk cache's
-read/write paths (only `cache info` / `cache clean` work).
+Not yet implemented: rational `Pow` exponents (`m^(1/2)` in source),
+multi-file module dependency resolution as a true pre-pass, the LSP
+server, and the on-disk cache's read/write paths (only `cache info` /
+`cache clean` work).
 
 Treat anything not listed above as unimplemented.
