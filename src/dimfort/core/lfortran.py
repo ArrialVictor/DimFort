@@ -29,9 +29,13 @@ class LFortranNotFound(RuntimeError):
     """Raised when no usable ``lfortran`` binary can be located."""
 
 
-@dataclass(frozen=True)
+@dataclass
 class LFortranError(Exception):
-    """Non-zero exit from LFortran with stderr captured."""
+    """Non-zero exit from LFortran with stderr captured.
+
+    Not frozen: Python attaches ``__traceback__`` on raise, which a frozen
+    dataclass disallows.
+    """
 
     path: Path
     mode: TreeMode

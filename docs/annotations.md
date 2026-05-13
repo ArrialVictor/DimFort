@@ -161,7 +161,7 @@ The semantic checker layers add the **H-series** on top:
 | H001  | error    | Assignment LHS unit doesn't match RHS unit. |
 | H002  | error    | `+` / `-` operands, or same-unit intrinsic args (`min`, `max`, `mod`, …) have different dimensions. |
 | H003  | error    | Intrinsic that requires a dimensionless argument (`exp`, `log`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `log10`) given something else. |
-| H004  | error    | *(planned)* user-defined function-call argument unit mismatch. |
+| H004  | error    | User-defined function or subroutine-call argument unit mismatch. |
 
 Intrinsics handled:
 
@@ -174,6 +174,25 @@ Intrinsics handled:
 | Product           | `dot_product`, `matmul`                                 | result = `arg[0] * arg[1]`. |
 | Reduction         | `sum`, `minval`, `maxval`                               | result = element unit. |
 
-User-defined function calls and derived-type field access are not yet
-handled; expressions involving them resolve to "unknown unit" and the
-checker skips them rather than risk a false positive.
+User-defined functions and subroutines are now checked. Their unit
+interface is inferred from the annotations on their declared formal
+arguments and the result variable:
+
+```fortran
+function box_area(side) result(out)
+  real, intent(in) :: side    !< @unit{m}
+  real :: out                 !< @unit{m^2}
+  out = side * side
+end function
+```
+
+A call site is checked against this signature: each actual argument
+must have the same unit as the corresponding formal (or be unknown),
+and the call's resolved unit becomes the formal return unit (used by
+the surrounding H001 check). v1 keys signatures by the bare function
+name — two functions with the same name in different scopes are not
+disambiguated; last definition wins.
+
+Derived-type field access (`b%v`) and rational `Pow` exponents are
+still resolved to "unknown unit"; checks on the surrounding expression
+are silently skipped.
