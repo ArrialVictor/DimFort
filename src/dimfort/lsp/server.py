@@ -34,7 +34,12 @@ from pygls.lsp.server import LanguageServer
 from dimfort import __version__
 from dimfort.core import lfortran as lf
 from dimfort.core import unit_config  # noqa: F401  populates DEFAULT_TABLE
-from dimfort.core.checker import FuncSig
+from dimfort.core import units as _units_mod
+from dimfort.core.checker import (
+    FuncSig,
+    _Resolver,
+    collect_intrinsic_names,
+)
 from dimfort.core.diagnostics import Diagnostic, Severity
 from dimfort.core.lfortran import walk
 from dimfort.core.multifile import WorksetResult, check_files
@@ -348,6 +353,13 @@ def _resolve_hover(uri: str, line_1based: int, col_1based: int) -> str | None:
         if sig is None:
             continue
         return _hover_signature(name, sig)
+
+    # Expression: find the smallest BinOp / UnaryMinus containing the
+    # cursor and show its resolved unit + the operands' units.
+    smallest = _smallest_expression_at(asr, line_1based, col_1based, expected)
+    if smallest is not None:
+        ast, _ = trees
+        return _hover_expression(result, ast, smallest, expected_basename=expected)
     return None
 
 
@@ -366,6 +378,96 @@ def _call_name(node: dict) -> str:
 
 def _fmt_unit_opt(u: Unit | None) -> str:
     return format_unit(u) if u is not None else "?"
+
+
+_EXPRESSION_NODES = frozenset({
+    "RealBinOp", "IntegerBinOp", "ComplexBinOp", "LogicalBinOp",
+    "RealUnaryMinus", "IntegerUnaryMinus",
+})
+
+
+def _loc_size(loc: dict | None) -> int:
+    """Cheap "size" used to compare two locs; lower = more specific."""
+    if not isinstance(loc, dict):
+        return 1_000_000
+    sl = loc.get("first_line")
+    sc = loc.get("first_column")
+    el = loc.get("last_line")
+    ec = loc.get("last_column")
+    if not all(isinstance(v, int) for v in (sl, sc, el, ec)):
+        return 1_000_000
+    # 1000 cols/line is a generous upper bound; we want a total order.
+    return (el - sl) * 1000 + (ec - sc)
+
+
+def _smallest_expression_at(
+    asr: dict, line: int, col: int, expected: str
+) -> dict | None:
+    best: dict | None = None
+    best_size = 1_000_000
+    for n in walk(asr):
+        if not isinstance(n, dict):
+            continue
+        if n.get("node") not in _EXPRESSION_NODES:
+            continue
+        if not _loc_contains(n.get("loc"), line, col, expected):
+            continue
+        size = _loc_size(n.get("loc"))
+        if size < best_size:
+            best = n
+            best_size = size
+    return best
+
+
+def _build_resolver(result: WorksetResult, ast: dict) -> _Resolver:
+    """Spin up a resolver pre-loaded with the workset's tables."""
+    intrinsic_names = collect_intrinsic_names(ast)
+    table = _units_mod.DEFAULT_TABLE
+    return _Resolver(
+        var_units=result.merged_var_units,
+        table=table,                       # may be None outside the runtime; ok
+        file="<hover>",
+        intrinsic_names=intrinsic_names,
+        functions=result.signatures,
+        field_units=result.merged_field_units,
+    )
+
+
+_BINOP_LABEL = {
+    "Add": "+", "Sub": "-", "Mul": "*", "Div": "/", "Pow": "**",
+}
+
+
+def _hover_expression(
+    result: WorksetResult, ast: dict, node: dict, *, expected_basename: str
+) -> str | None:
+    resolver = _build_resolver(result, ast)
+    own = resolver.resolve(node)
+    own_str = format_unit(own) if own is not None else "?"
+    kind = node.get("node")
+    f = node.get("fields", {})
+
+    lines = [f"expression — unit `{own_str}`"]
+    if kind in ("RealBinOp", "IntegerBinOp", "ComplexBinOp", "LogicalBinOp"):
+        op = f.get("op")
+        lbl = _BINOP_LABEL.get(op, op)
+        if lbl:
+            lines[0] = f"expression `… {lbl} …` — unit `{own_str}`"
+        left = f.get("left")
+        right = f.get("right")
+        if isinstance(left, dict):
+            lu = resolver.resolve(left)
+            lines.append(f"- left: `{format_unit(lu) if lu is not None else '?'}`")
+        if isinstance(right, dict):
+            ru = resolver.resolve(right)
+            lines.append(f"- right: `{format_unit(ru) if ru is not None else '?'}`")
+    elif kind in ("RealUnaryMinus", "IntegerUnaryMinus"):
+        inner = f.get("arg")
+        if isinstance(inner, dict):
+            iu = resolver.resolve(inner)
+            lines.append(f"- operand: `{format_unit(iu) if iu is not None else '?'}`")
+    body = "\n".join(lines)
+    return f"**DimFort**\n\n{body}"
 
 
 def _hover_signature(name: str, sig: FuncSig) -> str:

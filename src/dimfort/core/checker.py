@@ -333,7 +333,7 @@ class _Resolver:
                     code="H002",
                     message=(
                         f"Operands of '+' / '-' have different dimensions: "
-                        f"{format_unit(lu, table=self.table)} vs "
+                        f"{format_unit(lu, table=self.table)} ≠ "
                         f"{format_unit(ru, table=self.table)}"
                     ),
                 )
@@ -432,7 +432,7 @@ class _Resolver:
                             message=(
                                 f"Arguments of intrinsic {name!r} have different "
                                 f"dimensions: "
-                                f"{format_unit(first, table=self.table)} vs "
+                                f"{format_unit(first, table=self.table)} ≠ "
                                 f"{format_unit(u, table=self.table)}"
                             ),
                         )
@@ -718,9 +718,8 @@ def check(
                     severity=CODES["H001"].severity,
                     code="H001",
                     message=(
-                        f"Assignment unit mismatch: left "
-                        f"{format_unit(lhs_unit, table=active_table)} "
-                        f"vs right "
+                        f"Assignment unit mismatch: "
+                        f"{format_unit(lhs_unit, table=active_table)} ≠ "
                         f"{format_unit(rhs_unit, table=active_table)}"
                     ),
                 )
