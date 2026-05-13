@@ -167,6 +167,7 @@ class DeclarationSite:
     line_start: int            # 1-based: the line containing the type-spec
     line_end: int              # 1-based: the last physical line of the statement
     names: tuple[str, ...]     # variable names declared, in source order
+    enclosing_type: str | None = None  # type-block name, if inside `type :: …`
 
 
 @dataclass(frozen=True)
@@ -242,6 +243,26 @@ _DECL_PREFIX_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# `type :: foo` / `type, attr :: foo` / `type foo` — the start of a
+# derived-type definition block. Must be matched against the code part
+# of the line (comments stripped) since we case-fold via re.IGNORECASE.
+# A trailing `(` after `type` (as in `type(foo) :: bar`) is a *use*, not
+# a definition; the regex disallows that by requiring whitespace,
+# punctuation, or end-of-string immediately after the keyword.
+_TYPE_BLOCK_START_RE = re.compile(
+    r"""^\s*
+        type
+        \s*
+        (?: , [^:]* :: \s* | :: \s* | \s+ )
+        ([A-Za-z_]\w*)
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_TYPE_BLOCK_END_RE = re.compile(
+    r"^\s* end \s* type \b", re.IGNORECASE | re.VERBOSE
+)
+
 
 _ENTITY_NAME_RE = re.compile(r"\s*([A-Za-z_]\w*)")
 
@@ -281,12 +302,31 @@ def _extract_names_from_entity_list(entity_list: str) -> list[str]:
 
 
 def _scan_declarations(lines: list[str]) -> list[DeclarationSite]:
-    """Walk physical lines and emit one :class:`DeclarationSite` per stmt."""
+    """Walk physical lines and emit one :class:`DeclarationSite` per stmt.
+
+    Tracks ``type :: NAME`` blocks so each emitted site knows whether
+    it sits inside a derived-type definition (and which one). Nested
+    type definitions are unusual in F90; we use a stack defensively.
+    """
     out: list[DeclarationSite] = []
+    type_stack: list[str] = []
     i = 0
     while i < len(lines):
         col = _comment_start(lines[i])
         code = lines[i][:col] if col is not None else lines[i]
+
+        # Track entering / leaving a `type :: NAME ... end type` block.
+        if _TYPE_BLOCK_END_RE.match(code):
+            if type_stack:
+                type_stack.pop()
+            i += 1
+            continue
+        m_open = _TYPE_BLOCK_START_RE.match(code)
+        if m_open:
+            type_stack.append(m_open.group(1))
+            i += 1
+            continue
+
         if not _DECL_PREFIX_RE.match(code):
             i += 1
             continue
@@ -312,12 +352,17 @@ def _scan_declarations(lines: list[str]) -> list[DeclarationSite]:
         line_end = j  # j is 1-past-last in 0-based → equals 1-based last line
 
         joined = " ".join(chunks)
-        # Locate the `::` separator (mandatory for the F90 forms we cover).
         sep = joined.find("::")
         if sep != -1:
             names = _extract_names_from_entity_list(joined[sep + 2:])
             if names:
-                out.append(DeclarationSite(line_start, line_end, tuple(names)))
+                enclosing = type_stack[-1] if type_stack else None
+                out.append(
+                    DeclarationSite(
+                        line_start, line_end, tuple(names),
+                        enclosing_type=enclosing,
+                    )
+                )
         i = j
     return out
 

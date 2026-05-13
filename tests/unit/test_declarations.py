@@ -114,3 +114,38 @@ def test_amp_inside_string_does_not_continue():
         DeclarationSite(1, 1, ("s",)),
         DeclarationSite(2, 2, ("v",)),
     ]
+
+
+# ---------- type-block tracking --------------------------------------------
+
+
+def test_field_decl_records_enclosing_type():
+    src = (
+        "type :: particle\n"
+        "  real :: m\n"
+        "  real :: v(3)\n"
+        "end type\n"
+        "real :: tot\n"
+    )
+    decls = _decls(src)
+    assert [d.enclosing_type for d in decls] == ["particle", "particle", None]
+    assert decls[0].names == ("m",)
+    assert decls[1].names == ("v",)
+    assert decls[2].names == ("tot",)
+
+
+def test_type_block_with_attributes():
+    src = (
+        "type, public :: state\n"
+        "  real :: temp\n"
+        "end type\n"
+    )
+    decls = _decls(src)
+    assert decls == [DeclarationSite(2, 2, ("temp",), enclosing_type="state")]
+
+
+def test_type_declaration_as_use_is_not_a_block_open():
+    # `type(particle) :: b` is a *use* of a type, not a definition.
+    src = "type(particle) :: b\n"
+    decls = _decls(src)
+    assert decls == [DeclarationSite(1, 1, ("b",), enclosing_type=None)]

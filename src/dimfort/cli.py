@@ -182,7 +182,13 @@ def _run_check(args: argparse.Namespace) -> int:
             )
             continue
 
-        for d in check(asr, att.var_units, ast=ast, file=str(p)):
+        for d in check(
+            asr,
+            att.var_units,
+            ast=ast,
+            field_units_text=att.field_units,
+            file=str(p),
+        ):
             severity = "error" if d.severity is Severity.ERROR else "warning"
             emit(str(p), d.start.line, severity, d.code, d.message)
 

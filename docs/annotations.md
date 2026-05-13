@@ -193,6 +193,27 @@ the surrounding H001 check). v1 keys signatures by the bare function
 name — two functions with the same name in different scopes are not
 disambiguated; last definition wins.
 
-Derived-type field access (`b%v`) and rational `Pow` exponents are
-still resolved to "unknown unit"; checks on the surrounding expression
-are silently skipped.
+### Derived-type fields
+
+Annotate fields exactly like local variables, inside the type block:
+
+```fortran
+type :: particle
+  real :: m       !< @unit{kg}
+  real :: q       !< @unit{C}
+  real :: v(3)    !< @unit{m/s}
+end type
+```
+
+Both `%`-access reads (`tot = b%m`) and writes (`b%m = mass`) are
+checked. Field annotations live in their own scope-aware table, so a
+local variable named `m` and a field named `m` don't collide — they
+can carry independent units.
+
+v1 limitation: field lookup is keyed by `(bare_type_name, field_name)`.
+Two derived types in different modules that share a name are not
+disambiguated — last definition wins.
+
+Rational `Pow` exponents in source code (`area ** 0.5`) are still
+resolved to "unknown unit"; checks on the surrounding expression are
+silently skipped.

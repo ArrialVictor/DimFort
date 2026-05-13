@@ -87,6 +87,10 @@ class IntermediateContinuationAnnotation:
 @dataclass
 class AttachmentResult:
     var_units: dict[str, str] = field(default_factory=dict)
+    # Derived-type field annotations live under their own table so they
+    # don't collide with same-named local variables. Keyed by
+    # ``(type_name, field_name)``.
+    field_units: dict[tuple[str, str], str] = field(default_factory=dict)
     orphans: list[OrphanAnnotation] = field(default_factory=list)
     conflicts: list[ConflictingAnnotation] = field(default_factory=list)
     intermediate_continuations: list[IntermediateContinuationAnnotation] = field(
@@ -120,7 +124,29 @@ def _block_end(line: int, pre_block_lines: frozenset[int]) -> int:
     return line
 
 
-def _assign(result: AttachmentResult, name: str, unit_text: str, line: int) -> None:
+def _assign(
+    result: AttachmentResult,
+    name: str,
+    unit_text: str,
+    line: int,
+    *,
+    enclosing_type: str | None,
+) -> None:
+    if enclosing_type is not None:
+        key = (enclosing_type, name)
+        existing_f = result.field_units.get(key)
+        if existing_f is not None and existing_f != unit_text:
+            result.conflicts.append(
+                ConflictingAnnotation(
+                    variable=f"{enclosing_type}%{name}",
+                    first_unit=existing_f,
+                    second_unit=unit_text,
+                    second_line=line,
+                )
+            )
+            return
+        result.field_units[key] = unit_text
+        return
     existing = result.var_units.get(name)
     if existing is not None and existing != unit_text:
         result.conflicts.append(
@@ -180,5 +206,11 @@ def attach(scan: ScanResult) -> AttachmentResult:
             )
             continue
         for name in decl.names:
-            _assign(result, name, ann.unit_text, ann.line)
+            _assign(
+                result,
+                name,
+                ann.unit_text,
+                ann.line,
+                enclosing_type=decl.enclosing_type,
+            )
     return result
