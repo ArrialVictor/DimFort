@@ -155,3 +155,127 @@ def test_bad_annotation_text_emits_u002():
     asr = _prog([])
     diags = check(asr, {"x": "widget"}, file="t.f90")
     assert any(d.code == "U002" for d in diags)
+
+
+# ---------------------- intrinsics --------------------------------------------
+
+
+def _intrinsic(args: list[dict], *, line: int = 10, col: int = 7) -> dict:
+    """Build a minimal IntrinsicElementalFunction node at (line, col)."""
+    return {
+        "node": "IntrinsicElementalFunction",
+        "fields": {"args": args, "intrinsic_id": 0},
+        "loc": {
+            "first_line": line, "first_column": col,
+            "last_line": line, "last_column": col,
+        },
+    }
+
+
+def _intrinsic_names(*names_at: tuple[int, int, str]) -> dict:
+    """Build an AST shaped to expose the given intrinsic-name table.
+
+    ``names_at`` is a list of ``(line, col, name)``.
+    """
+    nodes = [
+        {
+            "node": "FuncCallOrArray",
+            "fields": {"func": name},
+            "loc": {
+                "first_line": line, "first_column": col,
+                "last_line": line, "last_column": col,
+            },
+        }
+        for (line, col, name) in names_at
+    ]
+    return {"node": "TranslationUnit", "items": nodes}
+
+
+def test_sqrt_halves_unit():
+    # side = sqrt(area)  where area: m^2 and side: m  → ok.
+    call = _intrinsic([_var("area")])
+    asr = _prog([_assign(_var("side"), call)])
+    ast = _intrinsic_names((10, 7, "sqrt"))
+    diags = check(
+        asr, {"side": "m", "area": "m^2"}, ast=ast, file="t.f90"
+    )
+    assert diags == []
+
+
+def test_sqrt_wrong_target_emits_h001():
+    call = _intrinsic([_var("area")])
+    asr = _prog([_assign(_var("side"), call)])
+    ast = _intrinsic_names((10, 7, "sqrt"))
+    diags = check(
+        asr, {"side": "kg", "area": "m^2"}, ast=ast, file="t.f90"
+    )
+    assert any(d.code == "H001" for d in diags)
+
+
+def test_exp_non_dimensionless_emits_h003():
+    call = _intrinsic([_var("x")])
+    asr = _prog([_assign(_var("y"), call)])
+    ast = _intrinsic_names((10, 7, "exp"))
+    diags = check(asr, {"x": "m", "y": "1"}, ast=ast, file="t.f90")
+    assert any(d.code == "H003" for d in diags)
+
+
+def test_exp_dimensionless_is_ok():
+    call = _intrinsic([_var("x")])
+    asr = _prog([_assign(_var("y"), call)])
+    ast = _intrinsic_names((10, 7, "exp"))
+    diags = check(asr, {"x": "1", "y": "1"}, ast=ast, file="t.f90")
+    assert diags == []
+
+
+def test_max_with_matching_units_is_ok():
+    call = _intrinsic([_var("a"), _var("b")])
+    asr = _prog([_assign(_var("c"), call)])
+    ast = _intrinsic_names((10, 7, "max"))
+    diags = check(asr, {"a": "m", "b": "m", "c": "m"}, ast=ast, file="t.f90")
+    assert diags == []
+
+
+def test_max_with_mismatched_units_emits_h002():
+    call = _intrinsic([_var("a"), _var("b")])
+    asr = _prog([_assign(_var("c"), call)])
+    ast = _intrinsic_names((10, 7, "max"))
+    diags = check(asr, {"a": "m", "b": "kg", "c": "m"}, ast=ast, file="t.f90")
+    codes = [d.code for d in diags]
+    assert "H002" in codes
+
+
+def test_dot_product_multiplies_units():
+    call = _intrinsic([_var("a"), _var("b")])
+    asr = _prog([_assign(_var("c"), call)])
+    ast = _intrinsic_names((10, 7, "dot_product"))
+    diags = check(
+        asr, {"a": "m", "b": "kg", "c": "kg*m"}, ast=ast, file="t.f90"
+    )
+    assert diags == []
+
+
+def test_sum_preserves_element_unit():
+    call = _intrinsic([_var("arr")])
+    asr = _prog([_assign(_var("total"), call)])
+    ast = _intrinsic_names((10, 7, "sum"))
+    diags = check(
+        asr, {"arr": "kg", "total": "kg"}, ast=ast, file="t.f90"
+    )
+    assert diags == []
+
+
+def test_floor_passes_unit_through():
+    call = _intrinsic([_var("x")])
+    asr = _prog([_assign(_var("y"), call)])
+    ast = _intrinsic_names((10, 7, "floor"))
+    diags = check(asr, {"x": "m", "y": "m"}, ast=ast, file="t.f90")
+    assert diags == []
+
+
+def test_unknown_intrinsic_name_skips_check_silently():
+    # Without AST, intrinsic name is unknown → expression is unknown unit.
+    call = _intrinsic([_var("x")])
+    asr = _prog([_assign(_var("y"), call)])
+    diags = check(asr, {"x": "m", "y": "kg"}, file="t.f90")  # would H001 if known
+    assert diags == []

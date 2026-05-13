@@ -82,14 +82,18 @@ Pre-alpha. Working pipeline pieces:
 
 - annotation scanner (`@unit{…}` extraction, all placement forms)
 - attachment (annotations → variables, with U010 enforcement)
-- semantic checker for **H001** (assignment mismatch) and **H002**
-  (additive operand mismatch) on simple arithmetic expressions
+- semantic checker for **H001** (assignment mismatch), **H002**
+  (additive / same-unit-intrinsic operand mismatch), and **H003**
+  (dimensionless-intrinsic violation), plus a useful subset of Fortran
+  intrinsics (`sqrt`, `abs`, `exp`, `log`, trig family, `min`/`max`/
+  `mod`/`merge`, `dot_product`/`matmul`, `sum`/`minval`/`maxval`, the
+  kind-conversion family)
 - end-to-end CLI: `dimfort check FILE [FILE …]` runs the full pipeline
   and reports diagnostics in `file:line: severity: code message` form
 
-Not yet implemented: intrinsics (`sqrt`, `exp`, trigonometry, …),
-function and subroutine calls (H004), derived-type field access, multi-
-file module dependency resolution, the LSP server, and the on-disk
-cache's read/write paths (only `cache info` / `cache clean` work).
+Not yet implemented: user-defined function and subroutine calls
+(H004), derived-type field access, multi-file module dependency
+resolution, the LSP server, and the on-disk cache's read/write paths
+(only `cache info` / `cache clean` work).
 
 Treat anything not listed above as unimplemented.

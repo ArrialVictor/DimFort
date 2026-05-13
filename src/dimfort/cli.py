@@ -163,9 +163,10 @@ def _run_check(args: argparse.Namespace) -> int:
         for inter in att.intermediate_continuations:
             emit(str(p), inter.line, "error", "U010", inter.reason)
 
-        # Semantic check needs the ASR.
+        # Semantic check needs the ASR + AST (the latter to recover
+        # intrinsic function names).
         try:
-            asr = lf.dump_tree(p, "asr", lfortran=args.lfortran)
+            ast, asr = lf.load_trees(p, lfortran=args.lfortran)
         except lf.LFortranNotFound as exc:
             print(f"dimfort: {exc}", file=sys.stderr)
             return 2
@@ -181,7 +182,7 @@ def _run_check(args: argparse.Namespace) -> int:
             )
             continue
 
-        for d in check(asr, att.var_units, file=str(p)):
+        for d in check(asr, att.var_units, ast=ast, file=str(p)):
             severity = "error" if d.severity is Severity.ERROR else "warning"
             emit(str(p), d.start.line, severity, d.code, d.message)
 
