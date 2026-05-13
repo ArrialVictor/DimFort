@@ -279,3 +279,126 @@ def test_unknown_intrinsic_name_skips_check_silently():
     asr = _prog([_assign(_var("y"), call)])
     diags = check(asr, {"x": "m", "y": "kg"}, file="t.f90")  # would H001 if known
     assert diags == []
+
+
+# ---------------------- user-defined function calls (H004) --------------------
+
+
+def _function(name: str, args: list[str], return_name: str) -> dict:
+    """A minimal ASR Function node with `args` and `return_var` as Vars."""
+    return {
+        "node": "Function",
+        "fields": {
+            "name": name,
+            "args": [_var(a) for a in args],
+            "return_var": _var(return_name),
+        },
+    }
+
+
+def _subroutine(name: str, args: list[str]) -> dict:
+    return {
+        "node": "Subroutine",
+        "fields": {
+            "name": name,
+            "args": [_var(a) for a in args],
+            "return_var": [],
+        },
+    }
+
+
+def _call_arg(node: dict) -> dict:
+    return {"node": "call_arg", "fields": {"value": node}}
+
+
+def _function_call(name: str, args: list[dict]) -> dict:
+    return {
+        "node": "FunctionCall",
+        "fields": {
+            "name": f"{name} (SymbolTable0)",
+            "args": [_call_arg(a) for a in args],
+        },
+        "loc": {"first_line": 20, "first_column": 7, "last_line": 20, "last_column": 7},
+    }
+
+
+def _subroutine_call(name: str, args: list[dict]) -> dict:
+    return {
+        "node": "SubroutineCall",
+        "fields": {
+            "name": f"{name} (SymbolTable0)",
+            "args": [_call_arg(a) for a in args],
+        },
+        "loc": {"first_line": 25, "first_column": 3, "last_line": 25, "last_column": 3},
+    }
+
+
+def test_function_call_matching_arg_units_ok():
+    fn = _function("area", args=["side"], return_name="area")
+    call = _function_call("area", [_var("s")])
+    asr = _prog([fn, _assign(_var("a"), call)])
+    diags = check(
+        asr,
+        {"side": "m", "area": "m^2", "s": "m", "a": "m^2"},
+        file="t.f90",
+    )
+    assert diags == []
+
+
+def test_function_call_wrong_arg_unit_emits_h004():
+    fn = _function("area", args=["side"], return_name="area")
+    call = _function_call("area", [_var("s")])
+    asr = _prog([fn, _assign(_var("a"), call)])
+    diags = check(
+        asr,
+        {"side": "m", "area": "m^2", "s": "kg", "a": "m^2"},
+        file="t.f90",
+    )
+    codes = [d.code for d in diags]
+    assert "H004" in codes
+    h004 = next(d for d in diags if d.code == "H004")
+    assert "area" in h004.message
+    assert "expected m" in h004.message
+
+
+def test_function_call_return_unit_drives_h001():
+    fn = _function("area", args=["side"], return_name="area")
+    call = _function_call("area", [_var("s")])
+    # Assigning an m^2 return to an m target → H001.
+    asr = _prog([fn, _assign(_var("len"), call)])
+    diags = check(
+        asr,
+        {"side": "m", "area": "m^2", "s": "m", "len": "m"},
+        file="t.f90",
+    )
+    codes = [d.code for d in diags]
+    assert "H001" in codes
+
+
+def test_subroutine_call_arg_mismatch_emits_h004():
+    sub = _subroutine("grow", args=["x", "factor"])
+    call = _subroutine_call("grow", [_var("v"), _var("s")])
+    asr = _prog([sub, call])
+    diags = check(
+        asr,
+        {"x": "m", "factor": "1", "v": "m", "s": "kg"},  # factor should be dimensionless
+        file="t.f90",
+    )
+    assert any(d.code == "H004" for d in diags)
+
+
+def test_unknown_function_skips_check_silently():
+    call = _function_call("mystery", [_var("x")])
+    asr = _prog([_assign(_var("y"), call)])
+    diags = check(asr, {"x": "m", "y": "kg"}, file="t.f90")
+    # No signature known → expression unit is None → no diagnostic.
+    assert diags == []
+
+
+def test_function_with_no_annotated_return_does_not_drive_h001():
+    fn = _function("opaque", args=["x"], return_name="opaque")
+    call = _function_call("opaque", [_var("v")])
+    asr = _prog([fn, _assign(_var("y"), call)])
+    # `opaque` has no return annotation → expression is unknown unit → no H001.
+    diags = check(asr, {"x": "m", "v": "m", "y": "kg"}, file="t.f90")
+    assert diags == []

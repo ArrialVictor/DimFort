@@ -83,17 +83,18 @@ Pre-alpha. Working pipeline pieces:
 - annotation scanner (`@unit{…}` extraction, all placement forms)
 - attachment (annotations → variables, with U010 enforcement)
 - semantic checker for **H001** (assignment mismatch), **H002**
-  (additive / same-unit-intrinsic operand mismatch), and **H003**
-  (dimensionless-intrinsic violation), plus a useful subset of Fortran
-  intrinsics (`sqrt`, `abs`, `exp`, `log`, trig family, `min`/`max`/
-  `mod`/`merge`, `dot_product`/`matmul`, `sum`/`minval`/`maxval`, the
-  kind-conversion family)
+  (additive / same-unit-intrinsic operand mismatch), **H003**
+  (dimensionless-intrinsic violation), and **H004** (user-defined
+  function/subroutine argument mismatch), plus a useful subset of
+  Fortran intrinsics (`sqrt`, `abs`, `exp`, `log`, trig family,
+  `min`/`max`/`mod`/`merge`, `dot_product`/`matmul`,
+  `sum`/`minval`/`maxval`, the kind-conversion family)
 - end-to-end CLI: `dimfort check FILE [FILE …]` runs the full pipeline
   and reports diagnostics in `file:line: severity: code message` form
 
-Not yet implemented: user-defined function and subroutine calls
-(H004), derived-type field access, multi-file module dependency
-resolution, the LSP server, and the on-disk cache's read/write paths
-(only `cache info` / `cache clean` work).
+Not yet implemented: derived-type field access (`b%v`), rational `Pow`
+exponents (`m^(1/2)` in source), multi-file module dependency
+resolution as a true pre-pass, the LSP server, and the on-disk cache's
+read/write paths (only `cache info` / `cache clean` work).
 
 Treat anything not listed above as unimplemented.

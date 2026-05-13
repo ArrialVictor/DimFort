@@ -73,10 +73,27 @@ CODES: dict[str, CodeSpec] = {
     "H003": CodeSpec(
         "H003", Severity.ERROR, "intrinsic argument must be dimensionless"
     ),
+    "H004": CodeSpec(
+        "H004", Severity.ERROR, "function-call argument unit mismatch"
+    ),
     "U002": CodeSpec(
         "U002", Severity.ERROR, "unit annotation could not be parsed"
     ),
 }
+
+
+@dataclass(frozen=True)
+class FuncSig:
+    """A user-defined function or subroutine's unit interface.
+
+    ``arg_units[i]`` is ``None`` when the i-th formal argument has no
+    unit annotation; the checker then doesn't constrain the actual.
+    ``return_unit`` is ``None`` for subroutines and for functions whose
+    return variable carries no annotation.
+    """
+
+    arg_units: tuple[Unit | None, ...]
+    return_unit: Unit | None
 
 
 # ---------------------------------------------------------------------------
@@ -199,11 +216,13 @@ class _Resolver:
         table: UnitTable,
         file: str,
         intrinsic_names: dict[tuple[int, int], str] | None = None,
+        functions: dict[str, FuncSig] | None = None,
     ):
         self.var_units = var_units
         self.table = table
         self.file = file
         self.intrinsic_names = intrinsic_names or {}
+        self.functions = functions or {}
         self.diags: list[Diagnostic] = []
 
     # ---- top-level dispatch ------------------------------------------------
@@ -221,8 +240,10 @@ class _Resolver:
             return self.resolve(inner) if isinstance(inner, dict) else None
         if kind in _INTRINSIC_NODES:
             return self._intrinsic(node)
-        # User-defined FunctionCall, derived-type access, etc. are not yet
-        # supported → unknown unit.
+        if kind == "FunctionCall":
+            return self._function_call(node)
+        # Derived-type access, generic dispatch, etc. are not yet supported
+        # → unknown unit, no diagnostic.
         return None
 
     # ---- arithmetic --------------------------------------------------------
@@ -381,6 +402,72 @@ class _Resolver:
 
         return None  # unknown intrinsic — keep unit unknown
 
+    # ---- user-defined function and subroutine calls ------------------------
+
+    def _call_name(self, node: dict) -> str:
+        v = node.get("fields", {}).get("name", "")
+        return v.split(" ", 1)[0] if isinstance(v, str) else ""
+
+    def _check_call_args(
+        self, call_node: dict, sig: FuncSig, name: str
+    ) -> None:
+        """Compare actual argument units against the formal signature."""
+        actuals = call_node.get("fields", {}).get("args") or []
+        for i, actual in enumerate(actuals):
+            if not isinstance(actual, dict):
+                continue
+            # ASR wraps each argument in a `call_arg` shim — unwrap to the value.
+            arg_node = actual.get("fields", {}).get("value")
+            if not isinstance(arg_node, dict):
+                # Omitted optional → fields.value is [] or None. Skip silently.
+                continue
+            if i >= len(sig.arg_units):
+                continue
+            formal = sig.arg_units[i]
+            if formal is None:
+                continue
+            actual_unit = self.resolve(arg_node)
+            if actual_unit is None:
+                continue
+            if not equal_dim(actual_unit, formal):
+                start, end = _loc_positions(arg_node)
+                self.diags.append(
+                    Diagnostic(
+                        file=self.file,
+                        start=start,
+                        end=end,
+                        severity=CODES["H004"].severity,
+                        code="H004",
+                        message=(
+                            f"call to {name!r}: argument {i + 1} unit "
+                            f"mismatch: expected "
+                            f"{format_unit(formal, table=self.table)}, "
+                            f"got "
+                            f"{format_unit(actual_unit, table=self.table)}"
+                        ),
+                    )
+                )
+
+    def _function_call(self, node: dict) -> Unit | None:
+        name = self._call_name(node)
+        sig = self.functions.get(name)
+        if sig is None:
+            return None
+        self._check_call_args(node, sig, name)
+        return sig.return_unit
+
+    def check_subroutine_call(self, node: dict) -> None:
+        """Same arg-unit check as a function call, but as a statement.
+
+        Subroutines don't return a value so this is fire-and-forget; the
+        diagnostics land in ``self.diags`` like everywhere else.
+        """
+        name = self._call_name(node)
+        sig = self.functions.get(name)
+        if sig is None:
+            return
+        self._check_call_args(node, sig, name)
+
 
 # ---------------------------------------------------------------------------
 # Public entry point
@@ -391,6 +478,56 @@ def _walk_assignments(asr: dict) -> Iterator[dict]:
     for n in walk(asr):
         if isinstance(n, dict) and n.get("node") == "Assignment":
             yield n
+
+
+def _walk_subroutine_calls(asr: dict) -> Iterator[dict]:
+    for n in walk(asr):
+        if isinstance(n, dict) and n.get("node") == "SubroutineCall":
+            yield n
+
+
+def _var_arg_name(var_node: dict) -> str:
+    """Variable name from an ASR Var-shaped node used as a formal arg."""
+    if not isinstance(var_node, dict):
+        return ""
+    v = var_node.get("fields", {}).get("v", "")
+    return v.split(" ", 1)[0] if isinstance(v, str) else ""
+
+
+def collect_function_signatures(
+    asr: dict, var_units: dict[str, Unit]
+) -> dict[str, FuncSig]:
+    """Build a ``{func_name: FuncSig}`` map by walking ASR ``Function`` /
+    ``Subroutine`` nodes and reading each formal's unit out of
+    ``var_units``.
+
+    Subroutines have an empty list for ``return_var`` (LFortran convention);
+    we record their signature with ``return_unit=None``.
+
+    v1 limitation: keyed by the bare function name. Cross-scope name
+    collisions are not disambiguated — last definition wins.
+    """
+    out: dict[str, FuncSig] = {}
+    for n in walk(asr):
+        if not isinstance(n, dict):
+            continue
+        if n.get("node") not in ("Function", "Subroutine"):
+            continue
+        fields = n.get("fields", {})
+        name = fields.get("name")
+        if not isinstance(name, str):
+            continue
+        formal_args = fields.get("args") or []
+        arg_units: list[Unit | None] = []
+        for a in formal_args:
+            argname = _var_arg_name(a)
+            arg_units.append(var_units.get(argname))
+        rv = fields.get("return_var")
+        return_unit: Unit | None = None
+        if isinstance(rv, dict):
+            return_unit = var_units.get(_var_arg_name(rv))
+        out[name] = FuncSig(tuple(arg_units), return_unit)
+    return out
 
 
 def _resolve_var_units(
@@ -440,7 +577,10 @@ def check(
 
     var_units, diags = _resolve_var_units(var_units_text, active_table, src_file)
     intrinsic_names = collect_intrinsic_names(ast) if ast is not None else {}
-    resolver = _Resolver(var_units, active_table, src_file, intrinsic_names)
+    functions = collect_function_signatures(asr, var_units)
+    resolver = _Resolver(
+        var_units, active_table, src_file, intrinsic_names, functions
+    )
 
     for asn in _walk_assignments(asr):
         target = asn.get("fields", {}).get("target")
@@ -469,6 +609,11 @@ def check(
                     ),
                 )
             )
+
+    # Subroutine calls are statements, not expressions, so they don't appear
+    # via resolver.resolve. Walk them explicitly.
+    for call in _walk_subroutine_calls(asr):
+        resolver.check_subroutine_call(call)
 
     diags.extend(resolver.diags)
     return diags
