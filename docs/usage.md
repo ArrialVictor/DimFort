@@ -30,8 +30,11 @@ dimfort cache info | clean      # inspect or clear the analysis cache
 
 | Flag                | Effect                                            |
 |---------------------|---------------------------------------------------|
-| `--no-cache`        | Bypass the on-disk analysis cache for this run.   |
-| `--cache-dir PATH`  | Override the cache directory (default: `./.dimfort/cache`). |
+| `-q`, `--quiet`     | Suppress diagnostic output; only return an exit code. |
+| `--no-color`        | Disable ANSI colour (also auto-disabled outside a TTY, or when `NO_COLOR` is set). |
+| `--lfortran PATH`   | Path to the `lfortran` binary (overrides `$LFORTRAN_BIN` and the conda default). |
+| `--no-cache`        | Bypass the on-disk analysis cache for this run. *(cache not yet implemented)* |
+| `--cache-dir PATH`  | Override the cache directory (default: `./.dimfort/cache`). *(cache not yet implemented)* |
 
 `cache` subcommands:
 
@@ -81,10 +84,12 @@ Pre-alpha. Working pipeline pieces:
 - attachment (annotations → variables, with U010 enforcement)
 - semantic checker for **H001** (assignment mismatch) and **H002**
   (additive operand mismatch) on simple arithmetic expressions
+- end-to-end CLI: `dimfort check FILE [FILE …]` runs the full pipeline
+  and reports diagnostics in `file:line: severity: code message` form
 
-Not yet implemented: intrinsics, function and subroutine calls,
-derived-type field access, module dependency resolution, the CLI
-front-end (`dimfort check` is still a stub), the LSP server, and the
-on-disk cache read/write paths.
+Not yet implemented: intrinsics (`sqrt`, `exp`, trigonometry, …),
+function and subroutine calls (H004), derived-type field access, multi-
+file module dependency resolution, the LSP server, and the on-disk
+cache's read/write paths (only `cache info` / `cache clean` work).
 
 Treat anything not listed above as unimplemented.

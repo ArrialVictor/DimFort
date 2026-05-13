@@ -14,9 +14,10 @@ real :: force     !< @unit{kg*m/s^2}
 force = mass * velocity            ! diagnosed: force unit is kg, expected kg*m/s^2
 ```
 
-> Status: **pre-alpha**. The CLI and LSP entry points exist as stubs;
-> annotation parsing and dimensional analysis are being ported from earlier
-> prototypes.
+> Status: **pre-alpha**. The annotation scanner, attachment pass, and a
+> minimal semantic checker (H001, H002) are working end-to-end through
+> the CLI. Intrinsics, function calls, derived-type access, and the LSP
+> are not yet implemented.
 
 ## Install
 
