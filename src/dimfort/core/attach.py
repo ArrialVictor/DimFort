@@ -1,44 +1,40 @@
-"""Attach :class:`RawAnnotation` records to ASR ``Variable`` nodes.
+"""Attach :class:`RawAnnotation` records to source-side declarations.
 
 Stage 2 of the annotation pipeline. Stage 1 (``annotations.py``)
-produced unattached ``@unit{...}`` occurrences; this module joins them
-to the variables they document.
+produced both unattached ``@unit{...}`` occurrences and a list of
+:class:`DeclarationSite` records covering every Fortran declaration
+statement. This module joins them.
 
-Key idea (inherited from V4): join by the ``Variable.type.loc.first_line``
-rather than the variable's own loc. For ``real :: a, b, c !< @unit{m}``
-all three Variable nodes share the same type-node line, so a single
-trailing annotation naturally maps to all three (declaration-list
-apply-to-all rule).
+Why source-side declarations: LFortran 0.63 has a position-tracking
+bug where each ``&``-continued statement collapses to 2 reported lines
+internally, shifting subsequent declarations' ``type_line`` backward.
+That makes ASR's positions unsuitable as the source of truth for
+annotation matching. We compute declaration extents from the source
+text itself; ASR is reserved for semantic work (type inference,
+intrinsic resolution) that needs proper compiler understanding.
 
 Attachment rules:
 
-- POST (``!<``): the annotation's line equals the declaration's type
-  first_line.
+- POST (``!<``) on any physical line in
+  ``[decl.line_start, decl.line_end]`` attaches to all of ``decl.names``.
 - PRE (``!>`` / ``!!``): walk forward through the contiguous
-  ``pre_block_lines`` set computed by stage 1; the annotation attaches
-  to the declaration whose type first_line equals ``block_end + 1``.
+  ``pre_block_lines`` set; the annotation attaches to the declaration
+  whose ``line_start`` equals ``block_end + 1``.
 
-Diagnostics produced:
-
-- :class:`OrphanAnnotation` — annotation line carries no matching
-  declaration.
-- :class:`ConflictingAnnotation` — same variable receives two
-  ``@unit{...}`` values from different annotations.
-
-Not yet implemented:
-
-- POST on the last line of a ``&``-continued declaration (form B/C in
-  the PROJECT_LOG continuation rule). Needs careful handling of
-  LFortran's normalised line numbers.
-- ``--strict-declist`` (U011) — flag multi-variable lists with a single
-  annotation.
+POST on an intermediate continuation line (form B/C policy: only first
+or last line of a continuation may carry ``!<``) is not yet diagnosed
+as a distinct U010 — currently the annotation still applies. That
+strict check arrives with ``--strict-declist`` and friends.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from dimfort.core.annotations import AnnotationKind, ScanResult
-from dimfort.core.lfortran import walk
+from dimfort.core.annotations import (
+    AnnotationKind,
+    DeclarationSite,
+    ScanResult,
+)
 
 
 @dataclass(frozen=True)
@@ -68,29 +64,23 @@ class AttachmentResult:
     conflicts: list[ConflictingAnnotation] = field(default_factory=list)
 
 
-def _variables_by_type_line(asr: dict) -> dict[int, list[str]]:
-    """Map ``type.first_line`` to the list of variable names declared there.
+def _decl_containing_line(
+    line: int, declarations: tuple[DeclarationSite, ...]
+) -> DeclarationSite | None:
+    """Return the declaration whose physical range contains ``line``, or None."""
+    for d in declarations:
+        if d.line_start <= line <= d.line_end:
+            return d
+    return None
 
-    A declaration list (``real :: a, b, c``) puts multiple Variable nodes
-    on the same type-line, so each line maps to a list.
-    """
-    out: dict[int, list[str]] = {}
-    for node in walk(asr):
-        if not isinstance(node, dict) or node.get("node") != "Variable":
-            continue
-        fields = node.get("fields") or {}
-        name = fields.get("name")
-        type_node = fields.get("type")
-        if not name or not isinstance(type_node, dict):
-            continue
-        loc = type_node.get("loc")
-        if not isinstance(loc, dict):
-            continue
-        line = loc.get("first_line")
-        if not isinstance(line, int):
-            continue
-        out.setdefault(line, []).append(name)
-    return out
+
+def _decl_starting_at_line(
+    line: int, declarations: tuple[DeclarationSite, ...]
+) -> DeclarationSite | None:
+    for d in declarations:
+        if d.line_start == line:
+            return d
+    return None
 
 
 def _block_end(line: int, pre_block_lines: frozenset[int]) -> int:
@@ -115,25 +105,28 @@ def _assign(result: AttachmentResult, name: str, unit_text: str, line: int) -> N
     result.var_units[name] = unit_text
 
 
-def attach(scan: ScanResult, asr: dict) -> AttachmentResult:
-    """Join a stage-1 :class:`ScanResult` to an ASR tree."""
+def attach(scan: ScanResult) -> AttachmentResult:
+    """Match a stage-1 :class:`ScanResult`'s annotations to its declarations."""
     result = AttachmentResult()
-    vars_by_line = _variables_by_type_line(asr)
-
     for ann in scan.annotations:
         if ann.kind is AnnotationKind.POST:
-            target_line = ann.line
-            orphan_reason = "no declaration on this line"
-        else:
-            block_end = _block_end(ann.line, scan.pre_block_lines)
-            target_line = block_end + 1
+            decl = _decl_containing_line(ann.line, scan.declarations)
             orphan_reason = (
-                f"no declaration immediately following the "
-                f"!> block (expected on line {target_line})"
+                "no declaration spans this line"
+                if decl is None
+                else ""
+            )
+        else:
+            target = _block_end(ann.line, scan.pre_block_lines) + 1
+            decl = _decl_starting_at_line(target, scan.declarations)
+            orphan_reason = (
+                f"no declaration immediately follows the !> block "
+                f"(expected on line {target})"
+                if decl is None
+                else ""
             )
 
-        names = vars_by_line.get(target_line)
-        if not names:
+        if decl is None:
             result.orphans.append(
                 OrphanAnnotation(
                     line=ann.line,
@@ -143,7 +136,6 @@ def attach(scan: ScanResult, asr: dict) -> AttachmentResult:
                 )
             )
             continue
-        for name in names:
+        for name in decl.names:
             _assign(result, name, ann.unit_text, ann.line)
-
     return result

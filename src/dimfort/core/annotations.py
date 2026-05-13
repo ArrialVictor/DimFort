@@ -161,28 +161,39 @@ def _find_unit_invocations(
 
 
 @dataclass(frozen=True)
+class DeclarationSite:
+    """A single Fortran declaration (possibly continued across lines)."""
+
+    line_start: int            # 1-based: the line containing the type-spec
+    line_end: int              # 1-based: the last physical line of the statement
+    names: tuple[str, ...]     # variable names declared, in source order
+
+
+@dataclass(frozen=True)
 class ScanResult:
     annotations: tuple[RawAnnotation, ...]
     errors: tuple[MalformedAnnotation, ...]
-    # Lines whose comment starts with `!>` or `!!` — used by stage 2 to
-    # determine where a PRE block ends so it can be attached to the next
-    # declaration. POST (`!<`) comments are treated as one-line and are
-    # NOT included here.
+    # Lines whose comment starts with `!>` or `!!` — used to find where a
+    # PRE block ends so it can be attached to the next declaration. POST
+    # (`!<`) is treated as one-line and is NOT included here.
     pre_block_lines: frozenset[int] = frozenset()
+    # Every declaration statement found in the source, in textual order.
+    declarations: tuple[DeclarationSite, ...] = ()
 
 
 def scan_text(source: str) -> ScanResult:
-    """Scan a single Fortran source string and return all annotations."""
+    """Scan a single Fortran source string and return annotations + declarations."""
+    lines = source.splitlines()
     annotations: list[RawAnnotation] = []
     errors: list[MalformedAnnotation] = []
     pre_block_lines: set[int] = set()
-    for line_no, line in enumerate(source.splitlines(), start=1):
+    for line_no, line in enumerate(lines, start=1):
         col = _comment_start(line)
         if col is None:
             continue
-        comment = line[col + 1:]  # drop the `!`
+        comment = line[col + 1:]
         # `col` is 0-based column of `!`. The character right after the
-        # `!` (which is `comment[0]`) sits at 1-based column `col + 2`.
+        # `!` (i.e. `comment[0]`) sits at 1-based column `col + 2`.
         anns, errs, kind = _find_unit_invocations(
             comment, line_no=line_no, base_column=col + 2
         )
@@ -190,9 +201,125 @@ def scan_text(source: str) -> ScanResult:
         errors.extend(errs)
         if kind is AnnotationKind.PRE:
             pre_block_lines.add(line_no)
+    declarations = tuple(_scan_declarations(lines))
     return ScanResult(
-        tuple(annotations), tuple(errors), frozenset(pre_block_lines)
+        annotations=tuple(annotations),
+        errors=tuple(errors),
+        pre_block_lines=frozenset(pre_block_lines),
+        declarations=declarations,
     )
+
+
+# ---------------------------------------------------------------------------
+# Source-side declaration scanner
+# ---------------------------------------------------------------------------
+#
+# Why source-side? LFortran 0.63 has a position-tracking bug where each
+# `&`-continued statement collapses to 2 reported lines internally,
+# shifting subsequent declarations' `type_line` backward by 1 per prior
+# continuation. That makes ASR positions unusable as the source of truth
+# for annotation→declaration matching. Probing fixtures with continued
+# decls confirms the drift: the second decl after a 3-line continued one
+# is reported at physical_line - 1.
+#
+# So: we identify declarations from text directly. The grammar handled
+# below is the common F90 subset; it is intentionally narrow and will
+# need extension for LMDZ-grade real code.
+
+
+_DECL_PREFIX_RE = re.compile(
+    r"""^\s*
+        ( real \b
+        | integer \b
+        | logical \b
+        | complex \b
+        | character \b
+        | double \s+ precision \b
+        | type      \s* \( [^)]+ \)
+        | class     \s* \( [^)]+ \)
+        )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+_ENTITY_NAME_RE = re.compile(r"\s*([A-Za-z_]\w*)")
+
+
+def _split_top_level_commas(s: str) -> list[str]:
+    """Split ``s`` on commas that sit at paren-depth 0."""
+    out: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    for ch in s:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            out.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    if buf:
+        out.append("".join(buf))
+    return out
+
+
+def _extract_names_from_entity_list(entity_list: str) -> list[str]:
+    """Return the variable names from a Fortran ``entity-list``.
+
+    ``a, b, c`` → ``["a", "b", "c"]``.
+    ``a = 1, b(3), c = (/0,0,0/)`` → ``["a", "b", "c"]``.
+    """
+    names: list[str] = []
+    for entity in _split_top_level_commas(entity_list):
+        m = _ENTITY_NAME_RE.match(entity)
+        if m:
+            names.append(m.group(1))
+    return names
+
+
+def _scan_declarations(lines: list[str]) -> list[DeclarationSite]:
+    """Walk physical lines and emit one :class:`DeclarationSite` per stmt."""
+    out: list[DeclarationSite] = []
+    i = 0
+    while i < len(lines):
+        col = _comment_start(lines[i])
+        code = lines[i][:col] if col is not None else lines[i]
+        if not _DECL_PREFIX_RE.match(code):
+            i += 1
+            continue
+
+        # Found a declaration start at line i+1. Walk forward through
+        # `&`-continuation lines until the statement ends.
+        line_start = i + 1
+        chunks: list[str] = []
+        j = i
+        while j < len(lines):
+            ccol = _comment_start(lines[j])
+            ccode = lines[j][:ccol] if ccol is not None else lines[j]
+            stripped = ccode.rstrip()
+            if stripped.endswith("&"):
+                chunks.append(stripped[:-1])
+                j += 1
+                if j >= len(lines):
+                    break
+            else:
+                chunks.append(stripped)
+                j += 1
+                break
+        line_end = j  # j is 1-past-last in 0-based → equals 1-based last line
+
+        joined = " ".join(chunks)
+        # Locate the `::` separator (mandatory for the F90 forms we cover).
+        sep = joined.find("::")
+        if sep != -1:
+            names = _extract_names_from_entity_list(joined[sep + 2:])
+            if names:
+                out.append(DeclarationSite(line_start, line_end, tuple(names)))
+        i = j
+    return out
 
 
 def scan_file(path: str | Path) -> ScanResult:
