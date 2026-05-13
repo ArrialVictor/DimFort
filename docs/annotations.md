@@ -154,7 +154,18 @@ same source — no duplication.
 | (conflict)  | error    | The same variable received two different unit annotations (e.g. `!>` block disagrees with `!<` trailing). |
 | **U010**    | error    | `!<` on an intermediate line of an `&`-continued declaration; annotation is rejected. |
 
-The semantic checker layers add the **H001–H004** family on top
-(assignment unit mismatch, arithmetic operand mismatch, function-call
-mismatch, intrinsic-argument mismatch). Those are documented
-separately once the checker module is in place.
+The semantic checker layers add the **H-series** on top:
+
+| Code  | Severity | Meaning |
+|-------|----------|---------|
+| H001  | error    | Assignment LHS unit doesn't match RHS unit. |
+| H002  | error    | `+` / `-` operands have different dimensions. |
+| H003  | error    | *(planned)* intrinsic argument must be dimensionless. |
+| H004  | error    | *(planned)* function-call argument unit mismatch. |
+
+H001 and H002 are implemented for the basic expression forms (`Var`,
+numeric constants, `Add` / `Sub` / `Mul` / `Div`, `Pow` with integer
+exponent). Intrinsics (`sqrt`, `exp`, trigonometry, reductions),
+user-defined function calls, and derived-type field access are not
+yet handled; expressions involving them currently resolve to "unknown
+unit" and the checker skips them rather than risk a false positive.

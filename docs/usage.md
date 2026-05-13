@@ -75,6 +75,16 @@ ALIASES += "unit{1}=\par Unit:^^\1"
 
 ## Status
 
-Pre-alpha. The annotation scanner and attachment pass are working;
-the semantic checker that produces H001–H004 diagnostics is being
-implemented. Treat anything not listed in this file as unimplemented.
+Pre-alpha. Working pipeline pieces:
+
+- annotation scanner (`@unit{…}` extraction, all placement forms)
+- attachment (annotations → variables, with U010 enforcement)
+- semantic checker for **H001** (assignment mismatch) and **H002**
+  (additive operand mismatch) on simple arithmetic expressions
+
+Not yet implemented: intrinsics, function and subroutine calls,
+derived-type field access, module dependency resolution, the CLI
+front-end (`dimfort check` is still a stub), the LSP server, and the
+on-disk cache read/write paths.
+
+Treat anything not listed above as unimplemented.
