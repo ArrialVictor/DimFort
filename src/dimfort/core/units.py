@@ -18,10 +18,9 @@ import re
 import warnings
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Tuple, Union
 
-Number = Union[int, Fraction]
-Dim = Tuple[Number, Number, Number, Number, Number, Number, Number]
+Number = int | Fraction
+Dim = tuple[Number, Number, Number, Number, Number, Number, Number]
 
 DIM_LEN = 7
 ZERO_DIM: Dim = (0, 0, 0, 0, 0, 0, 0)
@@ -44,19 +43,19 @@ class Unit:
     dimension: Dim
     factor: Fraction
 
-    def __mul__(self, other: "Unit") -> "Unit":
+    def __mul__(self, other: Unit) -> Unit:
         return Unit(
-            tuple(a + b for a, b in zip(self.dimension, other.dimension)),
+            tuple(a + b for a, b in zip(self.dimension, other.dimension, strict=False)),
             self.factor * other.factor,
         )
 
-    def __truediv__(self, other: "Unit") -> "Unit":
+    def __truediv__(self, other: Unit) -> Unit:
         return Unit(
-            tuple(a - b for a, b in zip(self.dimension, other.dimension)),
+            tuple(a - b for a, b in zip(self.dimension, other.dimension, strict=False)),
             self.factor / other.factor,
         )
 
-    def pow(self, exp: Number) -> "Unit":
+    def pow(self, exp: Number) -> Unit:
         new_dim = tuple(a * exp for a in self.dimension)
         if self.factor == 1:
             new_factor = Fraction(1)
@@ -235,7 +234,7 @@ def format_unit(u: Unit, *, show_factor: bool = False, table: UnitTable | None =
     names = base_symbols(table)
     pos_terms: list[str] = []
     neg_terms: list[str] = []
-    for sym, exp in zip(names, u.dimension):
+    for sym, exp in zip(names, u.dimension, strict=False):
         if exp == 0:
             continue
         mag = abs(exp)
