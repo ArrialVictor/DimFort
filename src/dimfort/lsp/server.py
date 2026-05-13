@@ -70,6 +70,51 @@ _last_result_lock = threading.Lock()
 # Workspace folders, captured at initialise time.
 _workspace_folders: list[Path] = []
 
+# Tracks every file VSCode (or whichever client) has currently open.
+# Keyed by resolved Path so we can recover the *exact* URI the editor
+# uses, even when its normalisation differs from ours (symlinks, case,
+# percent-encoding). Publishing back to the editor's URI is what makes
+# squiggles actually appear.
+_opened_uris: dict[Path, str] = {}
+_opened_uris_lock = threading.Lock()
+
+
+def _remember_uri(uri: str) -> None:
+    p = _uri_to_path(uri)
+    if p is None:
+        return
+    try:
+        resolved = p.resolve()
+    except OSError:
+        return
+    with _opened_uris_lock:
+        _opened_uris[resolved] = uri
+
+
+def _forget_uri(uri: str) -> None:
+    p = _uri_to_path(uri)
+    if p is None:
+        return
+    try:
+        resolved = p.resolve()
+    except OSError:
+        return
+    with _opened_uris_lock:
+        _opened_uris.pop(resolved, None)
+
+
+def _uri_for_path(path: Path) -> str:
+    """Prefer the editor's original URI for a known-open file.
+
+    Falls back to ``Path.as_uri()`` for files the editor hasn't opened
+    yet (cross-file diagnostics on closed files).
+    """
+    with _opened_uris_lock:
+        known = _opened_uris.get(path)
+    if known is not None:
+        return known
+    return path.as_uri()
+
 
 # ---------------------------------------------------------------------------
 # URI / position helpers
@@ -80,10 +125,6 @@ def _uri_to_path(uri: str) -> Path | None:
     if not uri.startswith("file:"):
         return None
     return Path(unquote(urlparse(uri).path))
-
-
-def _path_to_uri(p: Path) -> str:
-    return p.as_uri()
 
 
 def _to_lsp_diagnostic(d: Diagnostic) -> lsp.Diagnostic:
@@ -174,7 +215,7 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
     for path in paths:
         diags = result.diagnostics.get(path, [])
         try:
-            file_uri = _path_to_uri(path)
+            file_uri = _uri_for_path(path)
         except ValueError:
             continue
         ls.text_document_publish_diagnostics(
@@ -283,10 +324,7 @@ def _resolve_hover(uri: str, line_1based: int, col_1based: int) -> str | None:
                 qualified = rest
         for (type_name, field_name), unit in result.merged_field_units.items():
             if qualified == f"{type_name}_{field_name}":
-                return (
-                    f"**{type_name}%{field_name}** — unit "
-                    f"`{format_unit(unit)}`"
-                )
+                return _hover_text(f"{type_name}%{field_name}", format_unit(unit))
 
     # Otherwise look for a Variable declaration or a Var use.
     for node, name in _walk_var_nodes(asr):
@@ -296,9 +334,24 @@ def _resolve_hover(uri: str, line_1based: int, col_1based: int) -> str | None:
             continue
         unit = result.merged_var_units.get(name)
         if unit is not None:
-            return f"**{name}** — unit `{format_unit(unit)}`"
-        return f"**{name}** — no unit annotation"
+            return _hover_text(name, format_unit(unit))
+        return _hover_text(name, "no unit annotation", show_unit_label=False)
     return None
+
+
+def _hover_text(name: str, unit_or_message: str, *, show_unit_label: bool = True) -> str:
+    """Render a hover line with a clear DimFort label.
+
+    The label matters because VSCode merges hover providers from
+    multiple extensions in the order they reply; ours can land below
+    e.g. Modern Fortran's. A header makes our entry recognisable even
+    when stacked.
+    """
+    if show_unit_label:
+        body = f"**{name}** — unit `{unit_or_message}`"
+    else:
+        body = f"**{name}** — {unit_or_message}"
+    return f"**DimFort**\n\n{body}"
 
 
 # ---------------------------------------------------------------------------
@@ -325,16 +378,19 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
 
 @server.feature(lsp.TEXT_DOCUMENT_DID_OPEN)
 def _did_open(ls: LanguageServer, params: lsp.DidOpenTextDocumentParams) -> None:
+    _remember_uri(params.text_document.uri)
     _publish_for_uri(ls, params.text_document.uri)
 
 
 @server.feature(lsp.TEXT_DOCUMENT_DID_SAVE)
 def _did_save(ls: LanguageServer, params: lsp.DidSaveTextDocumentParams) -> None:
+    _remember_uri(params.text_document.uri)
     _publish_for_uri(ls, params.text_document.uri)
 
 
 @server.feature(lsp.TEXT_DOCUMENT_DID_CLOSE)
 def _did_close(ls: LanguageServer, params: lsp.DidCloseTextDocumentParams) -> None:
+    _forget_uri(params.text_document.uri)
     ls.text_document_publish_diagnostics(
         lsp.PublishDiagnosticsParams(uri=params.text_document.uri, diagnostics=[])
     )
@@ -346,6 +402,7 @@ _DEBOUNCE_SECONDS = 0.4
 @server.feature(lsp.TEXT_DOCUMENT_DID_CHANGE)
 def _did_change(ls: LanguageServer, params: lsp.DidChangeTextDocumentParams) -> None:
     uri = params.text_document.uri
+    _remember_uri(uri)
     version = _bump_version(uri)
 
     # Pygls keeps a TextDocument with the up-to-date buffer source.
