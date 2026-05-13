@@ -164,12 +164,18 @@ def _find_unit_invocations(
 class ScanResult:
     annotations: tuple[RawAnnotation, ...]
     errors: tuple[MalformedAnnotation, ...]
+    # Lines whose comment starts with `!>` or `!!` — used by stage 2 to
+    # determine where a PRE block ends so it can be attached to the next
+    # declaration. POST (`!<`) comments are treated as one-line and are
+    # NOT included here.
+    pre_block_lines: frozenset[int] = frozenset()
 
 
 def scan_text(source: str) -> ScanResult:
     """Scan a single Fortran source string and return all annotations."""
     annotations: list[RawAnnotation] = []
     errors: list[MalformedAnnotation] = []
+    pre_block_lines: set[int] = set()
     for line_no, line in enumerate(source.splitlines(), start=1):
         col = _comment_start(line)
         if col is None:
@@ -177,12 +183,16 @@ def scan_text(source: str) -> ScanResult:
         comment = line[col + 1:]  # drop the `!`
         # `col` is 0-based column of `!`. The character right after the
         # `!` (which is `comment[0]`) sits at 1-based column `col + 2`.
-        anns, errs, _ = _find_unit_invocations(
+        anns, errs, kind = _find_unit_invocations(
             comment, line_no=line_no, base_column=col + 2
         )
         annotations.extend(anns)
         errors.extend(errs)
-    return ScanResult(tuple(annotations), tuple(errors))
+        if kind is AnnotationKind.PRE:
+            pre_block_lines.add(line_no)
+    return ScanResult(
+        tuple(annotations), tuple(errors), frozenset(pre_block_lines)
+    )
 
 
 def scan_file(path: str | Path) -> ScanResult:
