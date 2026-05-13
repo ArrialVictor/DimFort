@@ -433,6 +433,59 @@ def _build_resolver(result: WorksetResult, ast: dict) -> _Resolver:
     )
 
 
+def _gather_named_references(node: dict, expected_basename: str | None):
+    """Yield ``(display_name, ASR sub-node)`` for every Var, Variable, or
+    derived-type member access reachable from ``node``, in source order,
+    de-duplicated by display name.
+
+    The filename filter keeps out symbols inlined by ``use`` (whose loc
+    points at a different file).
+    """
+    seen: set[str] = set()
+    for n in walk(node):
+        if not isinstance(n, dict):
+            continue
+        kind = n.get("node")
+        # Filename filter — keep only entries whose loc sits in the
+        # active file. Without this, `use`-inlined declarations leak in
+        # alphabetical order.
+        loc = n.get("loc")
+        if expected_basename is not None and isinstance(loc, dict):
+            fn = loc.get("first_filename")
+            if isinstance(fn, str) and Path(fn).name != expected_basename:
+                continue
+        if kind == "Var":
+            v = n.get("fields", {}).get("v", "")
+            name = v.split(" ", 1)[0] if isinstance(v, str) else ""
+        elif kind == "Variable":
+            name = n.get("fields", {}).get("name", "")
+        elif kind == "StructInstanceMember":
+            v_node = n.get("fields", {}).get("v")
+            m_field = n.get("fields", {}).get("m", "")
+            if isinstance(v_node, dict):
+                vv = v_node.get("fields", {}).get("v", "")
+                receiver = vv.split(" ", 1)[0] if isinstance(vv, str) else "?"
+            else:
+                receiver = "?"
+            qualified = m_field.split(" ", 1)[0] if isinstance(m_field, str) else ""
+            if "_" in qualified:
+                head, rest = qualified.split("_", 1)
+                if head.isdigit():
+                    qualified = rest
+            # Strip the `<type>_` prefix to get just the field name.
+            if "_" in qualified:
+                _, field_name = qualified.split("_", 1)
+            else:
+                field_name = qualified
+            name = f"{receiver}%{field_name}"
+        else:
+            continue
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        yield name, n
+
+
 _BINOP_LABEL = {
     "Add": "+", "Sub": "-", "Mul": "*", "Div": "/", "Pow": "**",
 }
@@ -447,26 +500,24 @@ def _hover_expression(
     kind = node.get("node")
     f = node.get("fields", {})
 
-    lines = [f"expression — unit `{own_str}`"]
+    # Header — mention the operator when we can.
     if kind in ("RealBinOp", "IntegerBinOp", "ComplexBinOp", "LogicalBinOp"):
         op = f.get("op")
         lbl = _BINOP_LABEL.get(op, op)
         if lbl:
-            lines[0] = f"expression `… {lbl} …` — unit `{own_str}`"
-        left = f.get("left")
-        right = f.get("right")
-        if isinstance(left, dict):
-            lu = resolver.resolve(left)
-            lines.append(f"- left: `{format_unit(lu) if lu is not None else '?'}`")
-        if isinstance(right, dict):
-            ru = resolver.resolve(right)
-            lines.append(f"- right: `{format_unit(ru) if ru is not None else '?'}`")
-    elif kind in ("RealUnaryMinus", "IntegerUnaryMinus"):
-        inner = f.get("arg")
-        if isinstance(inner, dict):
-            iu = resolver.resolve(inner)
-            lines.append(f"- operand: `{format_unit(iu) if iu is not None else '?'}`")
-    body = "\n".join(lines)
+            header = f"expression `… {lbl} …` — unit `{own_str}`"
+        else:
+            header = f"expression — unit `{own_str}`"
+    else:
+        header = f"expression — unit `{own_str}`"
+
+    # Every variable / member access inside the expression, in source
+    # order, with its resolved unit.
+    rows: list[str] = []
+    for name, sub in _gather_named_references(node, expected_basename):
+        u = resolver.resolve(sub)
+        rows.append(f"- `{name}`: `{format_unit(u) if u is not None else '?'}`")
+    body = header if not rows else header + "\n" + "\n".join(rows)
     return f"**DimFort**\n\n{body}"
 
 

@@ -285,6 +285,13 @@ class _Resolver:
         if kind in ("RealUnaryMinus", "IntegerUnaryMinus"):
             inner = node.get("fields", {}).get("arg")
             return self.resolve(inner) if isinstance(inner, dict) else None
+        if kind == "Cast":
+            # Kind conversion (e.g. IntegerConstant → RealConstant for
+            # the literal `2` in `force = mass * accel * 2`). LFortran
+            # uses this for any implicit numeric promotion; the wrapped
+            # value's unit is unchanged.
+            inner = node.get("fields", {}).get("arg")
+            return self.resolve(inner) if isinstance(inner, dict) else None
         if kind in _INTRINSIC_NODES:
             return self._intrinsic(node)
         if kind == "FunctionCall":
