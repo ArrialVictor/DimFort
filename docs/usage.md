@@ -92,12 +92,15 @@ Pre-alpha. Working pipeline pieces:
 - derived-type field access (`b%v`) both as a read and as an
   assignment target, with field annotations declared inside the
   `type :: …` block
+- multi-file worksets: `dimfort check a.f90 b.f90 c.f90` compiles any
+  module files first (in dependency order, via a retry-loop) so
+  `use` statements resolve, then aggregates unit tables and function
+  signatures across files before checking each one
 - end-to-end CLI: `dimfort check FILE [FILE …]` runs the full pipeline
   and reports diagnostics in `file:line: severity: code message` form
 
 Not yet implemented: rational `Pow` exponents (`m^(1/2)` in source),
-multi-file module dependency resolution as a true pre-pass, the LSP
-server, and the on-disk cache's read/write paths (only `cache info` /
-`cache clean` work).
+the LSP server, and the on-disk cache's read/write paths (only
+`cache info` / `cache clean` work).
 
 Treat anything not listed above as unimplemented.

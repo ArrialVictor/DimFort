@@ -174,9 +174,9 @@ Intrinsics handled:
 | Product           | `dot_product`, `matmul`                                 | result = `arg[0] * arg[1]`. |
 | Reduction         | `sum`, `minval`, `maxval`                               | result = element unit. |
 
-User-defined functions and subroutines are now checked. Their unit
-interface is inferred from the annotations on their declared formal
-arguments and the result variable:
+User-defined functions and subroutines are now checked, including
+across files. Their unit interface is inferred from the annotations on
+their declared formal arguments and the result variable:
 
 ```fortran
 function box_area(side) result(out)
@@ -189,9 +189,12 @@ end function
 A call site is checked against this signature: each actual argument
 must have the same unit as the corresponding formal (or be unknown),
 and the call's resolved unit becomes the formal return unit (used by
-the surrounding H001 check). v1 keys signatures by the bare function
-name — two functions with the same name in different scopes are not
-disambiguated; last definition wins.
+the surrounding H001 check). When the called routine lives in a
+different file, pass both files to `dimfort check` on the same command
+line — the orchestrator compiles modules first (in dependency order)
+and aggregates signatures across the whole workset. v1 keys signatures
+by the bare function name — two functions with the same name in
+different scopes are not disambiguated; last definition wins.
 
 ### Derived-type fields
 

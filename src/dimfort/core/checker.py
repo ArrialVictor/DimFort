@@ -590,17 +590,17 @@ def check(
     *,
     ast: dict | None = None,
     field_units_text: dict[tuple[str, str], str] | None = None,
+    functions: dict[str, FuncSig] | None = None,
     table: UnitTable | None = None,
     file: str | None = None,
 ) -> list[Diagnostic]:
     """Walk an ASR and produce homogeneity diagnostics.
 
-    When ``ast`` is supplied, intrinsic function calls are recognised
-    by name and their unit semantics are enforced. ``field_units_text``
-    carries derived-type field annotations from
-    :func:`dimfort.core.attach.attach`; without it, ``b%field``
-    accesses resolve to "unknown unit" and the surrounding checks are
-    silently skipped.
+    ``ast`` enables intrinsic checks. ``field_units_text`` enables
+    derived-type ``%``-access checks. ``functions``, when supplied,
+    replaces this file's signature scan — used by the multi-file
+    orchestrator so callers can see signatures defined elsewhere.
+    Without it, signatures are collected from ``asr`` alone.
     """
     active_table = table if table is not None else _units_mod.DEFAULT_TABLE
     if active_table is None:
@@ -628,13 +628,16 @@ def check(
                 )
             )
     intrinsic_names = collect_intrinsic_names(ast) if ast is not None else {}
-    functions = collect_function_signatures(asr, var_units)
+    active_functions = (
+        functions if functions is not None
+        else collect_function_signatures(asr, var_units)
+    )
     resolver = _Resolver(
         var_units,
         active_table,
         src_file,
         intrinsic_names,
-        functions,
+        active_functions,
         field_units,
     )
 
