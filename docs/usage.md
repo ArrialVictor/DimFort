@@ -101,7 +101,8 @@ Pre-alpha. Working pipeline pieces:
   keystroke, and hover info showing the resolved unit of a variable or
   derived-type field. Wire it up in your editor following
   [docs/lsp.md](lsp.md); a VSCode extension scaffold lives next to
-  the repo at `Homogeneity/vscode-extension/`
+  the repo at `Homogeneity/DimFort-VSCompanion/` (its own GitHub
+  repo: https://github.com/ArrialVictor/DimFort-VSCompanion)
 - end-to-end CLI: `dimfort check FILE [FILE …]` runs the full pipeline
   and reports diagnostics in `file:line: severity: code message` form
 
