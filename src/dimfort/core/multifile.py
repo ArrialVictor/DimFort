@@ -18,6 +18,7 @@ The orchestrator returns ``{Path: list[Diagnostic]}``. The CLI in
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import tempfile
 from dataclasses import dataclass, field
@@ -25,7 +26,7 @@ from pathlib import Path
 
 from dimfort.core import lfortran as lf
 from dimfort.core import units as _units_mod
-from dimfort.core.annotations import scan_file
+from dimfort.core.annotations import scan_file, scan_text
 from dimfort.core.attach import (
     AttachmentResult,
     attach,
@@ -53,6 +54,13 @@ class WorksetResult:
     attachments: dict[Path, AttachmentResult] = field(default_factory=dict)
     load_failures: dict[Path, FileLoadFailure] = field(default_factory=dict)
     compile_failures: dict[Path, str] = field(default_factory=dict)
+    # Per-file ``(ast, asr)`` pair, populated only for files that loaded
+    # successfully. Used by the LSP server for hover-time symbol lookup.
+    trees: dict[Path, tuple[dict, dict]] = field(default_factory=dict)
+    # Per-file parsed unit table (for hover formatting); same key set as
+    # ``trees``.
+    merged_var_units: dict[str, Unit] = field(default_factory=dict)
+    merged_field_units: dict[tuple[str, str], Unit] = field(default_factory=dict)
 
 
 def _diag(file: str, line: int, code: str, message: str) -> Diagnostic:
@@ -124,9 +132,17 @@ def check_files(
     lfortran: str | os.PathLike[str] | None = None,
     table: UnitTable | None = None,
     implicit_interface: bool = False,
+    overrides: dict[Path, str] | None = None,
 ) -> WorksetResult:
-    """Scan, attach, and check every file in ``sources`` together."""
+    """Scan, attach, and check every file in ``sources`` together.
+
+    ``overrides`` lets the caller substitute in-memory text for one or
+    more files — used by the LSP server to check unsaved buffers. The
+    keys are the same absolute paths as in ``sources``; for any path
+    present, the buffer text is what we scan and what lfortran sees.
+    """
     abs_sources = [Path(p).resolve() for p in sources]
+    overrides = {Path(p).resolve(): t for p, t in (overrides or {}).items()}
     active_table = table if table is not None else _units_mod.DEFAULT_TABLE
     if active_table is None:
         raise RuntimeError(
@@ -137,16 +153,23 @@ def check_files(
 
     with tempfile.TemporaryDirectory(prefix="dimfort-") as tmp:
         tmp_dir = Path(tmp)
-        # Symlink every source under stable basenames so lfortran sees
-        # short paths (works with -c emitting `.mod` next to the symlink).
+        # For each source: either symlink to disk, or (if overridden)
+        # write the in-memory buffer text as a real file in the temp dir.
+        # Either way the rest of the pipeline runs against the temp-dir
+        # entry, so `.mod` files emitted by `lfortran -c` land next to
+        # them and `use` statements resolve.
         basename_to_path: dict[str, Path] = {}
         for src in abs_sources:
             link = tmp_dir / src.name
-            try:
-                link.symlink_to(src)
-            except FileExistsError:
-                # Two inputs with the same basename — keep the first.
-                continue
+            if src in basename_to_path.values():
+                continue  # duplicate basename — keep the first
+            if src in overrides:
+                link.write_text(overrides[src])
+            else:
+                try:
+                    link.symlink_to(src)
+                except FileExistsError:
+                    continue
             basename_to_path[src.name] = src
 
         # Phase 1: compile every module file (retry-loop until stable).
@@ -167,8 +190,10 @@ def check_files(
         merged_field_units_text: dict[tuple[str, str], str] = {}
         per_file_attached: dict[Path, AttachmentResult] = {}
 
+        scans = {}
         for src in abs_sources:
-            att = attach(scan_file(src))
+            scans[src] = scan_text(overrides[src]) if src in overrides else scan_file(src)
+            att = attach(scans[src])
             per_file_attached[src] = att
             for n, u in att.var_units.items():
                 merged_var_units_text.setdefault(n, u)
@@ -176,12 +201,16 @@ def check_files(
                 merged_field_units_text.setdefault(k, u)
         result.attachments = per_file_attached
 
-        # Parse the merged textual table once, for signature collection.
+        # Parse the merged textual tables once.
         merged_var_units, _ = _parse_var_units(merged_var_units_text, active_table)
+        result.merged_var_units = merged_var_units
+        for (tn, fn), t in merged_field_units_text.items():
+            with contextlib.suppress(UnitError):
+                result.merged_field_units[(tn, fn)] = _units_mod.parse(t, active_table)
 
         # Phase 3: dump AST + ASR for every file (from the temp cwd so
         # `.mod` files are visible). Aggregate function signatures.
-        trees: dict[Path, tuple[dict, dict]] = {}
+        trees = result.trees
         global_signatures: dict[str, FuncSig] = {}
         for src in abs_sources:
             if src in result.compile_failures:
@@ -206,7 +235,7 @@ def check_files(
             # Attachment-time issues (orphans, conflicts, U010).
             diags.extend(_attachment_diags(str(src), per_file_attached[src]))
             # Stage-1 malformed annotations.
-            for err in scan_file(src).errors:
+            for err in scans[src].errors:
                 diags.append(
                     Diagnostic(
                         file=str(src),
