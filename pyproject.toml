@@ -7,7 +7,7 @@ name = "dimfort"
 version = "0.0.1"
 description = "Dimensional homogeneity checker for Fortran projects, with LSP support."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [{ name = "DimFort contributors" }]
 keywords = ["fortran", "static-analysis", "units", "dimensional-analysis", "lsp"]
@@ -50,12 +50,12 @@ addopts = "-ra"
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 strict = true
 files = ["src/dimfort"]
