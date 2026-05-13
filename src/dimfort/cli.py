@@ -64,7 +64,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override cache directory (default: ./.dimfort/cache).",
     )
 
-    sub.add_parser("lsp", help="Start the DimFort language server (stdio).")
+    lsp = sub.add_parser("lsp", help="Start the DimFort language server (stdio).")
+    # Some LSP clients (vscode-languageclient with TransportKind.stdio) tack
+    # this argument on automatically. We only speak stdio, so it's a no-op
+    # but we accept it so the server doesn't crash on launch.
+    lsp.add_argument(
+        "--stdio", action="store_true", help=argparse.SUPPRESS
+    )
 
     cache = sub.add_parser("cache", help="Manage the analysis cache.")
     cache_sub = cache.add_subparsers(dest="cache_command", required=True)
