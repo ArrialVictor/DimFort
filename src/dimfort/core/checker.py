@@ -86,14 +86,17 @@ CODES: dict[str, CodeSpec] = {
 class FuncSig:
     """A user-defined function or subroutine's unit interface.
 
-    ``arg_units[i]`` is ``None`` when the i-th formal argument has no
-    unit annotation; the checker then doesn't constrain the actual.
+    ``arg_names[i]`` and ``arg_units[i]`` describe the i-th formal
+    argument; ``arg_units[i]`` is ``None`` when that argument has no
+    unit annotation (the checker then doesn't constrain the actual).
     ``return_unit`` is ``None`` for subroutines and for functions whose
     return variable carries no annotation.
     """
 
+    arg_names: tuple[str, ...]
     arg_units: tuple[Unit | None, ...]
     return_unit: Unit | None
+    is_subroutine: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -585,22 +588,33 @@ def collect_function_signatures(
     for n in walk(asr):
         if not isinstance(n, dict):
             continue
-        if n.get("node") not in ("Function", "Subroutine"):
+        kind = n.get("node")
+        if kind not in ("Function", "Subroutine"):
             continue
         fields = n.get("fields", {})
         name = fields.get("name")
         if not isinstance(name, str):
             continue
         formal_args = fields.get("args") or []
+        arg_names: list[str] = []
         arg_units: list[Unit | None] = []
         for a in formal_args:
             argname = _var_arg_name(a)
+            arg_names.append(argname)
             arg_units.append(var_units.get(argname))
         rv = fields.get("return_var")
         return_unit: Unit | None = None
+        # LFortran 0.63 emits subroutines as ``Function`` nodes too;
+        # ``return_var = []`` (empty list) is the distinguishing marker.
+        is_sub = (kind == "Subroutine") or not isinstance(rv, dict)
         if isinstance(rv, dict):
             return_unit = var_units.get(_var_arg_name(rv))
-        out[name] = FuncSig(tuple(arg_units), return_unit)
+        out[name] = FuncSig(
+            arg_names=tuple(arg_names),
+            arg_units=tuple(arg_units),
+            return_unit=return_unit,
+            is_subroutine=is_sub,
+        )
     return out
 
 
