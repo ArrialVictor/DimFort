@@ -14,11 +14,12 @@ real :: force     !< @unit{kg*m/s^2}
 force = mass * velocity            ! diagnosed: force unit is kg, expected kg*m/s^2
 ```
 
-> Status: **pre-alpha**. The annotation scanner, attachment pass, the
-> full H-series checker (H001–H004), intrinsics, user-defined function
-> and subroutine calls, derived-type field access, rational `**`
-> exponents, and multi-file worksets all work end-to-end through the
-> CLI. The LSP server and the on-disk cache are still to come.
+> Status: **pre-alpha**. End-to-end the following work: the annotation
+> scanner, attachment pass, the full H-series checker (H001–H004),
+> intrinsics, user-defined function and subroutine calls, derived-type
+> field access, rational `**` exponents, multi-file worksets, and a
+> diagnostic-publishing LSP server (`dimfort lsp`). The on-disk cache
+> and LSP hovers are still to come.
 
 ## Install
 
