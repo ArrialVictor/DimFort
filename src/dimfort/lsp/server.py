@@ -34,10 +34,11 @@ from pygls.lsp.server import LanguageServer
 from dimfort import __version__
 from dimfort.core import lfortran as lf
 from dimfort.core import unit_config  # noqa: F401  populates DEFAULT_TABLE
+from dimfort.core.checker import FuncSig
 from dimfort.core.diagnostics import Diagnostic, Severity
 from dimfort.core.lfortran import walk
 from dimfort.core.multifile import WorksetResult, check_files
-from dimfort.core.units import format_unit
+from dimfort.core.units import Unit, format_unit
 
 log = logging.getLogger("dimfort.lsp")
 
@@ -326,7 +327,8 @@ def _resolve_hover(uri: str, line_1based: int, col_1based: int) -> str | None:
             if qualified == f"{type_name}_{field_name}":
                 return _hover_text(f"{type_name}%{field_name}", format_unit(unit))
 
-    # Otherwise look for a Variable declaration or a Var use.
+    # Variable or Var: covers declarations and uses, plus the formals
+    # inside a function definition (which already are Variable nodes).
     for node, name in _walk_var_nodes(asr):
         if not _loc_contains(node.get("loc"), line_1based, col_1based, expected):
             continue
@@ -336,7 +338,48 @@ def _resolve_hover(uri: str, line_1based: int, col_1based: int) -> str | None:
         if unit is not None:
             return _hover_text(name, format_unit(unit))
         return _hover_text(name, "no unit annotation", show_unit_label=False)
+
+    # Function / subroutine call: show the signature.
+    for node in _walk_call_nodes(asr):
+        if not _loc_contains(node.get("loc"), line_1based, col_1based, expected):
+            continue
+        name = _call_name(node)
+        sig = result.signatures.get(name)
+        if sig is None:
+            continue
+        return _hover_signature(name, sig)
     return None
+
+
+def _walk_call_nodes(tree: dict):
+    for n in walk(tree):
+        if not isinstance(n, dict):
+            continue
+        if n.get("node") in ("FunctionCall", "SubroutineCall"):
+            yield n
+
+
+def _call_name(node: dict) -> str:
+    v = node.get("fields", {}).get("name", "")
+    return v.split(" ", 1)[0] if isinstance(v, str) else ""
+
+
+def _fmt_unit_opt(u: Unit | None) -> str:
+    return format_unit(u) if u is not None else "?"
+
+
+def _hover_signature(name: str, sig: FuncSig) -> str:
+    """Format a user-defined call's signature as Markdown."""
+    args = ", ".join(
+        f"{arg_name}: {_fmt_unit_opt(arg_unit)}"
+        for arg_name, arg_unit in zip(sig.arg_names, sig.arg_units, strict=False)
+    )
+    if sig.is_subroutine:
+        body = f"`subroutine {name}({args})`"
+    else:
+        ret = _fmt_unit_opt(sig.return_unit)
+        body = f"`function {name}({args}) → {ret}`"
+    return f"**DimFort**\n\n{body}"
 
 
 def _hover_text(name: str, unit_or_message: str, *, show_unit_label: bool = True) -> str:

@@ -61,6 +61,8 @@ class WorksetResult:
     # ``trees``.
     merged_var_units: dict[str, Unit] = field(default_factory=dict)
     merged_field_units: dict[tuple[str, str], Unit] = field(default_factory=dict)
+    # Function / subroutine signatures resolved across the whole workset.
+    signatures: dict[str, FuncSig] = field(default_factory=dict)
 
 
 def _diag(file: str, line: int, code: str, message: str) -> Diagnostic:
@@ -211,7 +213,7 @@ def check_files(
         # Phase 3: dump AST + ASR for every file (from the temp cwd so
         # `.mod` files are visible). Aggregate function signatures.
         trees = result.trees
-        global_signatures: dict[str, FuncSig] = {}
+        global_signatures = result.signatures
         for src in abs_sources:
             if src in result.compile_failures:
                 continue
