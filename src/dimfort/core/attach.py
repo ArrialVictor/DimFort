@@ -21,10 +21,13 @@ Attachment rules:
   ``pre_block_lines`` set; the annotation attaches to the declaration
   whose ``line_start`` equals ``block_end + 1``.
 
-POST on an intermediate continuation line (form B/C policy: only first
-or last line of a continuation may carry ``!<``) is not yet diagnosed
-as a distinct U010 — currently the annotation still applies. That
-strict check arrives with ``--strict-declist`` and friends.
+Diagnostic **U010** fires when a POST annotation sits on an
+*intermediate* line of a ``&``-continued declaration (strictly between
+``line_start`` and ``line_end``). The annotation is rejected — the
+target variables are *not* assigned — because the position suggests a
+per-variable scope that we do not support. Users must move the
+annotation to either the first or the last line of the continuation,
+or split the declaration.
 """
 from __future__ import annotations
 
@@ -57,11 +60,38 @@ class ConflictingAnnotation:
     second_line: int
 
 
+@dataclass(frozen=True)
+class IntermediateContinuationAnnotation:
+    """U010: ``!<`` on a continuation line that is neither first nor last.
+
+    The annotation is *not* applied — the user must move it to the first
+    or the last line of the continuation.
+    """
+
+    line: int
+    column: int
+    unit_text: str
+    declaration_line_start: int
+    declaration_line_end: int
+
+    @property
+    def reason(self) -> str:
+        return (
+            f"!< on an intermediate continuation line (declaration spans "
+            f"lines {self.declaration_line_start}-{self.declaration_line_end}); "
+            f"move the annotation to line {self.declaration_line_start} or "
+            f"line {self.declaration_line_end}"
+        )
+
+
 @dataclass
 class AttachmentResult:
     var_units: dict[str, str] = field(default_factory=dict)
     orphans: list[OrphanAnnotation] = field(default_factory=list)
     conflicts: list[ConflictingAnnotation] = field(default_factory=list)
+    intermediate_continuations: list[IntermediateContinuationAnnotation] = field(
+        default_factory=list
+    )
 
 
 def _decl_containing_line(
@@ -112,10 +142,23 @@ def attach(scan: ScanResult) -> AttachmentResult:
         if ann.kind is AnnotationKind.POST:
             decl = _decl_containing_line(ann.line, scan.declarations)
             orphan_reason = (
-                "no declaration spans this line"
-                if decl is None
-                else ""
+                "no declaration spans this line" if decl is None else ""
             )
+            # U010: POST on a strictly-interior continuation line is rejected.
+            if (
+                decl is not None
+                and decl.line_start < ann.line < decl.line_end
+            ):
+                result.intermediate_continuations.append(
+                    IntermediateContinuationAnnotation(
+                        line=ann.line,
+                        column=ann.column,
+                        unit_text=ann.unit_text,
+                        declaration_line_start=decl.line_start,
+                        declaration_line_end=decl.line_end,
+                    )
+                )
+                continue
         else:
             target = _block_end(ann.line, scan.pre_block_lines) + 1
             decl = _decl_starting_at_line(target, scan.declarations)

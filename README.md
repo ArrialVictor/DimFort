@@ -58,9 +58,10 @@ produced, `2` for usage / file / config errors.
 
 ## Doxygen integration
 
-Annotations are read from Doxygen comments (`!>` preceding a declaration or
-`!<` trailing it). To make Doxygen render them natively, add one line to your
-`Doxyfile`:
+Annotations are read from Doxygen comments (`!>` / `!!` preceding a
+declaration, or `!<` trailing it) and apply to every variable in a
+declaration list. To make Doxygen render them natively, add one line to
+your `Doxyfile`:
 
 ```
 ALIASES += "unit{1}=\par Unit:^^\1"
@@ -74,8 +75,13 @@ Module-level constants follow the same notation:
 real, parameter :: g = 9.81
 ```
 
+See [docs/annotations.md](docs/annotations.md) for the full reference:
+unit-expression grammar, continuation-line forms, declaration lists,
+and the diagnostic codes the scanner can emit.
+
 ## Documentation
 
+- [Annotations](docs/annotations.md)
 - [Usage details](docs/usage.md)
 - [Language server](docs/lsp.md)
 - [Cache format](docs/cache-format.md)

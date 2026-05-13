@@ -141,6 +141,57 @@ def test_pre_and_post_matching_unit_is_fine():
     assert res.conflicts == []
 
 
+# ---------- U010 — intermediate continuation line --------------------------
+
+
+def test_post_on_intermediate_continuation_line_is_rejected():
+    # `real :: a, &
+    #          b, &      !<  HERE — interior of the continuation
+    #          c`
+    scan = _scan(
+        annotations=[RawAnnotation(AnnotationKind.POST, 2, 30, "m")],
+        declarations=[DeclarationSite(1, 3, ("a", "b", "c"))],
+    )
+    res = attach(scan)
+    assert res.var_units == {}, "U010 must NOT apply the annotation"
+    assert len(res.intermediate_continuations) == 1
+    rec = res.intermediate_continuations[0]
+    assert rec.line == 2
+    assert rec.declaration_line_start == 1
+    assert rec.declaration_line_end == 3
+    assert "intermediate" in rec.reason
+
+
+def test_post_on_first_line_of_continuation_is_not_u010():
+    scan = _scan(
+        annotations=[RawAnnotation(AnnotationKind.POST, 1, 30, "kg")],
+        declarations=[DeclarationSite(1, 3, ("a", "b", "c"))],
+    )
+    res = attach(scan)
+    assert res.var_units == {"a": "kg", "b": "kg", "c": "kg"}
+    assert res.intermediate_continuations == []
+
+
+def test_post_on_last_line_of_continuation_is_not_u010():
+    scan = _scan(
+        annotations=[RawAnnotation(AnnotationKind.POST, 3, 30, "Pa")],
+        declarations=[DeclarationSite(1, 3, ("a", "b", "c"))],
+    )
+    res = attach(scan)
+    assert res.var_units == {"a": "Pa", "b": "Pa", "c": "Pa"}
+    assert res.intermediate_continuations == []
+
+
+def test_single_line_declaration_is_not_u010():
+    scan = _scan(
+        annotations=[RawAnnotation(AnnotationKind.POST, 5, 20, "m")],
+        declarations=[DeclarationSite(5, 5, ("v",))],
+    )
+    res = attach(scan)
+    assert res.var_units == {"v": "m"}
+    assert res.intermediate_continuations == []
+
+
 def test_pre_and_post_disagree_records_conflict():
     scan = _scan(
         annotations=[
