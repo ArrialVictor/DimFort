@@ -155,6 +155,48 @@ def _node_file(node: dict) -> str:
     return loc.get("first_filename", "<unknown>")
 
 
+_RATIONAL_EXPONENT_MAX_DENOMINATOR = 100
+
+
+def _constant_exponent(node: dict) -> int | Fraction | None:
+    """Decode an ASR exponent node into an integer or :class:`Fraction`.
+
+    Recognised forms:
+
+    - ``IntegerConstant`` → ``int``.
+    - ``RealConstant`` whose float value is close to a rational with
+      denominator ≤ 100 — converted via ``Fraction.limit_denominator``.
+      A value that doesn't match any "nice" rational (e.g. ``0.314``)
+      yields ``None``, so the caller treats the exponent as unknown.
+    - Anything else → ``None``.
+    """
+    kind = node.get("node")
+    fields = node.get("fields", {})
+    if kind == "IntegerConstant":
+        try:
+            return int(fields.get("n", 0))
+        except (TypeError, ValueError):
+            return None
+    if kind == "RealConstant":
+        raw = fields.get("r")
+        if not isinstance(raw, (int, float)):
+            return None
+        try:
+            exact = Fraction(raw).limit_denominator(
+                _RATIONAL_EXPONENT_MAX_DENOMINATOR
+            )
+        except (TypeError, ValueError, OverflowError):
+            return None
+        # Reject when limit_denominator drifted noticeably — protects against
+        # users writing irrational-looking floats like ``a ** 0.314``.
+        if abs(float(exact) - float(raw)) > 1e-9:
+            return None
+        if exact.denominator == 1:
+            return exact.numerator
+        return exact
+    return None
+
+
 def _var_name(var_node: dict) -> str:
     """Extract the bare variable name from an ASR ``Var`` node.
 
@@ -309,14 +351,15 @@ class _Resolver:
         base = self.resolve(base_node)
         if base is None:
             return None
-        # Only integer constant exponents are supported in v1.
-        if exp_node.get("node") != "IntegerConstant":
+        exponent = _constant_exponent(exp_node)
+        if exponent is None:
             return None
         try:
-            n = int(exp_node.get("fields", {}).get("n", 0))
-        except (TypeError, ValueError):
+            return base.pow(exponent)
+        except UnitError:
+            # Rational exponent on a prefixed/scaled unit (e.g. ``(km)^0.5``).
+            # We don't try to preserve the factor; treat as unknown.
             return None
-        return base.pow(n)
 
     # ---- intrinsics --------------------------------------------------------
 

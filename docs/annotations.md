@@ -217,6 +217,10 @@ v1 limitation: field lookup is keyed by `(bare_type_name, field_name)`.
 Two derived types in different modules that share a name are not
 disambiguated — last definition wins.
 
-Rational `Pow` exponents in source code (`area ** 0.5`) are still
-resolved to "unknown unit"; checks on the surrounding expression are
-silently skipped.
+Rational `**` exponents in source code are now handled: literal
+real-valued exponents close to a "nice" rational with denominator ≤
+100 (e.g. `0.5` → `1/2`, `0.3333…` → `1/3`) are decoded and used as a
+fractional exponent. Exponents that don't match a nice rational (e.g.
+`0.314`) still resolve to "unknown unit" and the surrounding check is
+silently skipped — this is intentional, since irrational exponents on
+non-dimensionless units have no physical meaning.

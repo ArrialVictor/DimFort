@@ -148,6 +148,31 @@ def test_pow_emits_h001_when_target_unit_wrong():
     assert any(d.code == "H001" for d in diags)
 
 
+def test_pow_half_integer_exponent_via_real_constant():
+    # `side = area ** 0.5` — area: m^2, side: m → ok.
+    rhs = _binop("Pow", _var("area"), _real_const(0.5))
+    asr = _prog([_assign(_var("side"), rhs)])
+    diags = check(asr, {"area": "m^2", "side": "m"}, file="t.f90")
+    assert diags == []
+
+
+def test_pow_third_root_emits_correct_h001():
+    # `x = v ** (1.0/3.0)` rendered as ** 0.3333… — limit_denominator
+    # rounds it to 1/3. v: m^3, x: m → ok.
+    rhs = _binop("Pow", _var("v"), _real_const(1.0 / 3.0))
+    asr = _prog([_assign(_var("x"), rhs)])
+    diags = check(asr, {"v": "m^3", "x": "m"}, file="t.f90")
+    assert diags == []
+
+
+def test_pow_irrational_exponent_skips_silently():
+    # `a ** 0.314` is not a nice rational → unit becomes unknown → no diag.
+    rhs = _binop("Pow", _var("a"), _real_const(0.314))
+    asr = _prog([_assign(_var("b"), rhs)])
+    diags = check(asr, {"a": "m", "b": "kg"}, file="t.f90")
+    assert diags == []
+
+
 # ---------------------- U002: bad annotation ----------------------------------
 
 
