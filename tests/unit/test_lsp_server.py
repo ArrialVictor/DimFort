@@ -61,7 +61,7 @@ def test_to_lsp_diagnostic_maps_severity():
 def test_to_lsp_diagnostic_preserves_code_and_source():
     d = _to_lsp_diagnostic(_diag(1, 1, code="H002", msg="bad"))
     assert d.code == "H002"
-    assert d.source == "dimfort"
+    assert d.source == "DimFort"
     assert d.message == "bad"
 
 

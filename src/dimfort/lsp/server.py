@@ -142,7 +142,7 @@ def _to_lsp_diagnostic(d: Diagnostic) -> lsp.Diagnostic:
         ),
         severity=_SEVERITY_TO_LSP.get(d.severity, lsp.DiagnosticSeverity.Error),
         code=d.code,
-        source="dimfort",
+        source="DimFort",
         message=d.message,
     )
 
