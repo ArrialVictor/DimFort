@@ -1,0 +1,42 @@
+# Standard unit table for DimFort.
+# Shipped with the tool. Users may extend it via a project-local config
+# following the same schema; user entries are merged on top of these defaults
+# and a collision-detection pass runs at load time.
+
+# Base units: each maps to exactly one of the 7 SI dimension slots.
+# Slot names: M, L, T, Theta, I, N, J.
+[base]
+kg  = "M"
+m   = "L"
+s   = "T"
+K   = "Theta"
+A   = "I"
+mol = "N"
+cd  = "J"
+
+# SI prefixes. Values are exact: ints or rational strings "p/q".
+[prefixes]
+G = 1000000000
+M = 1000000
+k = 1000
+d = "1/10"
+c = "1/100"
+m = "1/1000"
+u = "1/1000000"
+n = "1/1000000000"
+p = "1/1000000000000"
+
+# Derived units. `expr` is parsed against the table being built (in
+# dependency order). `prefixable = true` opts in to prefix expansion.
+[derived]
+N   = { expr = "kg*m/s^2" }
+J   = { expr = "N*m" }
+W   = { expr = "J/s" }
+Pa  = { expr = "N/m^2" }
+Hz  = { expr = "1/s" }
+C   = { expr = "A*s" }
+V   = { expr = "W/A" }
+Ohm = { expr = "V/A" }
+T   = { expr = "kg/(s^2*A)" }
+rad = { expr = "1" }
+sr  = { expr = "1" }
