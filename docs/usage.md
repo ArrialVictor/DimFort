@@ -96,10 +96,14 @@ Pre-alpha. Working pipeline pieces:
   module files first (in dependency order, via a retry-loop) so
   `use` statements resolve, then aggregates unit tables and function
   signatures across files before checking each one
+- a working LSP server (`dimfort lsp`) that publishes diagnostics on
+  open and on save — wire it up in your editor following
+  [docs/lsp.md](lsp.md); a VSCode extension scaffold lives next to
+  the repo at `Homogeneity/vscode-extension/`
 - end-to-end CLI: `dimfort check FILE [FILE …]` runs the full pipeline
   and reports diagnostics in `file:line: severity: code message` form
 
-Not yet implemented: the LSP server and the on-disk cache's
-read/write paths (only `cache info` / `cache clean` work).
+Not yet implemented: the on-disk cache's read/write paths (only
+`cache info` / `cache clean` work).
 
 Treat anything not listed above as unimplemented.
