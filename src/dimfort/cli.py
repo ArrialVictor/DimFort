@@ -105,10 +105,8 @@ def _run_check(args: argparse.Namespace) -> int:
     # plumbing for users who only need `cache` or `lsp`.
     from dimfort.core import lfortran as lf
     from dimfort.core import unit_config  # noqa: F401 — populate DEFAULT_TABLE
-    from dimfort.core.annotations import scan_file
-    from dimfort.core.attach import attach
-    from dimfort.core.checker import check
     from dimfort.core.diagnostics import Severity
+    from dimfort.core.multifile import check_files
 
     paths: list[Path] = []
     for raw in args.paths:
@@ -133,64 +131,18 @@ def _run_check(args: argparse.Namespace) -> int:
             error_count += 1
         if args.quiet:
             return
-        print(
-            _format_diag(file, line, severity, code, message, color=color)
-        )
+        print(_format_diag(file, line, severity, code, message, color=color))
+
+    try:
+        result = check_files(paths, lfortran=args.lfortran)
+    except lf.LFortranNotFound as exc:
+        print(f"dimfort: {exc}", file=sys.stderr)
+        return 2
 
     for p in paths:
-        scan = scan_file(p)
-
-        # Stage-1 errors (malformed @unit{...} occurrences).
-        for err in scan.errors:
-            emit(str(p), err.line, "error", "U001", err.reason)
-
-        att = attach(scan)
-
-        # Stage-2 diagnostics.
-        for orph in att.orphans:
-            emit(str(p), orph.line, "warning", "U006", orph.reason)
-        for confl in att.conflicts:
-            emit(
-                str(p),
-                confl.second_line,
-                "error",
-                "U-conflict",
-                (
-                    f"conflicting unit for {confl.variable!r}: "
-                    f"{confl.first_unit} vs {confl.second_unit}"
-                ),
-            )
-        for inter in att.intermediate_continuations:
-            emit(str(p), inter.line, "error", "U010", inter.reason)
-
-        # Semantic check needs the ASR + AST (the latter to recover
-        # intrinsic function names).
-        try:
-            ast, asr = lf.load_trees(p, lfortran=args.lfortran)
-        except lf.LFortranNotFound as exc:
-            print(f"dimfort: {exc}", file=sys.stderr)
-            return 2
-        except lf.LFortranError as exc:
-            stderr = exc.stderr.strip()
-            head = stderr.splitlines()[0] if stderr else "no error message"
-            emit(
-                str(p),
-                0,
-                "error",
-                "U007",
-                f"lfortran could not load this file: {head}",
-            )
-            continue
-
-        for d in check(
-            asr,
-            att.var_units,
-            ast=ast,
-            field_units_text=att.field_units,
-            file=str(p),
-        ):
+        for d in result.diagnostics.get(p.resolve(), []):
             severity = "error" if d.severity is Severity.ERROR else "warning"
-            emit(str(p), d.start.line, severity, d.code, d.message)
+            emit(d.file, d.start.line, severity, d.code, d.message)
 
     return 1 if error_count else 0
 

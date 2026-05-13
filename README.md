@@ -14,10 +14,12 @@ real :: force     !< @unit{kg*m/s^2}
 force = mass * velocity            ! diagnosed: force unit is kg, expected kg*m/s^2
 ```
 
-> Status: **pre-alpha**. The annotation scanner, attachment pass, and a
-> minimal semantic checker (H001, H002) are working end-to-end through
-> the CLI. Intrinsics, function calls, derived-type access, and the LSP
-> are not yet implemented.
+> Status: **pre-alpha**. The annotation scanner, attachment pass, the
+> full H-series checker (H001–H004), intrinsics, user-defined function
+> and subroutine calls, derived-type field access, and multi-file
+> worksets all work end-to-end through the CLI. The LSP server, the
+> on-disk cache, and rational `Pow` exponents in source code are still
+> to come.
 
 ## Install
 
