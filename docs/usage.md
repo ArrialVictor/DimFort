@@ -99,8 +99,7 @@ Pre-alpha. Working pipeline pieces:
 - end-to-end CLI: `dimfort check FILE [FILE …]` runs the full pipeline
   and reports diagnostics in `file:line: severity: code message` form
 
-Not yet implemented: rational `Pow` exponents (`m^(1/2)` in source),
-the LSP server, and the on-disk cache's read/write paths (only
-`cache info` / `cache clean` work).
+Not yet implemented: the LSP server and the on-disk cache's
+read/write paths (only `cache info` / `cache clean` work).
 
 Treat anything not listed above as unimplemented.

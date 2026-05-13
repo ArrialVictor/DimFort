@@ -16,10 +16,9 @@ force = mass * velocity            ! diagnosed: force unit is kg, expected kg*m/
 
 > Status: **pre-alpha**. The annotation scanner, attachment pass, the
 > full H-series checker (H001–H004), intrinsics, user-defined function
-> and subroutine calls, derived-type field access, and multi-file
-> worksets all work end-to-end through the CLI. The LSP server, the
-> on-disk cache, and rational `Pow` exponents in source code are still
-> to come.
+> and subroutine calls, derived-type field access, rational `**`
+> exponents, and multi-file worksets all work end-to-end through the
+> CLI. The LSP server and the on-disk cache are still to come.
 
 ## Install
 
