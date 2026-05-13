@@ -41,7 +41,7 @@ It speaks LSP over stdio, the wire format every common editor expects.
 
 ### VSCode
 
-Use the companion extension at `Homogeneity/vscode-extension/`.
+Use the companion extension at [DimFort-VSCompanion](https://github.com/ArrialVictor/DimFort-VSCompanion).
 The README in that folder walks through the F5 dev-host workflow.
 Point the `dimfort.executable` setting at your DimFort install
 (typically a virtualenv).
