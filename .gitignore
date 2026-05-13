@@ -216,3 +216,23 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- DimFort-specific ---
+
+# Per-project analysis cache (safe to delete; `dimfort cache clean` does the same)
+.dimfort/
+
+# OS files
+.DS_Store
+Thumbs.db
+*~
+
+# Editor / IDE
+.idea/
+*.swp
+*.swo
+
+# Local-only notes or scratch
+NOTES.local.md
+scratch/
+
