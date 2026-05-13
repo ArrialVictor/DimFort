@@ -77,6 +77,10 @@ def _diag(file: str, line: int, code: str, message: str) -> Diagnostic:
 def _attachment_diags(file: str, att: AttachmentResult) -> list[Diagnostic]:
     out: list[Diagnostic] = []
     for orph in att.orphans:
+        # Make sure the reason reads as a proper sentence in the editor.
+        msg = orph.reason
+        if msg and not msg[:1].isupper():
+            msg = msg[:1].upper() + msg[1:]
         out.append(
             Diagnostic(
                 file=file,
@@ -84,7 +88,7 @@ def _attachment_diags(file: str, att: AttachmentResult) -> list[Diagnostic]:
                 end=Position(orph.line, orph.column),
                 severity=Severity.WARNING,
                 code="U006",
-                message=orph.reason,
+                message=msg,
             )
         )
     for confl in att.conflicts:
@@ -96,7 +100,7 @@ def _attachment_diags(file: str, att: AttachmentResult) -> list[Diagnostic]:
                 severity=Severity.ERROR,
                 code="U-conflict",
                 message=(
-                    f"conflicting unit for {confl.variable!r}: "
+                    f"Conflicting unit for {confl.variable!r}: "
                     f"{confl.first_unit} vs {confl.second_unit}"
                 ),
             )
@@ -254,7 +258,7 @@ def check_files(
                 diags.append(
                     _diag(
                         str(src), 0, "U007",
-                        f"module compile failed: {head[0] if head else '(no message)'}",
+                        f"Module compile failed: {head[0] if head else '(no message)'}",
                     )
                 )
             elif src in result.load_failures:
@@ -262,7 +266,7 @@ def check_files(
                 diags.append(
                     _diag(
                         str(src), 0, "U007",
-                        f"lfortran could not load this file: {head[0] if head else '(no message)'}",
+                        f"LFortran could not load this file: {head[0] if head else '(no message)'}",
                     )
                 )
             # Semantic checks.

@@ -77,7 +77,7 @@ class IntermediateContinuationAnnotation:
     @property
     def reason(self) -> str:
         return (
-            f"!< on an intermediate continuation line (declaration spans "
+            f"'!<' on an intermediate continuation line (declaration spans "
             f"lines {self.declaration_line_start}-{self.declaration_line_end}); "
             f"move the annotation to line {self.declaration_line_start} or "
             f"line {self.declaration_line_end}"

@@ -332,7 +332,7 @@ class _Resolver:
                     severity=CODES["H002"].severity,
                     code="H002",
                     message=(
-                        f"'+' / '-' operands have different dimensions: "
+                        f"Operands of '+' / '-' have different dimensions: "
                         f"{format_unit(lu, table=self.table)} vs "
                         f"{format_unit(ru, table=self.table)}"
                     ),
@@ -389,7 +389,7 @@ class _Resolver:
                         severity=CODES["H003"].severity,
                         code="H003",
                         message=(
-                            f"intrinsic {name!r} requires a dimensionless "
+                            f"Intrinsic {name!r} requires a dimensionless "
                             f"argument; got "
                             f"{format_unit(u, table=self.table)}"
                         ),
@@ -430,7 +430,7 @@ class _Resolver:
                             severity=CODES["H002"].severity,
                             code="H002",
                             message=(
-                                f"intrinsic {name!r} arguments have different "
+                                f"Arguments of intrinsic {name!r} have different "
                                 f"dimensions: "
                                 f"{format_unit(first, table=self.table)} vs "
                                 f"{format_unit(u, table=self.table)}"
@@ -489,7 +489,7 @@ class _Resolver:
                         severity=CODES["H004"].severity,
                         code="H004",
                         message=(
-                            f"call to {name!r}: argument {i + 1} unit "
+                            f"Call to {name!r}: argument {i + 1} unit "
                             f"mismatch: expected "
                             f"{format_unit(formal, table=self.table)}, "
                             f"got "
@@ -635,7 +635,7 @@ def _resolve_var_units(
                     end=Position(0, 0),
                     severity=CODES["U002"].severity,
                     code="U002",
-                    message=f"unit annotation for {name!r}: {exc}",
+                    message=f"Unit annotation for {name!r}: {exc}",
                 )
             )
     return out, diags
@@ -680,7 +680,7 @@ def check(
                     severity=CODES["U002"].severity,
                     code="U002",
                     message=(
-                        f"unit annotation for {type_name}%{field_name}: {exc}"
+                        f"Unit annotation for {type_name}%{field_name}: {exc}"
                     ),
                 )
             )
@@ -718,9 +718,9 @@ def check(
                     severity=CODES["H001"].severity,
                     code="H001",
                     message=(
-                        f"assignment unit mismatch: target "
+                        f"Assignment unit mismatch: left "
                         f"{format_unit(lhs_unit, table=active_table)} "
-                        f"vs value "
+                        f"vs right "
                         f"{format_unit(rhs_unit, table=active_table)}"
                     ),
                 )
