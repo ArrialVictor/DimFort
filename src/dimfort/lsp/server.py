@@ -301,8 +301,19 @@ def _loc_contains(
     return not (line_1based == el and col_1based > ec)
 
 
-def _resolve_hover(uri: str, line_1based: int, col_1based: int) -> str | None:
-    """Return formatted hover text, or None if nothing useful is here."""
+def _resolve_hover(
+    uri: str,
+    line_1based: int,
+    col_1based: int,
+    source_text: str | None,
+) -> str | None:
+    """Return formatted hover text, or None if nothing useful is here.
+
+    ``source_text`` is the editor's current buffer for ``uri``; it lets
+    us print the literal text of expressions in the hover instead of a
+    generic placeholder. ``None`` is tolerated and falls back to a
+    generic header.
+    """
     with _last_result_lock:
         result = _last_result
     if result is None:
@@ -359,8 +370,38 @@ def _resolve_hover(uri: str, line_1based: int, col_1based: int) -> str | None:
     smallest = _smallest_expression_at(asr, line_1based, col_1based, expected)
     if smallest is not None:
         ast, _ = trees
-        return _hover_expression(result, ast, smallest, expected_basename=expected)
+        return _hover_expression(
+            result, ast, smallest,
+            expected_basename=expected, source_text=source_text,
+        )
+
+    # Assignment: cursor lands on the `=` (no more-specific node
+    # matched it). Show LHS and RHS units, then the variables inside.
+    asn = _assignment_containing(asr, line_1based, col_1based, expected)
+    if asn is not None:
+        ast, _ = trees
+        return _hover_assignment(
+            result, ast, asn,
+            expected_basename=expected, source_text=source_text,
+        )
     return None
+
+
+def _assignment_containing(
+    asr: dict, line: int, col: int, expected: str
+) -> dict | None:
+    best: dict | None = None
+    best_size = 1_000_000
+    for n in walk(asr):
+        if not isinstance(n, dict) or n.get("node") != "Assignment":
+            continue
+        if not _loc_contains(n.get("loc"), line, col, expected):
+            continue
+        size = _loc_size(n.get("loc"))
+        if size < best_size:
+            best = n
+            best_size = size
+    return best
 
 
 def _walk_call_nodes(tree: dict):
@@ -486,38 +527,94 @@ def _gather_named_references(node: dict, expected_basename: str | None):
         yield name, n
 
 
-_BINOP_LABEL = {
-    "Add": "+", "Sub": "-", "Mul": "*", "Div": "/", "Pow": "**",
-}
+def _text_for_loc(source_text: str | None, loc: dict | None) -> str | None:
+    """Slice the buffer text spanned by ``loc``.
+
+    Multi-line slices are joined with spaces so a continued declaration
+    renders as one readable line in the hover. Returns ``None`` if the
+    loc looks malformed or the buffer is unavailable.
+    """
+    if not source_text or not isinstance(loc, dict):
+        return None
+    sl = loc.get("first_line")
+    sc = loc.get("first_column")
+    el = loc.get("last_line")
+    ec = loc.get("last_column")
+    if not all(isinstance(v, int) for v in (sl, sc, el, ec)):
+        return None
+    lines = source_text.splitlines()
+    if sl < 1 or el < 1 or sl > len(lines) or el > len(lines):
+        return None
+    sl_i, el_i = sl - 1, el - 1
+    if sl_i == el_i:
+        snippet = lines[sl_i][sc - 1 : ec]
+    else:
+        parts = [lines[sl_i][sc - 1 :]]
+        parts.extend(lines[sl_i + 1 : el_i])
+        parts.append(lines[el_i][:ec])
+        snippet = " ".join(p.strip() for p in parts)
+    return snippet.strip() or None
+
+
+def _variables_list_md(
+    resolver, node: dict, expected_basename: str | None
+) -> list[str]:
+    out: list[str] = []
+    for name, sub in _gather_named_references(node, expected_basename):
+        u = resolver.resolve(sub)
+        out.append(f"- `{name}` : `{format_unit(u) if u is not None else '?'}`")
+    return out
 
 
 def _hover_expression(
-    result: WorksetResult, ast: dict, node: dict, *, expected_basename: str
+    result: WorksetResult,
+    ast: dict,
+    node: dict,
+    *,
+    expected_basename: str,
+    source_text: str | None,
 ) -> str | None:
     resolver = _build_resolver(result, ast)
     own = resolver.resolve(node)
     own_str = format_unit(own) if own is not None else "?"
-    kind = node.get("node")
-    f = node.get("fields", {})
 
-    # Header — mention the operator when we can.
-    if kind in ("RealBinOp", "IntegerBinOp", "ComplexBinOp", "LogicalBinOp"):
-        op = f.get("op")
-        lbl = _BINOP_LABEL.get(op, op)
-        if lbl:
-            header = f"expression `… {lbl} …` — unit `{own_str}`"
-        else:
-            header = f"expression — unit `{own_str}`"
-    else:
-        header = f"expression — unit `{own_str}`"
+    snippet = _text_for_loc(source_text, node.get("loc"))
+    header = (
+        f"`{snippet}` : `{own_str}`"
+        if snippet
+        else f"expression : `{own_str}`"
+    )
 
-    # Every variable / member access inside the expression, in source
-    # order, with its resolved unit.
-    rows: list[str] = []
-    for name, sub in _gather_named_references(node, expected_basename):
-        u = resolver.resolve(sub)
-        rows.append(f"- `{name}`: `{format_unit(u) if u is not None else '?'}`")
+    rows = _variables_list_md(resolver, node, expected_basename)
     body = header if not rows else header + "\n" + "\n".join(rows)
+    return f"**DimFort**\n\n{body}"
+
+
+def _hover_assignment(
+    result: WorksetResult,
+    ast: dict,
+    node: dict,
+    *,
+    expected_basename: str,
+    source_text: str | None,
+) -> str | None:
+    resolver = _build_resolver(result, ast)
+    fields = node.get("fields", {})
+    target = fields.get("target")
+    value = fields.get("value")
+    if not isinstance(target, dict) or not isinstance(value, dict):
+        return None
+
+    lhs_unit = resolver.resolve(target)
+    rhs_unit = resolver.resolve(value)
+    lhs_text = _text_for_loc(source_text, target.get("loc")) or "LHS"
+    rhs_text = _text_for_loc(source_text, value.get("loc")) or "RHS"
+
+    lhs_line = f"`{lhs_text}` : `{format_unit(lhs_unit) if lhs_unit is not None else '?'}`"
+    rhs_line = f"`{rhs_text}` : `{format_unit(rhs_unit) if rhs_unit is not None else '?'}`"
+
+    rows = _variables_list_md(resolver, node, expected_basename)
+    body = "\n".join([lhs_line, rhs_line] + rows)
     return f"**DimFort**\n\n{body}"
 
 
@@ -623,7 +720,12 @@ def _hover(ls: LanguageServer, params: lsp.HoverParams) -> Any:
     # LSP positions are 0-based; our internal helpers are 1-based.
     line = params.position.line + 1
     col = params.position.character + 1
-    text = _resolve_hover(uri, line, col)
+    source_text: str | None = None
+    try:
+        source_text = ls.workspace.get_text_document(uri).source
+    except Exception:
+        log.debug("could not fetch buffer text for %s", uri)
+    text = _resolve_hover(uri, line, col, source_text)
     if text is None:
         return None
     return lsp.Hover(
