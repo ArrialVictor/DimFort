@@ -973,27 +973,34 @@ def _inlay_hint(
     trees = result.trees.get(path.resolve())
     if trees is None:
         return []
-    _, asr = trees
+    ast, asr = trees
 
     expected = path.name
     visible_start_line = params.range.start.line + 1   # 1-based
     visible_end_line = params.range.end.line + 1
     seen_positions: set[tuple[int, int]] = set()
     hints: list[lsp.InlayHint] = []
+    resolver = _build_resolver(result, ast)
+
+    _INLAY_NODES = (
+        "Var",
+        "FunctionCall",
+        "IntrinsicElementalFunction",
+        "IntrinsicArrayFunction",
+        "IntrinsicScalarFunction",
+        "StructInstanceMember",
+    )
 
     for node in walk(asr):
         if not isinstance(node, dict):
             continue
         kind = node.get("node")
-        if kind == "Var":
-            name = node.get("fields", {}).get("v", "").split(" ", 1)[0]
-            unit = result.merged_var_units.get(name)
-        elif kind == "FunctionCall":
-            name = node.get("fields", {}).get("name", "").split(" ", 1)[0]
-            sig = result.signatures.get(name)
-            unit = sig.return_unit if sig is not None else None
-        else:
+        if kind not in _INLAY_NODES:
             continue
+        # Defer to the resolver for every kind — it already knows how
+        # to handle Var/Variable, intrinsic categories, struct member
+        # access, and user-defined calls.
+        unit = resolver.resolve(node)
         if unit is None:
             continue
         loc = node.get("loc") or {}
