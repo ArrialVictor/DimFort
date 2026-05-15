@@ -32,7 +32,12 @@ from dimfort.core.ast_checker import (
 )
 from dimfort.core.checker import FuncSig
 from dimfort.core.diagnostics import Diagnostic, Position, Severity
-from dimfort.core.multifile import WorksetResult, FileLoadFailure, _clean_stderr
+from dimfort.core.multifile import (
+    WorksetResult,
+    FileLoadFailure,
+    _attachment_diags,
+    _clean_stderr,
+)
 from dimfort.core.units import Unit, UnitError, UnitTable
 
 
@@ -171,6 +176,41 @@ def check_files_ast(
     # Phase D: check each file with its imports merged in.
     for entry in loaded:
         diags: list[Diagnostic] = []
+
+        # Attachment-time issues (orphans, conflicts, U010) — emitted
+        # whether or not the AST loaded. Same source-side coverage as
+        # the ASR pipeline.
+        diags.extend(_attachment_diags(str(entry.path), entry.attachment))
+        # Stage-1 malformed annotations (U001).
+        for err in getattr(entry.scan, "errors", ()):
+            diags.append(
+                Diagnostic(
+                    file=str(entry.path),
+                    start=Position(err.line, err.column),
+                    end=Position(err.line, err.column),
+                    severity=Severity.ERROR,
+                    code="U001",
+                    message=err.reason,
+                )
+            )
+        # Per-file U002 for any unit annotation that didn't parse —
+        # emit from the merged text table so the report matches the
+        # ASR pipeline file-by-file.
+        for name, text in entry.attachment.var_units.items():
+            try:
+                _units_mod.parse(text, active_table)
+            except UnitError as exc:
+                diags.append(
+                    Diagnostic(
+                        file=str(entry.path),
+                        start=Position(0, 0),
+                        end=Position(0, 0),
+                        severity=Severity.ERROR,
+                        code="U002",
+                        message=f"Unit annotation for {name!r}: {exc}",
+                    )
+                )
+
         if entry.ast is None:
             head = _clean_stderr(entry.load_error or "").splitlines()
             diags.append(
@@ -187,8 +227,17 @@ def check_files_ast(
             continue
 
         uses = _wsi.extract_uses(entry.text)
+        # Scope each file to its OWN declared variables. Workset-wide
+        # name collisions (the same identifier annotated differently
+        # in different files) used to leak through ``merged_var_units``
+        # and cause false-positive H001s on files whose ``w`` came from
+        # a sibling file. Cross-file imports still arrive via
+        # ``apply_use_clauses`` — by name, through explicit ``use``.
+        file_var_units = _parse_var_units(
+            entry.attachment.var_units, active_table
+        )
         per_file_var_units, per_file_sigs, unresolved = apply_use_clauses(
-            uses, module_exports, merged_var_units, global_signatures
+            uses, module_exports, file_var_units, global_signatures
         )
         for missing in unresolved:
             diags.append(
