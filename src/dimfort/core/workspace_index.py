@@ -25,7 +25,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Callable, Iterable, Iterator
 
 from dimfort.core.annotations import _comment_start
 
@@ -242,11 +242,26 @@ def scan_workspace(
     *,
     include_suffixes: frozenset[str] = DEFAULT_INCLUDE_SUFFIXES,
     exclude_patterns: tuple[str, ...] = (),
+    progress_cb: Callable[[int, int, Path], None] | None = None,
 ) -> WorkspaceIndex:
-    """Walk every root, scan each Fortran source for module/use headers."""
+    """Walk every root, scan each Fortran source for module/use headers.
+
+    ``progress_cb`` is invoked after each file is scanned as
+    ``progress_cb(scanned, total, path)``. Materialising the file list
+    upfront costs one extra ``rglob`` traversal but is the only way to
+    surface a meaningful total to the caller.
+    """
     index = WorkspaceIndex()
-    for path in _iter_fortran_files(roots, include_suffixes, exclude_patterns):
+    if progress_cb is None:
+        for path in _iter_fortran_files(roots, include_suffixes, exclude_patterns):
+            _scan_into_index(index, path)
+        return index
+
+    files = list(_iter_fortran_files(roots, include_suffixes, exclude_patterns))
+    total = len(files)
+    for i, path in enumerate(files, start=1):
         _scan_into_index(index, path)
+        progress_cb(i, total, path)
     return index
 
 
