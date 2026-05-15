@@ -34,6 +34,7 @@ from pygls.lsp.server import LanguageServer
 
 from dimfort import __version__
 from dimfort import cache as _cache_mod
+from dimfort.config import DimfortConfig, load_config
 from dimfort.core import lfortran as lf
 from dimfort.core import unit_config  # noqa: F401  populates DEFAULT_TABLE
 from dimfort.core import units as _units_mod
@@ -162,6 +163,14 @@ _external_modules: frozenset[str] = _DEFAULT_EXTERNAL_MODULES
 # initializationOptions.
 _DEFAULT_MAX_WORKSET = 40
 _max_workset_size: int = _DEFAULT_MAX_WORKSET
+
+# Resolved project config (``.dimfort.toml``). Loaded once at
+# ``initialize`` time; an LSP restart is required to re-read.
+_project_config: DimfortConfig = DimfortConfig()
+
+# Path to the LFortran binary, when explicitly set via config. ``None``
+# means "fall through to the discovery order in ``find_lfortran``."
+_lfortran_binary: str | None = None
 
 
 def _cap_workset(paths: list[Path], active: Path, limit: int) -> list[Path]:
@@ -344,7 +353,12 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
         cache_dir = _cache_mod.default_cache_dir(active.resolve().parent)
 
     try:
-        result = check_files(paths, overrides=overrides, cache_dir=cache_dir)
+        result = check_files(
+            paths,
+            overrides=overrides,
+            cache_dir=cache_dir,
+            lfortran=_lfortran_binary,
+        )
     except lf.LFortranNotFound as exc:
         log.warning("lfortran not found: %s", exc)
         return
@@ -992,27 +1006,49 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
             folders.append(p)
     _workspace_folders = folders
 
+    # Load .dimfort.toml from the first workspace folder, if any.
+    global _project_config, _lfortran_binary
+    if folders:
+        _project_config = load_config(folders[0])
+    config = _project_config
+
+    # Start from config-provided values; initializationOptions override.
+    _external_modules_from_config = _DEFAULT_EXTERNAL_MODULES | frozenset(
+        config.external_modules
+    )
     opts = params.initialization_options or {}
     global _external_modules, _max_workset_size
+    _external_modules = _external_modules_from_config
+    if config.max_workset_size is not None:
+        _max_workset_size = config.max_workset_size
+    if config.lfortran_binary is not None:
+        _lfortran_binary = str(config.lfortran_binary)
+
     if isinstance(opts, dict):
         _features.inlay_hints = bool(opts.get("inlayHintsEnabled", True))
         _features.completion = bool(opts.get("completionEnabled", True))
         _features.code_actions = bool(opts.get("codeActionsEnabled", True))
         _features.goto_definition = bool(opts.get("gotoDefinitionEnabled", True))
         _features.code_lens = bool(opts.get("codeLensEnabled", False))
-        # Client may pass an extension list to extend the built-in set.
+        # Init options extend whatever config already contributed.
         extra = opts.get("externalModules")
         if isinstance(extra, list):
-            _external_modules = _DEFAULT_EXTERNAL_MODULES | frozenset(
+            _external_modules = _external_modules | frozenset(
                 str(m).lower() for m in extra if isinstance(m, str)
             )
         cap = opts.get("maxWorksetSize")
         if isinstance(cap, int) and cap > 0:
             _max_workset_size = cap
+
+    config_note = (
+        f" (config: {config.config_path.name})"
+        if config.config_path is not None
+        else ""
+    )
     _notify(
         ls,
         f"DimFort LSP initialised — {len(folders)} folder(s), "
-        f"{len(_external_modules)} external module(s) on allowlist",
+        f"{len(_external_modules)} external module(s) on allowlist{config_note}",
     )
 
 
@@ -1029,13 +1065,18 @@ def _initialized(ls: LanguageServer, params: lsp.InitializedParams) -> None:
     folders = _workspace_folders
     if not folders:
         return
+    # If ``.dimfort.toml`` narrows the source tree via [project].src_paths,
+    # scan only those subdirectories. Otherwise scan every workspace
+    # folder. Useful on large monorepos where DimFort cares about a
+    # handful of subtrees.
+    scan_roots = tuple(_project_config.src_paths) or tuple(folders)
     _notify(
         ls,
-        f"DimFort: scanning workspace ({len(folders)} folder(s))…",
+        f"DimFort: scanning workspace ({len(scan_roots)} root(s))…",
     )
     threading.Thread(
         target=_build_initial_index,
-        args=(ls, tuple(folders)),
+        args=(ls, scan_roots),
         daemon=True,
         name="dimfort-workspace-scan",
     ).start()
