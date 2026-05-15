@@ -49,17 +49,25 @@ def _run_both(fixture: Path) -> tuple[Counter, Counter]:
     ast = lf.dump_tree(fixture, "ast")
     asr = lf.dump_tree(fixture, "asr")
 
-    ast_diags = ast_checker.check(ast, attached.var_units, file=str(fixture))
+    ast_diags = ast_checker.check(
+        ast,
+        attached.var_units,
+        file=str(fixture),
+        field_units=attached.field_units,
+    )
     asr_diags = asr_checker.check(
-        asr, attached.var_units, file=str(fixture), ast=ast
+        asr, attached.var_units, file=str(fixture), ast=ast,
+        field_units_text=attached.field_units,
     )
     return _diag_counts(ast_diags), _diag_counts(asr_diags)
 
 
 @pytest.mark.parametrize("name", [
-    "smoke_check.f90",          # H001 only
-    "smoke_intrinsics.f90",     # H003
-    "smoke_functions.f90",      # H001 + H004 (single-file `use`)
+    "smoke_check.f90",            # H001 only
+    "smoke_intrinsics.f90",       # H003
+    "smoke_functions.f90",        # H001 + H004 (single-file `use`)
+    "smoke_derived_types.f90",    # derived-type field access (Phase 3)
+    "smoke_rational_pow.f90",     # ** 0.5 — rational exponent (Phase 1)
 ])
 def test_ast_parity_with_asr(name):
     """For Phase 1-supported fixtures, AST and ASR diagnostic-code

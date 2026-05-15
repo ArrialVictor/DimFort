@@ -203,6 +203,11 @@ def check_files_ast(
         var_units_text = {
             n: _units_mod.format_unit(u) for n, u in per_file_var_units.items()
         }
+        # field_units flows straight through: it's keyed by
+        # ``(type, field)`` and there's no cross-file rename concept
+        # for derived-type fields the way there is for ``use``-imported
+        # variable names. Merge across all files so a consumer that
+        # uses a type declared elsewhere still sees its fields.
         diags.extend(
             ast_checker.check(
                 entry.ast,
@@ -210,6 +215,7 @@ def check_files_ast(
                 file=str(entry.path),
                 table=active_table,
                 signatures=per_file_sigs,
+                field_units=merged_field_units_text,
             )
         )
         result.diagnostics[entry.path] = diags
