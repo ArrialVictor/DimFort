@@ -444,6 +444,138 @@ def _check_call_args_against_sig(
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class ModuleExports:
+    """Public surface of one Fortran module, ready to splice into a
+    consumer file's local scope via a ``use`` clause.
+
+    Variable units and function/subroutine signatures are keyed by the
+    name LFortran reports — lower-case for ``signatures`` (matching the
+    convention in ``collect_function_signatures``); original case for
+    ``var_units`` to keep parity with how scan/attach surfaces them.
+    Phase 2 treats every module-level declaration as exported (no
+    ``private`` honouring yet) — refinement in a later phase.
+    """
+
+    name: str
+    var_units: dict[str, Unit]
+    signatures: dict[str, FuncSig]
+
+
+def collect_module_exports(
+    ast: dict,
+    var_units: dict[str, Unit],
+) -> dict[str, ModuleExports]:
+    """Walk an AST and return ``{module_name_lower: ModuleExports}``.
+
+    For each ``Module`` node, gathers:
+      - Module-level variable names (their ``var_unit`` if annotated).
+      - ``Function`` and ``Subroutine`` definitions found in
+        ``module.fields.contains``.
+
+    The shared ``var_units`` table already covers both module-level
+    names and names declared inside contained subprograms, so we
+    filter against the per-module variable name list to avoid leaking
+    contained-procedure locals into the export surface.
+    """
+    from dimfort.core.lfortran import walk
+    out: dict[str, ModuleExports] = {}
+    for node in walk(ast):
+        if _node(node) != "Module":
+            continue
+        fields = _fields(node)
+        name = fields.get("name")
+        if not isinstance(name, str):
+            continue
+
+        # Module-level variables: walk the ``decl`` list and pick out
+        # ``var_sym`` names from each Declaration.
+        export_var_units: dict[str, Unit] = {}
+        for decl in fields.get("decl") or []:
+            if _node(decl) != "Declaration":
+                continue
+            for sym in _fields(decl).get("syms") or []:
+                sym_name = _fields(sym).get("name")
+                if isinstance(sym_name, str) and sym_name in var_units:
+                    export_var_units[sym_name] = var_units[sym_name]
+
+        # Contained procedures: reuse the function-signature collector
+        # but scope it to this module's `contains` block only.
+        contained_ast = {
+            "node": "TranslationUnit",
+            "fields": {"items": fields.get("contains") or []},
+        }
+        signatures = collect_function_signatures(contained_ast, var_units)
+
+        out[name.lower()] = ModuleExports(
+            name=name,
+            var_units=export_var_units,
+            signatures=signatures,
+        )
+    return out
+
+
+def apply_use_clauses(
+    uses: tuple,
+    module_exports: dict[str, ModuleExports],
+    base_var_units: dict[str, Unit],
+    base_signatures: dict[str, FuncSig],
+) -> tuple[dict[str, Unit], dict[str, FuncSig], frozenset[str]]:
+    """Merge imported symbols into a file's scope.
+
+    ``uses`` is the tuple of :class:`workspace_index.UseRef` produced
+    by ``extract_uses``. Local declarations always win over imports
+    (no shadow warning at this phase). Returns the merged
+    ``(var_units, signatures)`` tables plus the set of module names
+    referenced by ``use`` that we couldn't resolve — the caller can
+    surface those as U007.
+    """
+    var_units = dict(base_var_units)
+    signatures = dict(base_signatures)
+    unresolved: set[str] = set()
+    for use in uses:
+        mod_name = use.module.lower()
+        exports = module_exports.get(mod_name)
+        if exports is None:
+            unresolved.add(mod_name)
+            continue
+
+        # Build the in-scope (local_name, remote_name) pairs.
+        if use.only is None:
+            pairs = [(n, n) for n in exports.var_units]
+            pairs.extend((n, n) for n in exports.signatures)
+        else:
+            # ``only`` already lower-cased; expand renames first, then
+            # plain names. ``renames`` is the authoritative map for
+            # any locally-renamed import.
+            rename_map = {local: remote for local, remote in use.renames}
+            pairs = []
+            for local in use.only:
+                remote = rename_map.get(local, local)
+                pairs.append((local, remote))
+
+        for local, remote in pairs:
+            if local in base_var_units:
+                continue  # local declaration wins
+            # Variable lookup is case-sensitive against export keys;
+            # try the lower-cased name too as a fallback because the
+            # scanner reports names verbatim while ``use`` syntax is
+            # case-insensitive in F90.
+            if remote in exports.var_units:
+                var_units.setdefault(local, exports.var_units[remote])
+            else:
+                for k, v in exports.var_units.items():
+                    if k.lower() == remote:
+                        var_units.setdefault(local, v)
+                        break
+            # Signatures are stored lower-cased; ``remote`` is already
+            # lower from extract_uses.
+            sig = exports.signatures.get(remote)
+            if sig is not None:
+                signatures.setdefault(local.lower(), sig)
+    return var_units, signatures, frozenset(unresolved)
+
+
 def collect_function_signatures(
     ast: dict,
     var_units: dict[str, Unit],
