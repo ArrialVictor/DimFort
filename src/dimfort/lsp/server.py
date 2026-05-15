@@ -1797,21 +1797,31 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
     )
 
     last_report_at = [0.0]   # mutable via closure
+    # Each AST pipeline phase walks every file once. Show the user
+    # which phase we're in plus per-file detail so the spinner doesn't
+    # look stuck during the post-load passes (which take comparable
+    # time on a 2400-file workspace).
+    _phase_labels = {
+        "load": "loading",
+        "index": "indexing modules",
+        "check": "checking",
+    }
 
-    def on_load_progress(scanned: int, total: int, path: Path) -> None:
+    def on_load_progress(phase: str, scanned: int, total: int, path: Path) -> None:
         if not progress_started:
             return
         now = time.monotonic()
-        # Always emit the final tick; throttle the rest to ~10/sec
-        # so we don't flood the wire on a 2435-file workspace.
+        # Always emit the final tick of each phase; throttle the rest
+        # to ~10/sec so we don't flood the wire on a 2400-file workspace.
         if scanned != total and now - last_report_at[0] < 0.1:
             return
         last_report_at[0] = now
+        label = _phase_labels.get(phase, phase)
         with contextlib.suppress(Exception):
             progress.report(
                 token,
                 lsp.WorkDoneProgressReport(
-                    message=f"{scanned}/{total} {path.name}",
+                    message=f"{label} {scanned}/{total} {path.name}",
                     percentage=int(scanned * 100 / total) if total else 100,
                 ),
             )

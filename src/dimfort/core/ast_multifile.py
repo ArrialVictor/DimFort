@@ -111,7 +111,7 @@ def check_files_ast(
     overrides: dict[Path, str] | None = None,
     external_modules: frozenset[str] = frozenset(),
     include_paths: tuple[Path, ...] = (),
-    progress_cb: Callable[[int, int, Path], None] | None = None,
+    progress_cb: Callable[[str, int, int, Path], None] | None = None,
 ) -> WorksetResult:
     """Scan, attach, and AST-check every file in ``sources`` together.
 
@@ -157,7 +157,7 @@ def check_files_ast(
             result.load_failures[src] = FileLoadFailure(stderr=str(exc))
             loaded.append(_Loaded(src, "", scan_text(""), attach(scan_text("")), None, str(exc)))
         if progress_cb is not None:
-            progress_cb(i, total, src)
+            progress_cb("load", i, total, src)
 
     # Phase B: aggregate annotation tables across the workset, parse to
     # Unit objects once. Local declarations still win when the same
@@ -183,17 +183,18 @@ def check_files_ast(
     # every successfully-loaded file.
     module_exports: dict[str, ModuleExports] = {}
     global_signatures: dict[str, FuncSig] = {}
-    for entry in loaded:
-        if entry.ast is None:
-            continue
-        for mname, exp in collect_module_exports(entry.ast, merged_var_units).items():
-            module_exports.setdefault(mname, exp)
-        for fname, sig in collect_function_signatures(entry.ast, merged_var_units).items():
-            global_signatures.setdefault(fname, sig)
+    for i, entry in enumerate(loaded, start=1):
+        if entry.ast is not None:
+            for mname, exp in collect_module_exports(entry.ast, merged_var_units).items():
+                module_exports.setdefault(mname, exp)
+            for fname, sig in collect_function_signatures(entry.ast, merged_var_units).items():
+                global_signatures.setdefault(fname, sig)
+        if progress_cb is not None:
+            progress_cb("index", i, total, entry.path)
     result.signatures = global_signatures
 
     # Phase D: check each file with its imports merged in.
-    for entry in loaded:
+    for di, entry in enumerate(loaded, start=1):
         diags: list[Diagnostic] = []
 
         # Attachment-time issues (orphans, conflicts, U010) — emitted
@@ -243,6 +244,8 @@ def check_files_ast(
                 stderr=entry.load_error or ""
             )
             result.diagnostics[entry.path] = diags
+            if progress_cb is not None:
+                progress_cb("check", di, total, entry.path)
             continue
 
         uses = _wsi.extract_uses(entry.text)
@@ -288,5 +291,7 @@ def check_files_ast(
             )
         )
         result.diagnostics[entry.path] = diags
+        if progress_cb is not None:
+            progress_cb("check", di, total, entry.path)
 
     return result
