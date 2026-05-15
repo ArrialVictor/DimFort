@@ -140,6 +140,9 @@ def _run_check(args: argparse.Namespace) -> int:
         print(_format_diag(file, line, severity, code, message, color=color))
 
     from dimfort import cache as _cache_mod
+    from dimfort.config import load_config
+
+    project_config = load_config(paths[0])
 
     if args.no_cache:
         cache_dir: Path | None = None
@@ -148,9 +151,14 @@ def _run_check(args: argparse.Namespace) -> int:
     else:
         cache_dir = _cache_mod.default_cache_dir()
 
+    # CLI flag wins over config.
+    lfortran_binary = args.lfortran or (
+        str(project_config.lfortran_binary) if project_config.lfortran_binary else None
+    )
+
     try:
         result = check_files(
-            paths, lfortran=args.lfortran, cache_dir=cache_dir
+            paths, lfortran=lfortran_binary, cache_dir=cache_dir
         )
     except lf.LFortranNotFound as exc:
         print(f"dimfort: {exc}", file=sys.stderr)
