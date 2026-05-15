@@ -58,6 +58,28 @@ log = logging.getLogger("dimfort.lsp")
 server = LanguageServer("dimfort", __version__)
 
 
+def _notify(ls: LanguageServer | None, message: str, *, toast: bool = False) -> None:
+    """Surface a progress message to both the Python logger and the
+    LSP client's output channel. Pygls filters ``log.info`` below
+    WARNING by default, so user-relevant events would otherwise be
+    invisible in VSCode's "DimFort Language Server" output channel.
+    Pass ``toast=True`` for unblock signals worth a status-bar popup.
+    """
+    log.info(message)
+    if ls is None:
+        return
+    try:
+        ls.window_log_message(
+            lsp.LogMessageParams(type=lsp.MessageType.Info, message=message)
+        )
+        if toast:
+            ls.window_show_message(
+                lsp.ShowMessageParams(type=lsp.MessageType.Info, message=message)
+            )
+    except Exception:
+        log.debug("window/logMessage failed", exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # Feature toggles (set from initializationOptions; off-by-default flags
 # would surprise users, so everything defaults on).
@@ -284,9 +306,10 @@ def _workset_for(ls: LanguageServer, active_uri: str) -> tuple[list[Path], Path 
         # Cap to keep the LSP process alive on deep workspaces.
         capped = _cap_workset(paths, resolved_active, _max_workset_size)
         if len(capped) < len(paths):
-            log.info(
-                "workset capped at %d (full deps: %d) for %s",
-                _max_workset_size, len(paths), resolved_active.name,
+            _notify(
+                ls,
+                f"DimFort: workset capped at {_max_workset_size} "
+                f"(full deps: {len(paths)}) for {resolved_active.name}",
             )
         return capped, active
 
@@ -978,11 +1001,10 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         cap = opts.get("maxWorksetSize")
         if isinstance(cap, int) and cap > 0:
             _max_workset_size = cap
-    log.info(
-        "DimFort LSP initialised; folders=%s features=%s externals=%d",
-        folders,
-        vars(_features),
-        len(_external_modules),
+    _notify(
+        ls,
+        f"DimFort LSP initialised — {len(folders)} folder(s), "
+        f"{len(_external_modules)} external module(s) on allowlist",
     )
 
     # Build the workspace module index on a background thread — on
@@ -991,15 +1013,19 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
     # publishing, ``_workset_for`` falls back to whole-workspace
     # behaviour.
     if folders:
+        _notify(
+            ls,
+            f"DimFort: scanning workspace ({len(folders)} folder(s))…",
+        )
         threading.Thread(
             target=_build_initial_index,
-            args=(tuple(folders),),
+            args=(ls, tuple(folders)),
             daemon=True,
             name="dimfort-workspace-scan",
         ).start()
 
 
-def _build_initial_index(roots: tuple[Path, ...]) -> None:
+def _build_initial_index(ls: LanguageServer, roots: tuple[Path, ...]) -> None:
     """Background scan; assigns the result to the module-level index."""
     global _workspace_index
     try:
@@ -1009,10 +1035,11 @@ def _build_initial_index(roots: tuple[Path, ...]) -> None:
         return
     with _workspace_index_lock:
         _workspace_index = idx
-    log.info(
-        "DimFort workspace index ready: %d modules across %d files",
-        len(idx.modules),
-        len(idx.uses_by_file),
+    _notify(
+        ls,
+        f"DimFort workspace index ready: {len(idx.modules)} modules "
+        f"across {len(idx.uses_by_file)} files",
+        toast=True,
     )
 
 
@@ -1536,4 +1563,9 @@ def _comment_column(line: str) -> int | None:
 
 
 def run_stdio() -> None:
+    # Raise DimFort's own log level so progress messages emitted via
+    # ``log.info`` reach handlers. Pygls's root threshold is WARNING;
+    # without this, namespace-scoped INFO logs would be silently
+    # dropped before reaching the client's output channel.
+    logging.getLogger("dimfort").setLevel(logging.INFO)
     server.start_io()
