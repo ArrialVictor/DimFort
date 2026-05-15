@@ -63,6 +63,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--cache-dir",
         help="Override cache directory (default: ./.dimfort/cache).",
     )
+    check.add_argument(
+        "--backend",
+        choices=("ast", "asr"),
+        help=(
+            "Checker backend. 'asr' (default) uses LFortran's resolved "
+            "semantic tree; 'ast' uses the syntactic parse tree only "
+            "(no `lfortran -c`, no ASR — handles F77-idiom files like "
+            "COMMON+PUBLIC that ASR rejects)."
+        ),
+    )
 
     lsp = sub.add_parser("lsp", help="Start the DimFort language server (stdio).")
     # Some LSP clients (vscode-languageclient with TransportKind.stdio) tack
@@ -156,10 +166,17 @@ def _run_check(args: argparse.Namespace) -> int:
         str(project_config.lfortran_binary) if project_config.lfortran_binary else None
     )
 
+    # Backend precedence: --backend > config > "asr"
+    backend = args.backend or project_config.backend or "asr"
+
     try:
-        result = check_files(
-            paths, lfortran=lfortran_binary, cache_dir=cache_dir
-        )
+        if backend == "ast":
+            from dimfort.core.ast_multifile import check_files_ast
+            result = check_files_ast(paths, lfortran=lfortran_binary)
+        else:
+            result = check_files(
+                paths, lfortran=lfortran_binary, cache_dir=cache_dir
+            )
     except lf.LFortranNotFound as exc:
         print(f"dimfort: {exc}", file=sys.stderr)
         return 2

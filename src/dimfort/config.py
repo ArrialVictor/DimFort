@@ -27,6 +27,9 @@ log = logging.getLogger("dimfort.config")
 CONFIG_FILENAME = ".dimfort.toml"
 
 
+VALID_BACKENDS: frozenset[str] = frozenset({"ast", "asr"})
+
+
 @dataclass(frozen=True)
 class DimfortConfig:
     """Resolved configuration. ``None`` means "not set, fall through to
@@ -44,6 +47,9 @@ class DimfortConfig:
 
     # [lfortran]
     lfortran_binary: Path | None = None
+
+    # [checker]
+    backend: str | None = None    # "ast" | "asr"; None → caller default
 
 
 def find_config(start: Path) -> Path | None:
@@ -112,10 +118,24 @@ def _from_raw(raw: dict, path: Path) -> DimfortConfig:
         (base / binary_raw).resolve() if isinstance(binary_raw, str) else None
     )
 
+    checker_section = raw.get("checker", {}) or {}
+    backend_raw = checker_section.get("backend")
+    if isinstance(backend_raw, str) and backend_raw.lower() in VALID_BACKENDS:
+        backend = backend_raw.lower()
+    else:
+        if backend_raw is not None:
+            log.warning(
+                "ignoring [checker].backend = %r in %s; "
+                "expected one of %s",
+                backend_raw, path, sorted(VALID_BACKENDS),
+            )
+        backend = None
+
     return DimfortConfig(
         config_path=path,
         src_paths=src_paths,
         max_workset_size=max_size,
         external_modules=external_modules,
         lfortran_binary=lfortran_binary,
+        backend=backend,
     )
