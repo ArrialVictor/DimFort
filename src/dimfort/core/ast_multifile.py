@@ -59,6 +59,7 @@ def _load_one(
     *,
     lfortran: str | os.PathLike[str] | None,
     overrides: dict[Path, str],
+    include_paths: tuple[Path, ...] = (),
 ) -> _Loaded:
     """Scan + attach + dump AST for one file.
 
@@ -71,7 +72,9 @@ def _load_one(
     scan = scan_text(text)
     attachment = attach(scan)
     try:
-        ast = lf.dump_tree(path, "ast", lfortran=lfortran)
+        ast = lf.dump_tree(
+            path, "ast", lfortran=lfortran, include_paths=include_paths,
+        )
     except lf.LFortranError as exc:
         return _Loaded(path, text, scan, attachment, None, exc.stderr)
     return _Loaded(path, text, scan, attachment, ast, None)
@@ -107,6 +110,7 @@ def check_files_ast(
     table: UnitTable | None = None,
     overrides: dict[Path, str] | None = None,
     external_modules: frozenset[str] = frozenset(),
+    include_paths: tuple[Path, ...] = (),
     progress_cb: Callable[[int, int, Path], None] | None = None,
 ) -> WorksetResult:
     """Scan, attach, and AST-check every file in ``sources`` together.
@@ -141,7 +145,14 @@ def check_files_ast(
     total = len(abs_sources)
     for i, src in enumerate(abs_sources, start=1):
         try:
-            loaded.append(_load_one(src, lfortran=lfortran, overrides=overrides_map))
+            loaded.append(
+                _load_one(
+                    src,
+                    lfortran=lfortran,
+                    overrides=overrides_map,
+                    include_paths=include_paths,
+                )
+            )
         except OSError as exc:
             result.load_failures[src] = FileLoadFailure(stderr=str(exc))
             loaded.append(_Loaded(src, "", scan_text(""), attach(scan_text("")), None, str(exc)))

@@ -47,6 +47,7 @@ class DimfortConfig:
 
     # [lfortran]
     lfortran_binary: Path | None = None
+    include_paths: tuple[Path, ...] = ()
 
     # [checker]
     backend: str | None = None    # "ast" | "asr"; None → caller default
@@ -117,6 +118,12 @@ def _from_raw(raw: dict, path: Path) -> DimfortConfig:
     lfortran_binary = (
         (base / binary_raw).resolve() if isinstance(binary_raw, str) else None
     )
+    include_paths_raw = lfortran_section.get("include_paths", []) or []
+    include_paths = tuple(
+        (base / p).resolve()
+        for p in include_paths_raw
+        if isinstance(p, str)
+    )
 
     checker_section = raw.get("checker", {}) or {}
     backend_raw = checker_section.get("backend")
@@ -137,5 +144,6 @@ def _from_raw(raw: dict, path: Path) -> DimfortConfig:
         max_workset_size=max_size,
         external_modules=external_modules,
         lfortran_binary=lfortran_binary,
+        include_paths=include_paths,
         backend=backend,
     )

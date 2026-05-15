@@ -128,6 +128,7 @@ def dump_tree(
     lfortran: str | os.PathLike[str] | None = None,
     cwd: str | os.PathLike[str] | None = None,
     implicit_interface: bool = False,
+    include_paths: tuple[str | os.PathLike[str], ...] = (),
 ) -> dict:
     """Run ``lfortran --show-<mode> --json`` on ``path`` and return the dict.
 
@@ -153,6 +154,8 @@ def dump_tree(
     ]
     if implicit_interface:
         cmd.append("--implicit-interface")
+    for inc in include_paths:
+        cmd.extend(["-I", str(inc)])
     cmd.append(str(path))
     # Capture raw bytes — Latin-1 bytes leak through LFortran's JSON
     # output when source comments contain non-UTF-8 sequences (LMDZ
