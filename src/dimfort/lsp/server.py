@@ -21,6 +21,7 @@ Provides:
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import threading
@@ -1726,6 +1727,140 @@ def _comment_column(line: str) -> int | None:
                     in_quote = None
         i += 1
     return None
+
+
+@server.command("dimfort.checkWorkspace")
+def _cmd_check_workspace(ls: LanguageServer, *_args) -> None:
+    """Run the active checker backend over every file in the workspace
+    index, publishing diagnostics for each. Triggered from the client
+    via ``workspace/executeCommand`` (palette command "DimFort: Check
+    Whole Workspace").
+
+    The work runs on a daemon thread so the LSP stays responsive. The
+    server-wide ``_check_lock`` is held for the duration to avoid
+    racing with per-file didOpen/didSave/didChange checks.
+    """
+    threading.Thread(
+        target=_check_whole_workspace,
+        args=(ls,),
+        daemon=True,
+        name="dimfort-check-workspace",
+    ).start()
+
+
+def _check_whole_workspace(ls: LanguageServer) -> None:
+    with _workspace_index_lock:
+        idx = _workspace_index
+    if idx is None:
+        _notify(
+            ls,
+            "DimFort: workspace index not ready yet — wait for the scan "
+            "to finish, then try again.",
+        )
+        return
+
+    files = sorted(idx.uses_by_file.keys())
+    if not files:
+        _notify(ls, "DimFort: no Fortran files in workspace")
+        return
+
+    cache_dir = _cache_dir
+    if cache_dir is None and _workspace_folders:
+        cache_dir = _cache_mod.default_cache_dir(_workspace_folders[0])
+
+    token = f"dimfort-workspace-check-{int(time.time() * 1000)}"
+    progress = ls.work_done_progress
+    progress_started = False
+    try:
+        progress.create(token).result(timeout=2.0)
+        progress.begin(
+            token,
+            lsp.WorkDoneProgressBegin(
+                title=f"DimFort: checking workspace ({len(files)} files)",
+                cancellable=False,
+                percentage=0,
+            ),
+        )
+        progress_started = True
+    except Exception:
+        log.debug("could not start workDoneProgress for checkWorkspace", exc_info=True)
+
+    _notify(
+        ls,
+        f"DimFort: checking workspace ({len(files)} files, backend={_backend})…",
+    )
+
+    with _check_lock:
+        try:
+            if _backend == "ast":
+                from dimfort.core.ast_multifile import check_files_ast
+                result = check_files_ast(
+                    files,
+                    lfortran=_lfortran_binary,
+                    external_modules=_external_modules,
+                )
+            else:
+                result = check_files(
+                    files,
+                    lfortran=_lfortran_binary,
+                    cache_dir=cache_dir,
+                )
+        except Exception:
+            log.exception("workspace check failed")
+            if progress_started:
+                with contextlib.suppress(Exception):
+                    progress.end(
+                        token, lsp.WorkDoneProgressEnd(message="failed")
+                    )
+            return
+
+        with _last_result_lock:
+            global _last_result
+            _last_result = result
+
+        published = 0
+        for path in files:
+            diags = result.diagnostics.get(path, [])
+            try:
+                file_uri = _uri_for_path(path)
+            except ValueError:
+                continue
+            ls.text_document_publish_diagnostics(
+                lsp.PublishDiagnosticsParams(
+                    uri=file_uri,
+                    diagnostics=[_to_lsp_diagnostic(d) for d in diags],
+                )
+            )
+            published += 1
+            # Throttle progress reports the same way the scan does.
+            if progress_started and (published % 100 == 0 or published == len(files)):
+                with contextlib.suppress(Exception):
+                    progress.report(
+                        token,
+                        lsp.WorkDoneProgressReport(
+                            message=f"published {published}/{len(files)}",
+                            percentage=int(published * 100 / len(files)),
+                        ),
+                    )
+
+    if progress_started:
+        with contextlib.suppress(Exception):
+            progress.end(token, lsp.WorkDoneProgressEnd(message="done"))
+
+    h_count = sum(
+        1 for diags in result.diagnostics.values() for d in diags
+        if d.code.startswith("H")
+    )
+    u_count = sum(
+        1 for diags in result.diagnostics.values() for d in diags
+        if d.code.startswith("U")
+    )
+    _notify(
+        ls,
+        f"DimFort workspace check complete: {len(files)} files, "
+        f"{h_count} H-diags, {u_count} U-diags",
+        toast=True,
+    )
 
 
 def run_stdio() -> None:
