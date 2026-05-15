@@ -120,7 +120,11 @@ def dump_tree(
     """
     binary = find_lfortran(lfortran)
     flag = {"ast": "--show-ast", "asr": "--show-asr"}[mode]
-    cmd = [str(binary), flag, "--json"]
+    # --no-style-suggestions: LFortran 0.63 treats things like `.ne.` and
+    # numeric kind selectors as hard errors by default. Real-world Fortran
+    # (LMDZ in particular) is full of those constructs and DimFort isn't
+    # in the style-policing business, so we always suppress them.
+    cmd = [str(binary), flag, "--json", "--no-style-suggestions"]
     if implicit_interface:
         cmd.append("--implicit-interface")
     cmd.append(str(path))
@@ -189,7 +193,7 @@ def compile_module(
     and succeed on a later pass.
     """
     binary = find_lfortran(lfortran)
-    cmd = [str(binary), "-c"]
+    cmd = [str(binary), "-c", "--no-style-suggestions"]
     if implicit_interface:
         cmd.append("--implicit-interface")
     cmd.append(str(path))
