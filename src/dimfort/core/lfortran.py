@@ -102,6 +102,25 @@ def version(lfortran: str | os.PathLike[str] | None = None) -> str:
     return m.group(1) if m else result.stdout.strip().splitlines()[0]
 
 
+_VERSION_BY_BINARY: dict[str, str] = {}
+
+
+def cached_version(lfortran: str | os.PathLike[str] | None = None) -> str:
+    """Return :func:`version`, memoised by resolved binary path.
+
+    Callers that look up the version many times in one pipeline run
+    (e.g. the per-file cache validator) avoid re-invoking ``lfortran
+    --version`` for every file.
+    """
+    binary = str(find_lfortran(lfortran))
+    cached = _VERSION_BY_BINARY.get(binary)
+    if cached is not None:
+        return cached
+    v = version(lfortran)
+    _VERSION_BY_BINARY[binary] = v
+    return v
+
+
 def dump_tree(
     path: str | os.PathLike[str],
     mode: TreeMode,

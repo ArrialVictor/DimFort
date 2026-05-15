@@ -9,9 +9,10 @@ from dimfort import cache
 def _clear_lf_version_cache():
     """Reset the memoised lfortran version between tests so a stubbed
     binary path on one test doesn't leak into the next."""
-    cache._LF_VERSION_CACHE.clear()
+    from dimfort.core import lfortran as lf
+    lf._VERSION_BY_BINARY.clear()
     yield
-    cache._LF_VERSION_CACHE.clear()
+    lf._VERSION_BY_BINARY.clear()
 
 
 def test_clean_nonexistent_returns_zero(tmp_path: Path):
@@ -146,7 +147,8 @@ def test_lfortran_version_change_invalidates_cache(tmp_path, monkeypatch):
     cache.load_trees_cached(
         src.name, source_path=src, cwd=tmp_path, cache_dir=cache_dir,
     )
-    cache._LF_VERSION_CACHE.clear()
+    from dimfort.core import lfortran as lf
+    lf._VERSION_BY_BINARY.clear()
     fake._version = "0.64.0"
     cache.load_trees_cached(
         src.name, source_path=src, cwd=tmp_path, cache_dir=cache_dir,
