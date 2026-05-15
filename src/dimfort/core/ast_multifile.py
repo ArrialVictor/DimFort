@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from dimfort.core import ast_checker
 from dimfort.core import lfortran as lf
@@ -106,6 +107,7 @@ def check_files_ast(
     table: UnitTable | None = None,
     overrides: dict[Path, str] | None = None,
     external_modules: frozenset[str] = frozenset(),
+    progress_cb: Callable[[int, int, Path], None] | None = None,
 ) -> WorksetResult:
     """Scan, attach, and AST-check every file in ``sources`` together.
 
@@ -132,14 +134,19 @@ def check_files_ast(
 
     result = WorksetResult()
 
-    # Phase A: load every file.
+    # Phase A: load every file. ``progress_cb`` (if supplied) fires
+    # AFTER each file is loaded so the LSP / CLI can show per-file
+    # detail during the slow part of the pipeline.
     loaded: list[_Loaded] = []
-    for src in abs_sources:
+    total = len(abs_sources)
+    for i, src in enumerate(abs_sources, start=1):
         try:
             loaded.append(_load_one(src, lfortran=lfortran, overrides=overrides_map))
         except OSError as exc:
             result.load_failures[src] = FileLoadFailure(stderr=str(exc))
             loaded.append(_Loaded(src, "", scan_text(""), attach(scan_text("")), None, str(exc)))
+        if progress_cb is not None:
+            progress_cb(i, total, src)
 
     # Phase B: aggregate annotation tables across the workset, parse to
     # Unit objects once. Local declarations still win when the same

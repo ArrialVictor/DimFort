@@ -1790,6 +1790,26 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
         f"DimFort: checking workspace ({len(files)} files, backend={_backend})…",
     )
 
+    last_report_at = [0.0]   # mutable via closure
+
+    def on_load_progress(scanned: int, total: int, path: Path) -> None:
+        if not progress_started:
+            return
+        now = time.monotonic()
+        # Always emit the final tick; throttle the rest to ~10/sec
+        # so we don't flood the wire on a 2435-file workspace.
+        if scanned != total and now - last_report_at[0] < 0.1:
+            return
+        last_report_at[0] = now
+        with contextlib.suppress(Exception):
+            progress.report(
+                token,
+                lsp.WorkDoneProgressReport(
+                    message=f"{scanned}/{total} {path.name}",
+                    percentage=int(scanned * 100 / total) if total else 100,
+                ),
+            )
+
     with _check_lock:
         try:
             if _backend == "ast":
@@ -1798,6 +1818,7 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
                     files,
                     lfortran=_lfortran_binary,
                     external_modules=_external_modules,
+                    progress_cb=on_load_progress,
                 )
             else:
                 result = check_files(
