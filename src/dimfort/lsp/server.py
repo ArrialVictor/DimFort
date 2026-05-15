@@ -44,6 +44,12 @@ from dimfort.core.checker import (
 from dimfort.core.diagnostics import Diagnostic, Severity
 from dimfort.core.lfortran import walk
 from dimfort.core.multifile import WorksetResult, check_files
+from dimfort.core.workspace_index import (
+    WorkspaceIndex,
+    resolve_workset,
+    scan_workspace,
+    update_index,
+)
 from dimfort.core.units import Unit, equal_dim, format_unit
 from dimfort.core.units import base_symbols as _base_symbols
 
@@ -94,6 +100,27 @@ _last_result_lock = threading.Lock()
 
 # Workspace folders, captured at initialise time.
 _workspace_folders: list[Path] = []
+
+# Workspace module index — built once at initialize on a background
+# thread (it can take several seconds on large codebases), updated
+# incrementally on didChange / didSave. ``None`` until the initial
+# scan completes; callers fall back to whole-workspace check while
+# ``None``.
+_workspace_index: WorkspaceIndex | None = None
+_workspace_index_lock = threading.Lock()
+
+# Modules treated as known-external (Fortran intrinsics + common libs).
+# Anything `use`d that matches this set is silently dropped from the
+# dep chain rather than producing a missing-module diagnostic.
+_DEFAULT_EXTERNAL_MODULES: frozenset[str] = frozenset({
+    # Fortran 2003+ intrinsic modules
+    "iso_fortran_env", "iso_c_binding",
+    "ieee_arithmetic", "ieee_exceptions", "ieee_features",
+    # Common external libraries
+    "mpi", "mpi_f08", "openacc", "omp_lib",
+    "netcdf", "netcdf95", "ioipsl", "nrtype",
+})
+_external_modules: frozenset[str] = _DEFAULT_EXTERNAL_MODULES
 
 # Tracks every file VSCode (or whichever client) has currently open.
 # Keyed by resolved Path so we can recover the *exact* URI the editor
@@ -197,15 +224,39 @@ def _discover_fortran_files(roots: list[Path]) -> list[Path]:
 def _workset_for(ls: LanguageServer, active_uri: str) -> tuple[list[Path], Path | None]:
     """Return the workset of paths plus the active path (if known).
 
+    Uses the workspace index to follow ``use``-statement dependencies
+    from the active file when the index is ready. Falls back to the
+    whole-workspace scan otherwise (initial-check window before the
+    index finishes building, or no workspace folders configured).
+
     Always includes the active file even if it lives outside any
     workspace folder (e.g. the user opened a loose ``.f90``).
     """
     active = _uri_to_path(active_uri)
+    if active is None or not active.is_file():
+        return [], active
+
+    with _workspace_index_lock:
+        idx = _workspace_index
+
+    resolved_active = active.resolve()
+
+    if idx is not None:
+        res = resolve_workset(
+            idx, [resolved_active], external_modules=_external_modules
+        )
+        paths = list(res.compile_order)
+        # Belt-and-braces: ensure the active file is present even if it
+        # lives outside the indexed roots (e.g. a loose `.f90` outside
+        # any workspace folder).
+        if resolved_active not in paths:
+            paths.append(resolved_active)
+        return paths, active
+
+    # Fallback: index not ready yet, or no workspace folders.
     paths = _discover_fortran_files(_workspace_folders)
-    if active is not None and active.is_file():
-        resolved = active.resolve()
-        if resolved not in paths:
-            paths.append(resolved)
+    if resolved_active not in paths:
+        paths.append(resolved_active)
     return paths, active
 
 
@@ -872,17 +923,68 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
     _workspace_folders = folders
 
     opts = params.initialization_options or {}
+    global _external_modules
     if isinstance(opts, dict):
         _features.inlay_hints = bool(opts.get("inlayHintsEnabled", True))
         _features.completion = bool(opts.get("completionEnabled", True))
         _features.code_actions = bool(opts.get("codeActionsEnabled", True))
         _features.goto_definition = bool(opts.get("gotoDefinitionEnabled", True))
         _features.code_lens = bool(opts.get("codeLensEnabled", False))
+        # Client may pass an extension list to extend the built-in set.
+        extra = opts.get("externalModules")
+        if isinstance(extra, list):
+            _external_modules = _DEFAULT_EXTERNAL_MODULES | frozenset(
+                str(m).lower() for m in extra if isinstance(m, str)
+            )
     log.info(
-        "DimFort LSP initialised; folders=%s features=%s",
+        "DimFort LSP initialised; folders=%s features=%s externals=%d",
         folders,
         vars(_features),
+        len(_external_modules),
     )
+
+    # Build the workspace module index on a background thread — on
+    # large codebases (LMDZ: 2435 files) this can take several
+    # seconds and must not block initialize. Until it finishes
+    # publishing, ``_workset_for`` falls back to whole-workspace
+    # behaviour.
+    if folders:
+        threading.Thread(
+            target=_build_initial_index,
+            args=(tuple(folders),),
+            daemon=True,
+            name="dimfort-workspace-scan",
+        ).start()
+
+
+def _build_initial_index(roots: tuple[Path, ...]) -> None:
+    """Background scan; assigns the result to the module-level index."""
+    global _workspace_index
+    try:
+        idx = scan_workspace(roots)
+    except Exception:
+        log.exception("workspace index build failed")
+        return
+    with _workspace_index_lock:
+        _workspace_index = idx
+    log.info(
+        "DimFort workspace index ready: %d modules across %d files",
+        len(idx.modules),
+        len(idx.uses_by_file),
+    )
+
+
+def _update_index_for(path: Path, *, new_text: str | None = None) -> None:
+    """Incrementally re-scan one file into the index. No-op when the
+    initial build hasn't completed."""
+    with _workspace_index_lock:
+        idx = _workspace_index
+    if idx is None:
+        return
+    try:
+        update_index(idx, path, new_text=new_text)
+    except Exception:
+        log.exception("workspace index update failed for %s", path)
 
 
 @server.feature(lsp.TEXT_DOCUMENT_DID_OPEN)
@@ -894,6 +996,9 @@ def _did_open(ls: LanguageServer, params: lsp.DidOpenTextDocumentParams) -> None
 @server.feature(lsp.TEXT_DOCUMENT_DID_SAVE)
 def _did_save(ls: LanguageServer, params: lsp.DidSaveTextDocumentParams) -> None:
     _remember_uri(params.text_document.uri)
+    saved = _uri_to_path(params.text_document.uri)
+    if saved is not None:
+        _update_index_for(saved.resolve())
     _publish_for_uri(ls, params.text_document.uri)
 
 
@@ -923,6 +1028,11 @@ def _did_change(ls: LanguageServer, params: lsp.DidChangeTextDocumentParams) -> 
         if not _is_current(uri, version):
             return  # superseded by a later keystroke
         try:
+            # Reflect the in-memory buffer in the index so a freshly
+            # added `use M` is picked up on the same keystroke.
+            active = _uri_to_path(uri)
+            if active is not None:
+                _update_index_for(active.resolve(), new_text=text)
             _publish_for_uri(ls, uri, override_text=text)
         except Exception:
             log.exception("debounced check failed for %s", uri)
