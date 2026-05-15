@@ -369,4 +369,5 @@ def _scan_declarations(lines: list[str]) -> list[DeclarationSite]:
 
 def scan_file(path: str | Path) -> ScanResult:
     """Scan a Fortran source file from disk."""
-    return scan_text(Path(path).read_text())
+    from dimfort.core._source_io import read_text
+    return scan_text(read_text(path))
