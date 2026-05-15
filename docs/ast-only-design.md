@@ -55,6 +55,24 @@ What we deliberately do not re-implement:
 - **`use, only:` with renames.** AST has the rename text; we apply it by hand when threading symbols across files.
 - **Silent degradation.** Worst failure mode: a resolver returns `None`/unknown for an expression we should have checked, no diagnostic fires. Need explicit "I-don't-know-this-node" warnings during development.
 
+## Real-world validation (after Phase 3)
+
+Ran the AST pipeline against the LMDZ trial subset's `inigeom.f90`
+workset (15 files in topo order, includes the F77-idiom-tainted
+`comgeom*_mod_h.f90`):
+
+| Pipeline | Time | H-diags | U-diags | Load failures |
+|---|---:|---:|---:|---:|
+| AST-only (Phase 3) | 0.64 s | 0 | 0 | 0 |
+| ASR (current main) | 0.93 s | 0 | 4 | 1 |
+
+Every ASR U007 is downstream of `comgeom2_mod_h.f90`'s modfile-not-
+found cascade (`comgeom2_mod_h`, `fxhyp_m`, `fyhyp_m`, `inigeom`).
+The AST pipeline handles all of them without any source rewrites.
+Speedup is 1.46× on this 15-file workset; ratio should grow with
+workset size (no `lfortran -c` Phase 1 means the AST pipeline
+parallelises naturally to one subprocess per file).
+
 ## Phase 0 deliverable
 
 A function `dimfort.core.ast_checker.check(ast, var_units, file=...)` that
