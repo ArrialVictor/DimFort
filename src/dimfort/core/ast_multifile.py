@@ -105,6 +105,7 @@ def check_files_ast(
     lfortran: str | os.PathLike[str] | None = None,
     table: UnitTable | None = None,
     overrides: dict[Path, str] | None = None,
+    external_modules: frozenset[str] = frozenset(),
 ) -> WorksetResult:
     """Scan, attach, and AST-check every file in ``sources`` together.
 
@@ -237,7 +238,8 @@ def check_files_ast(
             entry.attachment.var_units, active_table
         )
         per_file_var_units, per_file_sigs, unresolved = apply_use_clauses(
-            uses, module_exports, file_var_units, global_signatures
+            uses, module_exports, file_var_units, global_signatures,
+            external_modules=external_modules,
         )
         for missing in unresolved:
             diags.append(
