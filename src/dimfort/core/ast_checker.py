@@ -1,28 +1,51 @@
-"""AST-only unit checker — Phase 0 spike.
+"""AST-only unit checker — Phase 0 + Phase 1.
 
-Walks LFortran's AST (no ASR) and emits the H001/H002 family of
+Walks LFortran's AST (no ASR) and emits the H001–H004 family of
 diagnostics. Reads variable units from an already-attached
 ``var_units`` table (produced by ``core.annotations`` +
 ``core.attach``).
 
-Phase 0 scope (deliberately tiny): ``Name | Num | BinOp(+,-,*,/) |
-Assignment``. Cross-file, intrinsics, casts, derived types, array
-sections, and everything else are explicit "unknown" returns; if a
-resolver hits one, the expression's unit is ``None`` and downstream
-checks silently no-op for that expression. This is fine for Phase 0
-because the test fixture only exercises supported nodes.
+Currently supported expression nodes (single file, no cross-file
+``use``-chain resolution yet):
+- ``Name``, ``Num`` (integer), ``Real`` (float)
+- ``BinOp``: ``Add``, ``Sub``, ``Mul``, ``Div``, ``Pow`` (constant exponent)
+- ``UnaryMinus``
+- ``FuncCallOrArray``: intrinsic dispatch (six categories) and
+  user-defined function calls against a signature table built from
+  the same AST.
+- ``Assignment``, ``SubroutineCall`` (as top-level statements).
 
-See docs/ast-only-design.md for the full multi-phase plan.
+Intrinsic categories are re-used verbatim from ``core.checker`` — no
+need to duplicate the data tables.
+
+Out of scope until Phase 2+: cross-file ``use``-chain resolution,
+derived-type member access, kind casts, ``Cast`` insertion, array
+sections, intrinsics with non-trivial unit semantics beyond the six
+categories. Anything unhandled returns ``None`` and the check silently
+no-ops on that expression — see ``docs/ast-only-design.md``.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Iterable
 
 from dimfort.core import units as _units_mod
+from dimfort.core.checker import (
+    DIMENSIONLESS_INTRINSICS,
+    FuncSig,
+    PRODUCT_INTRINSICS,
+    REDUCTION_INTRINSICS,
+    SAME_UNIT_ARG_INTRINSICS,
+    TRANSFORMING_INTRINSICS,
+    TRANSPARENT_INTRINSICS,
+)
 from dimfort.core.diagnostics import Diagnostic, Position, Severity
 from dimfort.core.units import Unit, UnitError, UnitTable, equal_dim, format_unit
+
+
+_RATIONAL_EXPONENT_MAX_DENOMINATOR = 100
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +60,7 @@ class _Ctx:
     file: str
     var_units: dict[str, Unit]
     table: UnitTable
+    signatures: dict[str, FuncSig]
 
 
 def _loc_position(loc: dict | None) -> Position:
@@ -72,6 +96,54 @@ def _node_loc(x: object) -> dict | None:
     return None
 
 
+def _constant_exponent_ast(node: object) -> int | Fraction | None:
+    """Decode an AST exponent expression into an integer or :class:`Fraction`.
+
+    AST integer literals are ``Num`` nodes with an ``n`` int field; real
+    literals are ``Real`` nodes with ``n`` as a string. Anything else
+    is "unknown" (so the caller treats the power as unresolved).
+    """
+    kind = _node(node)
+    fields = _fields(node)
+    if kind == "Num":
+        try:
+            return int(fields.get("n", 0))
+        except (TypeError, ValueError):
+            return None
+    if kind == "Real":
+        try:
+            value = float(fields.get("n", "0"))
+        except (TypeError, ValueError):
+            return None
+        try:
+            exact = Fraction(value).limit_denominator(
+                _RATIONAL_EXPONENT_MAX_DENOMINATOR
+            )
+        except (TypeError, ValueError, OverflowError):
+            return None
+        # Reject when limit_denominator drifted far from the literal —
+        # protects against arbitrary floats like 0.314 being misread as
+        # 157/500.
+        if abs(float(exact) - value) > 1e-6:
+            return None
+        return exact
+    return None
+
+
+def _fnarg_expr(arg: object) -> object | None:
+    """Extract the expression out of a ``fnarg`` wrapper. ``fnarg`` is
+    LFortran's positional/keyword argument container; the actual
+    expression hides in ``fields.end`` when the arg is not an array
+    section."""
+    if _node(arg) != "fnarg":
+        return arg
+    fields = _fields(arg)
+    end = fields.get("end")
+    if isinstance(end, dict):
+        return end
+    return None
+
+
 def _resolve(expr: object, ctx: _Ctx) -> Unit | None:
     """Return the unit of ``expr``, or ``None`` if we don't know.
 
@@ -95,15 +167,29 @@ def _resolve(expr: object, ctx: _Ctx) -> Unit | None:
             return None
         return ctx.var_units.get(name)
 
-    if kind == "Num":
+    if kind in ("Num", "Real"):
         # Numeric literals are dimensionless. We model that as the
         # neutral element of the unit algebra ("1").
         return _units_mod.parse("1", ctx.table)
 
+    if kind == "UnaryMinus":
+        return _resolve(fields.get("operand"), ctx)
+
     if kind == "BinOp":
+        op = fields.get("op")
+        if op == "Pow":
+            base = _resolve(fields.get("left"), ctx)
+            if base is None:
+                return None
+            exponent = _constant_exponent_ast(fields.get("right"))
+            if exponent is None:
+                return None
+            try:
+                return base ** exponent  # type: ignore[arg-type]
+            except Exception:
+                return None
         left = _resolve(fields.get("left"), ctx)
         right = _resolve(fields.get("right"), ctx)
-        op = fields.get("op")
         if left is None or right is None:
             return None
         if op in ("Add", "Sub"):
@@ -114,10 +200,76 @@ def _resolve(expr: object, ctx: _Ctx) -> Unit | None:
             return left * right
         if op == "Div":
             return left / right
-        # Pow + everything else: not in Phase 0 scope.
         return None
 
-    # Unsupported node kind in Phase 0.
+    if kind == "FuncCallOrArray":
+        return _resolve_call(expr, ctx)
+
+    # Unsupported node kind. Returning None lets the caller skip the
+    # check rather than emit a false positive.
+    return None
+
+
+def _resolve_call(expr: object, ctx: _Ctx) -> Unit | None:
+    """Resolve a ``FuncCallOrArray`` node's result unit.
+
+    Dispatches in order: intrinsic categories first, then the
+    user-defined signature table. Anything unmatched returns ``None``
+    — could be an array index expression, an unsupported intrinsic,
+    or a call to a function defined elsewhere.
+    """
+    fields = _fields(expr)
+    name = fields.get("func")
+    if not isinstance(name, str):
+        return None
+    name_lc = name.lower()
+    arg_exprs = [_fnarg_expr(a) for a in (fields.get("args") or [])]
+
+    # H003-class intrinsics: dimensionless in, dimensionless out.
+    if name_lc in DIMENSIONLESS_INTRINSICS:
+        return _units_mod.parse("1", ctx.table)
+
+    if name_lc in TRANSFORMING_INTRINSICS:
+        if not arg_exprs:
+            return None
+        base = _resolve(arg_exprs[0], ctx)
+        if base is None:
+            return None
+        exp = TRANSFORMING_INTRINSICS[name_lc]
+        try:
+            return base ** exp  # type: ignore[arg-type]
+        except Exception:
+            return None
+
+    if name_lc in TRANSPARENT_INTRINSICS:
+        if not arg_exprs:
+            return None
+        return _resolve(arg_exprs[0], ctx)
+
+    if name_lc in SAME_UNIT_ARG_INTRINSICS:
+        if not arg_exprs:
+            return None
+        return _resolve(arg_exprs[0], ctx)
+
+    if name_lc in PRODUCT_INTRINSICS:
+        if len(arg_exprs) < 2:
+            return None
+        a = _resolve(arg_exprs[0], ctx)
+        b = _resolve(arg_exprs[1], ctx)
+        if a is None or b is None:
+            return None
+        return a * b
+
+    if name_lc in REDUCTION_INTRINSICS:
+        if not arg_exprs:
+            return None
+        return _resolve(arg_exprs[0], ctx)
+
+    # User-defined function call.
+    sig = ctx.signatures.get(name_lc)
+    if sig is not None and not sig.is_subroutine:
+        return sig.return_unit
+
     return None
 
 
@@ -161,35 +313,188 @@ def _emit_h002(
     )
 
 
+def _emit_h003(
+    call_loc: dict | None, intrinsic: str, arg_unit: Unit, ctx: _Ctx,
+) -> Diagnostic:
+    pos = _loc_position(call_loc)
+    return Diagnostic(
+        file=ctx.file,
+        start=pos,
+        end=pos,
+        severity=Severity.ERROR,
+        code="H003",
+        message=(
+            f"Intrinsic '{intrinsic}' requires a dimensionless argument; "
+            f"got {format_unit(arg_unit)}"
+        ),
+    )
+
+
+def _emit_h004(
+    call_loc: dict | None,
+    func_name: str,
+    arg_index: int,
+    expected: Unit,
+    actual: Unit,
+    ctx: _Ctx,
+) -> Diagnostic:
+    pos = _loc_position(call_loc)
+    return Diagnostic(
+        file=ctx.file,
+        start=pos,
+        end=pos,
+        severity=Severity.ERROR,
+        code="H004",
+        message=(
+            f"Call to '{func_name}': argument {arg_index + 1} unit mismatch: "
+            f"expected {format_unit(expected)}, got {format_unit(actual)}"
+        ),
+    )
+
+
 def _walk_expressions(expr: object, ctx: _Ctx) -> Iterable[Diagnostic]:
-    """Recursive walk of an expression sub-tree, yielding H002s for any
-    `+`/`-` operand mismatch encountered."""
+    """Recursive walk of an expression sub-tree, yielding H002/H003/H004
+    for any operator or call mismatch encountered."""
     kind = _node(expr)
-    if kind != "BinOp":
-        # Recurse into any child dicts/lists looking for nested BinOps.
-        if isinstance(expr, dict):
-            for v in expr.values():
-                yield from _walk_expressions(v, ctx)
-        elif isinstance(expr, list):
-            for v in expr:
-                yield from _walk_expressions(v, ctx)
+
+    if kind == "BinOp":
+        fields = _fields(expr)
+        left = fields.get("left")
+        right = fields.get("right")
+        yield from _walk_expressions(left, ctx)
+        yield from _walk_expressions(right, ctx)
+        op = fields.get("op")
+        if op in ("Add", "Sub"):
+            lu = _resolve(left, ctx)
+            ru = _resolve(right, ctx)
+            if lu is not None and ru is not None and not equal_dim(lu, ru):
+                yield _emit_h002(_node_loc(expr), lu, ru, ctx)
         return
 
-    fields = _fields(expr)
-    left = fields.get("left")
-    right = fields.get("right")
-    yield from _walk_expressions(left, ctx)
-    yield from _walk_expressions(right, ctx)
+    if kind == "FuncCallOrArray":
+        yield from _check_call(expr, ctx)
+        # Recurse into args too — they can themselves contain calls etc.
+        fields = _fields(expr)
+        for a in fields.get("args") or []:
+            yield from _walk_expressions(_fnarg_expr(a), ctx)
+        return
 
-    op = fields.get("op")
-    if op not in ("Add", "Sub"):
+    # Default: recurse generically.
+    if isinstance(expr, dict):
+        for v in expr.values():
+            yield from _walk_expressions(v, ctx)
+    elif isinstance(expr, list):
+        for v in expr:
+            yield from _walk_expressions(v, ctx)
+
+
+def _check_call(call_node: object, ctx: _Ctx) -> Iterable[Diagnostic]:
+    """Emit H003 (dimensionless-intrinsic violation) and H004 (user-call
+    argument mismatch) for a single ``FuncCallOrArray``."""
+    fields = _fields(call_node)
+    name = fields.get("func")
+    if not isinstance(name, str):
         return
-    lu = _resolve(left, ctx)
-    ru = _resolve(right, ctx)
-    if lu is None or ru is None:
+    name_lc = name.lower()
+    arg_exprs = [_fnarg_expr(a) for a in (fields.get("args") or [])]
+
+    # H003 — intrinsics that require dimensionless arguments.
+    if name_lc in DIMENSIONLESS_INTRINSICS:
+        if not arg_exprs:
+            return
+        u = _resolve(arg_exprs[0], ctx)
+        if u is None:
+            return
+        try:
+            one = _units_mod.parse("1", ctx.table)
+        except UnitError:
+            return
+        if not equal_dim(u, one):
+            yield _emit_h003(_node_loc(call_node), name_lc, u, ctx)
         return
-    if not equal_dim(lu, ru):
-        yield _emit_h002(_node_loc(expr), lu, ru, ctx)
+
+    # H004 — call to a user-defined function with mismatched arg units.
+    sig = ctx.signatures.get(name_lc)
+    if sig is None or sig.is_subroutine:
+        return
+    yield from _check_call_args_against_sig(
+        sig, name_lc, arg_exprs, _node_loc(call_node), ctx
+    )
+
+
+def _check_call_args_against_sig(
+    sig: FuncSig,
+    func_name: str,
+    arg_exprs: list,
+    call_loc: dict | None,
+    ctx: _Ctx,
+) -> Iterable[Diagnostic]:
+    for i, (expected, actual_expr) in enumerate(zip(sig.arg_units, arg_exprs)):
+        if expected is None or actual_expr is None:
+            continue
+        actual = _resolve(actual_expr, ctx)
+        if actual is None:
+            continue
+        if not equal_dim(actual, expected):
+            yield _emit_h004(call_loc, func_name, i, expected, actual, ctx)
+
+
+# ---------------------------------------------------------------------------
+# Signature collection
+# ---------------------------------------------------------------------------
+
+
+def collect_function_signatures(
+    ast: dict,
+    var_units: dict[str, Unit],
+) -> dict[str, FuncSig]:
+    """Walk an AST and return ``{name_lower: FuncSig}`` for every
+    ``Function`` and ``Subroutine`` defined in it.
+
+    Argument and return units come from the file-level ``var_units``
+    table (already produced by the annotation/attach pipeline). If a
+    formal arg or return var carries no annotation, the corresponding
+    slot is ``None`` and the checker treats it as unconstrained.
+    """
+    from dimfort.core.lfortran import walk
+    out: dict[str, FuncSig] = {}
+    for node in walk(ast):
+        kind = _node(node)
+        if kind not in ("Function", "Subroutine"):
+            continue
+        fields = _fields(node)
+        name = fields.get("name")
+        if not isinstance(name, str):
+            continue
+
+        arg_names: list[str] = []
+        arg_units: list[Unit | None] = []
+        for arg in fields.get("args") or []:
+            arg_name = _fields(arg).get("arg")
+            if not isinstance(arg_name, str):
+                continue
+            arg_names.append(arg_name)
+            arg_units.append(var_units.get(arg_name))
+
+        return_unit: Unit | None = None
+        is_subroutine = kind == "Subroutine"
+        if not is_subroutine:
+            ret = fields.get("return_var")
+            ret_name = _fields(ret).get("id") if isinstance(ret, dict) else None
+            if isinstance(ret_name, str):
+                return_unit = var_units.get(ret_name)
+            else:
+                # When no explicit ``result`` clause, F90 implicitly
+                # uses the function's own name as the result variable.
+                return_unit = var_units.get(name)
+
+        out[name.lower()] = FuncSig(
+            arg_names=tuple(arg_names),
+            arg_units=tuple(arg_units),
+            return_unit=return_unit,
+            is_subroutine=is_subroutine,
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -203,13 +508,19 @@ def check(
     *,
     file: str | Path,
     table: UnitTable | None = None,
+    signatures: dict[str, FuncSig] | None = None,
 ) -> list[Diagnostic]:
-    """Run the Phase 0 AST checker.
+    """Run the AST checker over one file's AST.
 
     ``var_units`` is the same string-keyed table the ASR checker takes:
     ``{varname: unit_text}``. Strings that don't parse are dropped
     silently (we'd already have flagged them as U002 in the attach
     phase).
+
+    ``signatures`` is the user-defined function/subroutine signature
+    table. ``None`` means "build it from this file's own AST" — that's
+    the single-file Phase 1 mode. Pass a wider map (e.g. one merged
+    across an entire workset) once cross-file Phase 2 lands.
     """
     active_table = table if table is not None else _units_mod.DEFAULT_TABLE
     if active_table is None:
@@ -224,25 +535,55 @@ def check(
         except UnitError:
             continue
 
-    ctx = _Ctx(file=str(file), var_units=parsed, table=active_table)
+    if signatures is None:
+        signatures = collect_function_signatures(ast, parsed)
+
+    ctx = _Ctx(
+        file=str(file),
+        var_units=parsed,
+        table=active_table,
+        signatures=signatures,
+    )
     out: list[Diagnostic] = []
 
     from dimfort.core.lfortran import walk
     for node in walk(ast):
-        if _node(node) != "Assignment":
-            continue
-        fields = _fields(node)
-        target = fields.get("target")
-        value = fields.get("value")
+        kind = _node(node)
 
-        # H002s in sub-expressions of the RHS.
-        out.extend(_walk_expressions(value, ctx))
+        if kind == "Assignment":
+            fields = _fields(node)
+            target = fields.get("target")
+            value = fields.get("value")
 
-        target_unit = _resolve(target, ctx)
-        rhs_unit = _resolve(value, ctx)
-        if target_unit is None or rhs_unit is None:
+            out.extend(_walk_expressions(value, ctx))
+
+            target_unit = _resolve(target, ctx)
+            rhs_unit = _resolve(value, ctx)
+            if target_unit is None or rhs_unit is None:
+                continue
+            if not equal_dim(target_unit, rhs_unit):
+                out.append(
+                    _emit_h001(_node_loc(target), target_unit, rhs_unit, ctx)
+                )
             continue
-        if not equal_dim(target_unit, rhs_unit):
-            out.append(_emit_h001(_node_loc(target), target_unit, rhs_unit, ctx))
+
+        if kind == "SubroutineCall":
+            fields = _fields(node)
+            name = fields.get("name")
+            if not isinstance(name, str):
+                continue
+            name_lc = name.lower()
+            arg_exprs = [_fnarg_expr(a) for a in (fields.get("args") or [])]
+            # Recurse into args (they may contain expressions to check).
+            for a in arg_exprs:
+                out.extend(_walk_expressions(a, ctx))
+            sig = ctx.signatures.get(name_lc)
+            if sig is None or not sig.is_subroutine:
+                continue
+            out.extend(
+                _check_call_args_against_sig(
+                    sig, name_lc, arg_exprs, _node_loc(node), ctx
+                )
+            )
 
     return out

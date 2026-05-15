@@ -40,10 +40,10 @@ What we deliberately do not re-implement:
 
 | Phase | Goal | Status |
 |---|---|---|
-| 0 | Spike: single-file H001 from AST, no ASR involved. Prove the pattern. | landing |
-| 1 | Per-file resolver covers H001 + H002 + H003 + H004 (within one file). | TBD |
+| 0 | Spike: single-file H001 from AST, no ASR involved. Prove the pattern. | landed |
+| 1 | Per-file resolver covers H001 + H002 + H003 + H004 (within one file). | landed |
 | 2 | Cross-file `use`-chain symbol resolution. | TBD |
-| 3 | Derived types, intrinsics, casts, array sections. | TBD |
+| 3 | Derived types, intrinsics beyond the six categories, casts, array sections. | TBD |
 | 4 | Selectable backend (`[checker] backend = "ast" \| "asr"`) wired through CLI + LSP. | TBD |
 | 5 | Default flipped to AST; Phase 1 (lfortran -c) removed from `check_files`. | TBD |
 
