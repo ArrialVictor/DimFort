@@ -61,6 +61,10 @@ class _Ctx:
     var_units: dict[str, Unit]
     table: UnitTable
     signatures: dict[str, FuncSig]
+    # Phase 3 additions
+    var_types: dict[str, str]                       # varname → derived-type name
+    type_field_types: dict[tuple[str, str], str]    # (type, field) → field's struct type
+    field_units: dict[tuple[str, str], Unit]        # (type, field) → unit
 
 
 def _loc_position(loc: dict | None) -> Position:
@@ -161,10 +165,9 @@ def _resolve(expr: object, ctx: _Ctx) -> Unit | None:
         name = fields.get("id")
         if not isinstance(name, str):
             return None
-        # ``member`` non-empty means ``a%b%c`` — Phase 1+ territory.
         member = fields.get("member") or []
         if member:
-            return None
+            return _resolve_member_chain(member, name, ctx)
         return ctx.var_units.get(name)
 
     if kind in ("Num", "Real"):
@@ -185,7 +188,7 @@ def _resolve(expr: object, ctx: _Ctx) -> Unit | None:
             if exponent is None:
                 return None
             try:
-                return base ** exponent  # type: ignore[arg-type]
+                return base.pow(exponent)
             except Exception:
                 return None
         left = _resolve(fields.get("left"), ctx)
@@ -208,6 +211,41 @@ def _resolve(expr: object, ctx: _Ctx) -> Unit | None:
     # Unsupported node kind. Returning None lets the caller skip the
     # check rather than emit a false positive.
     return None
+
+
+def _resolve_member_chain(
+    member: list, final_name: str, ctx: _Ctx
+) -> Unit | None:
+    """Resolve a derived-type access chain.
+
+    For ``o%i%x`` the AST gives ``Name(id="x", member=[struct_member("o"),
+    struct_member("i")])`` — the chain is outer→inner→…→final. We
+    follow each step against the type-field-type map, then look up
+    the final field's unit in ``field_units``.
+
+    Returns ``None`` when any step can't be resolved — e.g. the base
+    variable's type wasn't captured, or the chain steps through a
+    field whose type isn't another derived type we know about. Phase
+    3 deliberately does not try to recover partial chains.
+    """
+    if not member:
+        return None
+    base_field = _fields(member[0]).get("name")
+    if not isinstance(base_field, str):
+        return None
+    current_type = ctx.var_types.get(base_field.lower())
+    if current_type is None:
+        return None
+    for step in member[1:]:
+        step_field = _fields(step).get("name")
+        if not isinstance(step_field, str):
+            return None
+        current_type = ctx.type_field_types.get(
+            (current_type, step_field.lower())
+        )
+        if current_type is None:
+            return None
+    return ctx.field_units.get((current_type, final_name.lower()))
 
 
 def _resolve_call(expr: object, ctx: _Ctx) -> Unit | None:
@@ -237,7 +275,7 @@ def _resolve_call(expr: object, ctx: _Ctx) -> Unit | None:
             return None
         exp = TRANSFORMING_INTRINSICS[name_lc]
         try:
-            return base ** exp  # type: ignore[arg-type]
+            return base.pow(exp)
         except Exception:
             return None
 
@@ -269,6 +307,19 @@ def _resolve_call(expr: object, ctx: _Ctx) -> Unit | None:
     sig = ctx.signatures.get(name_lc)
     if sig is not None and not sig.is_subroutine:
         return sig.return_unit
+
+    # Array indexing or slicing: LFortran's AST can't tell
+    # ``a(1)`` (array element) from ``f(1)`` (function call) without
+    # semantic context, so both surface as FuncCallOrArray. If the
+    # name resolves to a known variable, treat the result unit as the
+    # array's own unit — element access, full slice ``a(:)``, and
+    # sub-range ``a(1:n)`` all carry the same unit as the array.
+    if name_lc in ctx.var_units:
+        return ctx.var_units[name_lc]
+    # Tolerate the case where var_units uses original casing.
+    for k, v in ctx.var_units.items():
+        if k.lower() == name_lc:
+            return v
 
     return None
 
@@ -576,6 +627,67 @@ def apply_use_clauses(
     return var_units, signatures, frozenset(unresolved)
 
 
+def collect_var_types(ast: dict) -> dict[str, str]:
+    """Walk Declarations and return ``{varname_lc: type_name_lc}`` for
+    every variable declared with ``type(NAME) :: …``. F90 is
+    case-insensitive, so we normalise on the way in.
+    """
+    from dimfort.core.lfortran import walk
+    out: dict[str, str] = {}
+    for node in walk(ast):
+        if _node(node) != "Declaration":
+            continue
+        vt = _fields(node).get("vartype")
+        if not isinstance(vt, dict):
+            continue
+        vt_fields = _fields(vt)
+        if vt_fields.get("type") != "TypeType":
+            continue
+        type_name = vt_fields.get("name")
+        if not isinstance(type_name, str):
+            continue
+        for sym in _fields(node).get("syms") or []:
+            sym_name = _fields(sym).get("name")
+            if isinstance(sym_name, str):
+                out[sym_name.lower()] = type_name.lower()
+    return out
+
+
+def collect_type_field_types(ast: dict) -> dict[tuple[str, str], str]:
+    """Walk ``DerivedType`` definitions and return
+    ``{(struct_type_lc, field_name_lc): field_struct_type_lc}`` for
+    every field whose declared type is itself a derived type. Fields
+    of intrinsic type (real, integer, …) are not in the map; the
+    resolver knows to look up their units in ``field_units`` instead.
+    """
+    from dimfort.core.lfortran import walk
+    out: dict[tuple[str, str], str] = {}
+    for node in walk(ast):
+        if _node(node) != "DerivedType":
+            continue
+        struct_name = _fields(node).get("name")
+        if not isinstance(struct_name, str):
+            continue
+        struct_lc = struct_name.lower()
+        for item in _fields(node).get("items") or []:
+            if _node(item) != "Declaration":
+                continue
+            vt = _fields(item).get("vartype")
+            if not isinstance(vt, dict):
+                continue
+            vt_fields = _fields(vt)
+            if vt_fields.get("type") != "TypeType":
+                continue
+            field_type = vt_fields.get("name")
+            if not isinstance(field_type, str):
+                continue
+            for sym in _fields(item).get("syms") or []:
+                field_name = _fields(sym).get("name")
+                if isinstance(field_name, str):
+                    out[(struct_lc, field_name.lower())] = field_type.lower()
+    return out
+
+
 def collect_function_signatures(
     ast: dict,
     var_units: dict[str, Unit],
@@ -641,6 +753,7 @@ def check(
     file: str | Path,
     table: UnitTable | None = None,
     signatures: dict[str, FuncSig] | None = None,
+    field_units: dict[tuple[str, str], str] | None = None,
 ) -> list[Diagnostic]:
     """Run the AST checker over one file's AST.
 
@@ -652,7 +765,12 @@ def check(
     ``signatures`` is the user-defined function/subroutine signature
     table. ``None`` means "build it from this file's own AST" — that's
     the single-file Phase 1 mode. Pass a wider map (e.g. one merged
-    across an entire workset) once cross-file Phase 2 lands.
+    across an entire workset) in Phase 2+.
+
+    ``field_units`` is the derived-type field unit table produced by
+    attach (keyed by ``(type_name, field_name)`` strings). ``None``
+    means "no field annotations" — the resolver simply won't yield a
+    unit for ``a%b`` accesses but won't crash.
     """
     active_table = table if table is not None else _units_mod.DEFAULT_TABLE
     if active_table is None:
@@ -667,14 +785,29 @@ def check(
         except UnitError:
             continue
 
+    parsed_field_units: dict[tuple[str, str], Unit] = {}
+    for (tn, fn), text in (field_units or {}).items():
+        try:
+            parsed_field_units[(tn.lower(), fn.lower())] = _units_mod.parse(
+                text, active_table
+            )
+        except UnitError:
+            continue
+
     if signatures is None:
         signatures = collect_function_signatures(ast, parsed)
+
+    var_types = collect_var_types(ast)
+    type_field_types = collect_type_field_types(ast)
 
     ctx = _Ctx(
         file=str(file),
         var_units=parsed,
         table=active_table,
         signatures=signatures,
+        var_types=var_types,
+        type_field_types=type_field_types,
+        field_units=parsed_field_units,
     )
     out: list[Diagnostic] = []
 
