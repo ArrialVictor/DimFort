@@ -571,6 +571,8 @@ def apply_use_clauses(
     module_exports: dict[str, ModuleExports],
     base_var_units: dict[str, Unit],
     base_signatures: dict[str, FuncSig],
+    *,
+    external_modules: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, Unit], dict[str, FuncSig], frozenset[str]]:
     """Merge imported symbols into a file's scope.
 
@@ -580,12 +582,21 @@ def apply_use_clauses(
     ``(var_units, signatures)`` tables plus the set of module names
     referenced by ``use`` that we couldn't resolve — the caller can
     surface those as U007.
+
+    ``external_modules`` is the allowlist of module names that live
+    outside the workspace (intrinsic modules like ``iso_fortran_env``,
+    libraries like ``netcdf``). Names in this set are silently
+    skipped — no symbols are imported and no U007 is emitted, which
+    matches the ASR pipeline's behaviour of dropping them during dep
+    resolution.
     """
     var_units = dict(base_var_units)
     signatures = dict(base_signatures)
     unresolved: set[str] = set()
     for use in uses:
         mod_name = use.module.lower()
+        if mod_name in external_modules:
+            continue
         exports = module_exports.get(mod_name)
         if exports is None:
             unresolved.add(mod_name)

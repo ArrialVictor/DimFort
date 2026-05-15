@@ -375,6 +375,7 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
                 paths,
                 overrides=overrides,
                 lfortran=_lfortran_binary,
+                external_modules=_external_modules,
             )
         else:
             result = check_files(
@@ -1186,6 +1187,26 @@ def _build_initial_index(ls: LanguageServer, roots: tuple[Path, ...]) -> None:
         f"across {len(idx.uses_by_file)} files",
         toast=True,
     )
+
+    # Re-check every currently-open file. Without this, files opened
+    # during the scan published diagnostics under the single-file
+    # fallback workset (their use-deps surfacing as bogus U007s) and
+    # nothing ever re-triggered them. Now that the index is in
+    # place, ``_workset_for`` will resolve full topo-sorted
+    # closures.
+    with _opened_uris_lock:
+        opened = list(_opened_uris.values())
+    if opened:
+        _notify(
+            ls,
+            f"DimFort: refreshing diagnostics for {len(opened)} open file(s)",
+        )
+        for uri in opened:
+            try:
+                with _check_lock:
+                    _publish_for_uri(ls, uri)
+            except Exception:
+                log.exception("post-index refresh failed for %s", uri)
 
 
 def _update_index_for(path: Path, *, new_text: str | None = None) -> None:
