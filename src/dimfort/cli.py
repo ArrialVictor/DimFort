@@ -139,8 +139,19 @@ def _run_check(args: argparse.Namespace) -> int:
             return
         print(_format_diag(file, line, severity, code, message, color=color))
 
+    from dimfort import cache as _cache_mod
+
+    if args.no_cache:
+        cache_dir: Path | None = None
+    elif args.cache_dir:
+        cache_dir = Path(args.cache_dir)
+    else:
+        cache_dir = _cache_mod.default_cache_dir()
+
     try:
-        result = check_files(paths, lfortran=args.lfortran)
+        result = check_files(
+            paths, lfortran=args.lfortran, cache_dir=cache_dir
+        )
     except lf.LFortranNotFound as exc:
         print(f"dimfort: {exc}", file=sys.stderr)
         return 2

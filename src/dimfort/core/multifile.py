@@ -25,6 +25,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from dimfort import cache as _cache
 from dimfort.core import lfortran as lf
 from dimfort.core import units as _units_mod
 from dimfort.core.annotations import scan_file, scan_text
@@ -150,6 +151,7 @@ def check_files(
     table: UnitTable | None = None,
     implicit_interface: bool = False,
     overrides: dict[Path, str] | None = None,
+    cache_dir: Path | None = None,
 ) -> WorksetResult:
     """Scan, attach, and check every file in ``sources`` together.
 
@@ -157,6 +159,12 @@ def check_files(
     more files — used by the LSP server to check unsaved buffers. The
     keys are the same absolute paths as in ``sources``; for any path
     present, the buffer text is what we scan and what lfortran sees.
+
+    ``cache_dir`` enables the AST/ASR cache: any file whose content
+    matches its cached entry skips the LFortran subprocess. Files
+    present in ``overrides`` always bypass the cache (their content is
+    the buffer text, not what's on disk). Pass ``None`` to disable
+    caching entirely.
     """
     abs_sources = [Path(p).resolve() for p in sources]
     overrides = {Path(p).resolve(): t for p, t in (overrides or {}).items()}
@@ -233,11 +241,23 @@ def check_files(
             if src in result.compile_failures:
                 continue
             try:
-                ast, asr = lf.load_trees(
+                # Cache by absolute source path; the temp-dir symlink
+                # we pass to LFortran is just so `.mod` files resolve.
+                # Overridden buffers bypass the cache (their content
+                # differs from disk).
+                override_text = overrides.get(src)
+                ast, asr = _cache.load_trees_cached(
                     src.name,
+                    source_path=src,
                     lfortran=lfortran,
                     cwd=tmp_dir,
                     implicit_interface=implicit_interface,
+                    cache_dir=cache_dir,
+                    content=(
+                        override_text.encode("utf-8")
+                        if override_text is not None
+                        else None
+                    ),
                 )
             except lf.LFortranError as exc:
                 result.load_failures[src] = FileLoadFailure(stderr=exc.stderr)

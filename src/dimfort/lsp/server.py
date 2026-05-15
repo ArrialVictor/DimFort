@@ -33,6 +33,7 @@ from lsprotocol import types as lsp
 from pygls.lsp.server import LanguageServer
 
 from dimfort import __version__
+from dimfort import cache as _cache_mod
 from dimfort.core import lfortran as lf
 from dimfort.core import unit_config  # noqa: F401  populates DEFAULT_TABLE
 from dimfort.core import units as _units_mod
@@ -335,8 +336,15 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
     if override_text is not None:
         overrides[active.resolve()] = override_text
 
+    # Cache lives under the first workspace folder; if there are no
+    # folders (loose file open) we still cache, rooted next to the file.
+    if _workspace_folders:
+        cache_dir: Path | None = _cache_mod.default_cache_dir(_workspace_folders[0])
+    else:
+        cache_dir = _cache_mod.default_cache_dir(active.resolve().parent)
+
     try:
-        result = check_files(paths, overrides=overrides)
+        result = check_files(paths, overrides=overrides, cache_dir=cache_dir)
     except lf.LFortranNotFound as exc:
         log.warning("lfortran not found: %s", exc)
         return
