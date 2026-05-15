@@ -94,6 +94,13 @@ _SEVERITY_TO_LSP = {
 _doc_versions: dict[str, int] = {}
 _doc_versions_lock = threading.Lock()
 
+# Serialises every pipeline run across didOpen / didSave / didChange.
+# Without this, VSCode restoring N tabs after a reload fires N
+# concurrent didOpens, each spawning its own LFortran subprocesses
+# and ASR JSON in memory; the pile-up exceeds macOS jetsam's budget
+# and the LSP process gets SIGKILLed.
+_check_lock = threading.Lock()
+
 # Last successful check result, used for hover.
 _last_result: WorksetResult | None = None
 _last_result_lock = threading.Lock()
@@ -121,6 +128,29 @@ _DEFAULT_EXTERNAL_MODULES: frozenset[str] = frozenset({
     "netcdf", "netcdf95", "ioipsl", "nrtype",
 })
 _external_modules: frozenset[str] = _DEFAULT_EXTERNAL_MODULES
+
+# Maximum number of files to feed into a single check. Resolving the
+# full transitive `use` closure of a deep LMDZ-scale entry point (e.g.
+# `phylmd/physiq_mod.F90` -> ~353 files) holds enough AST/ASR JSON in
+# memory to trigger macOS jetsam SIGKILL on the LSP process. The cap
+# trades cross-file coverage for stability: when the workset exceeds
+# this, we keep the last N entries in topo order — the active file
+# plus its nearest deps. Override via `maxWorksetSize` in
+# initializationOptions.
+_DEFAULT_MAX_WORKSET = 40
+_max_workset_size: int = _DEFAULT_MAX_WORKSET
+
+
+def _cap_workset(paths: list[Path], active: Path, limit: int) -> list[Path]:
+    """Trim a workset down to ``limit`` entries while keeping the active
+    file. Takes the last ``limit`` entries in topo order (closest to
+    the active file's leaves)."""
+    if len(paths) <= limit:
+        return paths
+    tail = paths[-limit:]
+    if active not in tail:
+        tail = tail[1:] + [active]
+    return tail
 
 # Tracks every file VSCode (or whichever client) has currently open.
 # Keyed by resolved Path so we can recover the *exact* URI the editor
@@ -251,13 +281,22 @@ def _workset_for(ls: LanguageServer, active_uri: str) -> tuple[list[Path], Path 
         # any workspace folder).
         if resolved_active not in paths:
             paths.append(resolved_active)
-        return paths, active
+        # Cap to keep the LSP process alive on deep workspaces.
+        capped = _cap_workset(paths, resolved_active, _max_workset_size)
+        if len(capped) < len(paths):
+            log.info(
+                "workset capped at %d (full deps: %d) for %s",
+                _max_workset_size, len(paths), resolved_active.name,
+            )
+        return capped, active
 
-    # Fallback: index not ready yet, or no workspace folders.
-    paths = _discover_fortran_files(_workspace_folders)
-    if resolved_active not in paths:
-        paths.append(resolved_active)
-    return paths, active
+    # Fallback: index not ready yet, or no workspace folders. Just
+    # check the active file alone. Cross-file deps will surface as
+    # transient U007 errors until the index build finishes; that's
+    # strictly better than feeding every file in the workspace to
+    # the checker — on LMDZ-scale (2435 files) the old behaviour
+    # SIGKILLed the LSP via macOS jetsam.
+    return [resolved_active], active
 
 
 # ---------------------------------------------------------------------------
@@ -923,7 +962,7 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
     _workspace_folders = folders
 
     opts = params.initialization_options or {}
-    global _external_modules
+    global _external_modules, _max_workset_size
     if isinstance(opts, dict):
         _features.inlay_hints = bool(opts.get("inlayHintsEnabled", True))
         _features.completion = bool(opts.get("completionEnabled", True))
@@ -936,6 +975,9 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
             _external_modules = _DEFAULT_EXTERNAL_MODULES | frozenset(
                 str(m).lower() for m in extra if isinstance(m, str)
             )
+        cap = opts.get("maxWorksetSize")
+        if isinstance(cap, int) and cap > 0:
+            _max_workset_size = cap
     log.info(
         "DimFort LSP initialised; folders=%s features=%s externals=%d",
         folders,
@@ -989,17 +1031,35 @@ def _update_index_for(path: Path, *, new_text: str | None = None) -> None:
 
 @server.feature(lsp.TEXT_DOCUMENT_DID_OPEN)
 def _did_open(ls: LanguageServer, params: lsp.DidOpenTextDocumentParams) -> None:
-    _remember_uri(params.text_document.uri)
-    _publish_for_uri(ls, params.text_document.uri)
+    uri = params.text_document.uri
+    _remember_uri(uri)
+
+    def worker() -> None:
+        with _check_lock:
+            try:
+                _publish_for_uri(ls, uri)
+            except Exception:
+                log.exception("didOpen check failed for %s", uri)
+
+    threading.Thread(target=worker, daemon=True, name="dimfort-open").start()
 
 
 @server.feature(lsp.TEXT_DOCUMENT_DID_SAVE)
 def _did_save(ls: LanguageServer, params: lsp.DidSaveTextDocumentParams) -> None:
-    _remember_uri(params.text_document.uri)
-    saved = _uri_to_path(params.text_document.uri)
+    uri = params.text_document.uri
+    _remember_uri(uri)
+    saved = _uri_to_path(uri)
     if saved is not None:
         _update_index_for(saved.resolve())
-    _publish_for_uri(ls, params.text_document.uri)
+
+    def worker() -> None:
+        with _check_lock:
+            try:
+                _publish_for_uri(ls, uri)
+            except Exception:
+                log.exception("didSave check failed for %s", uri)
+
+    threading.Thread(target=worker, daemon=True, name="dimfort-save").start()
 
 
 @server.feature(lsp.TEXT_DOCUMENT_DID_CLOSE)
@@ -1027,15 +1087,20 @@ def _did_change(ls: LanguageServer, params: lsp.DidChangeTextDocumentParams) -> 
         time.sleep(_DEBOUNCE_SECONDS)
         if not _is_current(uri, version):
             return  # superseded by a later keystroke
-        try:
-            # Reflect the in-memory buffer in the index so a freshly
-            # added `use M` is picked up on the same keystroke.
-            active = _uri_to_path(uri)
-            if active is not None:
-                _update_index_for(active.resolve(), new_text=text)
-            _publish_for_uri(ls, uri, override_text=text)
-        except Exception:
-            log.exception("debounced check failed for %s", uri)
+        with _check_lock:
+            # Re-check version inside the lock: a later keystroke may
+            # have arrived while we were waiting for our turn.
+            if not _is_current(uri, version):
+                return
+            try:
+                # Reflect the in-memory buffer in the index so a freshly
+                # added `use M` is picked up on the same keystroke.
+                active = _uri_to_path(uri)
+                if active is not None:
+                    _update_index_for(active.resolve(), new_text=text)
+                _publish_for_uri(ls, uri, override_text=text)
+            except Exception:
+                log.exception("debounced check failed for %s", uri)
 
     threading.Thread(target=delayed, daemon=True).start()
 

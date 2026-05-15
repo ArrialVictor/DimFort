@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,6 +40,16 @@ from dimfort.core.checker import (
 )
 from dimfort.core.diagnostics import Diagnostic, Position, Severity
 from dimfort.core.units import Unit, UnitError, UnitTable
+
+
+# LFortran emits ANSI colour codes on stderr unconditionally. They'd
+# leak verbatim into our diagnostic messages (and the editor UI), so
+# we strip them before composing the U007 message.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _clean_stderr(text: str) -> str:
+    return _ANSI_RE.sub("", text).strip()
 
 
 @dataclass(frozen=True)
@@ -254,7 +265,7 @@ def check_files(
                 )
             # Compile and load failures surface as U007.
             if src in result.compile_failures:
-                head = result.compile_failures[src].strip().splitlines()
+                head = _clean_stderr(result.compile_failures[src]).splitlines()
                 diags.append(
                     _diag(
                         str(src), 0, "U007",
@@ -262,7 +273,7 @@ def check_files(
                     )
                 )
             elif src in result.load_failures:
-                head = result.load_failures[src].stderr.strip().splitlines()
+                head = _clean_stderr(result.load_failures[src].stderr).splitlines()
                 diags.append(
                     _diag(
                         str(src), 0, "U007",
