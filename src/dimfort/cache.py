@@ -171,7 +171,7 @@ def load_trees_cached(
         )
 
     content_sha = _sha256_bytes(file_bytes)
-    lf_version = _cached_lfortran_version(lf, lfortran)
+    lf_version = lf.cached_version(lfortran)
     key = _Key(
         abs_path=str(abs_path),
         content_sha256=content_sha,
@@ -207,21 +207,6 @@ def load_trees_cached(
     }
     _write_entry(entry_path, payload)
     return ast, asr
-
-
-_LF_VERSION_CACHE: dict[str, str] = {}
-
-
-def _cached_lfortran_version(lf_module, lfortran) -> str:
-    """Memoise ``lf.version`` so a multi-file check pays the subprocess
-    cost once, not once per file. Keyed by the resolved binary path."""
-    binary = str(lf_module.find_lfortran(lfortran))
-    cached = _LF_VERSION_CACHE.get(binary)
-    if cached is not None:
-        return cached
-    v = lf_module.version(lfortran)
-    _LF_VERSION_CACHE[binary] = v
-    return v
 
 
 def _entry_matches(entry: dict, key: _Key) -> bool:

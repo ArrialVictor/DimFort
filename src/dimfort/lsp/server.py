@@ -166,11 +166,21 @@ _max_workset_size: int = _DEFAULT_MAX_WORKSET
 
 # Resolved project config (``.dimfort.toml``). Loaded once at
 # ``initialize`` time; an LSP restart is required to re-read.
+# Read from worker threads without a lock: per the LSP protocol the
+# client cannot send textDocument/* requests before our initialize
+# response, so the write in ``_initialize`` happens-before every
+# worker-thread read. Don't introduce code paths that read these
+# state vars before the initialize handler returns.
 _project_config: DimfortConfig = DimfortConfig()
 
 # Path to the LFortran binary, when explicitly set via config. ``None``
 # means "fall through to the discovery order in ``find_lfortran``."
 _lfortran_binary: str | None = None
+
+# Resolved cache directory, computed once at initialize. ``None`` means
+# either no workspace folders were provided (we'll derive from the
+# active file at publish time) or caching is intentionally disabled.
+_cache_dir: Path | None = None
 
 
 def _cap_workset(paths: list[Path], active: Path, limit: int) -> list[Path]:
@@ -345,11 +355,11 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
     if override_text is not None:
         overrides[active.resolve()] = override_text
 
-    # Cache lives under the first workspace folder; if there are no
-    # folders (loose file open) we still cache, rooted next to the file.
-    if _workspace_folders:
-        cache_dir: Path | None = _cache_mod.default_cache_dir(_workspace_folders[0])
-    else:
+    # Cache lives under the first workspace folder, resolved once at
+    # initialize. For loose opens (no workspace), derive from the
+    # active file's parent — uncommon enough to compute on demand.
+    cache_dir = _cache_dir
+    if cache_dir is None:
         cache_dir = _cache_mod.default_cache_dir(active.resolve().parent)
 
     try:
@@ -1007,9 +1017,10 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
     _workspace_folders = folders
 
     # Load .dimfort.toml from the first workspace folder, if any.
-    global _project_config, _lfortran_binary
+    global _project_config, _lfortran_binary, _cache_dir
     if folders:
         _project_config = load_config(folders[0])
+        _cache_dir = _cache_mod.default_cache_dir(folders[0])
     config = _project_config
 
     # Start from config-provided values; initializationOptions override.
