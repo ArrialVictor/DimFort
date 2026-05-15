@@ -143,7 +143,14 @@ def dump_tree(
     # numeric kind selectors as hard errors by default. Real-world Fortran
     # (LMDZ in particular) is full of those constructs and DimFort isn't
     # in the style-policing business, so we always suppress them.
-    cmd = [str(binary), flag, "--json", "--no-style-suggestions"]
+    # --cpp-infer: enable LFortran's C preprocessor for files that look
+    # like they need it (`.F90` extension or `#`-directives). Without it,
+    # `#ifdef`/`#define`/`#include` warnings make LFortran exit non-zero
+    # and U007 fires on every preprocessed source.
+    cmd = [
+        str(binary), flag, "--json",
+        "--no-style-suggestions", "--cpp-infer",
+    ]
     if implicit_interface:
         cmd.append("--implicit-interface")
     cmd.append(str(path))
@@ -224,7 +231,7 @@ def compile_module(
     and succeed on a later pass.
     """
     binary = find_lfortran(lfortran)
-    cmd = [str(binary), "-c", "--no-style-suggestions"]
+    cmd = [str(binary), "-c", "--no-style-suggestions", "--cpp-infer"]
     if implicit_interface:
         cmd.append("--implicit-interface")
     cmd.append(str(path))
