@@ -1007,34 +1007,99 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         f"{len(_external_modules)} external module(s) on allowlist",
     )
 
-    # Build the workspace module index on a background thread — on
-    # large codebases (LMDZ: 2435 files) this can take several
-    # seconds and must not block initialize. Until it finishes
-    # publishing, ``_workset_for`` falls back to whole-workspace
-    # behaviour.
-    if folders:
-        _notify(
-            ls,
-            f"DimFort: scanning workspace ({len(folders)} folder(s))…",
-        )
-        threading.Thread(
-            target=_build_initial_index,
-            args=(ls, tuple(folders)),
-            daemon=True,
-            name="dimfort-workspace-scan",
-        ).start()
+
+@server.feature(lsp.INITIALIZED)
+def _initialized(ls: LanguageServer, params: lsp.InitializedParams) -> None:
+    """Kick off the workspace scan once the client is ready.
+
+    The workspace scan needs to send server-to-client requests
+    (``window/workDoneProgress/create``); these are only valid after the
+    client has sent the ``initialized`` notification. Spawning earlier —
+    e.g. from inside the ``initialize`` handler — races against the
+    client's readiness and produces JsonRpcMethodNotFound responses.
+    """
+    folders = _workspace_folders
+    if not folders:
+        return
+    _notify(
+        ls,
+        f"DimFort: scanning workspace ({len(folders)} folder(s))…",
+    )
+    threading.Thread(
+        target=_build_initial_index,
+        args=(ls, tuple(folders)),
+        daemon=True,
+        name="dimfort-workspace-scan",
+    ).start()
 
 
 def _build_initial_index(ls: LanguageServer, roots: tuple[Path, ...]) -> None:
-    """Background scan; assigns the result to the module-level index."""
+    """Background scan; assigns the result to the module-level index.
+
+    Emits ``$/progress`` notifications so VSCode shows a status-bar
+    spinner with per-file detail. Reports are throttled to ~10/sec so
+    a 2435-file scan doesn't flood the wire.
+    """
     global _workspace_index
+    token = f"dimfort-scan-{int(time.time() * 1000)}"
+    progress = ls.work_done_progress
+    progress_started = False
     try:
-        idx = scan_workspace(roots)
+        progress.create(token).result(timeout=2.0)
+        progress.begin(
+            token,
+            lsp.WorkDoneProgressBegin(
+                title="DimFort: scanning workspace",
+                cancellable=False,
+                percentage=0,
+            ),
+        )
+        progress_started = True
+    except Exception:
+        log.debug("could not start workDoneProgress", exc_info=True)
+
+    last_report_at = 0.0
+
+    def on_progress(scanned: int, total: int, path: Path) -> None:
+        nonlocal last_report_at
+        if not progress_started:
+            return
+        now = time.monotonic()
+        # Always report the final tick; throttle the rest to ~10/sec.
+        if scanned != total and now - last_report_at < 0.1:
+            return
+        last_report_at = now
+        try:
+            progress.report(
+                token,
+                lsp.WorkDoneProgressReport(
+                    message=f"{scanned}/{total} {path.name}",
+                    percentage=int(scanned * 100 / total) if total else 100,
+                ),
+            )
+        except Exception:
+            log.debug("workDoneProgress report failed", exc_info=True)
+
+    try:
+        idx = scan_workspace(roots, progress_cb=on_progress)
     except Exception:
         log.exception("workspace index build failed")
+        if progress_started:
+            try:
+                progress.end(token, lsp.WorkDoneProgressEnd(message="failed"))
+            except Exception:
+                log.debug("workDoneProgress end failed", exc_info=True)
         return
+
     with _workspace_index_lock:
         _workspace_index = idx
+
+    if progress_started:
+        try:
+            progress.end(token, lsp.WorkDoneProgressEnd(message="done"))
+        except Exception:
+            log.debug("workDoneProgress end failed", exc_info=True)
+
     _notify(
         ls,
         f"DimFort workspace index ready: {len(idx.modules)} modules "
