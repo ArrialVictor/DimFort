@@ -182,6 +182,12 @@ _lfortran_binary: str | None = None
 # active file at publish time) or caching is intentionally disabled.
 _cache_dir: Path | None = None
 
+# Checker backend: "asr" (default; uses LFortran's resolved semantic
+# tree) or "ast" (parse tree only; handles F77-idiom files like
+# COMMON+PUBLIC that ASR rejects). Set at initialize from config and
+# initializationOptions; restart the LSP to switch.
+_backend: str = "asr"
+
 
 def _cap_workset(paths: list[Path], active: Path, limit: int) -> list[Path]:
     """Trim a workset down to ``limit`` entries while keeping the active
@@ -363,12 +369,20 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
         cache_dir = _cache_mod.default_cache_dir(active.resolve().parent)
 
     try:
-        result = check_files(
-            paths,
-            overrides=overrides,
-            cache_dir=cache_dir,
-            lfortran=_lfortran_binary,
-        )
+        if _backend == "ast":
+            from dimfort.core.ast_multifile import check_files_ast
+            result = check_files_ast(
+                paths,
+                overrides=overrides,
+                lfortran=_lfortran_binary,
+            )
+        else:
+            result = check_files(
+                paths,
+                overrides=overrides,
+                cache_dir=cache_dir,
+                lfortran=_lfortran_binary,
+            )
     except lf.LFortranNotFound as exc:
         log.warning("lfortran not found: %s", exc)
         return
@@ -1028,12 +1042,14 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         config.external_modules
     )
     opts = params.initialization_options or {}
-    global _external_modules, _max_workset_size
+    global _external_modules, _max_workset_size, _backend
     _external_modules = _external_modules_from_config
     if config.max_workset_size is not None:
         _max_workset_size = config.max_workset_size
     if config.lfortran_binary is not None:
         _lfortran_binary = str(config.lfortran_binary)
+    if config.backend is not None:
+        _backend = config.backend
 
     if isinstance(opts, dict):
         _features.inlay_hints = bool(opts.get("inlayHintsEnabled", True))
@@ -1050,6 +1066,9 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         cap = opts.get("maxWorksetSize")
         if isinstance(cap, int) and cap > 0:
             _max_workset_size = cap
+        backend_opt = opts.get("backend")
+        if isinstance(backend_opt, str) and backend_opt.lower() in ("ast", "asr"):
+            _backend = backend_opt.lower()
 
     config_note = (
         f" (config: {config.config_path.name})"
@@ -1059,7 +1078,8 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
     _notify(
         ls,
         f"DimFort LSP initialised — {len(folders)} folder(s), "
-        f"{len(_external_modules)} external module(s) on allowlist{config_note}",
+        f"{len(_external_modules)} external module(s) on allowlist, "
+        f"backend={_backend}{config_note}",
     )
 
 

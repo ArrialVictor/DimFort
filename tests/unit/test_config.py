@@ -90,3 +90,45 @@ max_size = "lots"
 """)
     cfg = load_config(tmp_path)
     assert cfg.max_workset_size is None
+
+
+def test_checker_backend_ast(tmp_path):
+    (tmp_path / CONFIG_FILENAME).write_text("""
+[checker]
+backend = "ast"
+""")
+    cfg = load_config(tmp_path)
+    assert cfg.backend == "ast"
+
+
+def test_checker_backend_asr(tmp_path):
+    (tmp_path / CONFIG_FILENAME).write_text("""
+[checker]
+backend = "asr"
+""")
+    cfg = load_config(tmp_path)
+    assert cfg.backend == "asr"
+
+
+def test_checker_backend_case_insensitive(tmp_path):
+    (tmp_path / CONFIG_FILENAME).write_text("""
+[checker]
+backend = "AST"
+""")
+    cfg = load_config(tmp_path)
+    assert cfg.backend == "ast"
+
+
+def test_checker_backend_invalid_dropped(tmp_path):
+    (tmp_path / CONFIG_FILENAME).write_text("""
+[checker]
+backend = "neural-net"
+""")
+    cfg = load_config(tmp_path)
+    assert cfg.backend is None
+
+
+def test_no_checker_section_defaults_none(tmp_path):
+    (tmp_path / CONFIG_FILENAME).write_text("[project]\nsrc_paths = []\n")
+    cfg = load_config(tmp_path)
+    assert cfg.backend is None
