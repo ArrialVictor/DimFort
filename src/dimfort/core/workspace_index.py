@@ -272,26 +272,12 @@ def update_index(
     return index
 
 
-def _read_source(path: Path) -> str:
-    """Read a Fortran source, tolerating non-UTF-8 encodings.
-
-    LMDZ and many other legacy codebases ship Latin-1-encoded files
-    (French / German comments). Module and use scanning only cares
-    about ASCII identifiers, so falling back to Latin-1 — which
-    losslessly decodes any byte sequence — is safe for our purpose.
-    """
-    raw = path.read_bytes()
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return raw.decode("latin-1")
-
-
 def _scan_into_index(
     index: WorkspaceIndex, path: Path, *, new_text: str | None = None
 ) -> None:
+    from dimfort.core._source_io import read_text
     try:
-        text = new_text if new_text is not None else _read_source(path)
+        text = new_text if new_text is not None else read_text(path)
     except OSError as exc:
         index.scan_failures[path] = str(exc)
         return

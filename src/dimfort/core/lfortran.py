@@ -156,8 +156,9 @@ def load_trees(
 
 def has_module(path: str | os.PathLike[str]) -> bool:
     """Cheap text scan: does ``path`` declare at least one Fortran module?"""
+    from dimfort.core._source_io import read_text
     try:
-        text = Path(path).read_text()
+        text = read_text(path)
     except OSError:
         return False
     return bool(_MODULE_DECL_RE.search(text))
@@ -165,8 +166,9 @@ def has_module(path: str | os.PathLike[str]) -> bool:
 
 def modules_provided(path: str | os.PathLike[str]) -> list[str]:
     """Return the names of every module declared in ``path`` (lower-cased)."""
+    from dimfort.core._source_io import read_text
     try:
-        text = Path(path).read_text()
+        text = read_text(path)
     except OSError:
         return []
     return [m.group(1).lower() for m in _MODULE_DECL_RE.finditer(text)]
