@@ -147,15 +147,27 @@ def dump_tree(
     if implicit_interface:
         cmd.append("--implicit-interface")
     cmd.append(str(path))
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+    # Capture raw bytes — Latin-1 bytes leak through LFortran's JSON
+    # output when source comments contain non-UTF-8 sequences (LMDZ
+    # ships these). text=True would crash with UnicodeDecodeError.
+    # Mirrors the UTF-8 → Latin-1 fallback in core._source_io.read_text.
+    result = subprocess.run(cmd, capture_output=True, cwd=cwd)
+    try:
+        stderr = result.stderr.decode("utf-8")
+    except UnicodeDecodeError:
+        stderr = result.stderr.decode("latin-1")
     if result.returncode != 0:
         raise LFortranError(
             path=Path(path),
             mode=mode,
             returncode=result.returncode,
-            stderr=result.stderr,
+            stderr=stderr,
         )
-    return json.loads(result.stdout)
+    try:
+        stdout = result.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        stdout = result.stdout.decode("latin-1")
+    return json.loads(stdout)
 
 
 def load_trees(
