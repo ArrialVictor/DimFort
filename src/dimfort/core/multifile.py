@@ -28,6 +28,7 @@ from pathlib import Path
 from dimfort import cache as _cache
 from dimfort.core import lfortran as lf
 from dimfort.core import units as _units_mod
+from dimfort.core import workspace_index as _wsi
 from dimfort.core.annotations import scan_file, scan_text
 from dimfort.core.attach import (
     AttachmentResult,
@@ -198,17 +199,86 @@ def check_files(
             basename_to_path[src.name] = src
 
         # Phase 1: compile every module file (retry-loop until stable).
+        # When a cache_dir is set, the loop is preceded by a restore
+        # pass that drops cached .mod files into ``tmp_dir`` so each
+        # unchanged source can skip ``lfortran -c`` entirely. Cascade
+        # invariant: a source's .mod is only trusted when every one of
+        # its workset-internal use-deps was also restored — LFortran's
+        # .mod format embeds info about used modules, so a single
+        # stale dep silently propagates.
         module_basenames = [
             name for name, p in basename_to_path.items() if lf.has_module(p)
         ]
+
+        # Map module-name → producing basename for cascade resolution.
+        module_to_basename: dict[str, str] = {}
+        for name in module_basenames:
+            for mod_name in lf.modules_provided(basename_to_path[name]):
+                module_to_basename[mod_name] = name
+
+        restored: set[str] = set()
+        to_compile: list[str] = []
+        for basename in module_basenames:
+            src = basename_to_path[basename]
+            if cache_dir is None or src in overrides:
+                to_compile.append(basename)
+                continue
+            # Force recompile if any workset-internal use-dep wasn't
+            # restored from cache (or was itself force-recompiled).
+            try:
+                uses = _wsi.extract_uses(src.read_text(errors="replace"))
+            except OSError:
+                uses = ()
+            dep_dirty = any(
+                module_to_basename.get(u.module) not in (None, *restored)
+                for u in uses
+                if u.module in module_to_basename
+            )
+            if dep_dirty:
+                to_compile.append(basename)
+                continue
+            mods = _cache.load_mods_cached(
+                src,
+                lfortran=lfortran,
+                implicit_interface=implicit_interface,
+                cache_dir=cache_dir,
+            )
+            if mods is None:
+                to_compile.append(basename)
+                continue
+            for mod_name, mod_bytes in mods.items():
+                (tmp_dir / f"{mod_name}.mod").write_bytes(mod_bytes)
+            restored.add(basename)
+
         compile_errors = lf.compile_modules_retrying(
-            module_basenames,
+            to_compile,
             cwd=tmp_dir,
             lfortran=lfortran,
             implicit_interface=implicit_interface,
         )
         for base, msg in compile_errors.items():
             result.compile_failures[basename_to_path[base]] = msg
+
+        # Write back newly-produced .mod files for next run.
+        if cache_dir is not None:
+            for basename in to_compile:
+                if basename in compile_errors:
+                    continue
+                src = basename_to_path[basename]
+                if src in overrides:
+                    continue
+                produced: dict[str, bytes] = {}
+                for mod_name in lf.modules_provided(src):
+                    mod_file = tmp_dir / f"{mod_name}.mod"
+                    if mod_file.is_file():
+                        produced[mod_name] = mod_file.read_bytes()
+                _cache.save_mods_cached(
+                    src,
+                    produced,
+                    lfortran=lfortran,
+                    implicit_interface=implicit_interface,
+                    cache_dir=cache_dir,
+                )
 
         # Phase 2: scan + attach every file. Merge annotation tables.
         merged_var_units_text: dict[str, str] = {}
