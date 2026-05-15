@@ -15,6 +15,7 @@ The cache is internal but the on-disk schema is documented in
 """
 from __future__ import annotations
 
+import base64
 import contextlib
 import hashlib
 import json
@@ -84,6 +85,28 @@ def _entry_path(cache_dir: Path, abs_path: Path) -> Path:
     return cache_dir / f"{digest}.json"
 
 
+def _mods_entry_path(cache_dir: Path, abs_path: Path) -> Path:
+    digest = hashlib.sha1(str(abs_path).encode("utf-8")).hexdigest()[:16]
+    return cache_dir / f"{digest}.mods.json"
+
+
+def _build_key(
+    abs_path: Path,
+    content_bytes: bytes,
+    lf_module,
+    lfortran,
+    implicit_interface: bool,
+) -> "_Key":
+    from dimfort import __version__
+    return _Key(
+        abs_path=str(abs_path),
+        content_sha256=_sha256_bytes(content_bytes),
+        dimfort_version=__version__,
+        lfortran_version=lf_module.cached_version(lfortran),
+        implicit_interface=implicit_interface,
+    )
+
+
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -143,7 +166,6 @@ def load_trees_cached(
     refresh the entry. Cache write errors are swallowed — caching is
     opt-in speedup, never required for correctness.
     """
-    from dimfort import __version__
     from dimfort.core import lfortran as lf
 
     abs_path = Path(source_path).resolve()
@@ -170,15 +192,7 @@ def load_trees_cached(
             implicit_interface=implicit_interface,
         )
 
-    content_sha = _sha256_bytes(file_bytes)
-    lf_version = lf.cached_version(lfortran)
-    key = _Key(
-        abs_path=str(abs_path),
-        content_sha256=content_sha,
-        dimfort_version=__version__,
-        lfortran_version=lf_version,
-        implicit_interface=implicit_interface,
-    )
+    key = _build_key(abs_path, file_bytes, lf, lfortran, implicit_interface)
 
     entry_path = _entry_path(cache_dir, abs_path)
     entry = _read_entry(entry_path)
@@ -218,3 +232,92 @@ def _entry_matches(entry: dict, key: _Key) -> bool:
         and entry.get("lfortran_version") == key.lfortran_version
         and entry.get("implicit_interface") == key.implicit_interface
     )
+
+
+# ---------------------------------------------------------------------------
+# Module-file (.mod) cache
+# ---------------------------------------------------------------------------
+
+
+def load_mods_cached(
+    source_path: Path,
+    *,
+    lfortran=None,
+    implicit_interface: bool = False,
+    cache_dir: Path | None,
+) -> dict[str, bytes] | None:
+    """Return the cached ``.mod`` bytes for every module declared by
+    ``source_path``, or ``None`` on any cache miss.
+
+    The returned mapping is ``{module_name: mod_file_bytes}``. The
+    caller is expected to write each entry into the temp dir where
+    LFortran will look for ``.mod`` files; that's how a cache hit
+    skips ``lfortran -c`` for this source.
+
+    Callers must NOT use this result unless every transitive
+    dependency of this module was also restored from cache (or
+    successfully recompiled). LFortran's ``.mod`` format embeds
+    information about ``use``-d modules; a stale dep's ``.mod``
+    will silently propagate.
+    """
+    from dimfort.core import lfortran as lf
+
+    if cache_dir is None:
+        return None
+    abs_path = Path(source_path).resolve()
+    try:
+        file_bytes = abs_path.read_bytes()
+    except OSError:
+        return None
+    key = _build_key(abs_path, file_bytes, lf, lfortran, implicit_interface)
+
+    entry = _read_entry(_mods_entry_path(cache_dir, abs_path))
+    if not entry or not _entry_matches(entry, key):
+        return None
+    mods_raw = entry.get("mods")
+    if not isinstance(mods_raw, dict):
+        return None
+    try:
+        return {
+            name: base64.b64decode(b64.encode("ascii"))
+            for name, b64 in mods_raw.items()
+            if isinstance(name, str) and isinstance(b64, str)
+        }
+    except (ValueError, TypeError):
+        return None
+
+
+def save_mods_cached(
+    source_path: Path,
+    mods: dict[str, bytes],
+    *,
+    lfortran=None,
+    implicit_interface: bool = False,
+    cache_dir: Path | None,
+) -> None:
+    """Persist ``.mod`` bytes for every module declared by
+    ``source_path``. ``cache_dir=None`` is a no-op."""
+    from dimfort.core import lfortran as lf
+
+    if cache_dir is None or not mods:
+        return
+    abs_path = Path(source_path).resolve()
+    try:
+        file_bytes = abs_path.read_bytes()
+    except OSError:
+        return
+    key = _build_key(abs_path, file_bytes, lf, lfortran, implicit_interface)
+
+    payload = {
+        "schema_version": CACHE_SCHEMA_VERSION,
+        "abs_path": key.abs_path,
+        "content_sha256": key.content_sha256,
+        "dimfort_version": key.dimfort_version,
+        "lfortran_version": key.lfortran_version,
+        "implicit_interface": key.implicit_interface,
+        "mods": {
+            name: base64.b64encode(data).decode("ascii")
+            for name, data in mods.items()
+        },
+    }
+    _write_entry(_mods_entry_path(cache_dir, abs_path), payload)

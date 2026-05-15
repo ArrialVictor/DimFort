@@ -190,6 +190,70 @@ def test_cache_disabled(tmp_path, monkeypatch):
     assert len(fake.calls) == 2  # always invokes
 
 
+def test_mods_save_and_load_roundtrip(tmp_path, monkeypatch):
+    src = tmp_path / "src.f90"
+    src.write_text("module m\nend module m\n")
+    cache_dir = tmp_path / "cache"
+    fake = _FakeLF()
+    _patch_lf(monkeypatch, fake)
+
+    cache.save_mods_cached(
+        src,
+        {"m": b"\x00FAKEMOD\x01"},
+        cache_dir=cache_dir,
+    )
+    out = cache.load_mods_cached(src, cache_dir=cache_dir)
+    assert out == {"m": b"\x00FAKEMOD\x01"}
+
+
+def test_mods_content_change_invalidates(tmp_path, monkeypatch):
+    src = tmp_path / "src.f90"
+    src.write_text("module m\nend module m\n")
+    cache_dir = tmp_path / "cache"
+    fake = _FakeLF()
+    _patch_lf(monkeypatch, fake)
+
+    cache.save_mods_cached(src, {"m": b"AAA"}, cache_dir=cache_dir)
+    src.write_text("module m\n  integer :: x\nend module m\n")
+    assert cache.load_mods_cached(src, cache_dir=cache_dir) is None
+
+
+def test_mods_version_change_invalidates(tmp_path, monkeypatch):
+    src = tmp_path / "src.f90"
+    src.write_text("module m\nend module m\n")
+    cache_dir = tmp_path / "cache"
+    fake = _FakeLF(version="0.63.0")
+    _patch_lf(monkeypatch, fake)
+
+    cache.save_mods_cached(src, {"m": b"AAA"}, cache_dir=cache_dir)
+    from dimfort.core import lfortran as lf
+    lf._VERSION_BY_BINARY.clear()
+    fake._version = "0.64.0"
+    assert cache.load_mods_cached(src, cache_dir=cache_dir) is None
+
+
+def test_mods_disabled_cache(tmp_path, monkeypatch):
+    src = tmp_path / "src.f90"
+    src.write_text("module m\nend module m\n")
+    fake = _FakeLF()
+    _patch_lf(monkeypatch, fake)
+
+    cache.save_mods_cached(src, {"m": b"AAA"}, cache_dir=None)
+    assert cache.load_mods_cached(src, cache_dir=None) is None
+
+
+def test_mods_empty_dict_is_noop(tmp_path, monkeypatch):
+    src = tmp_path / "src.f90"
+    src.write_text("module m\nend module m\n")
+    cache_dir = tmp_path / "cache"
+    fake = _FakeLF()
+    _patch_lf(monkeypatch, fake)
+
+    cache.save_mods_cached(src, {}, cache_dir=cache_dir)
+    # No entry file should have been written.
+    assert not list(cache_dir.glob("*.mods.json")) if cache_dir.exists() else True
+
+
 def test_corrupt_entry_is_overwritten(tmp_path, monkeypatch):
     src = tmp_path / "src.f90"
     src.write_text("real :: x")
