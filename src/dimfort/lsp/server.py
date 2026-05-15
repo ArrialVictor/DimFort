@@ -182,6 +182,10 @@ _lfortran_binary: str | None = None
 # of truth is ``[lfortran] include_paths`` in the project config.
 _include_paths: tuple[Path, ...] = ()
 
+# CPP macros passed to LFortran as ``-D MACRO``. Source of truth is
+# ``[lfortran] cpp_defines`` in the project config.
+_cpp_defines: tuple[str, ...] = ()
+
 # Resolved cache directory, computed once at initialize. ``None`` means
 # either no workspace folders were provided (we'll derive from the
 # active file at publish time) or caching is intentionally disabled.
@@ -382,6 +386,7 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
                 lfortran=_lfortran_binary,
                 external_modules=_external_modules,
                 include_paths=_include_paths,
+                cpp_defines=_cpp_defines,
             )
         else:
             result = check_files(
@@ -1038,12 +1043,14 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
     _workspace_folders = folders
 
     # Load .dimfort.toml from the first workspace folder, if any.
-    global _project_config, _lfortran_binary, _cache_dir, _include_paths
+    global _project_config, _lfortran_binary, _cache_dir
+    global _include_paths, _cpp_defines
     if folders:
         _project_config = load_config(folders[0])
         _cache_dir = _cache_mod.default_cache_dir(folders[0])
     config = _project_config
     _include_paths = config.include_paths
+    _cpp_defines = config.cpp_defines
 
     # Start from config-provided values; initializationOptions override.
     _external_modules_from_config = _DEFAULT_EXTERNAL_MODULES | frozenset(
@@ -1835,6 +1842,7 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
                     lfortran=_lfortran_binary,
                     external_modules=_external_modules,
                     include_paths=_include_paths,
+                    cpp_defines=_cpp_defines,
                     progress_cb=on_load_progress,
                 )
             else:
