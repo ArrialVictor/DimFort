@@ -132,6 +132,17 @@ def test_scan_workspace_walks_subdirs(tmp_path):
     assert set(idx.modules) == {"a", "c"}
 
 
+def test_scan_handles_latin1_encoded_sources(tmp_path):
+    """Many legacy Fortran codebases (LMDZ included) ship files with
+    non-UTF-8 byte sequences in comments. The scanner must not crash."""
+    p = tmp_path / "latin.f90"
+    # `é` (0xe9) in Latin-1 — not valid UTF-8 as a standalone byte.
+    p.write_bytes(b"module foo\n! commentaire en fran\xe9ais\nend module foo\n")
+    idx = scan_workspace([tmp_path])
+    assert set(idx.modules) == {"foo"}
+    assert idx.scan_failures == {}
+
+
 def test_update_index_replaces_previous_scan_for_one_file(tmp_path):
     p = _write(tmp_path, "m.f90", "module old\nend module old")
     idx = scan_workspace([tmp_path])
