@@ -48,6 +48,7 @@ class DimfortConfig:
     # [lfortran]
     lfortran_binary: Path | None = None
     include_paths: tuple[Path, ...] = ()
+    cpp_defines: tuple[str, ...] = ()
 
     # [checker]
     backend: str | None = None    # "ast" | "asr"; None → caller default
@@ -124,6 +125,10 @@ def _from_raw(raw: dict, path: Path) -> DimfortConfig:
         for p in include_paths_raw
         if isinstance(p, str)
     )
+    cpp_defines_raw = lfortran_section.get("cpp_defines", []) or []
+    cpp_defines = tuple(
+        d for d in cpp_defines_raw if isinstance(d, str) and d
+    )
 
     checker_section = raw.get("checker", {}) or {}
     backend_raw = checker_section.get("backend")
@@ -145,5 +150,6 @@ def _from_raw(raw: dict, path: Path) -> DimfortConfig:
         external_modules=external_modules,
         lfortran_binary=lfortran_binary,
         include_paths=include_paths,
+        cpp_defines=cpp_defines,
         backend=backend,
     )

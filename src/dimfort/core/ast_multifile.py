@@ -60,6 +60,7 @@ def _load_one(
     lfortran: str | os.PathLike[str] | None,
     overrides: dict[Path, str],
     include_paths: tuple[Path, ...] = (),
+    cpp_defines: tuple[str, ...] = (),
 ) -> _Loaded:
     """Scan + attach + dump AST for one file.
 
@@ -73,7 +74,10 @@ def _load_one(
     attachment = attach(scan)
     try:
         ast = lf.dump_tree(
-            path, "ast", lfortran=lfortran, include_paths=include_paths,
+            path, "ast",
+            lfortran=lfortran,
+            include_paths=include_paths,
+            cpp_defines=cpp_defines,
         )
     except lf.LFortranError as exc:
         return _Loaded(path, text, scan, attachment, None, exc.stderr)
@@ -111,6 +115,7 @@ def check_files_ast(
     overrides: dict[Path, str] | None = None,
     external_modules: frozenset[str] = frozenset(),
     include_paths: tuple[Path, ...] = (),
+    cpp_defines: tuple[str, ...] = (),
     progress_cb: Callable[[str, int, int, Path], None] | None = None,
 ) -> WorksetResult:
     """Scan, attach, and AST-check every file in ``sources`` together.
@@ -151,6 +156,7 @@ def check_files_ast(
                     lfortran=lfortran,
                     overrides=overrides_map,
                     include_paths=include_paths,
+                    cpp_defines=cpp_defines,
                 )
             )
         except OSError as exc:
