@@ -10,7 +10,6 @@ from pathlib import Path
 
 from dimfort.cli import main
 
-
 FIXTURES = Path(__file__).parents[1] / "fixtures"
 
 

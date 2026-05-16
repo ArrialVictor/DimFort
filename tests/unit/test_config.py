@@ -1,4 +1,3 @@
-from pathlib import Path
 
 from dimfort.config import (
     CONFIG_FILENAME,

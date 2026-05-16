@@ -105,7 +105,10 @@ def test_initializer_array_with_commas():
 
 
 def test_non_declaration_lines_are_ignored():
-    """Only declaration statements produce sites; program headers, ``implicit none``, and assignments do not."""
+    """Only declaration statements produce sites.
+
+    Program headers, ``implicit none``, and assignments do not.
+    """
     src = (
         "program p\n"
         "  implicit none\n"

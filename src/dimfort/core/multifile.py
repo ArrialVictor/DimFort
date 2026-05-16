@@ -22,10 +22,10 @@ from __future__ import annotations
 
 import multiprocessing
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 from tree_sitter import Tree
 
@@ -34,7 +34,7 @@ from dimfort.core import ts_parser as _ts
 from dimfort.core import units as _units_mod
 from dimfort.core import workspace_index as _wsi
 from dimfort.core.annotations import scan_text
-from dimfort.core.attach import attach, AttachmentResult
+from dimfort.core.attach import AttachmentResult, attach
 from dimfort.core.diagnostics import Diagnostic, Position, Severity
 from dimfort.core.symbols import (
     FuncSig,
@@ -42,7 +42,6 @@ from dimfort.core.symbols import (
     apply_use_clauses,
 )
 from dimfort.core.units import Unit, UnitError, UnitTable
-
 
 # ---------------------------------------------------------------------------
 # Public result types

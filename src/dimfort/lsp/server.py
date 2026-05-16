@@ -35,21 +35,23 @@ from pygls.lsp.server import LanguageServer
 
 from dimfort import __version__
 from dimfort.config import DimfortConfig, load_config
-from dimfort.core import ts_checker
+from dimfort.core import (
+    ts_checker,
+    unit_config,  # noqa: F401  populates DEFAULT_TABLE
+)
 from dimfort.core import ts_parser as _ts
-from dimfort.core import unit_config  # noqa: F401  populates DEFAULT_TABLE
 from dimfort.core import units as _units_mod
 from dimfort.core.diagnostics import Diagnostic, Severity
 from dimfort.core.multifile import WorksetResult, check_files
 from dimfort.core.symbols import FuncSig
+from dimfort.core.units import Unit
+from dimfort.core.units import base_symbols as _base_symbols
 from dimfort.core.workspace_index import (
     WorkspaceIndex,
     resolve_workset,
     scan_workspace,
     update_index,
 )
-from dimfort.core.units import Unit, equal_dim, format_unit
-from dimfort.core.units import base_symbols as _base_symbols
 from dimfort.lsp import ts_helpers as _ts_h
 
 log = logging.getLogger("dimfort.lsp")

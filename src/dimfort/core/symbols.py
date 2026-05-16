@@ -18,7 +18,6 @@ from fractions import Fraction
 from dimfort.core.diagnostics import Severity
 from dimfort.core.units import Unit
 
-
 # ---------------------------------------------------------------------------
 # Diagnostic-code metadata
 # ---------------------------------------------------------------------------
