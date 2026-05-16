@@ -2,46 +2,30 @@
 
 ## Install
 
-LFortran (parser frontend) — install once from conda-forge:
-
-```bash
-conda create -n lfortran -c conda-forge lfortran -y
-```
-
-DimFort:
-
 ```bash
 git clone https://github.com/ArrialVictor/DimFort.git
 cd DimFort
 pip install -e ".[dev,lsp]"
 ```
 
-Requires Python ≥ 3.11.
+Requires Python ≥ 3.11. The Fortran parser
+([tree-sitter-fortran](https://pypi.org/project/tree-sitter-fortran/))
+is installed automatically as a runtime dependency — no external
+compiler or subprocess.
 
 ## CLI
 
 ```bash
-dimfort check <paths>...        # check Fortran sources for unit homogeneity
-dimfort lsp                     # start the language server (stdio)
-dimfort cache info | clean      # inspect or clear the analysis cache
+dimfort check <paths>...   # check Fortran sources for unit homogeneity
+dimfort lsp                # start the language server (stdio)
 ```
 
 `check` flags:
 
-| Flag                | Effect                                            |
-|---------------------|---------------------------------------------------|
-| `-q`, `--quiet`     | Suppress diagnostic output; only return an exit code. |
-| `--no-color`        | Disable ANSI colour (also auto-disabled outside a TTY, or when `NO_COLOR` is set). |
-| `--lfortran PATH`   | Path to the `lfortran` binary (overrides `$LFORTRAN_BIN` and the conda default). |
-| `--no-cache`        | Bypass the on-disk analysis cache for this run. *(cache not yet implemented)* |
-| `--cache-dir PATH`  | Override the cache directory (default: `./.dimfort/cache`). *(cache not yet implemented)* |
-
-`cache` subcommands:
-
-| Command             | Effect                                            |
-|---------------------|---------------------------------------------------|
-| `dimfort cache info`  | Show cache location, entry count, total size. |
-| `dimfort cache clean` | Remove the entire cache directory.            |
+| Flag             | Effect                                            |
+|------------------|---------------------------------------------------|
+| `-q`, `--quiet`  | Suppress diagnostic output; only return an exit code. |
+| `--no-color`     | Disable ANSI colour (also auto-disabled outside a TTY, or when `NO_COLOR` is set). |
 
 Exit codes:
 
@@ -92,21 +76,19 @@ Pre-alpha. Working pipeline pieces:
 - derived-type field access (`b%v`) both as a read and as an
   assignment target, with field annotations declared inside the
   `type :: …` block
-- multi-file worksets: `dimfort check a.f90 b.f90 c.f90` compiles any
-  module files first (in dependency order, via a retry-loop) so
-  `use` statements resolve, then aggregates unit tables and function
-  signatures across files before checking each one
+- multi-file worksets: `dimfort check a.f90 b.f90 c.f90` aggregates
+  unit tables and function signatures across files before checking
+  each one; cross-file `use` clauses splice imported symbols into the
+  consumer's scope
 - a working LSP server (`dimfort lsp`) — workspace-aware (cross-file
   diagnostics in the editor), debounced live editing on every
-  keystroke, and hover info showing the resolved unit of a variable or
-  derived-type field. Wire it up in your editor following
-  [docs/lsp.md](lsp.md); a VSCode extension scaffold lives next to
-  the repo at `Homogeneity/DimFort-VSCompanion/` (its own GitHub
-  repo: https://github.com/ArrialVictor/DimFort-VSCompanion)
+  keystroke, hover / inlay hints / go-to-definition / code lens / code
+  action for inserting `!< @unit{}` skeletons. Wire it up in your
+  editor following [docs/lsp.md](lsp.md); a VSCode extension scaffold
+  lives next to the repo at `Homogeneity/DimFort-VSCompanion/` (its
+  own GitHub repo:
+  https://github.com/ArrialVictor/DimFort-VSCompanion)
 - end-to-end CLI: `dimfort check FILE [FILE …]` runs the full pipeline
   and reports diagnostics in `file:line: severity: code message` form
-
-Not yet implemented: the on-disk cache's read/write paths (only
-`cache info` / `cache clean` work).
 
 Treat anything not listed above as unimplemented.

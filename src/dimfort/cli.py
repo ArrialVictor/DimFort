@@ -42,11 +42,6 @@ def build_parser() -> argparse.ArgumentParser:
         "paths", nargs="+", help="Fortran source files to check."
     )
     check.add_argument(
-        "--lfortran",
-        metavar="PATH",
-        help="Path to the lfortran binary (overrides $LFORTRAN_BIN).",
-    )
-    check.add_argument(
         "-q", "--quiet",
         action="store_true",
         help="Suppress diagnostic output; only return an exit code.",
@@ -56,24 +51,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable ANSI colour (also auto-disabled outside a TTY).",
     )
-    check.add_argument(
-        "--no-cache", action="store_true", help="Disable the on-disk cache."
-    )
-    check.add_argument(
-        "--cache-dir",
-        help="Override cache directory (default: ./.dimfort/cache).",
-    )
-    check.add_argument(
-        "--backend",
-        choices=("ast", "asr"),
-        help=(
-            "Checker backend. 'ast' (default) walks LFortran's parse "
-            "tree only — fast, no `lfortran -c`, handles F77-idiom "
-            "files like COMMON+PUBLIC that the semantic pass rejects. "
-            "'asr' falls back to LFortran's fully resolved tree (the "
-            "original DimFort pipeline; kept for comparison)."
-        ),
-    )
 
     lsp = sub.add_parser("lsp", help="Start the DimFort language server (stdio).")
     # Some LSP clients (vscode-languageclient with TransportKind.stdio) tack
@@ -82,13 +59,6 @@ def build_parser() -> argparse.ArgumentParser:
     lsp.add_argument(
         "--stdio", action="store_true", help=argparse.SUPPRESS
     )
-
-    cache = sub.add_parser("cache", help="Manage the analysis cache.")
-    cache_sub = cache.add_subparsers(dest="cache_command", required=True)
-    cache_clean = cache_sub.add_parser("clean", help="Delete the cache directory.")
-    cache_clean.add_argument("--cache-dir", help="Cache directory to clean.")
-    cache_info = cache_sub.add_parser("info", help="Show cache location and size.")
-    cache_info.add_argument("--cache-dir", help="Cache directory to inspect.")
 
     return parser
 
@@ -118,9 +88,7 @@ def _format_diag(
 
 
 def _run_check(args: argparse.Namespace) -> int:
-    # Lazy imports keep `dimfort --version` fast and avoid pulling LFortran
-    # plumbing for users who only need `cache` or `lsp`.
-    from dimfort.core import lfortran as lf
+    # Lazy imports keep ``dimfort --version`` fast.
     from dimfort.core import unit_config  # noqa: F401 — populate DEFAULT_TABLE
     from dimfort.core.diagnostics import Severity
     from dimfort.core.multifile import check_files
@@ -150,37 +118,7 @@ def _run_check(args: argparse.Namespace) -> int:
             return
         print(_format_diag(file, line, severity, code, message, color=color))
 
-    from dimfort import cache as _cache_mod
-    from dimfort.config import load_config
-
-    project_config = load_config(paths[0])
-
-    if args.no_cache:
-        cache_dir: Path | None = None
-    elif args.cache_dir:
-        cache_dir = Path(args.cache_dir)
-    else:
-        cache_dir = _cache_mod.default_cache_dir()
-
-    # CLI flag wins over config.
-    lfortran_binary = args.lfortran or (
-        str(project_config.lfortran_binary) if project_config.lfortran_binary else None
-    )
-
-    # Backend precedence: --backend > config > "ast" (default since Phase 5).
-    backend = args.backend or project_config.backend or "ast"
-
-    try:
-        if backend == "ast":
-            from dimfort.core.ast_multifile import check_files_ast
-            result = check_files_ast(paths, lfortran=lfortran_binary)
-        else:
-            result = check_files(
-                paths, lfortran=lfortran_binary, cache_dir=cache_dir
-            )
-    except lf.LFortranNotFound as exc:
-        print(f"dimfort: {exc}", file=sys.stderr)
-        return 2
+    result = check_files(paths)
 
     for p in paths:
         for d in result.diagnostics.get(p.resolve(), []):
@@ -206,19 +144,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         run_stdio()
         return 0
-    if args.command == "cache":
-        from dimfort import cache
-
-        cache_dir = (
-            Path(args.cache_dir) if args.cache_dir else cache.default_cache_dir()
-        )
-        if args.cache_command == "clean":
-            freed = cache.clean(cache_dir)
-            print(f"removed {cache_dir} (freed {freed} bytes)")
-            return 0
-        if args.cache_command == "info":
-            print(cache.info(cache_dir))
-            return 0
 
     parser.print_help()
     return 0

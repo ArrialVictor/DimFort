@@ -3,23 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from dimfort.core import lfortran as lf
+from dimfort.core import unit_config  # noqa: F401 — populate DEFAULT_TABLE
 from dimfort.core.multifile import check_files
-
-
-def _have_lfortran() -> bool:
-    try:
-        lf.find_lfortran()
-        return True
-    except lf.LFortranNotFound:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _have_lfortran(), reason="lfortran binary not available"
-)
 
 
 CLEAN = """\
