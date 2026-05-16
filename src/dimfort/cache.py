@@ -235,6 +235,125 @@ def _entry_matches(entry: dict, key: _Key) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Single-tree cache (AST or ASR alone) — used by the AST-only backend
+# ---------------------------------------------------------------------------
+
+
+def _single_entry_path(cache_dir: Path, abs_path: Path, mode: str) -> Path:
+    """Cache filename for the single-mode cache. Distinct from
+    :func:`_entry_path` (used by ``load_trees_cached`` which stores
+    both modes together) so AST-only and ASR-pair caches can coexist
+    without one overwriting the other."""
+    digest = hashlib.sha1(str(abs_path).encode("utf-8")).hexdigest()[:16]
+    return cache_dir / f"{digest}.{mode}.json"
+
+
+def load_single_tree_cached(
+    load_path,
+    *,
+    mode: str,
+    source_path: Path,
+    lfortran=None,
+    cwd=None,
+    implicit_interface: bool = False,
+    cache_dir: Path | None,
+    content: bytes | None = None,
+    include_paths: tuple = (),
+    cpp_defines: tuple = (),
+) -> dict:
+    """Return the AST (or ASR) for a source file, consulting the cache.
+
+    Mirrors :func:`load_trees_cached` but only invokes one ``lfortran
+    --show-<mode>`` instead of the pair. ``mode`` is ``"ast"`` or
+    ``"asr"``. Used by the AST-only backend so that warm runs skip the
+    LFortran subprocess entirely.
+
+    ``include_paths`` and ``cpp_defines`` are part of the input that
+    affects LFortran's output; they're hashed into the cache key as a
+    tuple so a config change invalidates entries cleanly.
+    """
+    from dimfort.core import lfortran as lf
+
+    abs_path = Path(source_path).resolve()
+    use_cache = cache_dir is not None and content is None
+
+    if not use_cache:
+        return lf.dump_tree(
+            load_path,
+            mode,
+            lfortran=lfortran,
+            cwd=cwd,
+            implicit_interface=implicit_interface,
+            include_paths=include_paths,
+            cpp_defines=cpp_defines,
+        )
+
+    assert cache_dir is not None
+    try:
+        file_bytes = abs_path.read_bytes()
+    except OSError:
+        return lf.dump_tree(
+            load_path,
+            mode,
+            lfortran=lfortran,
+            cwd=cwd,
+            implicit_interface=implicit_interface,
+            include_paths=include_paths,
+            cpp_defines=cpp_defines,
+        )
+
+    key = _build_key(abs_path, file_bytes, lf, lfortran, implicit_interface)
+    # Mix include_paths / cpp_defines into the content sha256 so that
+    # editing them invalidates the cache for every file (they change
+    # LFortran's behaviour globally).
+    extras = (
+        b"|inc=" + repr(sorted(str(p) for p in include_paths)).encode("utf-8")
+        + b"|def=" + repr(sorted(cpp_defines)).encode("utf-8")
+    )
+    extended_sha = hashlib.sha256(
+        key.content_sha256.encode("ascii") + extras
+    ).hexdigest()
+
+    entry_path = _single_entry_path(cache_dir, abs_path, mode)
+    entry = _read_entry(entry_path)
+    if (
+        entry
+        and entry.get("schema_version") == CACHE_SCHEMA_VERSION
+        and entry.get("abs_path") == key.abs_path
+        and entry.get("content_sha256") == extended_sha
+        and entry.get("dimfort_version") == key.dimfort_version
+        and entry.get("lfortran_version") == key.lfortran_version
+        and entry.get("implicit_interface") == key.implicit_interface
+        and entry.get("mode") == mode
+        and isinstance(entry.get("tree"), dict)
+    ):
+        return entry["tree"]
+
+    # Miss: invoke LFortran and refresh.
+    tree = lf.dump_tree(
+        load_path,
+        mode,
+        lfortran=lfortran,
+        cwd=cwd,
+        implicit_interface=implicit_interface,
+        include_paths=include_paths,
+        cpp_defines=cpp_defines,
+    )
+    payload = {
+        "schema_version": CACHE_SCHEMA_VERSION,
+        "abs_path": key.abs_path,
+        "content_sha256": extended_sha,
+        "dimfort_version": key.dimfort_version,
+        "lfortran_version": key.lfortran_version,
+        "implicit_interface": key.implicit_interface,
+        "mode": mode,
+        "tree": tree,
+    }
+    _write_entry(entry_path, payload)
+    return tree
+
+
+# ---------------------------------------------------------------------------
 # Module-file (.mod) cache
 # ---------------------------------------------------------------------------
 

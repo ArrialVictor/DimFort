@@ -388,6 +388,7 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
                 external_modules=_external_modules,
                 include_paths=_include_paths,
                 cpp_defines=_cpp_defines,
+                cache_dir=cache_dir,
             )
         else:
             result = check_files(
@@ -1844,6 +1845,7 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
                     external_modules=_external_modules,
                     include_paths=_include_paths,
                     cpp_defines=_cpp_defines,
+                    cache_dir=cache_dir,
                     progress_cb=on_load_progress,
                 )
             else:
