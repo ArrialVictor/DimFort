@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from dimfort import cache as _cache
 from dimfort.core import ast_checker
 from dimfort.core import lfortran as lf
 from dimfort.core import units as _units_mod
@@ -64,23 +65,34 @@ def _load_one(
     overrides: dict[Path, str],
     include_paths: tuple[Path, ...] = (),
     cpp_defines: tuple[str, ...] = (),
+    cache_dir: Path | None = None,
 ) -> _Loaded:
     """Scan + attach + dump AST for one file.
 
     ``overrides`` lets the LSP feed unsaved buffer contents. On any
     LFortran error the ``ast`` field is ``None`` and ``load_error``
     carries the stderr — the caller surfaces U007.
+
+    ``cache_dir`` enables the on-disk AST cache: unchanged files skip
+    the LFortran subprocess entirely. Overridden buffers always
+    bypass the cache.
     """
     from dimfort.core._source_io import read_text
     text = overrides.get(path) if path in overrides else read_text(path)
     scan = scan_text(text)
     attachment = attach(scan)
     try:
-        ast = lf.dump_tree(
-            path, "ast",
+        ast = _cache.load_single_tree_cached(
+            path,
+            mode="ast",
+            source_path=path,
             lfortran=lfortran,
             include_paths=include_paths,
             cpp_defines=cpp_defines,
+            cache_dir=cache_dir,
+            content=(
+                overrides[path].encode("utf-8") if path in overrides else None
+            ),
         )
     except lf.LFortranError as exc:
         return _Loaded(path, text, scan, attachment, None, exc.stderr)
@@ -119,6 +131,7 @@ def check_files_ast(
     external_modules: frozenset[str] = frozenset(),
     include_paths: tuple[Path, ...] = (),
     cpp_defines: tuple[str, ...] = (),
+    cache_dir: Path | None = None,
     progress_cb: Callable[[str, int, int, Path], None] | None = None,
     max_load_workers: int | None = None,
 ) -> WorksetResult:
@@ -171,6 +184,7 @@ def check_files_ast(
                 overrides=overrides_map,
                 include_paths=include_paths,
                 cpp_defines=cpp_defines,
+                cache_dir=cache_dir,
             ), None
         except OSError as exc:
             return idx, src, None, exc

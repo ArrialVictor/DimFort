@@ -254,6 +254,83 @@ def test_mods_empty_dict_is_noop(tmp_path, monkeypatch):
     assert not list(cache_dir.glob("*.mods.json")) if cache_dir.exists() else True
 
 
+def test_single_tree_round_trip(tmp_path, monkeypatch):
+    """``load_single_tree_cached`` writes one entry on miss and skips
+    the LFortran call on the next call with the same key."""
+    src = tmp_path / "x.f90"
+    src.write_text("real :: a")
+    cache_dir = tmp_path / "cache"
+    fake = _FakeLF()
+    _patch_lf(monkeypatch, fake)
+
+    monkeypatch.setattr(
+        "dimfort.core.lfortran.dump_tree",
+        lambda *a, **kw: ({"node": "TranslationUnit", "fields": {}}),
+    )
+
+    out1 = cache.load_single_tree_cached(
+        src, mode="ast", source_path=src, cache_dir=cache_dir,
+    )
+    out2 = cache.load_single_tree_cached(
+        src, mode="ast", source_path=src, cache_dir=cache_dir,
+    )
+    assert out1 == out2 == {"node": "TranslationUnit", "fields": {}}
+    entries = list(cache_dir.glob("*.ast.json"))
+    assert len(entries) == 1
+
+
+def test_single_tree_include_paths_invalidate(tmp_path, monkeypatch):
+    """Adding/removing an include path must invalidate the cache —
+    otherwise stale entries shadow real LFortran output after the
+    user fixes a missing include."""
+    src = tmp_path / "x.f90"
+    src.write_text("real :: a")
+    cache_dir = tmp_path / "cache"
+    fake = _FakeLF()
+    _patch_lf(monkeypatch, fake)
+
+    call_count = [0]
+    def fake_dump(*a, **kw):
+        call_count[0] += 1
+        return {"node": "T", "fields": {}}
+    monkeypatch.setattr("dimfort.core.lfortran.dump_tree", fake_dump)
+
+    cache.load_single_tree_cached(
+        src, mode="ast", source_path=src, cache_dir=cache_dir,
+        include_paths=(),
+    )
+    cache.load_single_tree_cached(
+        src, mode="ast", source_path=src, cache_dir=cache_dir,
+        include_paths=(tmp_path / "stubs",),
+    )
+    assert call_count[0] == 2, "include_paths change should miss the cache"
+
+
+def test_single_tree_cpp_defines_invalidate(tmp_path, monkeypatch):
+    """Changing the CPP defines must invalidate too."""
+    src = tmp_path / "x.f90"
+    src.write_text("real :: a")
+    cache_dir = tmp_path / "cache"
+    fake = _FakeLF()
+    _patch_lf(monkeypatch, fake)
+
+    call_count = [0]
+    def fake_dump(*a, **kw):
+        call_count[0] += 1
+        return {"node": "T", "fields": {}}
+    monkeypatch.setattr("dimfort.core.lfortran.dump_tree", fake_dump)
+
+    cache.load_single_tree_cached(
+        src, mode="ast", source_path=src, cache_dir=cache_dir,
+        cpp_defines=(),
+    )
+    cache.load_single_tree_cached(
+        src, mode="ast", source_path=src, cache_dir=cache_dir,
+        cpp_defines=("ISO",),
+    )
+    assert call_count[0] == 2
+
+
 def test_corrupt_entry_is_overwritten(tmp_path, monkeypatch):
     src = tmp_path / "src.f90"
     src.write_text("real :: x")
