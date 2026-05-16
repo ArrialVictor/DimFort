@@ -1108,7 +1108,22 @@ def _definition(
         return None
     target_lc = target_name.lower()
 
+    def _name_node_location(tree_path: Path, name_node) -> lsp.Location:
+        sr, sc = name_node.start_point
+        er, ec = name_node.end_point
+        return lsp.Location(
+            uri=_uri_for_path(tree_path),
+            range=lsp.Range(
+                start=lsp.Position(line=sr, character=sc),
+                end=lsp.Position(line=er, character=ec),
+            ),
+        )
+
     # Walk every loaded tree for the matching declaration / function.
+    # When the cursor was on a "callable", we try function/subroutine
+    # definitions first but fall through to variable declarations —
+    # ``a(1)`` in Fortran could be either an array index or a function
+    # call, and tree-sitter can't distinguish them syntactically.
     for tree_path, (other_tree, other_source) in result.trees.items():
         if target_kind == "callable":
             for func in _ts_h.walk_function_definitions(other_tree):
@@ -1116,34 +1131,12 @@ def _definition(
                 if nm is None:
                     continue
                 name, name_node = nm
-                if name.lower() != target_lc:
-                    continue
-                sr, sc = name_node.start_point
-                er, ec = name_node.end_point
-                return [
-                    lsp.Location(
-                        uri=_uri_for_path(tree_path),
-                        range=lsp.Range(
-                            start=lsp.Position(line=sr, character=sc),
-                            end=lsp.Position(line=er, character=ec),
-                        ),
-                    )
-                ]
-        else:
-            for decl, name_node in _ts_h.walk_decl_identifiers(other_tree):
-                if _ts.node_text(name_node, other_source).lower() != target_lc:
-                    continue
-                sr, sc = name_node.start_point
-                er, ec = name_node.end_point
-                return [
-                    lsp.Location(
-                        uri=_uri_for_path(tree_path),
-                        range=lsp.Range(
-                            start=lsp.Position(line=sr, character=sc),
-                            end=lsp.Position(line=er, character=ec),
-                        ),
-                    )
-                ]
+                if name.lower() == target_lc:
+                    return [_name_node_location(tree_path, name_node)]
+        for _decl, name_node in _ts_h.walk_decl_identifiers(other_tree):
+            if _ts.node_text(name_node, other_source).lower() != target_lc:
+                continue
+            return [_name_node_location(tree_path, name_node)]
     return None
 
 
