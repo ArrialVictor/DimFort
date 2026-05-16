@@ -577,14 +577,16 @@ def _resolve_hover(
             if sig is not None:
                 return _hover_signature(name, sig)
 
-    # 4. Bare identifier — variable reference.
+    # 4. Bare identifier — variable reference. Includes call-callee
+    # identifiers as a fallback: if step 3 already returned a
+    # signature hover we won't reach here, but if no signature was
+    # found we still want to show *something* (the variable's unit if
+    # known, or "no annotation"). Without this fallback, hovering on
+    # the callee of an intrinsic or an unindexed call shows nothing.
     for ident in _ts_h.walk_identifiers(tree):
         if not _ts_h.node_contains(ident, line_1based, col_1based):
             continue
         if _ts_h.is_inside_type_qualifier(ident):
-            continue
-        # Skip call-callee identifiers (handled above).
-        if _ts_h.is_call_callee(ident):
             continue
         name = _ts.node_text(ident, source)
         unit = result.merged_var_units.get(name)
