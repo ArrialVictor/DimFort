@@ -95,18 +95,57 @@ def _load_one(
     path: Path,
     *,
     overrides: dict[Path, str],
+    cpp_defines: tuple[str, ...] = (),
+    include_paths: tuple[Path, ...] = (),
 ) -> _Loaded:
     """Read source, scan + attach annotations, parse with tree-sitter.
 
     ``overrides`` lets the LSP feed unsaved buffer contents instead of
     reading from disk.
+
+    For ``.F90`` files we pre-run the system ``cpp`` using the
+    project's ``cpp_defines`` / ``include_paths`` (from
+    ``.dimfort.toml``). Without this, modules whose ``module NAME``
+    statement sits inside an ``#ifdef X`` block surface as an ERROR
+    span and downstream consumers fire U007 even though the module
+    exists. The cost is ~10 ms per ``.F90`` file (system cpp); on a
+    workset where the directives aren't used (no defines configured)
+    we skip cpp entirely.
+
+    Buffer overrides bypass cpp regardless — VSCode edits hit the
+    in-memory text, which we want parsed verbatim.
     """
     from dimfort.core._source_io import read_text
     text = overrides.get(path) if path in overrides else read_text(path)
     source = text.encode("utf-8")
     scan = scan_text(text)
     attachment = attach(scan)
+
+    use_cpp = (
+        path.suffix == ".F90"
+        and path not in overrides
+        and (cpp_defines or include_paths)
+    )
     try:
+        if use_cpp:
+            try:
+                pre = _ts.parse_with_cpp(
+                    path, defines=cpp_defines, include_paths=include_paths,
+                )
+                # Replace source with the preprocessed bytes so node
+                # positions / text extracts line up with what the tree
+                # actually contains. Diagnostics will point at expanded
+                # line numbers; line-map remapping back to source lives
+                # in PreprocessedSource for future use.
+                return _Loaded(
+                    path, text, pre.expanded_text, scan, attachment, pre.tree, None,
+                )
+            except _ts.CppFailedError as exc:
+                # cpp couldn't preprocess this file (missing include,
+                # syntax error in a directive). Surface as a load
+                # failure; tree-sitter's raw parse would garble
+                # continuations anyway.
+                return _Loaded(path, text, source, scan, attachment, None, exc.stderr)
         tree = _ts.parse_text(source)
     except Exception as exc:
         # tree-sitter shouldn't fail on valid bytes, but we mirror the
@@ -199,6 +238,8 @@ def check_files(
     table: UnitTable | None = None,
     overrides: dict[Path, str] | None = None,
     external_modules: frozenset[str] = frozenset(),
+    cpp_defines: tuple[str, ...] = (),
+    include_paths: tuple[Path, ...] = (),
     progress_cb: Callable[[str, int, int, Path], None] | None = None,
     max_load_workers: int | None = None,
 ) -> WorksetResult:
@@ -236,7 +277,12 @@ def check_files(
 
     def _do_load(idx: int, src: Path):
         try:
-            return idx, src, _load_one(src, overrides=overrides_map), None
+            return idx, src, _load_one(
+                src,
+                overrides=overrides_map,
+                cpp_defines=cpp_defines,
+                include_paths=include_paths,
+            ), None
         except OSError as exc:
             return idx, src, None, exc
 

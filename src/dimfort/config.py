@@ -42,6 +42,16 @@ class DimfortConfig:
     max_workset_size: int | None = None
     external_modules: tuple[str, ...] = ()
 
+    # [parser] — CPP preprocessing for ``.F90`` files. Identical
+    # semantics to the equivalent ``[lfortran]`` keys in the
+    # pre-tree-sitter era: ``cpp_defines`` becomes ``cpp -DX``,
+    # ``include_paths`` becomes ``cpp -IPATH``. Required to unblock
+    # files whose ``module``/``use`` constructs sit inside
+    # ``#ifdef X`` regions (LMDZ's ``isotopes_routines_mod``,
+    # ``radiation_cloud_cover``, etc).
+    cpp_defines: tuple[str, ...] = ()
+    include_paths: tuple[Path, ...] = ()
+
 
 def find_config(start: Path) -> Path | None:
     """Walk upward from ``start`` looking for a ``.dimfort.toml``.
@@ -103,12 +113,35 @@ def _from_raw(raw: dict, path: Path) -> DimfortConfig:
         if isinstance(m, str)
     )
 
-    # Legacy [lfortran] and [checker] sections are silently ignored.
-    # Unknown keys never break the loader (forward compatibility).
+    # [parser] is the canonical home for CPP-related config. We also
+    # accept the pre-tree-sitter ``[lfortran]`` keys for the same
+    # fields so projects can upgrade in any order. Explicit
+    # ``[parser]`` overrides ``[lfortran]`` when both are present.
+    legacy_parser = raw.get("lfortran", {}) or {}
+    parser_section = raw.get("parser", {}) or {}
+
+    def _strings(key: str) -> tuple[str, ...]:
+        raw_val = parser_section.get(key, legacy_parser.get(key, []) or [])
+        return tuple(v for v in raw_val if isinstance(v, str) and v)
+
+    def _paths(key: str) -> tuple[Path, ...]:
+        raw_val = parser_section.get(key, legacy_parser.get(key, []) or [])
+        return tuple(
+            (base / p).resolve() for p in raw_val if isinstance(p, str)
+        )
+
+    cpp_defines = _strings("cpp_defines")
+    include_paths = _paths("include_paths")
+
+    # The pre-tree-sitter [checker] section had a `backend` field. It's
+    # silently ignored now — accepted for backward compatibility but
+    # not exposed on DimfortConfig.
 
     return DimfortConfig(
         config_path=path,
         src_paths=src_paths,
         max_workset_size=max_size,
         external_modules=external_modules,
+        cpp_defines=cpp_defines,
+        include_paths=include_paths,
     )

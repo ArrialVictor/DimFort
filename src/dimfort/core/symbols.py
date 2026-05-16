@@ -45,6 +45,10 @@ CODES: dict[str, CodeSpec] = {
     "U002": CodeSpec(
         "U002", Severity.ERROR, "unit annotation could not be parsed"
     ),
+    "U005": CodeSpec(
+        "U005", Severity.WARNING,
+        "variable used in a unit-checked expression has no annotation",
+    ),
 }
 
 

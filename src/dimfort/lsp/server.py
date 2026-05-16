@@ -348,6 +348,8 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
             paths,
             overrides=overrides,
             external_modules=_external_modules,
+            cpp_defines=_project_config.cpp_defines,
+            include_paths=_project_config.include_paths,
         )
     except Exception:
         log.exception("dimfort pipeline crashed on %s", active)
@@ -1408,6 +1410,8 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
             result = check_files(
                 files,
                 external_modules=_external_modules,
+                cpp_defines=_project_config.cpp_defines,
+                include_paths=_project_config.include_paths,
                 progress_cb=on_load_progress,
             )
         except Exception:
