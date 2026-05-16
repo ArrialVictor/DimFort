@@ -11,7 +11,9 @@ Triggers:
 - ``textDocument/didOpen`` and ``didSave``: immediate check.
 - ``textDocument/didChange``: debounced live check (in-memory buffer
   text is passed to the pipeline so unsaved edits are honoured).
-- ``textDocument/didClose``: clear that file's diagnostics.
+- ``textDocument/didClose``: republish the cached workspace
+  diagnostics so the Problems panel keeps showing them after the
+  file is closed.
 
 Provides:
 
@@ -866,9 +868,31 @@ def _did_save(ls: LanguageServer, params: lsp.DidSaveTextDocumentParams) -> None
 
 @server.feature(lsp.TEXT_DOCUMENT_DID_CLOSE)
 def _did_close(ls: LanguageServer, params: lsp.DidCloseTextDocumentParams) -> None:
-    _forget_uri(params.text_document.uri)
+    uri = params.text_document.uri
+    path = _uri_to_path(uri)
+    _forget_uri(uri)
+
+    # DimFort is a workspace-wide checker, so a file's diagnostics
+    # remain true after the user closes it. Republish the cached
+    # workspace-check diagnostics instead of clearing them; clear only
+    # if we have nothing on file (e.g. a single-file workset whose
+    # entry no longer applies).
+    cached: list[Diagnostic] = []
+    if path is not None:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = None
+        if resolved is not None:
+            with _last_result_lock:
+                result = _last_result
+            if result is not None:
+                cached = result.diagnostics.get(resolved, [])
+
     ls.text_document_publish_diagnostics(
-        lsp.PublishDiagnosticsParams(uri=params.text_document.uri, diagnostics=[])
+        lsp.PublishDiagnosticsParams(
+            uri=uri, diagnostics=[_to_lsp_diagnostic(d) for d in cached]
+        )
     )
 
 
