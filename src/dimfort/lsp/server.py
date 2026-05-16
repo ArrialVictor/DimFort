@@ -37,15 +37,12 @@ from dimfort import __version__
 from dimfort import cache as _cache_mod
 from dimfort.config import DimfortConfig, load_config
 from dimfort.core import lfortran as lf
+from dimfort.core import ts_checker
+from dimfort.core import ts_parser as _ts
 from dimfort.core import unit_config  # noqa: F401  populates DEFAULT_TABLE
 from dimfort.core import units as _units_mod
-from dimfort.core.checker import (
-    FuncSig,
-    _Resolver,
-    collect_intrinsic_names,
-)
+from dimfort.core.checker import FuncSig
 from dimfort.core.diagnostics import Diagnostic, Severity
-from dimfort.core.lfortran import walk
 from dimfort.core.multifile import WorksetResult, check_files
 from dimfort.core.workspace_index import (
     WorkspaceIndex,
@@ -55,6 +52,7 @@ from dimfort.core.workspace_index import (
 )
 from dimfort.core.units import Unit, equal_dim, format_unit
 from dimfort.core.units import base_symbols as _base_symbols
+from dimfort.lsp import ts_helpers as _ts_h
 
 log = logging.getLogger("dimfort.lsp")
 
@@ -440,72 +438,8 @@ def _is_current(uri: str, version: int) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _walk_var_nodes(tree: dict):
-    """Yield every ASR reference to a variable.
-
-    ``Variable`` is the declaration site; ``Var`` is each *use*. Hover
-    should fire on both, so we yield them in one stream with their
-    bare-name field normalised to ``"name"``.
-    """
-    for n in walk(tree):
-        if not isinstance(n, dict):
-            continue
-        kind = n.get("node")
-        if kind == "Variable":
-            yield n, n.get("fields", {}).get("name", "")
-        elif kind == "Var":
-            v = n.get("fields", {}).get("v", "")
-            yield n, v.split(" ", 1)[0] if isinstance(v, str) else ""
-
-
-def _walk_member_nodes(tree: dict):
-    for n in walk(tree):
-        if isinstance(n, dict) and n.get("node") == "StructInstanceMember":
-            yield n
-
-
-def _loc_contains(
-    loc: dict | None,
-    line_1based: int,
-    col_1based: int,
-    expected_basename: str | None = None,
-) -> bool:
-    if not isinstance(loc, dict):
-        return False
-    # Multi-file worksets: ASR drags in nodes from `use`d modules whose
-    # loc points at the *other* file. Filter by filename to avoid
-    # hovering on `side` (in geo.f90) when the cursor is on `s` (in
-    # main.f90).
-    if expected_basename is not None:
-        fn = loc.get("first_filename")
-        if isinstance(fn, str) and Path(fn).name != expected_basename:
-            return False
-    sl = loc.get("first_line")
-    sc = loc.get("first_column")
-    el = loc.get("last_line")
-    ec = loc.get("last_column")
-    if not all(isinstance(v, int) for v in (sl, sc, el, ec)):
-        return False
-    if line_1based < sl or line_1based > el:
-        return False
-    if line_1based == sl and col_1based < sc:
-        return False
-    return not (line_1based == el and col_1based > ec)
-
-
-def _resolve_hover(
-    uri: str,
-    line_1based: int,
-    col_1based: int,
-    source_text: str | None,
-) -> str | None:
-    """Return formatted hover text, or None if nothing useful is here.
-
-    ``source_text`` is the editor's current buffer for ``uri``; it lets
-    us print the literal text of expressions in the hover instead of a
-    generic placeholder. ``None`` is tolerated and falls back to a
-    generic header.
-    """
+def _trees_for(uri: str) -> tuple[Path, object, bytes] | None:
+    """Return ``(resolved_path, tree, source_bytes)`` for ``uri`` if loaded."""
     with _last_result_lock:
         result = _last_result
     if result is None:
@@ -513,251 +447,36 @@ def _resolve_hover(
     path = _uri_to_path(uri)
     if path is None:
         return None
-    trees = result.trees.get(path.resolve())
-    if trees is None:
+    entry = result.trees.get(path.resolve())
+    if entry is None:
         return None
-    _, asr = trees
-    expected = path.name
-
-    # Function / subroutine *definition* (header line). Checked before
-    # Var/Variable because LFortran emits synthetic ``Var`` nodes for
-    # the formal args on the header line; without this they'd shadow
-    # the function-name hover.
-    for n in walk(asr):
-        if not isinstance(n, dict):
-            continue
-        if n.get("node") not in ("Function", "Subroutine"):
-            continue
-        loc = n.get("loc") or {}
-        fn = loc.get("first_filename")
-        if isinstance(fn, str) and Path(fn).name != expected:
-            continue
-        if loc.get("first_line") != line_1based:
-            continue
-        if not _loc_contains(loc, line_1based, col_1based, expected):
-            continue
-        name = n.get("fields", {}).get("name")
-        if not isinstance(name, str):
-            continue
-        sig = result.signatures.get(name)
-        if sig is None:
-            continue
-        return _hover_signature(name, sig)
-
-    # First try derived-type member access; it's more specific than plain Var.
-    for node in _walk_member_nodes(asr):
-        if not _loc_contains(node.get("loc"), line_1based, col_1based, expected):
-            continue
-        m_field = node.get("fields", {}).get("m")
-        if not isinstance(m_field, str):
-            continue
-        qualified = m_field.split(" ", 1)[0]
-        if "_" in qualified:
-            head, rest = qualified.split("_", 1)
-            if head.isdigit():
-                qualified = rest
-        for (type_name, field_name), unit in result.merged_field_units.items():
-            if qualified == f"{type_name}_{field_name}":
-                return _hover_text(f"{type_name}%{field_name}", _unit_pretty(unit))
-
-    # Variable or Var: covers declarations and uses, plus the formals
-    # inside a function definition (which already are Variable nodes).
-    for node, name in _walk_var_nodes(asr):
-        if not _loc_contains(node.get("loc"), line_1based, col_1based, expected):
-            continue
-        if not name:
-            continue
-        unit = result.merged_var_units.get(name)
-        if unit is not None:
-            return _hover_text(name, _unit_pretty(unit))
-        return _hover_text(name, "no unit annotation", show_unit_label=False)
-
-    # Function / subroutine call: show the signature + variables
-    # passed as arguments.
-    for node in _walk_call_nodes(asr):
-        if not _loc_contains(node.get("loc"), line_1based, col_1based, expected):
-            continue
-        name = _call_name(node)
-        sig = result.signatures.get(name)
-        if sig is None:
-            continue
-        ast, _ = trees
-        return _hover_call(
-            result, ast, node, name, sig, expected_basename=expected
-        )
-
-    # Expression: find the smallest BinOp / UnaryMinus containing the
-    # cursor and show its resolved unit + the operands' units.
-    smallest = _smallest_expression_at(asr, line_1based, col_1based, expected)
-    if smallest is not None:
-        ast, _ = trees
-        return _hover_expression(
-            result, ast, smallest,
-            expected_basename=expected, source_text=source_text,
-        )
-
-    # Assignment: cursor lands on the `=` (no more-specific node
-    # matched it). Show LHS and RHS units, then the variables inside.
-    asn = _assignment_containing(asr, line_1based, col_1based, expected)
-    if asn is not None:
-        ast, _ = trees
-        return _hover_assignment(
-            result, ast, asn,
-            expected_basename=expected, source_text=source_text,
-        )
-    return None
+    tree, source = entry
+    return path.resolve(), tree, source
 
 
-def _assignment_containing(
-    asr: dict, line: int, col: int, expected: str
-) -> dict | None:
-    best: dict | None = None
-    best_size = 1_000_000
-    for n in walk(asr):
-        if not isinstance(n, dict) or n.get("node") != "Assignment":
-            continue
-        if not _loc_contains(n.get("loc"), line, col, expected):
-            continue
-        size = _loc_size(n.get("loc"))
-        if size < best_size:
-            best = n
-            best_size = size
-    return best
+def _build_ts_ctx(result: WorksetResult, source: bytes, file: str) -> ts_checker._Ctx:
+    """Spin up a ts_checker ``_Ctx`` pre-loaded with the workset's tables.
 
-
-def _walk_call_nodes(tree: dict):
-    for n in walk(tree):
-        if not isinstance(n, dict):
-            continue
-        if n.get("node") in ("FunctionCall", "SubroutineCall"):
-            yield n
-
-
-def _call_name(node: dict) -> str:
-    v = node.get("fields", {}).get("name", "")
-    return v.split(" ", 1)[0] if isinstance(v, str) else ""
-
-
-def _fmt_unit_opt(u: Unit | None) -> str:
-    return format_unit(u) if u is not None else "?"
-
-
-_EXPRESSION_NODES = frozenset({
-    "RealBinOp", "IntegerBinOp", "ComplexBinOp", "LogicalBinOp",
-    "RealUnaryMinus", "IntegerUnaryMinus",
-})
-
-
-def _loc_size(loc: dict | None) -> int:
-    """Cheap "size" used to compare two locs; lower = more specific."""
-    if not isinstance(loc, dict):
-        return 1_000_000
-    sl = loc.get("first_line")
-    sc = loc.get("first_column")
-    el = loc.get("last_line")
-    ec = loc.get("last_column")
-    if not all(isinstance(v, int) for v in (sl, sc, el, ec)):
-        return 1_000_000
-    # 1000 cols/line is a generous upper bound; we want a total order.
-    return (el - sl) * 1000 + (ec - sc)
-
-
-def _smallest_expression_at(
-    asr: dict, line: int, col: int, expected: str
-) -> dict | None:
-    best: dict | None = None
-    best_size = 1_000_000
-    for n in walk(asr):
-        if not isinstance(n, dict):
-            continue
-        if n.get("node") not in _EXPRESSION_NODES:
-            continue
-        if not _loc_contains(n.get("loc"), line, col, expected):
-            continue
-        size = _loc_size(n.get("loc"))
-        if size < best_size:
-            best = n
-            best_size = size
-    return best
-
-
-def _build_resolver(result: WorksetResult, ast: dict) -> _Resolver:
-    """Spin up a resolver pre-loaded with the workset's tables."""
-    intrinsic_names = collect_intrinsic_names(ast)
-    table = _units_mod.DEFAULT_TABLE
-    return _Resolver(
+    Reused by hover / inlay so identifier-to-unit lookup goes through
+    the same logic as the diagnostic pipeline — no second source of
+    truth for derived-type / use-chain resolution.
+    """
+    return ts_checker._Ctx(
+        file=file,
         var_units=result.merged_var_units,
-        table=table,                       # may be None outside the runtime; ok
-        file="<hover>",
-        intrinsic_names=intrinsic_names,
-        functions=result.signatures,
+        table=_units_mod.DEFAULT_TABLE,
+        signatures=result.signatures,
+        # var_types / type_field_types are collected per-tree on demand
+        # by callers that need member-access resolution.
+        var_types={},
+        type_field_types={},
         field_units=result.merged_field_units,
     )
 
 
-def _gather_named_references(node: dict, expected_basename: str | None):
-    """Yield ``(display_name, ASR sub-node)`` for every Var, Variable, or
-    derived-type member access reachable from ``node``, in source order,
-    de-duplicated by display name.
-
-    A ``StructInstanceMember`` like ``b%m`` is yielded once as
-    ``b%m``; the receiver ``Var`` for ``b`` it contains is suppressed
-    so the hover doesn't carry a separate ``- b : ?`` row.
-
-    The filename filter keeps out symbols inlined by ``use`` (whose loc
-    points at a different file).
-    """
-    seen: set[str] = set()
-    suppressed_ids: set[int] = set()
-    for n in walk(node):
-        if not isinstance(n, dict):
-            continue
-        if id(n) in suppressed_ids:
-            continue
-        kind = n.get("node")
-        loc = n.get("loc")
-        if expected_basename is not None and isinstance(loc, dict):
-            fn = loc.get("first_filename")
-            if isinstance(fn, str) and Path(fn).name != expected_basename:
-                continue
-        if kind == "Var":
-            v = n.get("fields", {}).get("v", "")
-            name = v.split(" ", 1)[0] if isinstance(v, str) else ""
-        elif kind == "Variable":
-            name = n.get("fields", {}).get("name", "")
-        elif kind in ("FunctionCall", "SubroutineCall"):
-            v = n.get("fields", {}).get("name", "")
-            name = v.split(" ", 1)[0] if isinstance(v, str) else ""
-        elif kind == "StructInstanceMember":
-            v_node = n.get("fields", {}).get("v")
-            m_field = n.get("fields", {}).get("m", "")
-            if isinstance(v_node, dict):
-                vv = v_node.get("fields", {}).get("v", "")
-                receiver = vv.split(" ", 1)[0] if isinstance(vv, str) else "?"
-            else:
-                receiver = "?"
-            qualified = m_field.split(" ", 1)[0] if isinstance(m_field, str) else ""
-            if "_" in qualified:
-                head, rest = qualified.split("_", 1)
-                if head.isdigit():
-                    qualified = rest
-            if "_" in qualified:
-                _, field_name = qualified.split("_", 1)
-            else:
-                field_name = qualified
-            name = f"{receiver}%{field_name}"
-            # The receiver Var (and anything else inside the member
-            # access) is covered by the qualified name we're about to
-            # yield; suppress it so we don't list `- b : ?` separately.
-            for sub in walk(n):
-                if isinstance(sub, dict) and sub is not n:
-                    suppressed_ids.add(id(sub))
-        else:
-            continue
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        yield name, n
+# ---------------------------------------------------------------------------
+# Hover rendering (parser-agnostic)
+# ---------------------------------------------------------------------------
 
 
 _SUPERSCRIPTS = {
@@ -790,8 +509,6 @@ def _unit_pretty(u: Unit | None) -> str:
         elif isinstance(mag, int):
             term = sym + _to_superscript(str(mag))
         else:
-            # Rational exponent (e.g. 1/2) — keep ASCII parens since
-            # superscript fractions look messy.
             term = f"{sym}^({mag})"
         (pos if exp > 0 else neg).append(term)
     body = " × ".join(pos) if pos else "1"
@@ -803,157 +520,17 @@ def _unit_pretty(u: Unit | None) -> str:
     return body
 
 
-def _text_for_loc(source_text: str | None, loc: dict | None) -> str | None:
-    """Slice the buffer text spanned by ``loc``.
-
-    Multi-line slices are joined with spaces so a continued declaration
-    renders as one readable line in the hover. Returns ``None`` if the
-    loc looks malformed or the buffer is unavailable.
-    """
-    if not source_text or not isinstance(loc, dict):
-        return None
-    sl = loc.get("first_line")
-    sc = loc.get("first_column")
-    el = loc.get("last_line")
-    ec = loc.get("last_column")
-    if not all(isinstance(v, int) for v in (sl, sc, el, ec)):
-        return None
-    lines = source_text.splitlines()
-    if sl < 1 or el < 1 or sl > len(lines) or el > len(lines):
-        return None
-    sl_i, el_i = sl - 1, el - 1
-    if sl_i == el_i:
-        snippet = lines[sl_i][sc - 1 : ec]
+def _hover_text(name: str, unit_or_message: str, *, show_unit_label: bool = True) -> str:
+    """Render a single-symbol hover (variable or struct member)."""
+    if show_unit_label:
+        body = f"**{name}** : {unit_or_message}"
     else:
-        parts = [lines[sl_i][sc - 1 :]]
-        parts.extend(lines[sl_i + 1 : el_i])
-        parts.append(lines[el_i][:ec])
-        snippet = " ".join(p.strip() for p in parts)
-    return snippet.strip() or None
-
-
-def _variables_list_md(
-    resolver, node: dict, expected_basename: str | None, *, bulleted: bool = True
-) -> list[str]:
-    """One entry per variable / member access / call reachable from ``node``."""
-    out: list[str] = []
-    prefix = "- " if bulleted else ""
-    for name, sub in _gather_named_references(node, expected_basename):
-        kind = sub.get("node")
-        if kind in ("FunctionCall", "SubroutineCall"):
-            sig = resolver.functions.get(name)
-            if sig is not None:
-                out.append(f"{prefix}{_sig_render_md(name, sig)}")
-            continue
-        u = resolver.resolve(sub)
-        out.append(f"{prefix}`{name}` : {_unit_pretty(u)}")
-    return out
-
-
-def _hard_break_lines(lines: list[str]) -> str:
-    """Join lines so each renders on its own visual line in Markdown
-    (trailing two spaces = hard linebreak)."""
-    return "\n".join(line + "  " if line else "" for line in lines).rstrip()
-
-
-def _hover_expression(
-    result: WorksetResult,
-    ast: dict,
-    node: dict,
-    *,
-    expected_basename: str,
-    source_text: str | None,
-) -> str | None:
-    resolver = _build_resolver(result, ast)
-    own = resolver.resolve(node)
-
-    snippet = _text_for_loc(source_text, node.get("loc"))
-    header = (
-        f"`{snippet}` : {_unit_pretty(own)}"
-        if snippet
-        else f"expression : {_unit_pretty(own)}"
-    )
-
-    rows = _variables_list_md(resolver, node, expected_basename)
-    body = header if not rows else header + "\n" + "\n".join(rows)
+        body = f"**{name}** — {unit_or_message}"
     return f"**DimFort**\n\n{body}"
 
 
-def _leaf_display_name(node: dict | None) -> str | None:
-    """Return the bare display name when ``node`` is itself a single
-    Var / Variable / StructInstanceMember (i.e. shown literally on the
-    LHS or RHS line). Otherwise ``None``.
-    """
-    if not isinstance(node, dict):
-        return None
-    kind = node.get("node")
-    if kind == "Var":
-        v = node.get("fields", {}).get("v", "")
-        return v.split(" ", 1)[0] if isinstance(v, str) else None
-    if kind == "Variable":
-        return node.get("fields", {}).get("name") or None
-    if kind == "StructInstanceMember":
-        # Reuse the same parsing the variable-list code does so the
-        # names match for dedup.
-        for name, sub in _gather_named_references(node, None):
-            if sub is node:
-                return name
-        return None
-    return None
-
-
-def _hover_assignment(
-    result: WorksetResult,
-    ast: dict,
-    node: dict,
-    *,
-    expected_basename: str,
-    source_text: str | None,
-) -> str | None:
-    resolver = _build_resolver(result, ast)
-    fields = node.get("fields", {})
-    target = fields.get("target")
-    value = fields.get("value")
-    if not isinstance(target, dict) or not isinstance(value, dict):
-        return None
-
-    lhs_unit = resolver.resolve(target)
-    rhs_unit = resolver.resolve(value)
-
-    # Header only when both sides agree on a known unit: a single line
-    # showing the shared dimension. On mismatch we skip the header
-    # entirely because the H001 diagnostic already shows the
-    # `lhs ≠ rhs` comparison.
-    header: str | None = None
-    if (
-        lhs_unit is not None
-        and rhs_unit is not None
-        and equal_dim(lhs_unit, rhs_unit)
-    ):
-        header = _unit_pretty(lhs_unit)
-
-    # Variables / members reachable from the whole assignment, deduped
-    # by display name, in source order, without bullets.
-    rows = _variables_list_md(
-        resolver, node, expected_basename, bulleted=False
-    )
-
-    parts: list[str] = []
-    if header is not None:
-        parts.append(header)
-    if rows:
-        parts.append(_hard_break_lines(rows))
-    if not parts:
-        return None
-    return "**DimFort**\n\n" + "\n\n".join(parts)
-
-
 def _sig_render_md(name: str, sig: FuncSig) -> str:
-    """Markdown rendering of a call: the call form in backticks, then
-    ``: return-unit`` outside for functions. Mirrors the
-    ``\\`name\\` : unit`` shape used by the variables list so the rows
-    line up visually.
-    """
+    """Markdown rendering of a call signature."""
     args = ", ".join(
         f"{arg_name}: {_unit_pretty(arg_unit) if arg_unit is not None else '?'}"
         for arg_name, arg_unit in zip(sig.arg_names, sig.arg_units, strict=False)
@@ -965,63 +542,107 @@ def _sig_render_md(name: str, sig: FuncSig) -> str:
 
 
 def _hover_signature(name: str, sig: FuncSig) -> str:
-    # Header-only fallback. The richer renderer that also lists arg
-    # variables is :func:`_hover_call`, used when we have the ASR.
     return f"**DimFort**\n\n{_sig_render_md(name, sig)}"
 
 
-def _hover_call(
-    result: WorksetResult,
-    ast: dict,
-    node: dict,
-    name: str,
-    sig: FuncSig,
-    *,
-    expected_basename: str,
-) -> str:
-    """Hover for a user-defined call: signature line + variables passed."""
-    resolver = _build_resolver(result, ast)
-    header = _sig_render_md(name, sig)
-
-    # Variables / members / nested calls inside the actual arguments,
-    # de-duplicated by display name.
-    seen: set[str] = set()
-    rows: list[str] = []
-    for arg in node.get("fields", {}).get("args") or []:
-        if not isinstance(arg, dict):
-            continue
-        val = arg.get("fields", {}).get("value")
-        if not isinstance(val, dict):
-            continue
-        for nm, sub in _gather_named_references(val, expected_basename):
-            if nm in seen:
-                continue
-            seen.add(nm)
-            kind = sub.get("node")
-            if kind in ("FunctionCall", "SubroutineCall"):
-                sub_sig = resolver.functions.get(nm)
-                if sub_sig is not None:
-                    rows.append(_sig_render_md(nm, sub_sig))
-                continue
-            u = resolver.resolve(sub)
-            rows.append(f"`{nm}` : {_unit_pretty(u)}")
-
-    body = header if not rows else "\n\n".join([header, _hard_break_lines(rows)])
-    return f"**DimFort**\n\n{body}"
+# ---------------------------------------------------------------------------
+# Hover dispatch (tree-sitter)
+# ---------------------------------------------------------------------------
 
 
-def _hover_text(name: str, unit_or_message: str, *, show_unit_label: bool = True) -> str:
-    """Render a single-symbol hover (variable or struct member).
+def _resolve_hover(
+    uri: str,
+    line_1based: int,
+    col_1based: int,
+    source_text: str | None,  # accepted for caller compatibility; unused
+) -> str | None:
+    """Return formatted hover text for ``(line, col)``, or ``None``.
 
-    ``unit_or_message`` is either an inline-math snippet (e.g.
-    ``$\\mathrm{m}/\\mathrm{s}$``) or a plain message when there's no
-    unit to display.
+    Dispatch order, tightest-fit wins inside each category:
+
+    1. **Function/Subroutine definition header** — the cursor is on the
+       ``name`` token of a function or subroutine declaration.
+    2. **Derived-type member access** (``a%b``) — show the field's unit.
+    3. **Call expression / subroutine call** — show the callee's signature.
+    4. **Plain identifier** — variable reference; show its unit.
+
+    Less specific matches (assignment LHS/RHS hovers, BinOp hovers
+    showing the resolved expression unit) used to live here on the
+    LFortran-AST path. They are intentionally not ported in this pass:
+    they degrade gracefully (no hover at that exact position) and the
+    diagnostic-driven information is unchanged.
     """
-    if show_unit_label:
-        body = f"**{name}** : {unit_or_message}"
-    else:
-        body = f"**{name}** — {unit_or_message}"
-    return f"**DimFort**\n\n{body}"
+    found = _trees_for(uri)
+    if found is None:
+        return None
+    resolved_path, tree, source = found
+    with _last_result_lock:
+        result = _last_result
+    if result is None:
+        return None
+
+    # 1. Function / subroutine definition header on this line.
+    for func_or_sub in _ts_h.walk_function_definitions(tree):
+        if _ts_h.function_definition_header_line(func_or_sub) != line_1based:
+            continue
+        nm = _ts_h.function_definition_name(func_or_sub, source)
+        if nm is None:
+            continue
+        name, name_node = nm
+        if not _ts_h.node_contains(name_node, line_1based, col_1based):
+            continue
+        sig = result.signatures.get(name.lower())
+        if sig is None:
+            continue
+        return _hover_signature(name, sig)
+
+    # 2. Derived-type member access — tightest enclosing wins so the
+    #    innermost ``a%b`` in ``a%b%c`` doesn't shadow the outer.
+    member_hit = _ts_h.smallest_enclosing(
+        _ts_h.walk_member_exprs(tree), line_1based, col_1based
+    )
+    if member_hit is not None:
+        # Need var_types for this file to resolve b's type for a%b%c.
+        # Build a one-off mini-context.
+        ctx = _build_ts_ctx(result, source, str(resolved_path))
+        ctx.var_types.update(ts_checker.collect_var_types(tree, source))
+        ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
+        unit = ts_checker._resolve_member_chain(member_hit, ctx, source)
+        base, path = _ts_h.member_expr_chain(member_hit, source)
+        if base is not None and path:
+            display = f"{base}%{'%'.join(path)}"
+            return _hover_text(display, _unit_pretty(unit))
+
+    # 3. Call expression / subroutine call.
+    call_hit = _ts_h.smallest_enclosing(
+        _ts_h.walk_calls(tree), line_1based, col_1based
+    )
+    if call_hit is not None:
+        name = _ts_h.call_name(call_hit, source)
+        if name is not None:
+            sig = result.signatures.get(name.lower())
+            if sig is not None:
+                return _hover_signature(name, sig)
+
+    # 4. Bare identifier — variable reference.
+    for ident in _ts_h.walk_identifiers(tree):
+        if not _ts_h.node_contains(ident, line_1based, col_1based):
+            continue
+        if _ts_h.is_inside_type_qualifier(ident):
+            continue
+        # Skip call-callee identifiers (handled above).
+        if _ts_h.is_call_callee(ident):
+            continue
+        name = _ts.node_text(ident, source)
+        unit = result.merged_var_units.get(name)
+        if unit is not None:
+            return _hover_text(name, _unit_pretty(unit))
+        # Lower-case fallback for var_units keyed by original case.
+        for k, u in result.merged_var_units.items():
+            if k.lower() == name.lower():
+                return _hover_text(name, _unit_pretty(u))
+        return _hover_text(name, "no unit annotation", show_unit_label=False)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1345,74 +966,84 @@ def _hover(ls: LanguageServer, params: lsp.HoverParams) -> Any:
 def _inlay_hint(
     ls: LanguageServer, params: lsp.InlayHintParams
 ) -> list[lsp.InlayHint] | None:
+    """Inlay hints (``[unit]`` ghost text) at variable uses, calls, and member accesses.
+
+    Walks the visible range only — VSCode requests inlays in the
+    currently-on-screen range — and pulls each candidate node through
+    the ts_checker resolver so the unit-text matches what the
+    diagnostic pipeline computes.
+    """
     if not _features.inlay_hints:
         return None
+    found = _trees_for(params.text_document.uri)
+    if found is None:
+        return []
+    resolved_path, tree, source = found
     with _last_result_lock:
         result = _last_result
     if result is None:
         return []
-    path = _uri_to_path(params.text_document.uri)
-    if path is None:
-        return []
-    trees = result.trees.get(path.resolve())
-    if trees is None:
-        return []
-    ast, asr = trees
 
-    expected = path.name
     visible_start_line = params.range.start.line + 1   # 1-based
     visible_end_line = params.range.end.line + 1
-    seen_positions: set[tuple[int, int]] = set()
+
+    ctx = _build_ts_ctx(result, source, str(resolved_path))
+    ctx.var_types.update(ts_checker.collect_var_types(tree, source))
+    ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
+
+    seen: set[tuple[int, int]] = set()
     hints: list[lsp.InlayHint] = []
-    resolver = _build_resolver(result, ast)
 
-    _INLAY_NODES = (
-        "Var",
-        "FunctionCall",
-        "IntrinsicElementalFunction",
-        "IntrinsicArrayFunction",
-        "IntrinsicScalarFunction",
-        "StructInstanceMember",
-    )
-
-    for node in walk(asr):
-        if not isinstance(node, dict):
-            continue
-        kind = node.get("node")
-        if kind not in _INLAY_NODES:
-            continue
-        # Defer to the resolver for every kind — it already knows how
-        # to handle Var/Variable, intrinsic categories, struct member
-        # access, and user-defined calls.
-        unit = resolver.resolve(node)
+    def _emit(node, unit: Unit | None) -> None:
         if unit is None:
-            continue
-        loc = node.get("loc") or {}
-        if not isinstance(loc, dict):
-            continue
-        fn = loc.get("first_filename")
-        if isinstance(fn, str) and Path(fn).name != expected:
-            continue
-        line = loc.get("last_line")
-        col = loc.get("last_column")
-        if not isinstance(line, int) or not isinstance(col, int):
-            continue
+            return
+        # Anchor on the node's last column so the hint sits flush against
+        # the trailing character of the variable/call.
+        er, ec = node.end_point
+        line = er + 1
         if line < visible_start_line or line > visible_end_line:
-            continue
-        key = (line, col)
-        if key in seen_positions:
-            continue
-        seen_positions.add(key)
+            return
+        key = (line, ec)
+        if key in seen:
+            return
+        seen.add(key)
         hints.append(
             lsp.InlayHint(
-                position=lsp.Position(line=line - 1, character=col),
-                # No leading space in the label; padding_left=False so the
-                # hint sits flush against the variable / call.
+                position=lsp.Position(line=er, character=ec),
                 label=f"[{_unit_pretty(unit)}]",
                 kind=lsp.InlayHintKind.Type,
                 padding_left=False,
             )
         )
+
+    # Member accesses (a%b, a%b%c) — emit on the whole chain expression.
+    for member in _ts_h.walk_member_exprs(tree):
+        _emit(member, ts_checker._resolve_member_chain(member, ctx, source))
+
+    # Calls — emit on the full call expression so the [unit] sits past
+    # the closing paren.
+    for call in _ts_h.walk_calls(tree):
+        if call.type == "subroutine_call":
+            continue  # subroutines have no return unit
+        _emit(call, ts_checker._resolve(call, ctx, source))
+
+    # Plain identifier uses — skip declaration-site identifiers,
+    # type-qualifier identifiers, member-expression parts (handled
+    # above), and the callee position of a call (the call itself
+    # carries the hint).
+    for ident in _ts_h.walk_identifiers(tree):
+        if _ts_h.is_inside_declaration(ident):
+            continue
+        if _ts_h.is_inside_type_qualifier(ident):
+            continue
+        if _ts_h.is_call_callee(ident):
+            continue
+        # If this identifier is the LHS of a derived-type member, the
+        # member-expression hint covers it.
+        parent = ident.parent
+        if parent is not None and parent.type == "derived_type_member_expression":
+            continue
+        _emit(ident, ts_checker._resolve(ident, ctx, source))
     return hints
 
 
@@ -1483,78 +1114,94 @@ def _completion(
 def _definition(
     ls: LanguageServer, params: lsp.DefinitionParams
 ) -> list[lsp.Location] | None:
+    """Go-to-definition.
+
+    Resolves identifiers and call-callees to their declaration site,
+    searching every loaded file's tree-sitter tree. Returns the first
+    match — F90's case-insensitive name resolution is implemented by
+    a lower-cased compare on both ends.
+    """
     if not _features.goto_definition:
         return None
+    found = _trees_for(params.text_document.uri)
+    if found is None:
+        return None
+    _, tree, source = found
     with _last_result_lock:
         result = _last_result
     if result is None:
         return None
-    path = _uri_to_path(params.text_document.uri)
-    if path is None:
-        return None
-    trees = result.trees.get(path.resolve())
-    if trees is None:
-        return None
-    _, asr = trees
 
-    expected = path.name
     line = params.position.line + 1
     col = params.position.character + 1
 
-    # Identify what's under the cursor: a Var (use) or a call.
+    # Identify the target: a callee name (under a call), or a plain
+    # identifier (a variable use). Prefer the call-callee match because
+    # it's more specific.
     target_name: str | None = None
-    target_kind: str | None = None
-    for n in walk(asr):
-        if not isinstance(n, dict):
+    target_kind: str | None = None  # "var" or "callable"
+    for call in _ts_h.walk_calls(tree):
+        name = _ts_h.call_name(call, source)
+        if name is None:
             continue
-        kind = n.get("node")
-        if kind not in ("Var", "FunctionCall", "SubroutineCall"):
-            continue
-        if not _loc_contains(n.get("loc"), line, col, expected):
-            continue
-        v = n.get("fields", {}).get("v" if kind == "Var" else "name", "")
-        if not isinstance(v, str):
-            continue
-        bare = v.split(" ", 1)[0]
-        if bare:
-            target_name = bare
-            target_kind = kind
+        # Match only if the cursor is on the callee identifier (not on
+        # an argument inside the call).
+        for c in call.children:
+            if c.type == "identifier" and _ts_h.node_contains(c, line, col):
+                target_name = name
+                target_kind = "callable"
+                break
+        if target_name:
             break
-
-    if not target_name:
+    if target_name is None:
+        for ident in _ts_h.walk_identifiers(tree):
+            if not _ts_h.node_contains(ident, line, col):
+                continue
+            if _ts_h.is_inside_type_qualifier(ident):
+                continue
+            target_name = _ts.node_text(ident, source)
+            target_kind = "var"
+            break
+    if target_name is None:
         return None
+    target_lc = target_name.lower()
 
-    # Search every loaded ASR for the matching declaration / function.
-    for tree_path, (_, file_asr) in result.trees.items():
-        for n in walk(file_asr):
-            if not isinstance(n, dict):
-                continue
-            kind = n.get("node")
-            want_variable = target_kind == "Var" and kind == "Variable"
-            want_callable = (
-                target_kind in ("FunctionCall", "SubroutineCall")
-                and kind in ("Function", "Subroutine")
-            )
-            if not (want_variable or want_callable):
-                continue
-            if n.get("fields", {}).get("name") != target_name:
-                continue
-            loc = n.get("loc") or {}
-            sl = loc.get("first_line")
-            sc = loc.get("first_column")
-            el = loc.get("last_line")
-            ec = loc.get("last_column")
-            if not all(isinstance(v, int) for v in (sl, sc, el, ec)):
-                continue
-            return [
-                lsp.Location(
-                    uri=_uri_for_path(tree_path),
-                    range=lsp.Range(
-                        start=lsp.Position(line=sl - 1, character=sc - 1),
-                        end=lsp.Position(line=el - 1, character=ec),
-                    ),
-                )
-            ]
+    # Walk every loaded tree for the matching declaration / function.
+    for tree_path, (other_tree, other_source) in result.trees.items():
+        if target_kind == "callable":
+            for func in _ts_h.walk_function_definitions(other_tree):
+                nm = _ts_h.function_definition_name(func, other_source)
+                if nm is None:
+                    continue
+                name, name_node = nm
+                if name.lower() != target_lc:
+                    continue
+                sr, sc = name_node.start_point
+                er, ec = name_node.end_point
+                return [
+                    lsp.Location(
+                        uri=_uri_for_path(tree_path),
+                        range=lsp.Range(
+                            start=lsp.Position(line=sr, character=sc),
+                            end=lsp.Position(line=er, character=ec),
+                        ),
+                    )
+                ]
+        else:
+            for decl, name_node in _ts_h.walk_decl_identifiers(other_tree):
+                if _ts.node_text(name_node, other_source).lower() != target_lc:
+                    continue
+                sr, sc = name_node.start_point
+                er, ec = name_node.end_point
+                return [
+                    lsp.Location(
+                        uri=_uri_for_path(tree_path),
+                        range=lsp.Range(
+                            start=lsp.Position(line=sr, character=sc),
+                            end=lsp.Position(line=er, character=ec),
+                        ),
+                    )
+                ]
     return None
 
 
@@ -1672,50 +1319,38 @@ def _last_scan_declarations(path: Path):
 def _code_lens(
     ls: LanguageServer, params: lsp.CodeLensParams
 ) -> list[lsp.CodeLens] | None:
+    """A code lens above each function/subroutine header showing its signature."""
     if not _features.code_lens:
         return None
+    found = _trees_for(params.text_document.uri)
+    if found is None:
+        return None
+    _, tree, source = found
     with _last_result_lock:
         result = _last_result
     if result is None:
         return None
-    path = _uri_to_path(params.text_document.uri)
-    if path is None:
-        return None
-    trees = result.trees.get(path.resolve())
-    if trees is None:
-        return None
-    _, asr = trees
 
-    expected = path.name
     lenses: list[lsp.CodeLens] = []
     seen_lines: set[int] = set()
-    for n in walk(asr):
-        if not isinstance(n, dict):
+    for func in _ts_h.walk_function_definitions(tree):
+        nm = _ts_h.function_definition_name(func, source)
+        if nm is None:
             continue
-        if n.get("node") not in ("Function", "Subroutine"):
+        name, _ = nm
+        header_line_1based = _ts_h.function_definition_header_line(func)
+        if header_line_1based in seen_lines:
             continue
-        loc = n.get("loc") or {}
-        fn = loc.get("first_filename")
-        if isinstance(fn, str) and Path(fn).name != expected:
-            continue
-        first_line = loc.get("first_line")
-        if not isinstance(first_line, int):
-            continue
-        if first_line in seen_lines:
-            continue
-        seen_lines.add(first_line)
-        name = n.get("fields", {}).get("name")
-        if not isinstance(name, str):
-            continue
-        sig = result.signatures.get(name)
+        seen_lines.add(header_line_1based)
+        sig = result.signatures.get(name.lower())
         if sig is None:
             continue
         title = _sig_render_md(name, sig).replace("`", "")  # plain text only
         lenses.append(
             lsp.CodeLens(
                 range=lsp.Range(
-                    start=lsp.Position(line=first_line - 1, character=0),
-                    end=lsp.Position(line=first_line - 1, character=0),
+                    start=lsp.Position(line=header_line_1based - 1, character=0),
+                    end=lsp.Position(line=header_line_1based - 1, character=0),
                 ),
                 command=lsp.Command(title=title, command=""),
             )

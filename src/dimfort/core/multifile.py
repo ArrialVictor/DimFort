@@ -67,9 +67,12 @@ class WorksetResult:
     attachments: dict[Path, AttachmentResult] = field(default_factory=dict)
     load_failures: dict[Path, FileLoadFailure] = field(default_factory=dict)
     compile_failures: dict[Path, str] = field(default_factory=dict)
-    # Per-file ``(ast, asr)`` pair, populated only for files that loaded
-    # successfully. Used by the LSP server for hover-time symbol lookup.
-    trees: dict[Path, tuple[dict, dict]] = field(default_factory=dict)
+    # Per-file ``(tree, source_bytes)`` pair populated by the tree-sitter
+    # orchestrator (:mod:`dimfort.core.ast_multifile`), used by the LSP
+    # for hover/inlay/goto-time symbol lookup. The tuple's first element
+    # is a ``tree_sitter.Tree``; the second is the UTF-8 bytes that
+    # produced it (needed to extract identifier text from nodes).
+    trees: dict[Path, tuple[object, bytes]] = field(default_factory=dict)
     # Per-file parsed unit table (for hover formatting); same key set as
     # ``trees``.
     merged_var_units: dict[str, Unit] = field(default_factory=dict)
