@@ -1,16 +1,17 @@
-"""AST-only multi-file orchestration — Phase 2.
+"""Tree-sitter multi-file orchestration.
 
-Parallel to :mod:`dimfort.core.multifile`, but never invokes ``lfortran
--c`` and never asks for ASR. Every cross-file symbol that the ASR
-pipeline gets "for free" via inlined ``use``-imports must be
-synthesised here from each module's AST: see
-:func:`ast_checker.collect_module_exports` and
-:func:`ast_checker.apply_use_clauses`.
+Wires the per-file tree-sitter checker (:mod:`dimfort.core.ts_checker`)
+into a workset-wide pipeline: parse every file once, aggregate module
+exports and signatures across the corpus, and check each file with its
+imports merged in.
+
+Previously parallel to :mod:`dimfort.core.multifile` (the LFortran ASR
+pipeline) but now the sole orchestrator on ``main``. The LFortran-AST
+backend it replaces was a transitional step — see ``docs/ast-only-
+design.md`` for the history.
 
 Phase 2 v1 deliberately keeps the public-by-default policy from F90's
-implicit ``public`` rule — no ``private`` honouring yet. Refinements
-(``[checker] backend = "ast"`` config wiring, in-place buffer overrides
-through the LSP, ``.mods`` cache removal) land in later phases.
+implicit ``public`` rule — no ``private`` honouring yet.
 """
 from __future__ import annotations
 
@@ -22,26 +23,26 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from dimfort import cache as _cache
-from dimfort.core import ast_checker
-from dimfort.core import lfortran as lf
+from tree_sitter import Tree
+
+from dimfort.core import ts_checker
+from dimfort.core import ts_parser as _ts
 from dimfort.core import units as _units_mod
 from dimfort.core import workspace_index as _wsi
 from dimfort.core.annotations import scan_file, scan_text
 from dimfort.core.attach import attach, AttachmentResult
-from dimfort.core.ast_checker import (
-    ModuleExports,
-    apply_use_clauses,
-    collect_function_signatures,
-    collect_module_exports,
-)
 from dimfort.core.checker import FuncSig
 from dimfort.core.diagnostics import Diagnostic, Position, Severity
 from dimfort.core.multifile import (
     WorksetResult,
     FileLoadFailure,
     _attachment_diags,
-    _clean_stderr,
+)
+from dimfort.core.ts_checker import (
+    ModuleExports,
+    apply_use_clauses,
+    collect_function_signatures,
+    collect_module_exports,
 )
 from dimfort.core.units import Unit, UnitError, UnitTable
 
@@ -52,51 +53,50 @@ class _Loaded:
 
     path: Path
     text: str
+    source: bytes              # raw UTF-8 bytes fed to tree-sitter
     scan: object
     attachment: AttachmentResult
-    ast: dict | None
+    tree: Tree | None          # None only if the file couldn't be read
     load_error: str | None
 
 
 def _load_one(
     path: Path,
     *,
-    lfortran: str | os.PathLike[str] | None,
+    lfortran: str | os.PathLike[str] | None = None,  # accepted for caller compat; unused
     overrides: dict[Path, str],
-    include_paths: tuple[Path, ...] = (),
-    cpp_defines: tuple[str, ...] = (),
-    cache_dir: Path | None = None,
+    include_paths: tuple[Path, ...] = (),            # ditto
+    cpp_defines: tuple[str, ...] = (),                # ditto
+    cache_dir: Path | None = None,                   # ditto
 ) -> _Loaded:
-    """Scan + attach + dump AST for one file.
+    """Read source, scan + attach annotations, parse with tree-sitter.
 
-    ``overrides`` lets the LSP feed unsaved buffer contents. On any
-    LFortran error the ``ast`` field is ``None`` and ``load_error``
-    carries the stderr — the caller surfaces U007.
+    Tree-sitter parses in single-digit milliseconds for typical files
+    and tens of milliseconds for the largest LMDZ modules, so the
+    on-disk AST cache the LFortran backend needed is no longer
+    necessary. The ``cache_dir`` and ``lfortran`` parameters are
+    accepted for caller compatibility (CLI / LSP still pass them) but
+    have no effect on this path.
 
-    ``cache_dir`` enables the on-disk AST cache: unchanged files skip
-    the LFortran subprocess entirely. Overridden buffers always
-    bypass the cache.
+    ``overrides`` lets the LSP feed unsaved buffer contents instead of
+    reading from disk. CPP preprocessing for ``.F90`` files is **not**
+    applied here — tree-sitter is error-tolerant around raw ``#ifdef``
+    directives, which covers ~99% of LMDZ. The remaining files with
+    continuations interleaved across ``#ifdef`` will get a tiny
+    structural gap that we localise rather than fail on.
     """
     from dimfort.core._source_io import read_text
     text = overrides.get(path) if path in overrides else read_text(path)
+    source = text.encode("utf-8")
     scan = scan_text(text)
     attachment = attach(scan)
     try:
-        ast = _cache.load_single_tree_cached(
-            path,
-            mode="ast",
-            source_path=path,
-            lfortran=lfortran,
-            include_paths=include_paths,
-            cpp_defines=cpp_defines,
-            cache_dir=cache_dir,
-            content=(
-                overrides[path].encode("utf-8") if path in overrides else None
-            ),
-        )
-    except lf.LFortranError as exc:
-        return _Loaded(path, text, scan, attachment, None, exc.stderr)
-    return _Loaded(path, text, scan, attachment, ast, None)
+        tree = _ts.parse_text(source)
+    except Exception as exc:
+        # tree-sitter shouldn't fail on valid bytes, but we mirror the
+        # old error path so callers can rely on a uniform _Loaded shape.
+        return _Loaded(path, text, source, scan, attachment, None, str(exc))
+    return _Loaded(path, text, source, scan, attachment, tree, None)
 
 
 def _parse_var_units(
@@ -198,8 +198,9 @@ def check_files_ast(
             idx, src, entry, err = fut.result()
             if err is not None:
                 result.load_failures[src] = FileLoadFailure(stderr=str(err))
+                empty_scan = scan_text("")
                 loaded[idx] = _Loaded(
-                    src, "", scan_text(""), attach(scan_text("")), None, str(err),
+                    src, "", b"", empty_scan, attach(empty_scan), None, str(err),
                 )
             else:
                 loaded[idx] = entry
@@ -239,10 +240,14 @@ def check_files_ast(
     module_exports: dict[str, ModuleExports] = {}
     global_signatures: dict[str, FuncSig] = {}
     for i, entry in enumerate(loaded, start=1):
-        if entry.ast is not None:
-            for mname, exp in collect_module_exports(entry.ast, merged_var_units).items():
+        if entry.tree is not None:
+            for mname, exp in collect_module_exports(
+                entry.tree, merged_var_units, entry.source
+            ).items():
                 module_exports.setdefault(mname, exp)
-            for fname, sig in collect_function_signatures(entry.ast, merged_var_units).items():
+            for fname, sig in collect_function_signatures(
+                entry.tree, merged_var_units, entry.source
+            ).items():
                 global_signatures.setdefault(fname, sig)
         if progress_cb is not None:
             progress_cb("index", i, total, entry.path)
@@ -286,13 +291,14 @@ def check_files_ast(
                     )
                 )
 
-        if entry.ast is None:
-            head = _clean_stderr(entry.load_error or "").splitlines()
+        if entry.tree is None:
+            # The only way to reach this branch today is a read error
+            # (OSError surfaced from _load_one). Tree-sitter itself
+            # doesn't fail on raw bytes.
             diags.append(
                 _u007(
                     entry.path,
-                    f"LFortran could not load this file: "
-                    f"{head[0] if head else '(no message)'}",
+                    f"Could not load this file: {entry.load_error or '(read error)'}",
                 )
             )
             result.load_failures[entry.path] = FileLoadFailure(
@@ -322,18 +328,11 @@ def check_files_ast(
                 _u007(entry.path, f"Module '{missing}' not found in workset")
             )
 
-        # Convert the merged Unit table back to text-keyed form (which
-        # ast_checker.check re-parses). Cheap because parses are cached
-        # implicitly by Python's small-object reuse — and at this size
-        # the cost is invisible. Keeps the check() public interface
-        # uniform with the single-file path.
-        # Pass already-parsed Unit values straight through. The earlier
-        # ``parse → format_unit → parse`` round-trip broke on Unicode
-        # output (`m/s²` is not parseable input).
         diags.extend(
-            ast_checker.check(
-                entry.ast,
+            ts_checker.check(
+                entry.tree,
                 per_file_var_units,
+                source=entry.source,
                 file=str(entry.path),
                 table=active_table,
                 signatures=per_file_sigs,
