@@ -140,6 +140,57 @@ def test_derived_type_member_resolves_via_var_types():
     assert all(d.code != "H001" for d in diags)
 
 
+def test_h001_squiggle_spans_lhs_not_a_single_char():
+    """The H001 diagnostic range must cover the LHS identifier, not just one char.
+
+    A zero-length range gets widened to one char by the LSP layer; this
+    test pins the per-checker invariant that ``start < end`` on the
+    offending node.
+    """
+    src = (
+        "subroutine s\n"
+        "  real :: aaaaa, b\n"
+        "  aaaaa = b\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"aaaaa": "m/s", "b": "kg"})
+    h001 = next(d for d in diags if d.code == "H001")
+    # 'aaaaa' is 5 chars on line 3, column 3-8. We require a non-zero span.
+    assert h001.end.column > h001.start.column
+    assert h001.end.column - h001.start.column >= 5
+
+
+def test_u005_fires_when_var_used_in_assignment_without_annotation():
+    """A variable used as the RHS of an assignment but not annotated triggers U005."""
+    src = (
+        "subroutine s\n"
+        "  real :: a, b\n"
+        "  a = b\n"
+        "end subroutine\n"
+    )
+    # Annotate only ``a``, leave ``b`` bare. ``b`` is read on line 3
+    # → U005 fires on the declaration line.
+    diags = _check(src, {"a": "m/s"})
+    u005 = [d for d in diags if d.code == "U005"]
+    assert len(u005) == 1
+    assert "'b'" in u005[0].message
+    assert u005[0].start.line == 2
+
+
+def test_u005_does_not_fire_when_var_only_declared():
+    """A variable declared but never used in a checked expression doesn't get U005."""
+    src = (
+        "subroutine s\n"
+        "  real :: a, b\n"
+        "  real :: unused\n"
+        "  a = b\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"a": "m/s", "b": "m/s"})
+    u005_names = [d.message for d in diags if d.code == "U005"]
+    assert all("unused" not in m for m in u005_names)
+
+
 def test_unsupported_expression_does_not_emit_false_positive():
     """If we can't resolve one side of an assignment, we emit nothing rather than guess."""
     # `transfer` isn't in any of our intrinsic categories, so its

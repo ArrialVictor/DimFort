@@ -435,10 +435,146 @@ def _resolve_call(node: Node, ctx: _Ctx, source: bytes) -> Unit | None:
 # ---------------------------------------------------------------------------
 
 
+def _node_span(node: Node) -> tuple[Position, Position]:
+    """Return ``(start, end)`` positions in DimFort 1-based coordinates.
+
+    Using the full extent (not just the start) gives VSCode a real
+    range to draw the squiggle over, instead of widening a zero-length
+    point to a single character.
+    """
+    sr, sc = node.start_point
+    er, ec = node.end_point
+    return Position(sr + 1, sc + 1), Position(er + 1, ec + 1)
+
+
+def _emit_u005_for_unannotated(
+    tree, ctx: _Ctx, source: bytes,
+) -> list[Diagnostic]:
+    """Emit U005 on declarations whose names are used in a checked context but unannotated.
+
+    "Checked context" = the identifier appears as an operand of an
+    assignment, a binary expression, a unary expression, or as a call
+    argument. We deliberately skip identifiers that only appear inside
+    type qualifiers (``dimension(n)``), as the callee of a call (not an
+    operand), or solely as a declaration site — none of those would
+    cause a check to fail.
+
+    Reports once per (declaration line, name) pair so a variable used
+    in many expressions yields a single squiggle on its declaration.
+    """
+    # First pass: collect names that are *queried* in a checked context.
+    queried: set[str] = set()
+
+    def _mark_identifier(ident: Node) -> None:
+        name = _ts.node_text(ident, source)
+        if not name:
+            return
+        # Already annotated (any case-fold) → no warning needed.
+        if name in ctx.var_units:
+            return
+        if any(k.lower() == name.lower() for k in ctx.var_units):
+            return
+        queried.add(name.lower())
+
+    def _walk_operands(expr: Node | None) -> None:
+        if expr is None:
+            return
+        # Identifier directly used as an operand → mark.
+        if expr.type == "identifier":
+            _mark_identifier(expr)
+            return
+        # Otherwise descend into expression-shaped children.
+        for c in expr.children:
+            if c.type in (
+                "identifier",
+                "math_expression",
+                "unary_expression",
+                "parenthesized_expression",
+                "derived_type_member_expression",
+                "call_expression",
+            ):
+                _walk_operands(c)
+
+    for node in _ts.walk(tree.root_node):
+        if node.type == "assignment_statement":
+            lhs, rhs = _assignment_sides(node)
+            _walk_operands(lhs)
+            _walk_operands(rhs)
+        elif node.type == "math_expression":
+            left, right = _math_operands(node)
+            _walk_operands(left)
+            _walk_operands(right)
+        elif node.type in ("call_expression", "subroutine_call"):
+            for arg in _call_args(node, source):
+                _walk_operands(arg)
+
+    if not queried:
+        return []
+
+    # Second pass: find each queried name's declaration site. Only
+    # declarations *in this file* qualify — cross-file usages where the
+    # var is imported and annotated elsewhere shouldn't fire here.
+    out: list[Diagnostic] = []
+    seen: set[tuple[str, int]] = set()
+    for decl in _ts.walk(tree.root_node):
+        if decl.type != "variable_declaration":
+            continue
+        for name_node in _decl_name_nodes(decl):
+            name_lc = _ts.node_text(name_node, source).lower()
+            if name_lc not in queried:
+                continue
+            sr, sc = name_node.start_point
+            er, ec = name_node.end_point
+            key = (name_lc, sr)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                Diagnostic(
+                    file=ctx.file,
+                    start=Position(sr + 1, sc + 1),
+                    end=Position(er + 1, ec + 1),
+                    severity=Severity.WARNING,
+                    code="U005",
+                    message=(
+                        f"{_ts.node_text(name_node, source)!r} is used in a "
+                        f"unit-checked expression but has no @unit{{}} annotation"
+                    ),
+                )
+            )
+    return out
+
+
+def _decl_name_nodes(decl: Node):
+    """Yield identifier nodes that name a declared entity in ``decl``.
+
+    Same logic as :func:`_collect_decl_names`, but yields the nodes so
+    the caller can read their positions.
+    """
+    for c in decl.children:
+        if c.type == "identifier":
+            yield c
+        elif c.type in _DECLARATOR_WRAPPERS:
+            inner = _declarator_leading_node(c)
+            if inner is not None:
+                yield inner
+
+
+def _declarator_leading_node(node: Node) -> Node | None:
+    for c in node.children:
+        if c.type == "identifier":
+            return c
+        if c.type in _DECLARATOR_WRAPPERS:
+            inner = _declarator_leading_node(c)
+            if inner is not None:
+                return inner
+    return None
+
+
 def _emit_h001(loc: Node, lhs: Unit, rhs: Unit, ctx: _Ctx) -> Diagnostic:
-    pos = _position(loc)
+    start, end = _node_span(loc)
     return Diagnostic(
-        file=ctx.file, start=pos, end=pos,
+        file=ctx.file, start=start, end=end,
         severity=Severity.ERROR, code="H001",
         message=(
             f"Assignment unit mismatch: "
@@ -448,9 +584,9 @@ def _emit_h001(loc: Node, lhs: Unit, rhs: Unit, ctx: _Ctx) -> Diagnostic:
 
 
 def _emit_h002(loc: Node, left: Unit, right: Unit, ctx: _Ctx) -> Diagnostic:
-    pos = _position(loc)
+    start, end = _node_span(loc)
     return Diagnostic(
-        file=ctx.file, start=pos, end=pos,
+        file=ctx.file, start=start, end=end,
         severity=Severity.ERROR, code="H002",
         message=(
             f"Operand unit mismatch in '+'/'-': "
@@ -460,9 +596,9 @@ def _emit_h002(loc: Node, left: Unit, right: Unit, ctx: _Ctx) -> Diagnostic:
 
 
 def _emit_h003(loc: Node, intrinsic: str, arg_unit: Unit, ctx: _Ctx) -> Diagnostic:
-    pos = _position(loc)
+    start, end = _node_span(loc)
     return Diagnostic(
-        file=ctx.file, start=pos, end=pos,
+        file=ctx.file, start=start, end=end,
         severity=Severity.ERROR, code="H003",
         message=(
             f"Intrinsic '{intrinsic}' requires a dimensionless argument; "
@@ -474,9 +610,9 @@ def _emit_h003(loc: Node, intrinsic: str, arg_unit: Unit, ctx: _Ctx) -> Diagnost
 def _emit_h004(
     loc: Node, func: str, arg_index: int, expected: Unit, actual: Unit, ctx: _Ctx
 ) -> Diagnostic:
-    pos = _position(loc)
+    start, end = _node_span(loc)
     return Diagnostic(
-        file=ctx.file, start=pos, end=pos,
+        file=ctx.file, start=start, end=end,
         severity=Severity.ERROR, code="H004",
         message=(
             f"Call to '{func}': argument {arg_index + 1} unit mismatch: "
@@ -899,6 +1035,7 @@ def check(
         field_units=parsed_fields,
     )
     out: list[Diagnostic] = []
+    out.extend(_emit_u005_for_unannotated(tree, ctx, source))
 
     for node in _ts.walk(tree.root_node):
         kind = node.type

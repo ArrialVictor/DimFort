@@ -52,29 +52,48 @@ external_modules = ["ioipsl", "netcdf", "MPI"]
     assert cfg.external_modules == ("ioipsl", "netcdf", "mpi")
 
 
-def test_legacy_sections_silently_ignored(tmp_path):
-    """Old ``[lfortran]`` and ``[checker]`` sections are accepted but ignored.
+def test_parser_section_picks_up_cpp_defines_and_includes(tmp_path):
+    """The ``[parser]`` section feeds CPP defines and include paths into the loader."""
+    (tmp_path / CONFIG_FILENAME).write_text("""
+[parser]
+cpp_defines = ["ISO", "ISOVERIF"]
+include_paths = [".dimfort/stubs", "vendor/headers"]
+""")
+    cfg = load_config(tmp_path)
+    assert cfg.cpp_defines == ("ISO", "ISOVERIF")
+    assert cfg.include_paths == (
+        (tmp_path / ".dimfort" / "stubs").resolve(),
+        (tmp_path / "vendor" / "headers").resolve(),
+    )
 
-    Keeps backward compatibility for projects whose ``.dimfort.toml``
-    still carries the pre-tree-sitter keys.
+
+def test_legacy_lfortran_section_still_provides_cpp_keys(tmp_path):
+    """Old ``[lfortran]`` cpp_defines / include_paths keys keep working.
+
+    Projects whose ``.dimfort.toml`` predates the rename should not
+    need to be updated to keep CPP preprocessing.
     """
+    (tmp_path / CONFIG_FILENAME).write_text("""
+[lfortran]
+include_paths = [".dimfort/stubs"]
+cpp_defines = ["ISO"]
+""")
+    cfg = load_config(tmp_path)
+    assert cfg.cpp_defines == ("ISO",)
+    assert cfg.include_paths == ((tmp_path / ".dimfort" / "stubs").resolve(),)
+
+
+def test_legacy_checker_section_silently_ignored(tmp_path):
+    """The pre-tree-sitter ``[checker] backend`` is accepted but no longer surfaced."""
     (tmp_path / CONFIG_FILENAME).write_text("""
 [project]
 src_paths = ["src/"]
-
-[lfortran]
-binary = "tools/lfortran"
-include_paths = [".dimfort/stubs"]
-cpp_defines = ["ISO"]
 
 [checker]
 backend = "asr"
 """)
     cfg = load_config(tmp_path)
-    # The supported field is still picked up; legacy keys don't appear
-    # as attributes anywhere.
     assert cfg.src_paths == ((tmp_path / "src").resolve(),)
-    assert not hasattr(cfg, "lfortran_binary")
     assert not hasattr(cfg, "backend")
 
 
