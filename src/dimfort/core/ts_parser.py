@@ -230,11 +230,29 @@ def parse_with_cpp(
 
     expanded_lines: list[bytes] = []
     line_map: list[int | None] = []
-    target = str(p)
-    target_resolved = str(p.resolve())
-    target_name = p.name
+    target_basename_lc = p.name.lower()
+    target_strs = {str(p), str(p.resolve())}
     current_file: str | None = None
     current_line: int = 1
+    saw_any_target_marker = False
+
+    def _is_target(marker_file: str) -> bool:
+        """Is this marker pointing at the source file we asked cpp about?
+
+        Direct string match handles POSIX-style cpp on macOS/Linux.
+        The basename fallback handles Windows path-encoding quirks
+        (some cpp builds emit ``C:/...`` while Path.str gives
+        ``C:\\...``; some emit backslashes literally) and the case-
+        insensitive Windows filesystem.
+        """
+        if marker_file in target_strs:
+            return True
+        # Normalise separators before peeling the basename.
+        try:
+            marker_name = Path(marker_file.replace("\\", "/")).name.lower()
+        except (TypeError, ValueError):
+            return False
+        return marker_name == target_basename_lc
 
     for line in raw.splitlines(keepends=True):
         # A line marker looks like ``# 123 "filename" [flags]``. We
@@ -258,11 +276,23 @@ def parse_with_cpp(
         if is_marker:
             continue
         expanded_lines.append(line)
-        if current_file in (target, target_resolved, target_name):
+        if current_file is not None and _is_target(current_file):
             line_map.append(current_line)
+            saw_any_target_marker = True
         else:
             line_map.append(None)
         current_line += 1
+
+    # Fallback: if no marker ever pointed at our source file (some
+    # Windows cpp builds don't emit ``#``-line markers at all when
+    # running over a single file with no #includes), assume the
+    # output is a 1-to-1 copy of the source. That's correct when
+    # cpp didn't add or remove any lines — the common case for
+    # files without #ifdef-removed blocks. With #ifdef-active
+    # branches we'd be wrong, but no markers means we have no
+    # signal to do better, and 1-to-1 beats all-None.
+    if not saw_any_target_marker:
+        line_map = [i + 1 for i in range(len(line_map))]
 
     expanded = b"".join(expanded_lines)
     tree = parse_text(expanded)
