@@ -198,44 +198,78 @@ def parse_with_cpp(
     the split form). We use the joined form unconditionally — it
     works on every platform we care about.
 
-    Two cpp invocations are run:
+    One ``cpp`` invocation, no ``-P``: that keeps the
+    ``# <linenum> "file"`` markers in the output so we can build the
+    expanded-line → source-line map accurately. We then strip the
+    marker lines ourselves to produce parser input, and the map is
+    constructed from the same stream so it stays in sync line-for-line
+    with what the parser actually sees.
 
-    1. ``cpp -P`` (no line markers) → the actual source for the parser.
-       ``-P`` keeps output line-numbering meaningful for the tree
-       only when no ``#include`` / ``#ifdef`` adds/removes lines; for
-       files where it does, positions in the tree won't directly map
-       to the source.
-    2. ``cpp`` (with line markers) → used to build a line map back to
-       the original source.
-
-    The cost is one extra ``cpp`` invocation per file. Acceptable for
-    Phase 0; can be optimised later by running a single ``cpp -E``
-    and stripping markers ourselves.
+    Earlier versions called cpp twice (once with ``-P``, once without)
+    and built the map from the with-markers stream. That produced a
+    line-count mismatch because ``-P`` also suppresses the blank
+    lines surrounding suppressed markers — diagnostics on cpp'd files
+    consistently appeared 1-2 lines above their real source position.
     """
     cpp = _find_cpp()
     p = Path(path)
 
-    def _run(extra: list[str]) -> bytes:
-        cmd = [cpp, *extra]
-        for d in defines:
-            cmd.append("-D" + d)
-        for inc in include_paths:
-            cmd.append("-I" + str(inc))
-        cmd.append(str(p))
-        r = subprocess.run(cmd, capture_output=True)
-        if r.returncode != 0:
-            err = r.stderr.decode("utf-8", "replace").strip().splitlines()
-            raise CppFailedError(
-                f"cpp failed on {p.name} (rc={r.returncode})",
-                err[0] if err else "(no message)",
-            )
-        return r.stdout
+    cmd = [cpp]  # no -P, we need the markers
+    for d in defines:
+        cmd.append("-D" + d)
+    for inc in include_paths:
+        cmd.append("-I" + str(inc))
+    cmd.append(str(p))
+    r = subprocess.run(cmd, capture_output=True)
+    if r.returncode != 0:
+        err = r.stderr.decode("utf-8", "replace").strip().splitlines()
+        raise CppFailedError(
+            f"cpp failed on {p.name} (rc={r.returncode})",
+            err[0] if err else "(no message)",
+        )
+    raw = r.stdout
 
-    expanded = _run(["-P"])
-    with_markers = _run([])
-    line_map = _build_line_map(with_markers, p)
+    expanded_lines: list[bytes] = []
+    line_map: list[int | None] = []
+    target = str(p)
+    target_resolved = str(p.resolve())
+    target_name = p.name
+    current_file: str | None = None
+    current_line: int = 1
+
+    for line in raw.splitlines(keepends=True):
+        # A line marker looks like ``# 123 "filename" [flags]``. We
+        # decode each line as latin-1 (lossless single-byte) just for
+        # the marker scan; the line itself stays as raw bytes when
+        # we copy it into the parser input.
+        is_marker = False
+        if line.startswith(b"# ") and b'"' in line:
+            try:
+                head = line.decode("ascii", "ignore")
+                rest = head[2:]
+                num_str, rest = rest.split(" ", 1)
+                lineno = int(num_str)
+                first = rest.index('"') + 1
+                second = rest.index('"', first)
+                current_file = rest[first:second]
+                current_line = lineno
+                is_marker = True
+            except (ValueError, IndexError):
+                pass
+        if is_marker:
+            continue
+        expanded_lines.append(line)
+        if current_file in (target, target_resolved, target_name):
+            line_map.append(current_line)
+        else:
+            line_map.append(None)
+        current_line += 1
+
+    expanded = b"".join(expanded_lines)
     tree = parse_text(expanded)
-    return PreprocessedSource(tree=tree, expanded_text=expanded, line_map=line_map)
+    return PreprocessedSource(
+        tree=tree, expanded_text=expanded, line_map=tuple(line_map),
+    )
 
 
 # ---------------------------------------------------------------------------

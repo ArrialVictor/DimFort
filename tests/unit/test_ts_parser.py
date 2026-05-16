@@ -277,3 +277,29 @@ class TestCppShim:
                     if n.type == "variable_declaration")
         expanded_line = ts.position_for(decl).line
         assert pre.source_line(expanded_line) == 2
+
+    def test_line_map_survives_ifdef_drop(self, tmp_path: Path):
+        # Regression for the drift bug: when ``#ifdef X`` removes
+        # lines, the line_map must keep node positions pointing at
+        # the *source* line of the surviving content, not the
+        # post-stripping line. Here ``integer :: keep`` is on source
+        # line 5; after preprocessing strips the ``#ifdef OFF`` block
+        # (lines 2-4), it appears on expanded line 1. The map must
+        # recover source line 5.
+        f = tmp_path / "x.F90"
+        f.write_text(textwrap.dedent("""\
+            subroutine s
+            #ifdef OFF
+              integer :: dropped
+            #endif
+              integer :: keep
+            end subroutine
+        """))
+        pre = ts.parse_with_cpp(f)
+        decl = next(
+            n for n in ts.walk(pre.tree.root_node)
+            if n.type == "variable_declaration"
+        )
+        expanded_line = ts.position_for(decl).line
+        # `keep` is on source line 5 of the original file
+        assert pre.source_line(expanded_line) == 5

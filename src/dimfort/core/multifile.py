@@ -80,15 +80,34 @@ class WorksetResult:
 
 @dataclass(frozen=True)
 class _Loaded:
-    """Per-file intermediate state for one workset pass."""
+    """Per-file intermediate state for one workset pass.
+
+    On ``.F90`` files where CPP preprocessing is needed (to make
+    modules buried inside ``#ifdef`` blocks visible), we keep two
+    trees:
+
+    - ``tree`` is the *primary* parse — the cpp-expanded one when cpp
+      ran, the raw one otherwise. The checker walks this tree because
+      it's where module / use semantics are visible.
+    - ``raw_tree`` is the raw parse, populated only when ``tree``
+      came from cpp. Its node positions match the on-disk file. The
+      LSP enrichment handlers walk this tree because they receive
+      cursor positions in source coordinates.
+
+    Diagnostics emitted by the checker are remapped from expanded →
+    source line numbers via ``line_map`` before publish.
+    """
 
     path: Path
     text: str
-    source: bytes              # raw UTF-8 bytes fed to tree-sitter
+    source: bytes              # bytes ``tree`` was actually built from
     scan: object
     attachment: AttachmentResult
     tree: Tree | None          # None only if the file couldn't be read
     load_error: str | None
+    line_map: tuple[int | None, ...] | None = None
+    raw_tree: Tree | None = None
+    raw_source: bytes | None = None
 
 
 def _load_one(
@@ -132,26 +151,63 @@ def _load_one(
                 pre = _ts.parse_with_cpp(
                     path, defines=cpp_defines, include_paths=include_paths,
                 )
-                # Replace source with the preprocessed bytes so node
-                # positions / text extracts line up with what the tree
-                # actually contains. Diagnostics will point at expanded
-                # line numbers; line-map remapping back to source lives
-                # in PreprocessedSource for future use.
-                return _Loaded(
-                    path, text, pre.expanded_text, scan, attachment, pre.tree, None,
-                )
             except _ts.CppFailedError as exc:
                 # cpp couldn't preprocess this file (missing include,
                 # syntax error in a directive). Surface as a load
                 # failure; tree-sitter's raw parse would garble
                 # continuations anyway.
                 return _Loaded(path, text, source, scan, attachment, None, exc.stderr)
+            # Two-tree mode: cpp'd tree for the checker (correct
+            # semantics), raw tree for the LSP (source-coordinate
+            # positions). Cost is ~3 ms extra per .F90 file; tree-
+            # sitter parses in single-digit ms.
+            raw_tree = _ts.parse_text(source)
+            return _Loaded(
+                path, text, pre.expanded_text, scan, attachment,
+                pre.tree, None, line_map=pre.line_map,
+                raw_tree=raw_tree, raw_source=source,
+            )
         tree = _ts.parse_text(source)
     except Exception as exc:
         # tree-sitter shouldn't fail on valid bytes, but we mirror the
         # error path so callers can rely on a uniform _Loaded shape.
         return _Loaded(path, text, source, scan, attachment, None, str(exc))
     return _Loaded(path, text, source, scan, attachment, tree, None)
+
+
+def _remap_diagnostic(
+    d: Diagnostic, line_map: tuple[int | None, ...] | None,
+) -> Diagnostic:
+    """Remap a diagnostic's positions from expanded → source coordinates.
+
+    No-op for files parsed raw (``line_map is None``). Lines that came
+    from an ``#include`` (``line_map[idx] is None``) are clamped to the
+    nearest known source line so the diagnostic still publishes
+    somewhere useful rather than being silently dropped.
+    """
+    if line_map is None:
+        return d
+
+    def _src(line_1based: int) -> int:
+        idx = line_1based - 1
+        if 0 <= idx < len(line_map):
+            mapped = line_map[idx]
+            if mapped is not None:
+                return mapped
+            # Walk backward to the previous source-line entry.
+            for j in range(idx - 1, -1, -1):
+                if line_map[j] is not None:
+                    return line_map[j]  # type: ignore[return-value]
+        return line_1based
+
+    return Diagnostic(
+        file=d.file,
+        start=Position(_src(d.start.line), d.start.column),
+        end=Position(_src(d.end.line), d.end.column),
+        severity=d.severity,
+        code=d.code,
+        message=d.message,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -326,9 +382,15 @@ def check_files(
             continue
 
     # Expose per-file (tree, source_bytes) for the LSP to reuse on
-    # hover/inlay/goto.
+    # hover/inlay/goto. When cpp ran, we publish the raw-source tree
+    # so positions match the on-disk file. Otherwise the primary tree
+    # is already in source coordinates.
     for entry in loaded:
-        if entry.tree is not None:
+        if entry.tree is None:
+            continue
+        if entry.raw_tree is not None and entry.raw_source is not None:
+            result.trees[entry.path] = (entry.raw_tree, entry.raw_source)
+        else:
             result.trees[entry.path] = (entry.tree, entry.source)
 
     # Phase C — index modules + signatures across the workset.
@@ -410,17 +472,18 @@ def check_files(
                 _u007(entry.path, f"Module '{missing}' not found in workset")
             )
 
-        diags.extend(
-            ts_checker.check(
-                entry.tree,
-                per_file_var_units,
-                source=entry.source,
-                file=str(entry.path),
-                table=active_table,
-                signatures=per_file_sigs,
-                field_units=merged_field_units_text,
-            )
+        check_diags = ts_checker.check(
+            entry.tree,
+            per_file_var_units,
+            source=entry.source,
+            file=str(entry.path),
+            table=active_table,
+            signatures=per_file_sigs,
+            field_units=merged_field_units_text,
         )
+        # Remap to source coordinates when the file went through cpp.
+        # No-op when ``line_map`` is None (file parsed raw).
+        diags.extend(_remap_diagnostic(d, entry.line_map) for d in check_diags)
         result.diagnostics[entry.path] = diags
         if progress_cb is not None:
             progress_cb("check", di, total, entry.path)

@@ -712,27 +712,44 @@ def _check_call_args_against_sig(
 # ---------------------------------------------------------------------------
 
 
-def collect_var_types(tree: Tree, source: bytes) -> dict[str, str]:
-    """Return ``{varname_lc: type_name_lc}`` for every ``type(NAME) :: …`` decl.
+def _decl_type_name(decl: Node, source: bytes) -> str | None:
+    """Pull the type name from a ``variable_declaration``.
 
-    Walks every ``variable_declaration`` and looks for a ``type_name``
-    child (which appears when the declared type is a derived type,
-    e.g. ``type(particle) :: p`` — the ``Particle`` becomes
-    ``type_name``). Names of declared entities come from the same
-    direct-children scan the scanner uses.
+    Tree-sitter's Fortran grammar wraps the declared type differently
+    depending on whether it's intrinsic or derived:
+
+    - ``real :: x``         → ``intrinsic_type`` child, no ``type_name``.
+    - ``type(particle) :: p`` → ``derived_type`` child containing a
+      ``type_name`` child. The ``derived_type`` wrapper is what trips
+      up a direct-children scan for ``type_name``.
+
+    Returns the type name (case preserved) when the declaration uses
+    a derived type, or ``None`` for intrinsic types.
     """
+    for c in decl.children:
+        if c.type == "derived_type":
+            inner = next((cc for cc in c.children if cc.type == "type_name"), None)
+            if inner is not None:
+                return _text(inner, source)
+        elif c.type == "type_name":
+            # Grammar variants occasionally surface type_name directly;
+            # keep the fallback so a future grammar tweak doesn't break us.
+            return _text(c, source)
+    return None
+
+
+def collect_var_types(tree: Tree, source: bytes) -> dict[str, str]:
+    """Return ``{varname_lc: type_name_lc}`` for every ``type(NAME) :: …`` decl."""
     out: dict[str, str] = {}
     for n in _ts.walk(tree.root_node):
         if n.type != "variable_declaration":
             continue
-        type_name_node = next((c for c in n.children if c.type == "type_name"), None)
-        if type_name_node is None:
+        tn = _decl_type_name(n, source)
+        if tn is None:
             continue
-        tn = _text(type_name_node, source).lower()
-        # Reuse the same wrapper logic as the scanner: identifiers can
-        # be direct or wrapped in sized_declarator/init_declarator.
+        tn_lc = tn.lower()
         for vn in _collect_decl_names(n, source):
-            out[vn.lower()] = tn
+            out[vn.lower()] = tn_lc
     return out
 
 
@@ -761,14 +778,11 @@ def collect_type_field_types(
         for decl in n.children:
             if decl.type != "variable_declaration":
                 continue
-            field_struct = next(
-                (c for c in decl.children if c.type == "type_name"), None
-            )
-            if field_struct is None:
+            field_type = _decl_type_name(decl, source)
+            if field_type is None:
                 continue
-            field_struct_lc = _text(field_struct, source).lower()
             for vn in _collect_decl_names(decl, source):
-                out[(struct_lc, vn.lower())] = field_struct_lc
+                out[(struct_lc, vn.lower())] = field_type.lower()
     return out
 
 
