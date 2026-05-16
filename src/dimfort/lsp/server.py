@@ -191,11 +191,12 @@ _cpp_defines: tuple[str, ...] = ()
 # active file at publish time) or caching is intentionally disabled.
 _cache_dir: Path | None = None
 
-# Checker backend: "asr" (default; uses LFortran's resolved semantic
-# tree) or "ast" (parse tree only; handles F77-idiom files like
-# COMMON+PUBLIC that ASR rejects). Set at initialize from config and
+# Checker backend: "ast" (default since Phase 5; parse tree only,
+# handles F77-idiom files like COMMON+PUBLIC, no `lfortran -c`) or
+# "asr" (LFortran's resolved semantic tree, original pipeline kept
+# for comparison). Set at initialize from config and
 # initializationOptions; restart the LSP to switch.
-_backend: str = "asr"
+_backend: str = "ast"
 
 
 def _cap_workset(paths: list[Path], active: Path, limit: int) -> list[Path]:

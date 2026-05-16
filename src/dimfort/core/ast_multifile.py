@@ -278,18 +278,13 @@ def check_files_ast(
         # implicitly by Python's small-object reuse — and at this size
         # the cost is invisible. Keeps the check() public interface
         # uniform with the single-file path.
-        var_units_text = {
-            n: _units_mod.format_unit(u) for n, u in per_file_var_units.items()
-        }
-        # field_units flows straight through: it's keyed by
-        # ``(type, field)`` and there's no cross-file rename concept
-        # for derived-type fields the way there is for ``use``-imported
-        # variable names. Merge across all files so a consumer that
-        # uses a type declared elsewhere still sees its fields.
+        # Pass already-parsed Unit values straight through. The earlier
+        # ``parse → format_unit → parse`` round-trip broke on Unicode
+        # output (`m/s²` is not parseable input).
         diags.extend(
             ast_checker.check(
                 entry.ast,
-                var_units_text,
+                per_file_var_units,
                 file=str(entry.path),
                 table=active_table,
                 signatures=per_file_sigs,

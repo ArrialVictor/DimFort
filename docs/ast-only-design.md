@@ -46,7 +46,8 @@ What we deliberately do not re-implement:
 | 3 | Derived types, array elements/sections, kind casts (via existing TRANSPARENT intrinsics). | landed |
 | 3.5 | Parity hardening: emit U001/U002/U006/U010, file-level scoping (no bare-name leak). | landed |
 | 4 | Selectable backend (`[checker] backend = "ast" \| "asr"`) wired through CLI + LSP + VSCode. | landed |
-| 5 | Default flipped to AST; Phase 1 (lfortran -c) removed from `check_files`. | TBD |
+| 5 | Default flipped to AST in CLI + LSP + VSCode extension. ASR still available behind the flag. | landed |
+| 6 | Phase 1 (`lfortran -c`) removed from default path; cache + parallelism for AST loading. | TBD |
 
 ## Risks worth tracking
 

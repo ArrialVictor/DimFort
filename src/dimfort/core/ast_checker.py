@@ -789,21 +789,31 @@ def check(
             "no unit table available — import dimfort.core.unit_config"
         )
 
+    # ``var_units`` accepts either {name: unit_text} (the public API)
+    # or {name: Unit} (used by ``ast_multifile`` to skip a redundant
+    # parse/format round-trip — ``format_unit`` emits Unicode that the
+    # parser doesn't round-trip on).
     parsed: dict[str, Unit] = {}
-    for name, text in var_units.items():
-        try:
-            parsed[name] = _units_mod.parse(text, active_table)
-        except UnitError:
-            continue
+    for name, value in var_units.items():
+        if isinstance(value, Unit):
+            parsed[name] = value
+        else:
+            try:
+                parsed[name] = _units_mod.parse(value, active_table)
+            except UnitError:
+                continue
 
     parsed_field_units: dict[tuple[str, str], Unit] = {}
-    for (tn, fn), text in (field_units or {}).items():
-        try:
-            parsed_field_units[(tn.lower(), fn.lower())] = _units_mod.parse(
-                text, active_table
-            )
-        except UnitError:
-            continue
+    for (tn, fn), value in (field_units or {}).items():
+        if isinstance(value, Unit):
+            parsed_field_units[(tn.lower(), fn.lower())] = value
+        else:
+            try:
+                parsed_field_units[(tn.lower(), fn.lower())] = _units_mod.parse(
+                    value, active_table
+                )
+            except UnitError:
+                continue
 
     if signatures is None:
         signatures = collect_function_signatures(ast, parsed)
