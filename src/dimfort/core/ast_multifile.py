@@ -235,6 +235,12 @@ def check_files_ast(
         except UnitError:
             continue
 
+    # Expose per-file (tree, source_bytes) for the LSP to reuse on
+    # hover/inlay/goto — without re-parsing.
+    for entry in loaded:
+        if entry.tree is not None:
+            result.trees[entry.path] = (entry.tree, entry.source)
+
     # Phase C: aggregate module exports and global signatures across
     # every successfully-loaded file.
     module_exports: dict[str, ModuleExports] = {}
