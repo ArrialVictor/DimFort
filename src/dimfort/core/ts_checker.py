@@ -462,7 +462,10 @@ def _emit_u005_for_unannotated(
     in many expressions yields a single squiggle on its declaration.
     """
     # First pass: collect names that are *queried* in a checked context.
+    # Also remember the earliest usage site per name so we can point the
+    # user at one concrete location in the U005 message.
     queried: set[str] = set()
+    first_use: dict[str, tuple[int, int]] = {}
 
     def _mark_identifier(ident: Node) -> None:
         name = _ts.node_text(ident, source)
@@ -473,7 +476,12 @@ def _emit_u005_for_unannotated(
             return
         if any(k.lower() == name.lower() for k in ctx.var_units):
             return
-        queried.add(name.lower())
+        key = name.lower()
+        queried.add(key)
+        sr, sc = ident.start_point
+        prior = first_use.get(key)
+        if prior is None or (sr, sc) < prior:
+            first_use[key] = (sr, sc)
 
     def _walk_operands(expr: Node | None) -> None:
         if expr is None:
@@ -528,6 +536,10 @@ def _emit_u005_for_unannotated(
             if key in seen:
                 continue
             seen.add(key)
+            use_hint = ""
+            usage = first_use.get(name_lc)
+            if usage is not None and usage[0] != sr:
+                use_hint = f" (e.g. used at line {usage[0] + 1})"
             out.append(
                 Diagnostic(
                     file=ctx.file,
@@ -537,7 +549,8 @@ def _emit_u005_for_unannotated(
                     code="U005",
                     message=(
                         f"{_ts.node_text(name_node, source)!r} is used in a "
-                        f"unit-checked expression but has no @unit{{}} annotation"
+                        f"unit-checked expression but has no @unit{{}} "
+                        f"annotation{use_hint}"
                     ),
                 )
             )
