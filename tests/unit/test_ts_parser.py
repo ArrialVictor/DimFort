@@ -13,7 +13,6 @@ import pytest
 
 from dimfort.core import ts_parser as ts
 
-
 # ---------------------------------------------------------------------------
 # Group 1 — Basic parse + walk
 # Smoke tests for each public entry point. They look redundant but each
@@ -181,7 +180,7 @@ def test_broken_section_does_not_abort_rest_of_file():
 def test_node_text_decodes_utf8():
     # LMDZ source has French comments. The wrapper must decode them
     # without raising on multi-byte characters.
-    src = "! French: éclair\nmodule m\nend module\n".encode("utf-8")
+    src = "! French: éclair\nmodule m\nend module\n".encode()
     tree = ts.parse_text(src)
     comments = [n for n in ts.walk(tree.root_node) if n.type == "comment"]
     assert "éclair" in ts.node_text(comments[0], src)

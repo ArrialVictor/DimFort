@@ -23,12 +23,11 @@ External / unresolvable modules:
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Iterator
 
 from dimfort.core.annotations import _comment_start
-
 
 # ---------------------------------------------------------------------------
 # Regexes

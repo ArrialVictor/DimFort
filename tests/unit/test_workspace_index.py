@@ -4,8 +4,6 @@ from __future__ import annotations
 from pathlib import Path
 from textwrap import dedent
 
-import pytest
-
 from dimfort.core.workspace_index import (
     UseRef,
     extract_modules,
@@ -14,7 +12,6 @@ from dimfort.core.workspace_index import (
     scan_workspace,
     update_index,
 )
-
 
 # ---------------------------------------------------------------------------
 # Source extraction

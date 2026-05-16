@@ -12,7 +12,6 @@ from pathlib import Path
 from dimfort.core._source_io import read_text
 from dimfort.core.annotations import scan_file
 
-
 # `é` (0xe9) is valid Latin-1 but an invalid standalone UTF-8 byte.
 _LATIN1_SAMPLE = b"module foo\n! commentaire en fran\xe9ais\nend module foo\n"
 

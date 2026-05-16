@@ -6,7 +6,6 @@ from pathlib import Path
 from dimfort.core import unit_config  # noqa: F401 — populate DEFAULT_TABLE
 from dimfort.core.multifile import check_files
 
-
 CLEAN = """\
 program p
   implicit none

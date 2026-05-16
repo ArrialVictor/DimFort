@@ -7,10 +7,11 @@ easy to regress when changing node-shape logic.
 """
 from __future__ import annotations
 
-from dimfort.core import unit_config  # noqa: F401  — installs DEFAULT_TABLE
-from dimfort.core import ts_checker
+from dimfort.core import (
+    ts_checker,
+    unit_config,  # noqa: F401  — installs DEFAULT_TABLE
+)
 from dimfort.core import ts_parser as ts
-from dimfort.core import units as _units_mod
 
 
 def _check(src: str, var_units: dict[str, str]) -> list:

@@ -19,10 +19,10 @@ strings instead of the LFortran ``node`` discriminator.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import Iterable
 
 from tree_sitter import Node, Tree
 
@@ -31,17 +31,16 @@ from dimfort.core import units as _units_mod
 from dimfort.core.diagnostics import Diagnostic, Position, Severity
 from dimfort.core.symbols import (
     DIMENSIONLESS_INTRINSICS,
-    FuncSig,
-    ModuleExports,
     PRODUCT_INTRINSICS,
     REDUCTION_INTRINSICS,
     SAME_UNIT_ARG_INTRINSICS,
     TRANSFORMING_INTRINSICS,
     TRANSPARENT_INTRINSICS,
+    FuncSig,
+    ModuleExports,
     apply_use_clauses,
 )
 from dimfort.core.units import Unit, UnitError, UnitTable, equal_dim, format_unit
-
 
 _RATIONAL_EXPONENT_MAX_DENOMINATOR = 100
 
@@ -697,7 +696,12 @@ def _check_call_args_against_sig(
     ctx: _Ctx,
     source: bytes,
 ) -> Iterable[Diagnostic]:
-    for i, (expected, actual_node) in enumerate(zip(sig.arg_units, arg_exprs)):
+    # ``strict=False``: it's normal for the call site to pass fewer
+    # arguments than the signature declares (Fortran allows trailing
+    # optional args). We check whichever pairs we can match.
+    for i, (expected, actual_node) in enumerate(
+        zip(sig.arg_units, arg_exprs, strict=False)
+    ):
         if expected is None or actual_node is None:
             continue
         actual = _resolve(actual_node, ctx, source)

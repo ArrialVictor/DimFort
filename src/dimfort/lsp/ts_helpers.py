@@ -11,13 +11,12 @@ Conventions (mirroring :mod:`dimfort.core.ts_parser`):
 """
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from typing import Iterable, Iterator
 
 from tree_sitter import Node, Tree
 
 from dimfort.core import ts_parser as _ts
-
 
 # ---------------------------------------------------------------------------
 # Position containment
@@ -36,9 +35,7 @@ def node_contains(node: Node, line_1based: int, col_1based: int) -> bool:
         return False
     # End-point is exclusive in tree-sitter, but we treat the last byte
     # inclusively so a click on the final char of a node still hovers.
-    if row == er and col > ec:
-        return False
-    return True
+    return not (row == er and col > ec)
 
 
 def node_size(node: Node) -> int:

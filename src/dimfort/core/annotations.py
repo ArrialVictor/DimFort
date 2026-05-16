@@ -325,9 +325,10 @@ def _scan_declarations(source: str) -> list[DeclarationSite]:
         # Smallest containing range wins (handles nested definitions).
         best: tuple[int, int, str] | None = None
         for lo, hi, name in type_ranges:
-            if lo <= byte_offset < hi:
-                if best is None or (hi - lo) < (best[1] - best[0]):
-                    best = (lo, hi, name)
+            if lo <= byte_offset < hi and (
+                best is None or (hi - lo) < (best[1] - best[0])
+            ):
+                best = (lo, hi, name)
         return best[2] if best else None
 
     # Second pass: every variable_declaration becomes a DeclarationSite.

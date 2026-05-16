@@ -78,7 +78,10 @@ def test_escaped_quote_inside_string():
 
 
 def test_complex_unit_text_preserved():
-    """Operators and parens inside ``{...}`` survive verbatim — algebra is the parser's job, not ours."""
+    """Operators and parens inside ``{...}`` survive verbatim.
+
+    Unit-algebra parsing is the parser's job, not the scanner's.
+    """
     src = "real :: f !< @unit{(kg*m)/s^2}\n"
     anns, _ = _scan(src)
     assert anns[0].unit_text == "(kg*m)/s^2"
