@@ -27,9 +27,6 @@ log = logging.getLogger("dimfort.config")
 CONFIG_FILENAME = ".dimfort.toml"
 
 
-VALID_BACKENDS: frozenset[str] = frozenset({"ast", "asr"})
-
-
 @dataclass(frozen=True)
 class DimfortConfig:
     """Resolved configuration. ``None`` means "not set, fall through to
@@ -44,14 +41,6 @@ class DimfortConfig:
     # [workset]
     max_workset_size: int | None = None
     external_modules: tuple[str, ...] = ()
-
-    # [lfortran]
-    lfortran_binary: Path | None = None
-    include_paths: tuple[Path, ...] = ()
-    cpp_defines: tuple[str, ...] = ()
-
-    # [checker]
-    backend: str | None = None    # "ast" | "asr"; None → caller default
 
 
 def find_config(start: Path) -> Path | None:
@@ -114,42 +103,12 @@ def _from_raw(raw: dict, path: Path) -> DimfortConfig:
         if isinstance(m, str)
     )
 
-    lfortran_section = raw.get("lfortran", {}) or {}
-    binary_raw = lfortran_section.get("binary")
-    lfortran_binary = (
-        (base / binary_raw).resolve() if isinstance(binary_raw, str) else None
-    )
-    include_paths_raw = lfortran_section.get("include_paths", []) or []
-    include_paths = tuple(
-        (base / p).resolve()
-        for p in include_paths_raw
-        if isinstance(p, str)
-    )
-    cpp_defines_raw = lfortran_section.get("cpp_defines", []) or []
-    cpp_defines = tuple(
-        d for d in cpp_defines_raw if isinstance(d, str) and d
-    )
-
-    checker_section = raw.get("checker", {}) or {}
-    backend_raw = checker_section.get("backend")
-    if isinstance(backend_raw, str) and backend_raw.lower() in VALID_BACKENDS:
-        backend = backend_raw.lower()
-    else:
-        if backend_raw is not None:
-            log.warning(
-                "ignoring [checker].backend = %r in %s; "
-                "expected one of %s",
-                backend_raw, path, sorted(VALID_BACKENDS),
-            )
-        backend = None
+    # Legacy [lfortran] and [checker] sections are silently ignored.
+    # Unknown keys never break the loader (forward compatibility).
 
     return DimfortConfig(
         config_path=path,
         src_paths=src_paths,
         max_workset_size=max_size,
         external_modules=external_modules,
-        lfortran_binary=lfortran_binary,
-        include_paths=include_paths,
-        cpp_defines=cpp_defines,
-        backend=backend,
     )

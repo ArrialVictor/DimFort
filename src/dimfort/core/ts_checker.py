@@ -28,21 +28,18 @@ from tree_sitter import Node, Tree
 
 from dimfort.core import ts_parser as _ts
 from dimfort.core import units as _units_mod
-from dimfort.core.ast_checker import (
-    # Pure-data structures with no AST dependency — re-used.
-    ModuleExports,
-    apply_use_clauses,
-)
-from dimfort.core.checker import (
+from dimfort.core.diagnostics import Diagnostic, Position, Severity
+from dimfort.core.symbols import (
     DIMENSIONLESS_INTRINSICS,
     FuncSig,
+    ModuleExports,
     PRODUCT_INTRINSICS,
     REDUCTION_INTRINSICS,
     SAME_UNIT_ARG_INTRINSICS,
     TRANSFORMING_INTRINSICS,
     TRANSPARENT_INTRINSICS,
+    apply_use_clauses,
 )
-from dimfort.core.diagnostics import Diagnostic, Position, Severity
 from dimfort.core.units import Unit, UnitError, UnitTable, equal_dim, format_unit
 
 

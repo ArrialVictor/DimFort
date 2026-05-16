@@ -9,11 +9,13 @@ from dimfort.config import (
 
 
 def test_no_config_returns_empty(tmp_path):
+    """No ``.dimfort.toml`` anywhere → an empty :class:`DimfortConfig`."""
     cfg = load_config(tmp_path)
     assert cfg == DimfortConfig()
 
 
 def test_find_walks_upward(tmp_path):
+    """``find_config`` ascends parent directories until it hits the file."""
     nested = tmp_path / "a" / "b" / "c"
     nested.mkdir(parents=True)
     (tmp_path / CONFIG_FILENAME).write_text("")
@@ -22,13 +24,15 @@ def test_find_walks_upward(tmp_path):
 
 
 def test_find_starts_from_file_parent(tmp_path):
+    """When given a file path, ``find_config`` walks from its parent dir."""
     (tmp_path / CONFIG_FILENAME).write_text("")
     src = tmp_path / "src.f90"
     src.write_text("")
     assert find_config(src) == (tmp_path / CONFIG_FILENAME).resolve()
 
 
-def test_parses_all_sections(tmp_path):
+def test_parses_supported_sections(tmp_path):
+    """Currently-supported sections (project, workset) parse into the dataclass."""
     (tmp_path / CONFIG_FILENAME).write_text("""
 [project]
 src_paths = ["src/", "dyn3d_common/"]
@@ -36,9 +40,6 @@ src_paths = ["src/", "dyn3d_common/"]
 [workset]
 max_size = 80
 external_modules = ["ioipsl", "netcdf", "MPI"]
-
-[lfortran]
-binary = "tools/lfortran"
 """)
     cfg = load_config(tmp_path)
     assert cfg.config_path == (tmp_path / CONFIG_FILENAME).resolve()
@@ -49,10 +50,36 @@ binary = "tools/lfortran"
     assert cfg.max_workset_size == 80
     # External modules lower-cased.
     assert cfg.external_modules == ("ioipsl", "netcdf", "mpi")
-    assert cfg.lfortran_binary == (tmp_path / "tools" / "lfortran").resolve()
+
+
+def test_legacy_sections_silently_ignored(tmp_path):
+    """Old ``[lfortran]`` and ``[checker]`` sections are accepted but ignored.
+
+    Keeps backward compatibility for projects whose ``.dimfort.toml``
+    still carries the pre-tree-sitter keys.
+    """
+    (tmp_path / CONFIG_FILENAME).write_text("""
+[project]
+src_paths = ["src/"]
+
+[lfortran]
+binary = "tools/lfortran"
+include_paths = [".dimfort/stubs"]
+cpp_defines = ["ISO"]
+
+[checker]
+backend = "asr"
+""")
+    cfg = load_config(tmp_path)
+    # The supported field is still picked up; legacy keys don't appear
+    # as attributes anywhere.
+    assert cfg.src_paths == ((tmp_path / "src").resolve(),)
+    assert not hasattr(cfg, "lfortran_binary")
+    assert not hasattr(cfg, "backend")
 
 
 def test_malformed_returns_empty_but_records_path(tmp_path):
+    """A malformed TOML file logs a warning but doesn't crash the loader."""
     cfg_file = tmp_path / CONFIG_FILENAME
     cfg_file.write_text("not = valid = toml")
     cfg = load_config(tmp_path)
@@ -62,6 +89,7 @@ def test_malformed_returns_empty_but_records_path(tmp_path):
 
 
 def test_unknown_keys_ignored(tmp_path):
+    """Future-compatibility: unknown keys / sections never break the loader."""
     (tmp_path / CONFIG_FILENAME).write_text("""
 [project]
 src_paths = ["x"]
@@ -75,6 +103,7 @@ anything = 42
 
 
 def test_invalid_max_size_is_dropped(tmp_path):
+    """A negative ``max_size`` is treated as "unset" rather than accepted."""
     (tmp_path / CONFIG_FILENAME).write_text("""
 [workset]
 max_size = -5
@@ -84,51 +113,10 @@ max_size = -5
 
 
 def test_string_max_size_is_dropped(tmp_path):
+    """A non-int ``max_size`` is treated as "unset" without raising."""
     (tmp_path / CONFIG_FILENAME).write_text("""
 [workset]
 max_size = "lots"
 """)
     cfg = load_config(tmp_path)
     assert cfg.max_workset_size is None
-
-
-def test_checker_backend_ast(tmp_path):
-    (tmp_path / CONFIG_FILENAME).write_text("""
-[checker]
-backend = "ast"
-""")
-    cfg = load_config(tmp_path)
-    assert cfg.backend == "ast"
-
-
-def test_checker_backend_asr(tmp_path):
-    (tmp_path / CONFIG_FILENAME).write_text("""
-[checker]
-backend = "asr"
-""")
-    cfg = load_config(tmp_path)
-    assert cfg.backend == "asr"
-
-
-def test_checker_backend_case_insensitive(tmp_path):
-    (tmp_path / CONFIG_FILENAME).write_text("""
-[checker]
-backend = "AST"
-""")
-    cfg = load_config(tmp_path)
-    assert cfg.backend == "ast"
-
-
-def test_checker_backend_invalid_dropped(tmp_path):
-    (tmp_path / CONFIG_FILENAME).write_text("""
-[checker]
-backend = "neural-net"
-""")
-    cfg = load_config(tmp_path)
-    assert cfg.backend is None
-
-
-def test_no_checker_section_defaults_none(tmp_path):
-    (tmp_path / CONFIG_FILENAME).write_text("[project]\nsrc_paths = []\n")
-    cfg = load_config(tmp_path)
-    assert cfg.backend is None

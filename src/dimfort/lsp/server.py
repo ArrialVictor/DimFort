@@ -34,16 +34,14 @@ from lsprotocol import types as lsp
 from pygls.lsp.server import LanguageServer
 
 from dimfort import __version__
-from dimfort import cache as _cache_mod
 from dimfort.config import DimfortConfig, load_config
-from dimfort.core import lfortran as lf
 from dimfort.core import ts_checker
 from dimfort.core import ts_parser as _ts
 from dimfort.core import unit_config  # noqa: F401  populates DEFAULT_TABLE
 from dimfort.core import units as _units_mod
-from dimfort.core.checker import FuncSig
 from dimfort.core.diagnostics import Diagnostic, Severity
 from dimfort.core.multifile import WorksetResult, check_files
+from dimfort.core.symbols import FuncSig
 from dimfort.core.workspace_index import (
     WorkspaceIndex,
     resolve_workset,
@@ -171,30 +169,6 @@ _max_workset_size: int = _DEFAULT_MAX_WORKSET
 # worker-thread read. Don't introduce code paths that read these
 # state vars before the initialize handler returns.
 _project_config: DimfortConfig = DimfortConfig()
-
-# Path to the LFortran binary, when explicitly set via config. ``None``
-# means "fall through to the discovery order in ``find_lfortran``."
-_lfortran_binary: str | None = None
-
-# Extra include directories passed to LFortran as ``-I PATH``. Source
-# of truth is ``[lfortran] include_paths`` in the project config.
-_include_paths: tuple[Path, ...] = ()
-
-# CPP macros passed to LFortran as ``-D MACRO``. Source of truth is
-# ``[lfortran] cpp_defines`` in the project config.
-_cpp_defines: tuple[str, ...] = ()
-
-# Resolved cache directory, computed once at initialize. ``None`` means
-# either no workspace folders were provided (we'll derive from the
-# active file at publish time) or caching is intentionally disabled.
-_cache_dir: Path | None = None
-
-# Checker backend: "ast" (default since Phase 5; parse tree only,
-# handles F77-idiom files like COMMON+PUBLIC, no `lfortran -c`) or
-# "asr" (LFortran's resolved semantic tree, original pipeline kept
-# for comparison). Set at initialize from config and
-# initializationOptions; restart the LSP to switch.
-_backend: str = "ast"
 
 
 def _cap_workset(paths: list[Path], active: Path, limit: int) -> list[Path]:
@@ -369,35 +343,12 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
     if override_text is not None:
         overrides[active.resolve()] = override_text
 
-    # Cache lives under the first workspace folder, resolved once at
-    # initialize. For loose opens (no workspace), derive from the
-    # active file's parent — uncommon enough to compute on demand.
-    cache_dir = _cache_dir
-    if cache_dir is None:
-        cache_dir = _cache_mod.default_cache_dir(active.resolve().parent)
-
     try:
-        if _backend == "ast":
-            from dimfort.core.ast_multifile import check_files_ast
-            result = check_files_ast(
-                paths,
-                overrides=overrides,
-                lfortran=_lfortran_binary,
-                external_modules=_external_modules,
-                include_paths=_include_paths,
-                cpp_defines=_cpp_defines,
-                cache_dir=cache_dir,
-            )
-        else:
-            result = check_files(
-                paths,
-                overrides=overrides,
-                cache_dir=cache_dir,
-                lfortran=_lfortran_binary,
-            )
-    except lf.LFortranNotFound as exc:
-        log.warning("lfortran not found: %s", exc)
-        return
+        result = check_files(
+            paths,
+            overrides=overrides,
+            external_modules=_external_modules,
+        )
     except Exception:
         log.exception("dimfort pipeline crashed on %s", active)
         return
@@ -666,28 +617,20 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
     _workspace_folders = folders
 
     # Load .dimfort.toml from the first workspace folder, if any.
-    global _project_config, _lfortran_binary, _cache_dir
-    global _include_paths, _cpp_defines
+    global _project_config
     if folders:
         _project_config = load_config(folders[0])
-        _cache_dir = _cache_mod.default_cache_dir(folders[0])
     config = _project_config
-    _include_paths = config.include_paths
-    _cpp_defines = config.cpp_defines
 
     # Start from config-provided values; initializationOptions override.
     _external_modules_from_config = _DEFAULT_EXTERNAL_MODULES | frozenset(
         config.external_modules
     )
     opts = params.initialization_options or {}
-    global _external_modules, _max_workset_size, _backend
+    global _external_modules, _max_workset_size
     _external_modules = _external_modules_from_config
     if config.max_workset_size is not None:
         _max_workset_size = config.max_workset_size
-    if config.lfortran_binary is not None:
-        _lfortran_binary = str(config.lfortran_binary)
-    if config.backend is not None:
-        _backend = config.backend
 
     if isinstance(opts, dict):
         _features.inlay_hints = bool(opts.get("inlayHintsEnabled", True))
@@ -704,9 +647,6 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         cap = opts.get("maxWorksetSize")
         if isinstance(cap, int) and cap > 0:
             _max_workset_size = cap
-        backend_opt = opts.get("backend")
-        if isinstance(backend_opt, str) and backend_opt.lower() in ("ast", "asr"):
-            _backend = backend_opt.lower()
 
     config_note = (
         f" (config: {config.config_path.name})"
@@ -716,8 +656,8 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
     _notify(
         ls,
         f"DimFort LSP initialised — {len(folders)} folder(s), "
-        f"{len(_external_modules)} external module(s) on allowlist, "
-        f"backend={_backend}{config_note}",
+        f"{len(_external_modules)} external module(s) on allowlist"
+        f"{config_note}",
     )
 
 
@@ -1414,10 +1354,6 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
         _notify(ls, "DimFort: no Fortran files in workspace")
         return
 
-    cache_dir = _cache_dir
-    if cache_dir is None and _workspace_folders:
-        cache_dir = _cache_mod.default_cache_dir(_workspace_folders[0])
-
     token = f"dimfort-workspace-check-{int(time.time() * 1000)}"
     progress = ls.work_done_progress
     progress_started = False
@@ -1435,10 +1371,7 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
     except Exception:
         log.debug("could not start workDoneProgress for checkWorkspace", exc_info=True)
 
-    _notify(
-        ls,
-        f"DimFort: checking workspace ({len(files)} files, backend={_backend})…",
-    )
+    _notify(ls, f"DimFort: checking workspace ({len(files)} files)…")
 
     last_report_at = [0.0]   # mutable via closure
     # Each AST pipeline phase walks every file once. Show the user
@@ -1472,23 +1405,11 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
 
     with _check_lock:
         try:
-            if _backend == "ast":
-                from dimfort.core.ast_multifile import check_files_ast
-                result = check_files_ast(
-                    files,
-                    lfortran=_lfortran_binary,
-                    external_modules=_external_modules,
-                    include_paths=_include_paths,
-                    cpp_defines=_cpp_defines,
-                    cache_dir=cache_dir,
-                    progress_cb=on_load_progress,
-                )
-            else:
-                result = check_files(
-                    files,
-                    lfortran=_lfortran_binary,
-                    cache_dir=cache_dir,
-                )
+            result = check_files(
+                files,
+                external_modules=_external_modules,
+                progress_cb=on_load_progress,
+            )
         except Exception:
             log.exception("workspace check failed")
             if progress_started:
