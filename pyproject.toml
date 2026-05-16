@@ -21,8 +21,8 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
-    # Fortran parsing — choice TBD (fparser vs lfortran); pinned later
-    # LSP framework — choice TBD (likely pygls)
+    "tree-sitter>=0.25",
+    "tree-sitter-fortran>=0.6,<0.7",
 ]
 
 [project.optional-dependencies]
