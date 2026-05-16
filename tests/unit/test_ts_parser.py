@@ -21,6 +21,7 @@ from dimfort.core import ts_parser as ts
 # any of them removes coverage for that shape.
 
 def test_parse_text_returns_tree():
+    """``parse_text`` accepts ``str`` and returns a clean ``translation_unit`` tree."""
     tree = ts.parse_text("module m\nend module\n")
     assert tree.root_node.type == "translation_unit"
     assert not tree.root_node.has_error
@@ -34,6 +35,7 @@ def test_parse_text_accepts_bytes():
 
 
 def test_parse_file(tmp_path: Path):
+    """``parse_file`` accepts a ``Path`` and reads the source itself."""
     f = tmp_path / "x.f90"
     f.write_text("program p\nend program\n")
     tree = ts.parse_file(f)
@@ -156,6 +158,7 @@ def test_continuation_comments_keep_their_physical_lines():
 # is full of constructs LFortran rejects outright.
 
 def test_clean_source_reports_no_error():
+    """On a well-formed file, ``has_error`` is ``False`` and ``error_nodes`` is empty."""
     tree = ts.parse_text("module m\nend module\n")
     assert not ts.has_error(tree)
     assert list(ts.error_nodes(tree)) == []

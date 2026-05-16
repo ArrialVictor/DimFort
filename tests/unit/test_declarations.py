@@ -1,7 +1,7 @@
 """Tests for the declaration scanner.
 
-The scanner is now backed by tree-sitter (``core.ts_parser``). These
-tests exercise the public ``scan_text`` API; the implementation can be
+The scanner is backed by tree-sitter (``core.ts_parser``). These tests
+exercise the public ``scan_text`` API; the implementation can be
 replaced as long as it produces the same ``DeclarationSite`` records.
 """
 from dimfort.core.annotations import DeclarationSite, scan_text
@@ -12,21 +12,29 @@ def _decls(src: str) -> list[DeclarationSite]:
 
 
 def test_single_real():
+    """A bare ``real :: v`` produces one site with the name and 1-based line."""
     decls = _decls("real :: v\n")
     assert decls == [DeclarationSite(1, 1, ("v",))]
 
 
 def test_declaration_list():
+    """Comma-separated names on one line come out in source order."""
     decls = _decls("real :: a, b, c\n")
     assert decls == [DeclarationSite(1, 1, ("a", "b", "c"))]
 
 
 def test_integer_with_attributes():
+    """A ``, parameter`` qualifier and ``= 10`` initializer don't hide the name."""
     decls = _decls("integer, parameter :: N = 10\n")
     assert decls == [DeclarationSite(1, 1, ("N",))]
 
 
 def test_continuation_two_lines():
+    """A ``&``-continued decl spans both physical lines and lists all names.
+
+    This is the headline scenario LFortran 0.63's AST misreports
+    (position drift). Tree-sitter must return ``line_start=1, line_end=2``.
+    """
     src = (
         "real :: a, &\n"
         "        b\n"
@@ -36,6 +44,7 @@ def test_continuation_two_lines():
 
 
 def test_continuation_three_lines():
+    """Three-line continuation: line_start=1 and line_end=3, all names."""
     src = (
         "real :: pressure, &\n"
         "        temperature, &\n"
@@ -46,6 +55,7 @@ def test_continuation_three_lines():
 
 
 def test_continuation_with_trailing_post_comment_on_first_line():
+    """A trailing ``!<`` on the first line of a continuation doesn't truncate the decl extent."""
     src = (
         "real :: a1, &           !< @unit{kg}\n"
         "        a2, &\n"
@@ -56,6 +66,7 @@ def test_continuation_with_trailing_post_comment_on_first_line():
 
 
 def test_continuation_with_trailing_post_comment_on_last_line():
+    """A trailing ``!<`` on the last line of a continuation doesn't truncate the decl extent."""
     src = (
         "real :: pressure, &\n"
         "        temperature, &\n"
@@ -66,27 +77,35 @@ def test_continuation_with_trailing_post_comment_on_last_line():
 
 
 def test_type_with_dimension_attribute():
+    """Identifiers inside ``dimension(n)`` are NOT counted as declared names.
+
+    Only the entity (``v``) is declared; the ``n`` in the attribute is
+    a *use* of an existing name and lives under ``type_qualifier``.
+    """
     decls = _decls("real, dimension(3) :: v\n")
     assert decls == [DeclarationSite(1, 1, ("v",))]
 
 
 def test_derived_type_var():
+    """``type(particle) :: p`` declares ``p`` (no enclosing type scope opened)."""
     decls = _decls("type(particle) :: p\n")
     assert decls == [DeclarationSite(1, 1, ("p",))]
 
 
 def test_initializer_not_in_name():
+    """``real :: g = 9.81`` yields one name ``g`` — the literal is not collected."""
     decls = _decls("real :: g = 9.81\n")
     assert decls == [DeclarationSite(1, 1, ("g",))]
 
 
 def test_initializer_array_with_commas():
-    # Commas inside `( /1,2,3/ )` are NOT entity separators.
+    """Commas inside ``(/1,2,3/)`` are array-constructor separators, not entity separators."""
     decls = _decls("integer :: v(3) = (/1, 2, 3/)\n")
     assert decls == [DeclarationSite(1, 1, ("v",))]
 
 
 def test_non_declaration_lines_are_ignored():
+    """Only declaration statements produce sites; program headers, ``implicit none``, and assignments do not."""
     src = (
         "program p\n"
         "  implicit none\n"
@@ -99,6 +118,7 @@ def test_non_declaration_lines_are_ignored():
 
 
 def test_multiple_declarations_in_order():
+    """Several independent declarations come back in source order."""
     src = (
         "real :: a\n"
         "integer :: b\n"
@@ -109,7 +129,12 @@ def test_multiple_declarations_in_order():
 
 
 def test_amp_inside_string_does_not_continue():
-    # The `&` is inside a string literal — should NOT trigger continuation.
+    """An ``&`` inside a string literal must not be mistaken for a line continuation.
+
+    Without proper string handling, ``character :: s = 'A & B'`` would
+    appear to continue onto the next line and would swallow the
+    following ``real :: v`` declaration.
+    """
     src = (
         "character(20) :: s = 'A & B'\n"
         "real :: v\n"
@@ -125,6 +150,11 @@ def test_amp_inside_string_does_not_continue():
 
 
 def test_field_decl_records_enclosing_type():
+    """A decl inside ``type :: NAME ... end type`` carries ``enclosing_type=NAME``.
+
+    Decls after ``end type`` revert to ``enclosing_type=None`` —
+    confirming we leave the block scope cleanly.
+    """
     src = (
         "type :: particle\n"
         "  real :: m\n"
@@ -140,6 +170,7 @@ def test_field_decl_records_enclosing_type():
 
 
 def test_type_block_with_attributes():
+    """``type, public :: NAME`` still records ``NAME`` as the enclosing scope."""
     src = (
         "type, public :: state\n"
         "  real :: temp\n"
@@ -150,22 +181,25 @@ def test_type_block_with_attributes():
 
 
 def test_type_declaration_as_use_is_not_a_block_open():
-    # `type(particle) :: b` is a *use* of a type, not a definition.
+    """``type(NAME) :: x`` declares ``x``; it must NOT open a NAME-scoped block.
+
+    Distinguishing "type Foo definition" from "use of Foo as a type
+    spec" is the source of subtle bugs in regex-based scanners. Pin it.
+    """
     src = "type(particle) :: b\n"
     decls = _decls(src)
     assert decls == [DeclarationSite(1, 1, ("b",), enclosing_type=None)]
 
 
 def test_declarations_recover_around_syntax_errors():
-    # The capability tree-sitter unlocked over the previous scanner:
-    # a broken statement in the middle of a subroutine no longer hides
-    # the declarations that follow. Here ``real :: a`` and
-    # ``real :: c`` must still be recovered even though the line in
-    # between is ungrammatical. The old regex scanner would have
-    # accepted this case anyway (it never tried to validate non-
-    # declaration lines) — but with tree-sitter the recovery extends
-    # to genuinely syntactically broken Fortran, not just unknown
-    # statements.
+    """Decls after a syntactically broken statement are still recovered.
+
+    The capability tree-sitter unlocked over the previous scanner: a
+    parse error in the middle of a subroutine no longer hides the
+    declarations that follow. The old regex scanner already tolerated
+    *unknown* statements (it never validated non-decl lines); with
+    tree-sitter the tolerance extends to *ungrammatical* Fortran.
+    """
     src = (
         "subroutine s\n"
         "  real :: a\n"
