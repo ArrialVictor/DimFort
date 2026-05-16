@@ -503,13 +503,28 @@ def _hover_signature(name: str, sig: FuncSig) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _node_lsp_range(node) -> lsp.Range:
+    """Convert a tree-sitter node's extent to an LSP 0-based ``Range``."""
+    sr, sc = node.start_point
+    er, ec = node.end_point
+    return lsp.Range(
+        start=lsp.Position(line=sr, character=sc),
+        end=lsp.Position(line=er, character=ec),
+    )
+
+
 def _resolve_hover(
     uri: str,
     line_1based: int,
     col_1based: int,
     source_text: str | None,  # accepted for caller compatibility; unused
-) -> str | None:
-    """Return formatted hover text for ``(line, col)``, or ``None``.
+) -> tuple[str, lsp.Range] | None:
+    """Return ``(markdown_text, range)`` for the hover at ``(line, col)``.
+
+    Returning the range alongside the text is what lets VSCode display
+    the "Go to Definition" / "Peek" affordances at the bottom of the
+    hover popup. Without it, VSCode doesn't know which symbol the
+    hover is for and suppresses those links.
 
     Dispatch order, tightest-fit wins inside each category:
 
@@ -547,7 +562,7 @@ def _resolve_hover(
         sig = result.signatures.get(name.lower())
         if sig is None:
             continue
-        return _hover_signature(name, sig)
+        return _hover_signature(name, sig), _node_lsp_range(name_node)
 
     # 2. Derived-type member access — tightest enclosing wins so the
     #    innermost ``a%b`` in ``a%b%c`` doesn't shadow the outer.
@@ -555,8 +570,6 @@ def _resolve_hover(
         _ts_h.walk_member_exprs(tree), line_1based, col_1based
     )
     if member_hit is not None:
-        # Need var_types for this file to resolve b's type for a%b%c.
-        # Build a one-off mini-context.
         ctx = _build_ts_ctx(result, source, str(resolved_path))
         ctx.var_types.update(ts_checker.collect_var_types(tree, source))
         ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
@@ -564,7 +577,7 @@ def _resolve_hover(
         base, path = _ts_h.member_expr_chain(member_hit, source)
         if base is not None and path:
             display = f"{base}%{'%'.join(path)}"
-            return _hover_text(display, _unit_pretty(unit))
+            return _hover_text(display, _unit_pretty(unit)), _node_lsp_range(member_hit)
 
     # 3. Call expression / subroutine call.
     call_hit = _ts_h.smallest_enclosing(
@@ -575,7 +588,14 @@ def _resolve_hover(
         if name is not None:
             sig = result.signatures.get(name.lower())
             if sig is not None:
-                return _hover_signature(name, sig)
+                # Range the callee identifier specifically so the
+                # "Go to Definition" link targets the callable name,
+                # not the whole call expression including its args.
+                callee = next(
+                    (c for c in call_hit.children if c.type == "identifier"),
+                    call_hit,
+                )
+                return _hover_signature(name, sig), _node_lsp_range(callee)
 
     # 4. Bare identifier — variable reference. Includes call-callee
     # identifiers as a fallback: if step 3 already returned a
@@ -591,12 +611,15 @@ def _resolve_hover(
         name = _ts.node_text(ident, source)
         unit = result.merged_var_units.get(name)
         if unit is not None:
-            return _hover_text(name, _unit_pretty(unit))
+            return _hover_text(name, _unit_pretty(unit)), _node_lsp_range(ident)
         # Lower-case fallback for var_units keyed by original case.
         for k, u in result.merged_var_units.items():
             if k.lower() == name.lower():
-                return _hover_text(name, _unit_pretty(u))
-        return _hover_text(name, "no unit annotation", show_unit_label=False)
+                return _hover_text(name, _unit_pretty(u)), _node_lsp_range(ident)
+        return (
+            _hover_text(name, "no unit annotation", show_unit_label=False),
+            _node_lsp_range(ident),
+        )
     return None
 
 
@@ -890,11 +913,13 @@ def _hover(ls: LanguageServer, params: lsp.HoverParams) -> Any:
         source_text = ls.workspace.get_text_document(uri).source
     except Exception:
         log.debug("could not fetch buffer text for %s", uri)
-    text = _resolve_hover(uri, line, col, source_text)
-    if text is None:
+    hit = _resolve_hover(uri, line, col, source_text)
+    if hit is None:
         return None
+    text, range_ = hit
     return lsp.Hover(
-        contents=lsp.MarkupContent(kind=lsp.MarkupKind.Markdown, value=text)
+        contents=lsp.MarkupContent(kind=lsp.MarkupKind.Markdown, value=text),
+        range=range_,
     )
 
 
