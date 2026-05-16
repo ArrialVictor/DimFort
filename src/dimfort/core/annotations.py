@@ -1,17 +1,24 @@
 """Doxygen ``@unit{...}`` annotation scanner.
 
-Stage 1: pure text pass over a Fortran source file. Recognises Doxygen
-comment markers (``!>``, ``!<``, ``!!``) and extracts ``@unit{...}``
-annotations carried inside them. Does **not** attach annotations to
-declarations yet — that's stage 2 (joining with LFortran's AST/ASR).
+Stage 1: produces two streams from a Fortran source file —
+``RawAnnotation`` records (every ``@unit{...}`` occurrence) and
+``DeclarationSite`` records (every ``real :: x``, ``integer :: i``,
+etc. statement). Stage 2 (:mod:`dimfort.core.attach`) joins them by
+physical line range.
 
-Why a separate stage 1:
+Two scanners, two independent reasons for existing:
 
-- The scanner is the only place that needs to understand Fortran string
-  literals (so ``!`` inside a string isn't a comment).
-- Stage 2 can then operate on a clean stream of ``(kind, line, unit)``
-  triples without re-tokenising.
-- Easier to unit-test against tiny fixtures.
+- The **comment scanner** (everything in the ``@unit`` extraction
+  section below) is the only place that needs to understand Fortran
+  string literals so a ``!`` inside ``"hello!"`` isn't mistaken for a
+  comment marker. Kept hand-written and string-aware.
+- The **declaration scanner** uses tree-sitter (``core.ts_parser``).
+  Previously regex-based — but a regex scanner that handles F90 +
+  F77-flavoured idioms + continuations + derived-type blocks
+  accurately is hard to maintain, and the LFortran-AST-based approach
+  it replaced suffered from position drift on ``&``-continuations.
+  Tree-sitter is the third (and we hope final) implementation: byte-
+  exact positions, real grammar, handles every fixture we cover.
 
 Restrictions in v1 (documented; relax later if needed):
 
@@ -19,9 +26,6 @@ Restrictions in v1 (documented; relax later if needed):
   ``@unit{`` … ``}`` across ``!>`` continuation lines are not parsed.
 - At most one ``@unit{...}`` per comment line. A second one is reported
   as :class:`MalformedAnnotation`.
-
-See ``Homogeneity/PROJECT_LOG.md`` (§4ter) for the attachment rules
-that the upstream stage will apply.
 """
 from __future__ import annotations
 
@@ -29,6 +33,8 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+
+from dimfort.core import ts_parser as _ts
 
 
 class AnnotationKind(StrEnum):
@@ -202,7 +208,7 @@ def scan_text(source: str) -> ScanResult:
         errors.extend(errs)
         if kind is AnnotationKind.PRE:
             pre_block_lines.add(line_no)
-    declarations = tuple(_scan_declarations(lines))
+    declarations = tuple(_scan_declarations(source))
     return ScanResult(
         annotations=tuple(annotations),
         errors=tuple(errors),
@@ -212,158 +218,143 @@ def scan_text(source: str) -> ScanResult:
 
 
 # ---------------------------------------------------------------------------
-# Source-side declaration scanner
+# Tree-sitter declaration scanner
 # ---------------------------------------------------------------------------
 #
-# Why source-side? LFortran 0.63 has a position-tracking bug where each
-# `&`-continued statement collapses to 2 reported lines internally,
-# shifting subsequent declarations' `type_line` backward by 1 per prior
-# continuation. That makes ASR positions unusable as the source of truth
-# for annotation→declaration matching. Probing fixtures with continued
-# decls confirms the drift: the second decl after a 3-line continued one
-# is reported at physical_line - 1.
+# We let tree-sitter's Fortran grammar identify declaration statements
+# instead of hand-rolling a regex matcher. Each ``variable_declaration``
+# node already spans the right physical line range (including
+# ``&``-continuations) and exposes top-level ``identifier`` children
+# for the names being declared. Names inside a ``type_qualifier``
+# (e.g. the ``n`` in ``real, dimension(n) :: arr``) are nested deeper
+# and are correctly ignored by taking only direct children.
 #
-# So: we identify declarations from text directly. The grammar handled
-# below is the common F90 subset; it is intentionally narrow and will
-# need extension for LMDZ-grade real code.
+# Type-block scoping (``type :: Foo ... end type``) comes from the
+# ``derived_type_definition`` wrapper node; any ``variable_declaration``
+# whose start byte sits within a derived_type_definition's span is a
+# field of that type, not a free-standing variable.
 
 
-_DECL_PREFIX_RE = re.compile(
-    r"""^\s*
-        ( real \b
-        | integer \b
-        | logical \b
-        | complex \b
-        | character \b
-        | double \s+ precision \b
-        | type      \s* \( [^)]+ \)
-        | class     \s* \( [^)]+ \)
-        )
-    """,
-    re.IGNORECASE | re.VERBOSE,
-)
-
-# `type :: foo` / `type, attr :: foo` / `type foo` — the start of a
-# derived-type definition block. Must be matched against the code part
-# of the line (comments stripped) since we case-fold via re.IGNORECASE.
-# A trailing `(` after `type` (as in `type(foo) :: bar`) is a *use*, not
-# a definition; the regex disallows that by requiring whitespace,
-# punctuation, or end-of-string immediately after the keyword.
-_TYPE_BLOCK_START_RE = re.compile(
-    r"""^\s*
-        type
-        \s*
-        (?: , [^:]* :: \s* | :: \s* | \s+ )
-        ([A-Za-z_]\w*)
-    """,
-    re.IGNORECASE | re.VERBOSE,
-)
-
-_TYPE_BLOCK_END_RE = re.compile(
-    r"^\s* end \s* type \b", re.IGNORECASE | re.VERBOSE
-)
+# The leading identifier of a declared entity can arrive wrapped in one
+# of three shapes, depending on whether the declaration carries an
+# array spec, an initializer, or neither::
+#
+#   real :: a                → direct ``identifier`` child
+#   real :: a(3)             → ``sized_declarator`` wrapping ``identifier``
+#   real :: a = 1.0          → ``init_declarator`` wrapping ``identifier``
+#   real :: a(3) = (/.../)   → ``init_declarator`` wrapping ``sized_declarator``
+#
+# We accept all three and recurse one level if the immediate child is
+# a wrapper. Identifiers inside attribute expressions (the ``n`` in
+# ``real, dimension(n) :: arr``) live under ``type_qualifier`` and are
+# not visited.
+_NAME_WRAPPERS = {"sized_declarator", "init_declarator"}
 
 
-_ENTITY_NAME_RE = re.compile(r"\s*([A-Za-z_]\w*)")
-
-
-def _split_top_level_commas(s: str) -> list[str]:
-    """Split ``s`` on commas that sit at paren-depth 0."""
-    out: list[str] = []
-    buf: list[str] = []
-    depth = 0
-    for ch in s:
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        elif ch == "," and depth == 0:
-            out.append("".join(buf))
-            buf = []
-            continue
-        buf.append(ch)
-    if buf:
-        out.append("".join(buf))
-    return out
-
-
-def _extract_names_from_entity_list(entity_list: str) -> list[str]:
-    """Return the variable names from a Fortran ``entity-list``.
-
-    ``a, b, c`` → ``["a", "b", "c"]``.
-    ``a = 1, b(3), c = (/0,0,0/)`` → ``["a", "b", "c"]``.
-    """
+def _ts_decl_names(decl_node) -> list[str]:
+    """Return the variable names declared by a ``variable_declaration``."""
     names: list[str] = []
-    for entity in _split_top_level_commas(entity_list):
-        m = _ENTITY_NAME_RE.match(entity)
-        if m:
-            names.append(m.group(1))
+    for c in decl_node.children:
+        if c.type == "identifier":
+            names.append(c.text.decode("utf-8", "replace"))
+            continue
+        if c.type in _NAME_WRAPPERS:
+            inner = _ts_declarator_name(c)
+            if inner is not None:
+                names.append(inner)
     return names
 
 
-def _scan_declarations(lines: list[str]) -> list[DeclarationSite]:
-    """Walk physical lines and emit one :class:`DeclarationSite` per stmt.
+def _ts_declarator_name(node) -> str | None:
+    """Find the leading identifier inside a declarator wrapper.
 
-    Tracks ``type :: NAME`` blocks so each emitted site knows whether
-    it sits inside a derived-type definition (and which one). Nested
-    type definitions are unusual in F90; we use a stack defensively.
+    Walks descendants until the first ``identifier`` — that's the name
+    of the declared entity (everything after it is dimension spec or
+    initializer).
     """
+    for c in node.children:
+        if c.type == "identifier":
+            return c.text.decode("utf-8", "replace")
+        if c.type in _NAME_WRAPPERS:
+            inner = _ts_declarator_name(c)
+            if inner is not None:
+                return inner
+    return None
+
+
+def _ts_type_name(type_def_node) -> str | None:
+    """Pull the type name out of a ``derived_type_definition`` node.
+
+    The first ``derived_type_statement`` child carries a ``type_name``
+    child whose text is the user-visible name (preserving case, per
+    Fortran source convention).
+    """
+    stmt = next(
+        (c for c in type_def_node.children if c.type == "derived_type_statement"),
+        None,
+    )
+    if stmt is None:
+        return None
+    name_node = next((c for c in stmt.children if c.type == "type_name"), None)
+    return name_node.text.decode("utf-8", "replace") if name_node else None
+
+
+def _scan_declarations(source: str) -> list[DeclarationSite]:
+    """Walk a tree-sitter Fortran tree and emit one :class:`DeclarationSite` per decl.
+
+    The scanner is deliberately tolerant: a parse with ``ERROR`` nodes
+    (e.g. a syntactically broken statement somewhere in the file) still
+    yields declarations from the well-formed regions. This matters for
+    real-world LMDZ files that occasionally contain F77 idioms the
+    grammar doesn't fully model.
+    """
+    tree = _ts.parse_text(source)
+    root = tree.root_node
+
+    # First pass: every derived-type definition's byte-range → its name.
+    # Storing byte-ranges (not line ranges) lets us nest correctly when
+    # one type definition starts on the same line another ends on.
+    type_ranges: list[tuple[int, int, str]] = []
+    for n in _ts.walk(root):
+        if n.type == "derived_type_definition":
+            name = _ts_type_name(n)
+            if name is not None:
+                type_ranges.append((n.start_byte, n.end_byte, name))
+
+    def enclosing_type_at(byte_offset: int) -> str | None:
+        # Smallest containing range wins (handles nested definitions).
+        best: tuple[int, int, str] | None = None
+        for lo, hi, name in type_ranges:
+            if lo <= byte_offset < hi:
+                if best is None or (hi - lo) < (best[1] - best[0]):
+                    best = (lo, hi, name)
+        return best[2] if best else None
+
+    # Second pass: every variable_declaration becomes a DeclarationSite.
     out: list[DeclarationSite] = []
-    type_stack: list[str] = []
-    i = 0
-    while i < len(lines):
-        col = _comment_start(lines[i])
-        code = lines[i][:col] if col is not None else lines[i]
-
-        # Track entering / leaving a `type :: NAME ... end type` block.
-        if _TYPE_BLOCK_END_RE.match(code):
-            if type_stack:
-                type_stack.pop()
-            i += 1
+    for n in _ts.walk(root):
+        if n.type != "variable_declaration":
             continue
-        m_open = _TYPE_BLOCK_START_RE.match(code)
-        if m_open:
-            type_stack.append(m_open.group(1))
-            i += 1
-            continue
-
-        if not _DECL_PREFIX_RE.match(code):
-            i += 1
-            continue
-
-        # Found a declaration start at line i+1. Walk forward through
-        # `&`-continuation lines until the statement ends.
-        line_start = i + 1
-        chunks: list[str] = []
-        j = i
-        while j < len(lines):
-            ccol = _comment_start(lines[j])
-            ccode = lines[j][:ccol] if ccol is not None else lines[j]
-            stripped = ccode.rstrip()
-            if stripped.endswith("&"):
-                chunks.append(stripped[:-1])
-                j += 1
-                if j >= len(lines):
-                    break
-            else:
-                chunks.append(stripped)
-                j += 1
-                break
-        line_end = j  # j is 1-past-last in 0-based → equals 1-based last line
-
-        joined = " ".join(chunks)
-        sep = joined.find("::")
-        if sep != -1:
-            names = _extract_names_from_entity_list(joined[sep + 2:])
-            if names:
-                enclosing = type_stack[-1] if type_stack else None
-                out.append(
-                    DeclarationSite(
-                        line_start, line_end, tuple(names),
-                        enclosing_type=enclosing,
-                    )
-                )
-        i = j
+        names = _ts_decl_names(n)
+        if not names:
+            continue  # e.g. a malformed half-declaration we shouldn't attach to
+        start = _ts.position_for(n).line
+        end = _ts.end_position_for(n).line
+        # If the node ends exactly at the start of the next line (because
+        # tree-sitter includes the trailing newline), prefer the previous
+        # physical line as the real end.
+        if end > start:
+            end_col = n.end_point[1]
+            if end_col == 0:
+                end -= 1
+        out.append(
+            DeclarationSite(
+                line_start=start,
+                line_end=end,
+                names=tuple(names),
+                enclosing_type=enclosing_type_at(n.start_byte),
+            )
+        )
     return out
 
 

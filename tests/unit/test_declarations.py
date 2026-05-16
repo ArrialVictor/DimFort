@@ -1,4 +1,9 @@
-"""Tests for the source-side declaration scanner."""
+"""Tests for the declaration scanner.
+
+The scanner is now backed by tree-sitter (``core.ts_parser``). These
+tests exercise the public ``scan_text`` API; the implementation can be
+replaced as long as it produces the same ``DeclarationSite`` records.
+"""
 from dimfort.core.annotations import DeclarationSite, scan_text
 
 
@@ -149,3 +154,26 @@ def test_type_declaration_as_use_is_not_a_block_open():
     src = "type(particle) :: b\n"
     decls = _decls(src)
     assert decls == [DeclarationSite(1, 1, ("b",), enclosing_type=None)]
+
+
+def test_declarations_recover_around_syntax_errors():
+    # The capability tree-sitter unlocked over the previous scanner:
+    # a broken statement in the middle of a subroutine no longer hides
+    # the declarations that follow. Here ``real :: a`` and
+    # ``real :: c`` must still be recovered even though the line in
+    # between is ungrammatical. The old regex scanner would have
+    # accepted this case anyway (it never tried to validate non-
+    # declaration lines) — but with tree-sitter the recovery extends
+    # to genuinely syntactically broken Fortran, not just unknown
+    # statements.
+    src = (
+        "subroutine s\n"
+        "  real :: a\n"
+        "  *** completely broken ***\n"
+        "  real :: c\n"
+        "end subroutine\n"
+    )
+    decls = _decls(src)
+    names = [d.names for d in decls]
+    assert ("a",) in names
+    assert ("c",) in names
