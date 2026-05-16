@@ -1,0 +1,306 @@
+"""Tree-sitter Fortran parser wrapper.
+
+Phase 0 of the tree-sitter migration. Mirrors the API surface of
+:mod:`dimfort.core.lfortran` but uses ``tree-sitter`` + ``tree-sitter-
+fortran`` instead of an LFortran subprocess.
+
+Why we're migrating to tree-sitter (in one paragraph): LFortran's AST
+positions drift on ``&``-continuations, ~16 LMDZ files trigger
+``Internal Compiler Errors`` we have to allowlist, parsing a 200 KB
+file takes ~100 ms and a 700 KB file far longer. Tree-sitter parses
+the same corpus in seconds, recovers from syntax errors with localised
+``ERROR`` nodes instead of fatal failures, gives byte-exact positions
+on every node including comments, and matches DimFort's
+linter-not-compiler philosophy. See ``Homogeneity/scratch/tree-
+sitter-eval/RESULTS.md`` for the benchmark numbers behind that claim.
+
+Position convention: tree-sitter exposes 0-based ``(row, column)`` on
+every node via ``start_point`` / ``end_point``. DimFort uses 1-based
+``line`` and ``column`` throughout (matching LSP, editors, compiler
+diagnostics). The :func:`position_for` helper bridges this; callers
+should never read ``node.start_point`` directly.
+
+CPP-preprocessed ``.F90`` files: tree-sitter has no built-in CPP, but
+its grammar is error-tolerant — raw ``#ifdef`` blocks parse with a
+small ERROR node and the surrounding Fortran code is recovered.
+Empirically (over 2424 LMDZ files, see the spike notes) most ``.F90``
+files parse acceptably raw, but continuations interleaved with
+``#ifdef`` lines lose argument-list structure. For those cases use
+:func:`parse_with_cpp`, which runs the system ``cpp`` first and parses
+the expanded text. Position remapping back to the source file is
+exposed via :class:`PreprocessedSource`.
+"""
+from __future__ import annotations
+
+import shutil
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterator, Sequence
+
+import tree_sitter_fortran as _tsf
+from tree_sitter import Language, Node, Parser, Tree
+
+
+# ---------------------------------------------------------------------------
+# Parser singleton
+
+_LANGUAGE: Language | None = None
+_PARSER: Parser | None = None
+
+
+def _parser() -> Parser:
+    """Lazy-create and reuse a single Parser instance.
+
+    Tree-sitter Parser is cheap to create but holding one instance
+    avoids re-loading the grammar shared object on every call.
+    """
+    global _LANGUAGE, _PARSER
+    if _PARSER is None:
+        _LANGUAGE = Language(_tsf.language())
+        _PARSER = Parser(_LANGUAGE)
+    return _PARSER
+
+
+# ---------------------------------------------------------------------------
+# Errors
+
+class TreeSitterError(Exception):
+    """Wraps a parse failure or CPP-shim failure."""
+
+
+class CppNotFoundError(TreeSitterError):
+    """The system ``cpp`` binary could not be located."""
+
+
+class CppFailedError(TreeSitterError):
+    """``cpp`` exited non-zero. ``stderr`` carries its first line."""
+
+    def __init__(self, message: str, stderr: str):
+        super().__init__(message)
+        self.stderr = stderr
+
+
+# ---------------------------------------------------------------------------
+# Plain parsing
+
+def parse_text(text: str | bytes) -> Tree:
+    """Parse Fortran source text. No preprocessing.
+
+    Accepts ``str`` (UTF-8 encoded under the hood) or ``bytes``. Use
+    ``bytes`` when you already have raw file content — saves a copy.
+    """
+    src = text.encode("utf-8") if isinstance(text, str) else text
+    return _parser().parse(src)
+
+
+def parse_file(path: str | Path) -> Tree:
+    """Parse a Fortran source file. No preprocessing.
+
+    For ``.F90`` files containing CPP directives, prefer
+    :func:`parse_with_cpp`. ``parse_file`` is appropriate for ``.f90``
+    or for ``.F90`` known to be directive-free.
+    """
+    return parse_text(Path(path).read_bytes())
+
+
+# ---------------------------------------------------------------------------
+# CPP-preprocessed parsing
+
+@dataclass(frozen=True)
+class PreprocessedSource:
+    """A parsed CPP-expanded source, plus a position remap.
+
+    ``tree`` is the parsed expanded source. ``expanded_text`` is the
+    bytes fed to the parser. ``line_map`` maps a 1-based expanded line
+    number to the corresponding 1-based original-source line number.
+
+    Lines from ``#include``-injected content map to ``None`` (callers
+    should normally not encounter them since DimFort doesn't analyse
+    code from .h includes).
+    """
+    tree: Tree
+    expanded_text: bytes
+    line_map: tuple[int | None, ...]  # index = expanded_line - 1
+
+    def source_line(self, expanded_line_1based: int) -> int | None:
+        """Map an expanded 1-based line number back to source."""
+        idx = expanded_line_1based - 1
+        if 0 <= idx < len(self.line_map):
+            return self.line_map[idx]
+        return None
+
+
+def _find_cpp() -> str:
+    cpp = shutil.which("cpp")
+    if cpp is None:
+        raise CppNotFoundError("system 'cpp' not found in PATH")
+    return cpp
+
+
+def _build_line_map(expanded_with_markers: bytes, source_path: Path) -> tuple[int | None, ...]:
+    """Walk a ``cpp``-output stream (with line markers) and build a map.
+
+    ``cpp`` emits ``# linenum "file"`` markers when called without
+    ``-P``. We use those to track which lines of the expanded output
+    correspond to which line of the original source. Lines from other
+    files (``#include`` expansions) map to ``None``.
+
+    The marker syntax is::
+
+      # <line> "<file>" [<flags>...]
+
+    Per GCC docs, lines in the output between two markers come from
+    the file the first marker names, starting at the line number the
+    first marker gives.
+    """
+    target = str(source_path)
+    target_realpath = str(source_path.resolve())
+    out_map: list[int | None] = []
+    current_file: str | None = None
+    current_line: int = 1
+    for raw in expanded_with_markers.splitlines():
+        line = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
+        if line.startswith("# ") and '"' in line:
+            try:
+                # # 123 "filename" [flags...]
+                rest = line[2:]
+                num_str, rest = rest.split(" ", 1)
+                lineno = int(num_str)
+                # Filename is between the first two quotes
+                first = rest.index('"') + 1
+                second = rest.index('"', first)
+                fname = rest[first:second]
+                current_file = fname
+                current_line = lineno
+                continue  # marker line itself is not in the expanded output
+            except (ValueError, IndexError):
+                pass  # malformed marker, treat as content
+        # This output line corresponds to current_file:current_line
+        if current_file in (target, target_realpath, source_path.name):
+            out_map.append(current_line)
+        else:
+            out_map.append(None)
+        current_line += 1
+    return tuple(out_map)
+
+
+def parse_with_cpp(
+    path: str | Path,
+    *,
+    defines: Sequence[str] = (),
+    include_paths: Sequence[str | Path] = (),
+) -> PreprocessedSource:
+    """Preprocess a Fortran file with system ``cpp`` then parse it.
+
+    On macOS ``cpp`` is a clang wrapper; ``-I`` must be passed as the
+    joined form ``-IPATH``, not ``-I PATH`` (the wrapper mis-parses
+    the split form). We use the joined form unconditionally — it
+    works on every platform we care about.
+
+    Two cpp invocations are run:
+
+    1. ``cpp -P`` (no line markers) → the actual source for the parser.
+       ``-P`` keeps output line-numbering meaningful for the tree
+       only when no ``#include`` / ``#ifdef`` adds/removes lines; for
+       files where it does, positions in the tree won't directly map
+       to the source.
+    2. ``cpp`` (with line markers) → used to build a line map back to
+       the original source.
+
+    The cost is one extra ``cpp`` invocation per file. Acceptable for
+    Phase 0; can be optimised later by running a single ``cpp -E``
+    and stripping markers ourselves.
+    """
+    cpp = _find_cpp()
+    p = Path(path)
+
+    def _run(extra: list[str]) -> bytes:
+        cmd = [cpp, *extra]
+        for d in defines:
+            cmd.append("-D" + d)
+        for inc in include_paths:
+            cmd.append("-I" + str(inc))
+        cmd.append(str(p))
+        r = subprocess.run(cmd, capture_output=True)
+        if r.returncode != 0:
+            err = r.stderr.decode("utf-8", "replace").strip().splitlines()
+            raise CppFailedError(
+                f"cpp failed on {p.name} (rc={r.returncode})",
+                err[0] if err else "(no message)",
+            )
+        return r.stdout
+
+    expanded = _run(["-P"])
+    with_markers = _run([])
+    line_map = _build_line_map(with_markers, p)
+    tree = parse_text(expanded)
+    return PreprocessedSource(tree=tree, expanded_text=expanded, line_map=line_map)
+
+
+# ---------------------------------------------------------------------------
+# Tree walking
+
+def walk(node: Node) -> Iterator[Node]:
+    """Pre-order depth-first walk over a tree-sitter node.
+
+    Yields ``node`` first, then descends into each child. Matches the
+    iteration order used by :func:`dimfort.core.lfortran.walk` so
+    callers porting from the LFortran API can swap implementations
+    without changing their loop logic.
+    """
+    yield node
+    for child in node.children:
+        yield from walk(child)
+
+
+# ---------------------------------------------------------------------------
+# Position helpers
+
+@dataclass(frozen=True)
+class SourcePosition:
+    """1-based ``(line, column)`` matching DimFort's diagnostic convention.
+
+    Tree-sitter exposes 0-based ``(row, column)``. This helper is the
+    only place we convert; callers should not read ``node.start_point``
+    directly.
+    """
+    line: int
+    column: int
+
+
+def position_for(node: Node) -> SourcePosition:
+    """Start position of a node in DimFort's 1-based convention."""
+    row, col = node.start_point
+    return SourcePosition(line=row + 1, column=col + 1)
+
+
+def end_position_for(node: Node) -> SourcePosition:
+    """End position (exclusive) of a node in 1-based convention."""
+    row, col = node.end_point
+    return SourcePosition(line=row + 1, column=col + 1)
+
+
+def node_text(node: Node, source: bytes) -> str:
+    """Extract the source text spanned by ``node`` as a Python ``str``.
+
+    Tree-sitter nodes don't carry their own text; the caller must
+    provide the original ``bytes``. UTF-8 decoded with ``replace`` so
+    LMDZ's French comments don't break the wrapper.
+    """
+    return source[node.start_byte:node.end_byte].decode("utf-8", "replace")
+
+
+# ---------------------------------------------------------------------------
+# Error inspection
+
+def has_error(tree: Tree) -> bool:
+    """``True`` if any node in the tree is ``ERROR`` or missing."""
+    return tree.root_node.has_error
+
+
+def error_nodes(tree: Tree) -> Iterator[Node]:
+    """Yield every ``ERROR`` or missing node in the tree."""
+    for n in walk(tree.root_node):
+        if n.type == "ERROR" or n.is_missing:
+            yield n
