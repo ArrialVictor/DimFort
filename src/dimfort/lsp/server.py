@@ -41,6 +41,7 @@ from dimfort.core import (
 )
 from dimfort.core import ts_parser as _ts
 from dimfort.core import units as _units_mod
+from dimfort.core._source_io import FORTRAN_EXTS as _FORTRAN_EXTS
 from dimfort.core.diagnostics import Diagnostic, Severity
 from dimfort.core.multifile import WorksetResult, check_files
 from dimfort.core.symbols import FuncSig
@@ -97,11 +98,6 @@ class _FeatureToggles:
 
 _features = _FeatureToggles()
 
-
-_FORTRAN_EXTS = {
-    ".f90", ".F90", ".f95", ".F95",
-    ".f03", ".F03", ".f08", ".F08",
-}
 
 _SEVERITY_TO_LSP = {
     Severity.ERROR: lsp.DiagnosticSeverity.Error,

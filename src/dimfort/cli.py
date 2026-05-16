@@ -51,6 +51,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable ANSI colour (also auto-disabled outside a TTY).",
     )
+    check.add_argument(
+        "--summary",
+        action="store_true",
+        help=(
+            "Print a per-file H/U diagnostic count summary after the "
+            "individual diagnostics."
+        ),
+    )
 
     lsp = sub.add_parser("lsp", help="Start the DimFort language server (stdio).")
     # Some LSP clients (vscode-languageclient with TransportKind.stdio) tack
@@ -91,22 +99,26 @@ def _run_check(args: argparse.Namespace) -> int:
     # Lazy imports keep ``dimfort --version`` fast.
     from dimfort.config import load_config
     from dimfort.core import unit_config  # populate DEFAULT_TABLE
+    from dimfort.core._source_io import FORTRAN_EXTS, discover_fortran_files
     from dimfort.core.diagnostics import Severity
     from dimfort.core.multifile import check_files
 
-    paths: list[Path] = []
+    roots: list[Path] = []
     for raw in args.paths:
         p = Path(raw)
-        if p.is_dir():
-            print(
-                f"dimfort: directory paths are not supported yet: {p}",
-                file=sys.stderr,
-            )
+        if not p.exists():
+            print(f"dimfort: path not found: {p}", file=sys.stderr)
             return 2
-        if not p.is_file():
-            print(f"dimfort: file not found: {p}", file=sys.stderr)
-            return 2
-        paths.append(p)
+        roots.append(p)
+
+    paths = discover_fortran_files(roots)
+    if not paths:
+        print(
+            "dimfort: no Fortran sources found "
+            f"(looked for {sorted(FORTRAN_EXTS)})",
+            file=sys.stderr,
+        )
+        return 2
 
     color = _color_enabled(args.no_color)
     error_count = 0
@@ -120,8 +132,8 @@ def _run_check(args: argparse.Namespace) -> int:
         print(_format_diag(file, line, severity, code, message, color=color))
 
     # Pick up CPP defines + include paths from .dimfort.toml, anchored
-    # on the first path passed on the command line.
-    config = load_config(paths[0])
+    # on the first path passed on the command line (file or directory).
+    config = load_config(roots[0])
     if config.units_file is not None:
         unit_config.install_default(config.units_file)
     result = check_files(
@@ -131,10 +143,43 @@ def _run_check(args: argparse.Namespace) -> int:
         external_modules=frozenset(config.external_modules),
     )
 
+    per_file_counts: list[tuple[Path, int, int]] = []
     for p in paths:
-        for d in result.diagnostics.get(p.resolve(), []):
+        diags = result.diagnostics.get(p.resolve(), [])
+        h = sum(1 for d in diags if d.code.startswith("H"))
+        u = sum(1 for d in diags if d.code.startswith("U"))
+        per_file_counts.append((p, h, u))
+        for d in diags:
             severity = "error" if d.severity is Severity.ERROR else "warning"
             emit(d.file, d.start.line, severity, d.code, d.message)
+
+    if args.summary and not args.quiet:
+        total_h = sum(h for _, h, _ in per_file_counts)
+        total_u = sum(u for _, _, u in per_file_counts)
+        files_with_issues = [
+            (p, h, u) for p, h, u in per_file_counts if h or u
+        ]
+        header = f"{_BOLD}Summary{_RESET}" if color else "Summary"
+        print()
+        print(header)
+        if files_with_issues:
+            name_width = max(len(str(p)) for p, _, _ in files_with_issues)
+            for p, h, u in files_with_issues:
+                line = f"  {str(p).ljust(name_width)}  {h:>3} H  {u:>3} U"
+                if color:
+                    if h:
+                        line = line.replace(
+                            f"{h:>3} H", f"{_RED}{h:>3} H{_RESET}"
+                        )
+                    if u:
+                        line = line.replace(
+                            f"{u:>3} U", f"{_YELLOW}{u:>3} U{_RESET}"
+                        )
+                print(line)
+        print(
+            f"  {len(paths)} file(s), "
+            f"{total_h} H-diagnostic(s), {total_u} U-diagnostic(s)"
+        )
 
     return 1 if error_count else 0
 

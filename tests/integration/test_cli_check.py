@@ -44,4 +44,50 @@ def test_check_missing_file_returns_two(capsys):
     rc = main(["check", "/nonexistent/path.f90", "--no-color"])
     err = capsys.readouterr().err
     assert rc == 2
-    assert "file not found" in err
+    assert "path not found" in err
+
+
+def test_check_directory_walks_fortran_sources(tmp_path, capsys):
+    """A directory argument is walked recursively for Fortran files."""
+    (tmp_path / "sub").mkdir()
+    bad = tmp_path / "sub" / "bad.f90"
+    bad.write_text(
+        "program p\n"
+        "  real :: m  !< @unit{kg}\n"
+        "  real :: v  !< @unit{m/s}\n"
+        "  m = v\n"
+        "end program p\n"
+    )
+    (tmp_path / "readme.txt").write_text("not fortran")
+    rc = main(["check", str(tmp_path), "--no-color"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "H001" in out
+    assert "bad.f90" in out
+
+
+def test_check_directory_with_no_sources_returns_two(tmp_path, capsys):
+    """A directory containing no Fortran files is a usage error."""
+    (tmp_path / "readme.txt").write_text("nothing")
+    rc = main(["check", str(tmp_path), "--no-color"])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "no Fortran sources" in err
+
+
+def test_check_summary_emits_per_file_counts(tmp_path, capsys):
+    """`--summary` prints a per-file H/U breakdown after diagnostics."""
+    f = tmp_path / "bad.f90"
+    f.write_text(
+        "program p\n"
+        "  real :: m  !< @unit{kg}\n"
+        "  real :: v  !< @unit{m/s}\n"
+        "  m = v\n"
+        "end program p\n"
+    )
+    rc = main(["check", str(f), "--no-color", "--summary"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "Summary" in out
+    assert "1 H" in out
+    assert "file(s)" in out
