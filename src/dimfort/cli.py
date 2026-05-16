@@ -67,10 +67,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--backend",
         choices=("ast", "asr"),
         help=(
-            "Checker backend. 'asr' (default) uses LFortran's resolved "
-            "semantic tree; 'ast' uses the syntactic parse tree only "
-            "(no `lfortran -c`, no ASR — handles F77-idiom files like "
-            "COMMON+PUBLIC that ASR rejects)."
+            "Checker backend. 'ast' (default) walks LFortran's parse "
+            "tree only — fast, no `lfortran -c`, handles F77-idiom "
+            "files like COMMON+PUBLIC that the semantic pass rejects. "
+            "'asr' falls back to LFortran's fully resolved tree (the "
+            "original DimFort pipeline; kept for comparison)."
         ),
     )
 
@@ -166,8 +167,8 @@ def _run_check(args: argparse.Namespace) -> int:
         str(project_config.lfortran_binary) if project_config.lfortran_binary else None
     )
 
-    # Backend precedence: --backend > config > "asr"
-    backend = args.backend or project_config.backend or "asr"
+    # Backend precedence: --backend > config > "ast" (default since Phase 5).
+    backend = args.backend or project_config.backend or "ast"
 
     try:
         if backend == "ast":
