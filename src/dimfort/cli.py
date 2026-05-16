@@ -90,7 +90,7 @@ def _format_diag(
 def _run_check(args: argparse.Namespace) -> int:
     # Lazy imports keep ``dimfort --version`` fast.
     from dimfort.config import load_config
-    from dimfort.core import unit_config  # noqa: F401 — populate DEFAULT_TABLE
+    from dimfort.core import unit_config  # populate DEFAULT_TABLE
     from dimfort.core.diagnostics import Severity
     from dimfort.core.multifile import check_files
 
@@ -122,6 +122,8 @@ def _run_check(args: argparse.Namespace) -> int:
     # Pick up CPP defines + include paths from .dimfort.toml, anchored
     # on the first path passed on the command line.
     config = load_config(paths[0])
+    if config.units_file is not None:
+        unit_config.install_default(config.units_file)
     result = check_files(
         paths,
         cpp_defines=config.cpp_defines,
