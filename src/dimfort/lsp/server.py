@@ -649,6 +649,13 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         _project_config = load_config(folders[0])
     config = _project_config
 
+    # Project-specific unit table (LMDZ ships ``lmdz_units.toml`` with
+    # ``degree``, ``hPa``, ``day``, etc.). Install before any check
+    # fires so var_units parsing doesn't drop those annotations.
+    if config.units_file is not None:
+        from dimfort.core import unit_config as _unit_config
+        _unit_config.install_default(config.units_file)
+
     # Start from config-provided values; initializationOptions override.
     _external_modules_from_config = _DEFAULT_EXTERNAL_MODULES | frozenset(
         config.external_modules

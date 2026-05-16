@@ -149,6 +149,27 @@ def load_config(user_path: Path | None = None) -> UnitTable:
     return table
 
 
+def install_default(user_path: Path | None = None) -> UnitTable:
+    """Build a unit table and install it as the module-level default.
+
+    Subsequent ``units.parse(expr)`` calls (without an explicit table) and
+    every downstream component that reads ``_units_mod.DEFAULT_TABLE``
+    pick up the new table. The CLI and LSP call this after resolving
+    ``.dimfort.toml`` so project-specific units like LMDZ's ``degree`` /
+    ``hPa`` / ``day`` are honoured.
+
+    On any error (file missing, malformed, conflicting names) the
+    shipped default is left in place — a bad ``[units] file`` must not
+    break the pipeline. The caller is expected to log a warning.
+    """
+    try:
+        table = load_config(user_path)
+    except (OSError, UnitError, tomllib.TOMLDecodeError):
+        return _units_mod.DEFAULT_TABLE
+    _units_mod.DEFAULT_TABLE = table
+    return table
+
+
 # Initialise the module-level default so ``units.parse(expr)`` works
 # without callers threading a table through.
 _units_mod.DEFAULT_TABLE = load_config()

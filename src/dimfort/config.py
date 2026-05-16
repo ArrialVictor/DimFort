@@ -52,6 +52,12 @@ class DimfortConfig:
     cpp_defines: tuple[str, ...] = ()
     include_paths: tuple[Path, ...] = ()
 
+    # [units] — extension TOML merged on top of the shipped SI table.
+    # Lets projects add domain-specific units (``hPa``, ``bar``,
+    # ``degrees``, ``day``, ``percent``…) without touching the package.
+    # Path is resolved relative to the config file.
+    units_file: Path | None = None
+
 
 def find_config(start: Path) -> Path | None:
     """Walk upward from ``start`` looking for a ``.dimfort.toml``.
@@ -133,6 +139,14 @@ def _from_raw(raw: dict, path: Path) -> DimfortConfig:
     cpp_defines = _strings("cpp_defines")
     include_paths = _paths("include_paths")
 
+    units_section = raw.get("units", {}) or {}
+    units_file_raw = units_section.get("file")
+    units_file = (
+        (base / units_file_raw).resolve()
+        if isinstance(units_file_raw, str) and units_file_raw
+        else None
+    )
+
     # The pre-tree-sitter [checker] section had a `backend` field. It's
     # silently ignored now — accepted for backward compatibility but
     # not exposed on DimfortConfig.
@@ -144,4 +158,5 @@ def _from_raw(raw: dict, path: Path) -> DimfortConfig:
         external_modules=external_modules,
         cpp_defines=cpp_defines,
         include_paths=include_paths,
+        units_file=units_file,
     )

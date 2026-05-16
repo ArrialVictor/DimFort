@@ -83,6 +83,29 @@ cpp_defines = ["ISO"]
     assert cfg.include_paths == ((tmp_path / ".dimfort" / "stubs").resolve(),)
 
 
+def test_units_file_resolved_relative_to_config(tmp_path):
+    """``[units] file`` is resolved relative to the .dimfort.toml directory.
+
+    Mirrors how src_paths / include_paths are handled — a relative
+    path like ``lmdz_units.toml`` should not depend on the current
+    working directory of whatever invoked DimFort.
+    """
+    (tmp_path / "lmdz_units.toml").write_text("[derived]\nday = { expr = \"s\" }\n")
+    (tmp_path / CONFIG_FILENAME).write_text("""
+[units]
+file = "lmdz_units.toml"
+""")
+    cfg = load_config(tmp_path)
+    assert cfg.units_file == (tmp_path / "lmdz_units.toml").resolve()
+
+
+def test_units_file_missing_field_means_none(tmp_path):
+    """Without ``[units] file``, the resolved value is ``None`` — i.e. use defaults."""
+    (tmp_path / CONFIG_FILENAME).write_text("[project]\nsrc_paths = []\n")
+    cfg = load_config(tmp_path)
+    assert cfg.units_file is None
+
+
 def test_legacy_checker_section_silently_ignored(tmp_path):
     """The pre-tree-sitter ``[checker] backend`` is accepted but no longer surfaced."""
     (tmp_path / CONFIG_FILENAME).write_text("""
@@ -119,6 +142,42 @@ anything = 42
 """)
     cfg = load_config(tmp_path)
     assert cfg.src_paths == ((tmp_path / "x").resolve(),)
+
+
+def test_install_default_picks_up_user_units(tmp_path):
+    """``install_default`` re-builds ``DEFAULT_TABLE`` so user units parse.
+
+    Before this wiring, an LMDZ workspace whose annotations used
+    ``hPa`` / ``degrees`` / ``day`` saw U002 errors because the
+    shipped table only knows base SI units.
+    """
+    from dimfort.core import unit_config
+    from dimfort.core import units as _units_mod
+    user_file = tmp_path / "lmdz.toml"
+    user_file.write_text(
+        '[derived]\n'
+        'day = { expr = "s" }\n'
+    )
+    original_table = _units_mod.DEFAULT_TABLE
+    try:
+        unit_config.install_default(user_file)
+        # parsing "day" must now succeed against the installed default
+        result = _units_mod.parse("day", _units_mod.DEFAULT_TABLE)
+        assert result is not None
+    finally:
+        _units_mod.DEFAULT_TABLE = original_table
+
+
+def test_install_default_tolerates_missing_file(tmp_path):
+    """A missing user-units file leaves the shipped default in place; no raise."""
+    from dimfort.core import unit_config
+    from dimfort.core import units as _units_mod
+    original_table = _units_mod.DEFAULT_TABLE
+    try:
+        unit_config.install_default(tmp_path / "nonexistent.toml")
+        assert _units_mod.DEFAULT_TABLE is original_table
+    finally:
+        _units_mod.DEFAULT_TABLE = original_table
 
 
 def test_invalid_max_size_is_dropped(tmp_path):
