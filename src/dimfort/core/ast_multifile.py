@@ -14,7 +14,10 @@ through the LSP, ``.mods`` cache removal) land in later phases.
 """
 from __future__ import annotations
 
+import multiprocessing
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -117,6 +120,7 @@ def check_files_ast(
     include_paths: tuple[Path, ...] = (),
     cpp_defines: tuple[str, ...] = (),
     progress_cb: Callable[[str, int, int, Path], None] | None = None,
+    max_load_workers: int | None = None,
 ) -> WorksetResult:
     """Scan, attach, and AST-check every file in ``sources`` together.
 
@@ -143,27 +147,58 @@ def check_files_ast(
 
     result = WorksetResult()
 
-    # Phase A: load every file. ``progress_cb`` (if supplied) fires
-    # AFTER each file is loaded so the LSP / CLI can show per-file
-    # detail during the slow part of the pipeline.
-    loaded: list[_Loaded] = []
+    # Phase A: load every file in parallel. Each ``_load_one`` is
+    # dominated by an ``lfortran --show-ast`` subprocess that releases
+    # the GIL while running, so threads give us real parallelism
+    # without the pickling overhead of a process pool.
     total = len(abs_sources)
-    for i, src in enumerate(abs_sources, start=1):
+    workers = (
+        max_load_workers
+        if max_load_workers is not None
+        else max(1, (multiprocessing.cpu_count() or 4) - 1)
+    )
+    # Pre-size so we can drop results in by index — preserves source
+    # order for downstream Phase B/C/D iteration.
+    loaded: list[_Loaded | None] = [None] * total
+    progress_lock = threading.Lock()
+    progress_counter = [0]  # mutable via closure
+
+    def _do_load(idx: int, src: Path) -> tuple[int, Path, _Loaded | None, OSError | None]:
         try:
-            loaded.append(
-                _load_one(
-                    src,
-                    lfortran=lfortran,
-                    overrides=overrides_map,
-                    include_paths=include_paths,
-                    cpp_defines=cpp_defines,
-                )
-            )
+            return idx, src, _load_one(
+                src,
+                lfortran=lfortran,
+                overrides=overrides_map,
+                include_paths=include_paths,
+                cpp_defines=cpp_defines,
+            ), None
         except OSError as exc:
-            result.load_failures[src] = FileLoadFailure(stderr=str(exc))
-            loaded.append(_Loaded(src, "", scan_text(""), attach(scan_text("")), None, str(exc)))
-        if progress_cb is not None:
-            progress_cb("load", i, total, src)
+            return idx, src, None, exc
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = [
+            ex.submit(_do_load, i, src)
+            for i, src in enumerate(abs_sources)
+        ]
+        for fut in as_completed(futures):
+            idx, src, entry, err = fut.result()
+            if err is not None:
+                result.load_failures[src] = FileLoadFailure(stderr=str(err))
+                loaded[idx] = _Loaded(
+                    src, "", scan_text(""), attach(scan_text("")), None, str(err),
+                )
+            else:
+                loaded[idx] = entry
+            if progress_cb is not None:
+                with progress_lock:
+                    progress_counter[0] += 1
+                    n = progress_counter[0]
+                progress_cb("load", n, total, src)
+    # All slots filled now; the type system can stop worrying.
+    loaded_files: list[_Loaded] = [e for e in loaded if e is not None]
+    if len(loaded_files) != total:
+        raise RuntimeError("internal: parallel load left None entries")
+    loaded = loaded_files  # type: ignore[assignment]
 
     # Phase B: aggregate annotation tables across the workset, parse to
     # Unit objects once. Local declarations still win when the same
