@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import multiprocessing
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -70,6 +71,11 @@ class WorksetResult:
     merged_field_units: dict[tuple[str, str], Unit] = field(default_factory=dict)
     # Function / subroutine signatures resolved across the whole workset.
     signatures: dict[str, FuncSig] = field(default_factory=dict)
+    # Wall-clock seconds spent in each pipeline phase. Populated by
+    # ``check_files``; consulted by the CLI's ``--timings`` flag and by
+    # ad-hoc profiling scripts. Keys: "load", "aggregate", "index",
+    # "check", "total".
+    phase_timings: dict[str, float] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -318,8 +324,10 @@ def check_files(
         )
 
     result = WorksetResult()
+    t_total_start = time.perf_counter()
 
     # Phase A — load + parse in parallel.
+    t_phase_start = time.perf_counter()
     total = len(abs_sources)
     workers = (
         max_load_workers
@@ -362,8 +370,10 @@ def check_files(
     if len(loaded_files) != total:
         raise RuntimeError("internal: parallel load left None entries")
     loaded = loaded_files  # type: ignore[assignment]
+    result.phase_timings["load"] = time.perf_counter() - t_phase_start
 
     # Phase B — aggregate annotation tables across the workset.
+    t_phase_start = time.perf_counter()
     merged_var_units_text: dict[str, str] = {}
     merged_field_units_text: dict[tuple[str, str], str] = {}
     for entry in loaded:
@@ -392,7 +402,10 @@ def check_files(
         else:
             result.trees[entry.path] = (entry.tree, entry.source)
 
+    result.phase_timings["aggregate"] = time.perf_counter() - t_phase_start
+
     # Phase C — index modules + signatures across the workset.
+    t_phase_start = time.perf_counter()
     module_exports: dict[str, ModuleExports] = {}
     global_signatures: dict[str, FuncSig] = {}
     for i, entry in enumerate(loaded, start=1):
@@ -408,8 +421,10 @@ def check_files(
         if progress_cb is not None:
             progress_cb("index", i, total, entry.path)
     result.signatures = global_signatures
+    result.phase_timings["index"] = time.perf_counter() - t_phase_start
 
     # Phase D — check each file with its imports merged in.
+    t_phase_start = time.perf_counter()
     for di, entry in enumerate(loaded, start=1):
         diags: list[Diagnostic] = []
 
@@ -486,5 +501,7 @@ def check_files(
         result.diagnostics[entry.path] = diags
         if progress_cb is not None:
             progress_cb("check", di, total, entry.path)
+    result.phase_timings["check"] = time.perf_counter() - t_phase_start
+    result.phase_timings["total"] = time.perf_counter() - t_total_start
 
     return result
