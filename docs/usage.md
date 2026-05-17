@@ -20,12 +20,17 @@ dimfort check <paths>...   # check Fortran sources for unit homogeneity
 dimfort lsp                # start the language server (stdio)
 ```
 
+`<paths>` may be individual files or directories. Directories are
+walked recursively for `.f90` / `.F90` / `.f95` / `.F95` / `.f03` /
+`.F03` / `.f08` / `.F08` sources.
+
 `check` flags:
 
 | Flag             | Effect                                            |
 |------------------|---------------------------------------------------|
 | `-q`, `--quiet`  | Suppress diagnostic output; only return an exit code. |
 | `--no-color`     | Disable ANSI colour (also auto-disabled outside a TTY, or when `NO_COLOR` is set). |
+| `--summary`      | After the diagnostic stream, print a per-file H-/U-count breakdown and total. |
 
 Exit codes:
 

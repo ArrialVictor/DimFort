@@ -5,6 +5,26 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 ## [Unreleased]
 - Initial project scaffold: `src/` layout, pyproject, CLI stub, LSP stub, CI workflow.
 
+### 2026-05-17 — CLI directory mode, LSP didClose persistence, U005 usage hint
+
+- **CLI**: `dimfort check` accepts directory arguments and walks them
+  recursively for Fortran sources. New `--summary` flag prints a
+  per-file H-/U-diagnostic count breakdown after the diagnostic stream.
+  `FORTRAN_EXTS` and `discover_fortran_files` extracted to
+  `core/_source_io.py` so the LSP and CLI share one definition.
+- **LSP**: `didClose` no longer publishes an empty diagnostic list for
+  the closed file — it now republishes the most recent workspace-check
+  diagnostics for that path, so the Problems panel keeps showing real
+  issues after the user closes a tab.
+- **Checker**: U005 ("variable used in unit-checked expression but
+  has no `@unit{}` annotation") now appends `(e.g. used at line N)`
+  pointing at the earliest usage site, so the user can jump from the
+  unannotated declaration to a concrete consumer.
+- **Branding**: `scripts/make_branding.py` renders a 1280×640
+  `social_preview.png` at the repo root. Design palette mirrors the
+  VSCompanion icon (translucent Clarendon F watermark, rounded
+  frame, `[m·s⁻²]` glyph).
+
 ### Branch `ast-tree-sitter` (2026-05-16) — LFortran retired, tree-sitter takes over
 
 Parser swap: LFortran subprocess → in-process tree-sitter Fortran grammar. The diagnostic pipeline, the LSP enrichments, and the on-disk caching are all re-implemented; CLI and config simplified accordingly.
