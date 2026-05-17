@@ -1532,10 +1532,12 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
         1 for diags in result.diagnostics.values() for d in diags
         if d.code.startswith("U")
     )
+    total_seconds = result.phase_timings.get("total")
+    timing = f" in {total_seconds:.1f} s" if total_seconds is not None else ""
     _notify(
         ls,
         f"DimFort workspace check complete: {len(files)} files, "
-        f"{h_count} H-diags, {u_count} U-diags",
+        f"{h_count} H-diags, {u_count} U-diags{timing}",
         toast=True,
     )
 

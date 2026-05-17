@@ -59,6 +59,14 @@ def build_parser() -> argparse.ArgumentParser:
             "individual diagnostics."
         ),
     )
+    check.add_argument(
+        "--timings",
+        action="store_true",
+        help=(
+            "Print wall-clock seconds per pipeline phase "
+            "(load / aggregate / index / check / total) at the end of the run."
+        ),
+    )
 
     lsp = sub.add_parser("lsp", help="Start the DimFort language server (stdio).")
     # Some LSP clients (vscode-languageclient with TransportKind.stdio) tack
@@ -180,6 +188,17 @@ def _run_check(args: argparse.Namespace) -> int:
             f"  {len(paths)} file(s), "
             f"{total_h} H-diagnostic(s), {total_u} U-diagnostic(s)"
         )
+
+    if args.timings:
+        header = f"{_BOLD}Phase timings{_RESET}" if color else "Phase timings"
+        print()
+        print(header)
+        # Print in the canonical pipeline order, not dict order.
+        for phase in ("load", "aggregate", "index", "check", "total"):
+            seconds = result.phase_timings.get(phase)
+            if seconds is None:
+                continue
+            print(f"  {phase:<10}  {seconds:7.2f} s")
 
     return 1 if error_count else 0
 
