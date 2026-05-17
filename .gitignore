@@ -236,3 +236,8 @@ Thumbs.db
 NOTES.local.md
 scratch/
 
+
+# Emacs auto-save / backup
+\#*\#
+.\#*
+*~

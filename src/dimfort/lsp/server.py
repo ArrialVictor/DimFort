@@ -373,6 +373,23 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
                 diagnostics=[_to_lsp_diagnostic(d) for d in diags],
             )
         )
+    _refresh_inlay_hints(ls)
+
+
+def _refresh_inlay_hints(ls: LanguageServer) -> None:
+    """Ask the client to re-query inlay hints for every open buffer.
+
+    The client may issue a ``textDocument/inlayHint`` request *before*
+    the server's initial workspace check has populated
+    ``_last_result``; that early request returns empty and the
+    client caches "no hints". Without this nudge the user has to
+    perform a buffer edit to coax the client into re-querying. The
+    method is opt-in via the LSP spec (``workspace.inlayHint.refreshSupport``),
+    so we fire it unconditionally and let the framework drop it when
+    the client didn't advertise support.
+    """
+    with contextlib.suppress(Exception):
+        ls.workspace_inlay_hint_refresh(None)
 
 
 def _bump_version(uri: str) -> int:
@@ -1504,6 +1521,8 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
     if progress_started:
         with contextlib.suppress(Exception):
             progress.end(token, lsp.WorkDoneProgressEnd(message="done"))
+
+    _refresh_inlay_hints(ls)
 
     h_count = sum(
         1 for diags in result.diagnostics.values() for d in diags
