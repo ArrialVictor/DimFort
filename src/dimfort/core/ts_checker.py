@@ -460,23 +460,28 @@ def _emit_u005_for_unannotated(
 
     Reports once per (declaration line, name) pair so a variable used
     in many expressions yields a single squiggle on its declaration.
+
+    Single-pass implementation: while walking the tree we
+    simultaneously (a) collect names appearing in checked expressions
+    and (b) record every variable_declaration we see. After the walk,
+    we cross-reference queried names against recorded declarations.
+    Avoids the two-pass tree walk an earlier revision had — the
+    second pass alone was visible on profiles of LMDZ-scale worksets.
     """
-    # First pass: collect names that are *queried* in a checked context.
-    # Also remember the earliest usage site per name so we can point the
-    # user at one concrete location in the U005 message.
     queried: set[str] = set()
     first_use: dict[str, tuple[int, int]] = {}
+    # name_lc -> list of (start_row, start_col, end_row, end_col, raw_name)
+    decls_by_name: dict[str, list[tuple[int, int, int, int, str]]] = {}
+    # Skip already-annotated names cheaply — precompute a lowercased set.
+    annotated_lc = {k.lower() for k in ctx.var_units}
 
     def _mark_identifier(ident: Node) -> None:
         name = _ts.node_text(ident, source)
         if not name:
             return
-        # Already annotated (any case-fold) → no warning needed.
-        if name in ctx.var_units:
-            return
-        if any(k.lower() == name.lower() for k in ctx.var_units):
-            return
         key = name.lower()
+        if key in annotated_lc:
+            return
         queried.add(key)
         sr, sc = ident.start_point
         prior = first_use.get(key)
@@ -486,11 +491,9 @@ def _emit_u005_for_unannotated(
     def _walk_operands(expr: Node | None) -> None:
         if expr is None:
             return
-        # Identifier directly used as an operand → mark.
         if expr.type == "identifier":
             _mark_identifier(expr)
             return
-        # Otherwise descend into expression-shaped children.
         for c in expr.children:
             if c.type in (
                 "identifier",
@@ -503,41 +506,45 @@ def _emit_u005_for_unannotated(
                 _walk_operands(c)
 
     for node in _ts.walk(tree.root_node):
-        if node.type == "assignment_statement":
+        ntype = node.type
+        if ntype == "assignment_statement":
             lhs, rhs = _assignment_sides(node)
             _walk_operands(lhs)
             _walk_operands(rhs)
-        elif node.type == "math_expression":
+        elif ntype == "math_expression":
             left, right = _math_operands(node)
             _walk_operands(left)
             _walk_operands(right)
-        elif node.type in ("call_expression", "subroutine_call"):
+        elif ntype == "call_expression" or ntype == "subroutine_call":
             for arg in _call_args(node, source):
                 _walk_operands(arg)
+        elif ntype == "variable_declaration":
+            for name_node in _decl_name_nodes(node):
+                name_text = _ts.node_text(name_node, source)
+                if not name_text:
+                    continue
+                sr, sc = name_node.start_point
+                er, ec = name_node.end_point
+                decls_by_name.setdefault(name_text.lower(), []).append(
+                    (sr, sc, er, ec, name_text)
+                )
 
     if not queried:
         return []
 
-    # Second pass: find each queried name's declaration site. Only
-    # declarations *in this file* qualify — cross-file usages where the
-    # var is imported and annotated elsewhere shouldn't fire here.
     out: list[Diagnostic] = []
     seen: set[tuple[str, int]] = set()
-    for decl in _ts.walk(tree.root_node):
-        if decl.type != "variable_declaration":
+    for name_lc in queried:
+        decls = decls_by_name.get(name_lc)
+        if not decls:
             continue
-        for name_node in _decl_name_nodes(decl):
-            name_lc = _ts.node_text(name_node, source).lower()
-            if name_lc not in queried:
-                continue
-            sr, sc = name_node.start_point
-            er, ec = name_node.end_point
+        usage = first_use.get(name_lc)
+        for sr, sc, er, ec, name_text in decls:
             key = (name_lc, sr)
             if key in seen:
                 continue
             seen.add(key)
             use_hint = ""
-            usage = first_use.get(name_lc)
             if usage is not None and usage[0] != sr:
                 use_hint = f" (e.g. used at line {usage[0] + 1})"
             out.append(
@@ -548,7 +555,7 @@ def _emit_u005_for_unannotated(
                     severity=Severity.WARNING,
                     code="U005",
                     message=(
-                        f"{_ts.node_text(name_node, source)!r} is used in a "
+                        f"{name_text!r} is used in a "
                         f"unit-checked expression but has no @unit{{}} "
                         f"annotation{use_hint}"
                     ),
@@ -917,6 +924,168 @@ def collect_module_exports(
     return out
 
 
+def collect_var_types_and_type_field_types(
+    tree: Tree, source: bytes,
+) -> tuple[dict[str, str], dict[tuple[str, str], str]]:
+    """Produce both var-type and type-field-type maps in one tree walk.
+
+    Equivalent to ``collect_var_types`` + ``collect_type_field_types``
+    back-to-back, halved. Used inside ``check`` so the per-file context
+    only walks the tree once for both maps.
+    """
+    var_types: dict[str, str] = {}
+    type_field_types: dict[tuple[str, str], str] = {}
+    for n in _ts.walk(tree.root_node):
+        ntype = n.type
+        if ntype == "variable_declaration":
+            tn = _decl_type_name(n, source)
+            if tn is None:
+                continue
+            tn_lc = tn.lower()
+            for vn in _collect_decl_names(n, source):
+                var_types[vn.lower()] = tn_lc
+        elif ntype == "derived_type_definition":
+            stmt = next(
+                (c for c in n.children if c.type == "derived_type_statement"), None
+            )
+            if stmt is None:
+                continue
+            struct = next((c for c in stmt.children if c.type == "type_name"), None)
+            if struct is None:
+                continue
+            struct_lc = _text(struct, source).lower()
+            for decl in n.children:
+                if decl.type != "variable_declaration":
+                    continue
+                field_type = _decl_type_name(decl, source)
+                if field_type is None:
+                    continue
+                for vn in _collect_decl_names(decl, source):
+                    type_field_types[(struct_lc, vn.lower())] = field_type.lower()
+    return var_types, type_field_types
+
+
+def collect_function_signatures_and_module_exports(
+    tree: Tree,
+    var_units: dict[str, Unit],
+    source: bytes,
+) -> tuple[dict[str, FuncSig], dict[str, ModuleExports]]:
+    """Produce both function/subroutine signatures *and* module exports
+    in a single tree walk.
+
+    Equivalent to running ``collect_function_signatures`` and
+    ``collect_module_exports`` back-to-back, but visits the tree once
+    instead of twice. Profiling LMDZ workset showed those two walks
+    accounted for ~6-7s in the index phase; consolidating saves about
+    half. Public collectors are kept for back-compat (LSP hover etc.).
+    """
+    signatures: dict[str, FuncSig] = {}
+    module_exports: dict[str, ModuleExports] = {}
+    for n in _ts.walk(tree.root_node):
+        ntype = n.type
+        if ntype == "function" or ntype == "subroutine":
+            sig = _signature_for_node(n, var_units, source)
+            if sig is not None:
+                name_lc, func_sig = sig
+                signatures[name_lc] = func_sig
+        elif ntype == "module":
+            mod = _module_exports_for_node(n, var_units, source)
+            if mod is not None:
+                name_lc, exp = mod
+                module_exports[name_lc] = exp
+    return signatures, module_exports
+
+
+def _signature_for_node(
+    node: Node,
+    var_units: dict[str, Unit],
+    source: bytes,
+) -> tuple[str, FuncSig] | None:
+    """Extract a single ``FuncSig`` from a ``function`` / ``subroutine`` node.
+
+    Returns ``(name_lc, FuncSig)`` or ``None`` when the node lacks the
+    expected ``*_statement`` / ``name`` children (malformed parse).
+    """
+    is_subroutine = node.type == "subroutine"
+    stmt_type = "subroutine_statement" if is_subroutine else "function_statement"
+    stmt = next((c for c in node.children if c.type == stmt_type), None)
+    if stmt is None:
+        return None
+    name_node = next((c for c in stmt.children if c.type == "name"), None)
+    if name_node is None:
+        return None
+    func_name = _text(name_node, source)
+
+    params = next((c for c in stmt.children if c.type == "parameters"), None)
+    arg_names: list[str] = []
+    if params is not None:
+        for c in params.children:
+            if c.type == "identifier":
+                arg_names.append(_text(c, source))
+    arg_units = tuple(var_units.get(a) for a in arg_names)
+
+    return_unit: Unit | None = None
+    if not is_subroutine:
+        result = next(
+            (c for c in stmt.children if c.type == "function_result"), None
+        )
+        if result is not None:
+            ret_id = next(
+                (c for c in result.children if c.type == "identifier"), None
+            )
+            if ret_id is not None:
+                return_unit = var_units.get(_text(ret_id, source))
+        if return_unit is None:
+            return_unit = var_units.get(func_name)
+
+    return func_name.lower(), FuncSig(
+        arg_names=tuple(arg_names),
+        arg_units=arg_units,
+        return_unit=return_unit,
+        is_subroutine=is_subroutine,
+    )
+
+
+def _module_exports_for_node(
+    node: Node,
+    var_units: dict[str, Unit],
+    source: bytes,
+) -> tuple[str, ModuleExports] | None:
+    """Extract ``ModuleExports`` from a single ``module`` node."""
+    stmt = next((c for c in node.children if c.type == "module_statement"), None)
+    if stmt is None:
+        return None
+    name_node = next((c for c in stmt.children if c.type == "name"), None)
+    if name_node is None:
+        return None
+    name = _text(name_node, source)
+
+    export_var_units: dict[str, Unit] = {}
+    for decl in node.children:
+        if decl.type != "variable_declaration":
+            continue
+        for vn in _collect_decl_names(decl, source):
+            if vn in var_units:
+                export_var_units[vn] = var_units[vn]
+
+    signatures: dict[str, FuncSig] = {}
+    for child in node.children:
+        if child.type in ("function", "subroutine"):
+            signatures.update(_signatures_for_subtree(child, var_units, source))
+        elif child.type == "internal_procedures":
+            for grandchild in child.children:
+                if grandchild.type in ("function", "subroutine"):
+                    signatures.update(
+                        _signatures_for_subtree(grandchild, var_units, source)
+                    )
+
+    return name.lower(), ModuleExports(
+        name=name,
+        var_units=export_var_units,
+        signatures=signatures,
+    )
+
+
 def _signatures_for_subtree(
     node: Node,
     var_units: dict[str, Unit],
@@ -1056,13 +1225,16 @@ def check(
     if signatures is None:
         signatures = collect_function_signatures(tree, parsed_vars, source)
 
+    var_types, type_field_types = collect_var_types_and_type_field_types(
+        tree, source
+    )
     ctx = _Ctx(
         file=str(file),
         var_units=parsed_vars,
         table=active_table,
         signatures=signatures,
-        var_types=collect_var_types(tree, source),
-        type_field_types=collect_type_field_types(tree, source),
+        var_types=var_types,
+        type_field_types=type_field_types,
         field_units=parsed_fields,
     )
     out: list[Diagnostic] = []

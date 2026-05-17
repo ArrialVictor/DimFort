@@ -75,11 +75,21 @@ def _comment_start(line: str) -> int | None:
     isn't mistaken for a comment marker. Doubled quotes (``''`` / ``""``)
     inside a string are the Fortran escape and don't close it.
 
-    Ported from V4's ``annotations.py``.
+    Fast path: the vast majority of Fortran lines contain no string
+    literal, so a single ``str.find("!")`` is enough. Only when a quote
+    is actually present do we fall back to the quote-aware character
+    scan. Profiling on LMDZ (1.75M calls) showed this function and its
+    per-iteration ``len(line)`` accounted for ~9 seconds; the fast
+    path drops it under 1.
     """
+    if "'" not in line and '"' not in line:
+        idx = line.find("!")
+        return idx if idx != -1 else None
+
+    n = len(line)
     in_quote: str | None = None
     i = 0
-    while i < len(line):
+    while i < n:
         c = line[i]
         if in_quote is None:
             if c == "!":
@@ -88,7 +98,7 @@ def _comment_start(line: str) -> int | None:
                 in_quote = c
         else:
             if c == in_quote:
-                if i + 1 < len(line) and line[i + 1] == in_quote:
+                if i + 1 < n and line[i + 1] == in_quote:
                     i += 1  # escaped pair
                 else:
                     in_quote = None

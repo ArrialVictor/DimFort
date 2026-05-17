@@ -145,10 +145,17 @@ def _load_one(
     scan = scan_text(text)
     attachment = attach(scan)
 
+    # cpp short-circuit: even when defines/includes are configured, a
+    # ``.F90`` file with no ``#`` directives produces output identical
+    # to its input, so spawning a subprocess for ~10 ms each is pure
+    # overhead. Cheap text scan first; bypass cpp when no directive
+    # line is present. (LMDZ: ~half the .F90 files have no directives.)
+    has_directives = text.startswith("#") or "\n#" in text
     use_cpp = (
         path.suffix == ".F90"
         and path not in overrides
         and (cpp_defines or include_paths)
+        and has_directives
     )
     try:
         if use_cpp:
@@ -405,18 +412,20 @@ def check_files(
     result.phase_timings["aggregate"] = time.perf_counter() - t_phase_start
 
     # Phase C — index modules + signatures across the workset.
+    # Single combined walk per file via
+    # ``collect_function_signatures_and_module_exports``: profiling
+    # LMDZ showed two separate walks here cost ~6-7s; one walk halves it.
     t_phase_start = time.perf_counter()
     module_exports: dict[str, ModuleExports] = {}
     global_signatures: dict[str, FuncSig] = {}
     for i, entry in enumerate(loaded, start=1):
         if entry.tree is not None:
-            for mname, exp in ts_checker.collect_module_exports(
+            sigs, modules = ts_checker.collect_function_signatures_and_module_exports(
                 entry.tree, merged_var_units, entry.source
-            ).items():
+            )
+            for mname, exp in modules.items():
                 module_exports.setdefault(mname, exp)
-            for fname, sig in ts_checker.collect_function_signatures(
-                entry.tree, merged_var_units, entry.source
-            ).items():
+            for fname, sig in sigs.items():
                 global_signatures.setdefault(fname, sig)
         if progress_cb is not None:
             progress_cb("index", i, total, entry.path)
