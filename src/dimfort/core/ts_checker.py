@@ -590,6 +590,35 @@ def _declarator_leading_node(node: Node) -> Node | None:
     return None
 
 
+def _is_pure_numeric_constant(node: Node | None) -> bool:
+    """Return True if ``node`` is a literal number or a constant
+    expression composed entirely of literal numbers.
+
+    Used to suppress H001 on initialisations like ``g = 9.81`` or
+    ``omega = 2.0 * 3.14159 / 86400.0``: a unit-bearing variable
+    being given a numeric default value is the standard Fortran
+    idiom for declaring a physical constant, not a unit error. The
+    literal IS the constant; treating it as dimensionless and firing
+    H001 produces noise on every model-initialisation file.
+    """
+    if node is None:
+        return False
+    t = node.type
+    if t == "number_literal" or t == "complex_literal" or t == "boz_literal":
+        return True
+    if t == "unary_expression" or t == "parenthesized_expression":
+        for c in node.children:
+            if c.type not in ("+", "-", "(", ")"):
+                return _is_pure_numeric_constant(c)
+        return False
+    if t == "math_expression":
+        return all(
+            _is_pure_numeric_constant(c) for c in node.children
+            if c.type not in ("+", "-", "*", "/", "**")
+        )
+    return False
+
+
 def _emit_h001(loc: Node, lhs: Unit, rhs: Unit, ctx: _Ctx) -> Diagnostic:
     start, end = _node_span(loc)
     return Diagnostic(
@@ -1251,6 +1280,13 @@ def check(
             if tu is None or ru is None:
                 continue
             if not equal_dim(tu, ru):
+                # Suppress when the RHS is a pure numeric constant
+                # (e.g. ``g = 9.81``). That's an initialisation with a
+                # default value, not a unit-math error; treating the
+                # literal as dimensionless would flag every physical
+                # constant declaration in the model.
+                if _is_pure_numeric_constant(value):
+                    continue
                 # Position points at the LHS (parity with ast_checker).
                 out.append(_emit_h001(target if target is not None else node, tu, ru, ctx))
             continue
