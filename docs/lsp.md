@@ -15,27 +15,37 @@ It speaks LSP over stdio, the wire format every common editor expects.
   - On `textDocument/didOpen` and `didSave` — immediate re-check.
   - On `textDocument/didChange` — re-check with a 400 ms debounce, so
     unsaved buffer edits flow through the pipeline as you type.
-  - Cleared on `textDocument/didClose`.
+  - On `textDocument/didClose` — the file's diagnostics from the most
+    recent workspace check are republished, so closing a file doesn't
+    silently clear its squiggles from the Problems panel.
 - **Workspace-aware**. The server captures workspace folders on
   `initialize` and runs the pipeline over **every** Fortran source it
   finds under them. Cross-file behaviour (`use mod_other`, H004 on a
   call to a function defined in another file) lights up correctly in
-  the editor exactly as it does on the command line.
+  the editor exactly as it does on the command line. A `DimFort: Check
+  Whole Workspace` command on the command palette re-runs the full
+  workspace check on demand.
 - **Hover** (`textDocument/hover`). Point at a variable name (either
   its declaration or a use site) and the editor shows
   `**name** — unit \`m/s\`` (or "no unit annotation" if the variable
   was declared without one). Derived-type member accesses (`b%v`)
   produce `**particle%v** — unit \`m/s\``.
+- **Inlay hints**, **go-to-definition**, **code lens**, **code actions**
+  (insert `!< @unit{}` skeletons), and **unit-name completion** are all
+  live; each is toggleable through its respective `DimFort: Toggle …`
+  palette command or VSCode setting.
 
 ## Limitations
 
-- **In-memory edits to file A trigger a check of every file** in the
-  workspace. The pipeline is fast on small projects but will need a
-  per-file cache for LMDZ-scale codebases.
-- **No completion, no go-to-definition.** Out of scope for now.
-- **`use` resolution across files relies on the LFortran ``-c``
-  compile step**, which is alpha. Files that LFortran can't load show
-  up as `U007`; that's the same surface as the CLI.
+- **In-memory edits to file A trigger a check of every file** in its
+  workset. The pipeline is fast on small projects; large worksets are
+  capped at `maxWorksetSize` files (default 40, configurable via
+  `initializationOptions`) so a deep LMDZ-scale entry point stays
+  responsive.
+- **`.F90` preprocessing** uses the system `cpp` (one subprocess per
+  file). On a 2400-file workspace this dominates wall time — the
+  workspace check takes ~80s vs ~7s for pure parse. Tracked as a perf
+  task.
 
 ## Editor setup
 

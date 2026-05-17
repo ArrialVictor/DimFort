@@ -17,28 +17,12 @@ force = mass * velocity            ! diagnosed: force unit is kg, expected kg*m/
 > Status: **pre-alpha**. End-to-end the following work: the annotation
 > scanner, attachment pass, the full H-series checker (H001–H004),
 > intrinsics, user-defined function and subroutine calls, derived-type
-> field access, rational `**` exponents, multi-file worksets, and a
-> workspace-aware LSP server with live-edit diagnostics and hover
-> (`dimfort lsp`). The on-disk cache is still to come.
+> field access, rational `**` exponents, multi-file worksets, a workspace-
+> aware LSP server with live-edit diagnostics, hover, inlay hints,
+> go-to-definition, code lens, code actions, completion, and a CLI that
+> accepts files or directories.
 
 ## Install
-
-Two prerequisites.
-
-### 1. LFortran (parser frontend)
-
-DimFort consumes LFortran's AST/ASR. It is not on PyPI or Homebrew; install
-from conda-forge:
-
-```bash
-conda create -n lfortran -c conda-forge lfortran -y
-```
-
-DimFort discovers `lfortran` from `$PATH`, from `$LFORTRAN_BIN`, or from
-`~/miniconda3/envs/lfortran/bin/lfortran` by default. Override with
-`--lfortran PATH` on the CLI.
-
-### 2. DimFort itself
 
 ```bash
 git clone https://github.com/ArrialVictor/DimFort.git
@@ -46,18 +30,36 @@ cd DimFort
 pip install -e ".[dev,lsp]"
 ```
 
-Requires Python ≥ 3.11.
+Requires Python ≥ 3.11. The Fortran parser
+([tree-sitter-fortran](https://pypi.org/project/tree-sitter-fortran/))
+is installed automatically as a runtime dependency — no external
+compiler or subprocess required for parsing. For `.F90` files using
+CPP `#`-directives DimFort shells out to the system `cpp` if
+`[parser] cpp_defines` or `[parser] include_paths` are set in
+`.dimfort.toml`.
 
 ## Usage
 
 ```bash
-dimfort check path/to/project        # check Fortran sources for unit homogeneity
+dimfort check path/to/file.f90       # check a single file
+dimfort check path/to/project/       # walk a directory recursively
+dimfort check path/...  --summary    # also print a per-file H/U count table
 dimfort lsp                          # start the language server (stdio)
-dimfort cache info | clean           # manage the on-disk analysis cache
 ```
 
 Exit code is `0` if no errors, `1` if any error-severity diagnostic was
-produced, `2` for usage / file / config errors.
+produced, `2` for usage / file / config errors. Warnings alone do not
+fail the run.
+
+Diagnostic codes split into two families:
+
+- **H-series** (`H001`–`H004`) — homogeneity violations: the math
+  doesn't balance dimensionally. Real bugs.
+- **U-series** (`U001`, `U002`, `U005`–`U007`, `U010`, `U-conflict`) —
+  annotation / metadata problems: something's wrong with the
+  annotations themselves, not the math.
+
+Full reference: [docs/usage.md](docs/usage.md).
 
 ## Doxygen integration
 
@@ -87,7 +89,6 @@ and the diagnostic codes the scanner can emit.
 - [Annotations](docs/annotations.md)
 - [Usage details](docs/usage.md)
 - [Language server](docs/lsp.md)
-- [Cache format](docs/cache-format.md)
 - [Releases](docs/release.md)
 
 ## License
