@@ -35,6 +35,46 @@ def test_h001_assignment_mismatch():
     assert "H001" in codes
 
 
+def test_h001_suppressed_for_numeric_literal_default():
+    """``g = 9.81`` on a unit-bearing variable shouldn't fire H001.
+
+    Numeric literals are dimensionless in Fortran, but assigning one
+    to a variable annotated with a unit is the standard idiom for
+    declaring a physical constant — the literal IS the value of the
+    constant. Treating that as an error makes initialisation files
+    unreadable. The suppression applies when the entire RHS is a
+    pure literal or a constant expression of literals.
+    """
+    src = (
+        "subroutine s\n"
+        "  real :: g, omega\n"
+        "  g = 9.81\n"
+        "  omega = 2.0 * 3.14159 / 86400.0\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"g": "m/s^2", "omega": "1/s"})
+    assert all(d.code != "H001" for d in diags), [
+        (d.code, d.message) for d in diags
+    ]
+
+
+def test_h001_fires_when_non_literal_rhs_mismatches():
+    """The literal-suppression rule must not mask actual unit errors.
+
+    ``a = b * 2.0`` where ``b`` has the wrong unit should still fire.
+    """
+    src = (
+        "subroutine s\n"
+        "  real :: a, b\n"
+        "  a = b * 2.0\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"a": "m/s", "b": "kg"})
+    assert any(d.code == "H001" for d in diags), [
+        (d.code, d.message) for d in diags
+    ]
+
+
 def test_h001_passes_when_units_match():
     """An assignment whose dimensions agree (even via mul/div) emits no H001."""
     # force = mass * accel : kg * m/s² == kg·m/s²
