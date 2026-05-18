@@ -107,6 +107,46 @@ def test_checker_signatures_use_per_scope_units(tmp_path: Path):
     assert sigs["emit_m"].arg_units[0] != sigs["emit_k"].arg_units[0]
 
 
+def test_unannotated_param_does_not_inherit_unrelated_global(tmp_path: Path):
+    """An unannotated parameter of a generic wrapper must NOT absorb
+    the unit of a same-named variable in some other file.
+
+    Regression: a NetCDF wrapper ``put_var1(..., v)`` with no
+    @unit{} on ``v`` was falling through to the flat var_units map
+    and finding a wind-routine's ``v @unit{m/s}`` elsewhere in the
+    workset, producing spurious H004 diagnostics on every call site
+    that passed something other than m/s.
+    """
+    wind = tmp_path / "wind.f90"
+    wind.write_text(
+        "subroutine wind_calc(v)\n"
+        "  real :: v  !< @unit{m/s}\n"   # annotated
+        "  v = 0.0\n"
+        "end subroutine\n"
+    )
+    wrapper = tmp_path / "wrapper.f90"
+    wrapper.write_text(
+        "subroutine put_var1(v)\n"
+        "  real :: v\n"                  # NOT annotated
+        "end subroutine\n"
+    )
+    caller = tmp_path / "caller.f90"
+    caller.write_text(
+        "subroutine driver\n"
+        "  real :: pressure  !< @unit{Pa}\n"
+        "  call put_var1(pressure)\n"    # pressure into an unannotated param
+        "end subroutine\n"
+    )
+    result = check_files([wind, wrapper, caller])
+    codes = [d.code for d in result.diagnostics[caller]]
+    assert "H004" not in codes, [
+        (d.code, d.message) for d in result.diagnostics[caller]
+    ]
+    # put_var1's signature should have None for the v arg (no annotation).
+    sig = result.signatures["put_var1"]
+    assert sig.arg_units == (None,), sig.arg_units
+
+
 def test_checker_h004_fires_when_call_actually_mismatches(tmp_path: Path):
     """Sanity: scoping doesn't disable H004 — passing a K/s value to
     a routine whose param is m/s still trips it.
