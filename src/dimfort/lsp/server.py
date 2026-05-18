@@ -1697,4 +1697,67 @@ def run_stdio() -> None:
     # without this, namespace-scoped INFO logs would be silently
     # dropped before reaching the client's output channel.
     logging.getLogger("dimfort").setLevel(logging.INFO)
+    _install_crash_trace_hook()
     server.start_io()
+
+
+def _install_crash_trace_hook() -> None:
+    """Wire ``sys.excepthook`` + ``threading.excepthook`` to a crash log.
+
+    LSP stdio mode can lose stderr (the client doesn't forward it,
+    pygls may not flush before process death, etc.). Writing
+    tracebacks to a known file makes the next silent crash
+    actionable. Default log path is ``/tmp/dimfort-lsp.crash``;
+    override via ``DIMFORT_CRASH_LOG`` env var. Disable entirely
+    with ``DIMFORT_CRASH_LOG=`` (empty value).
+
+    Deliberately does NOT touch asyncio's loop policy — pygls owns
+    that, and meddling with it broke server startup on Python 3.14.
+    Most pygls feature handlers run on the asyncio loop, so an
+    unhandled exception there typically dies via the loop's default
+    handler which prints to stderr. If a future crash isn't caught
+    by sys.excepthook + threading.excepthook, the next step is to
+    wrap individual feature handlers in try/except locally rather
+    than instrument the loop globally.
+    """
+    import os
+    import sys
+    import traceback
+
+    env = os.environ.get("DIMFORT_CRASH_LOG")
+    if env is None:
+        path = "/tmp/dimfort-lsp.crash"
+    elif env == "":
+        return
+    else:
+        path = env
+
+    def _write(header: str, body: str) -> None:
+        try:
+            with open(path, "a") as f:
+                f.write(f"\n=== {header} ===\n{body}\n")
+                f.flush()
+        except Exception:  # noqa: BLE001 — diagnostic path; can't help if write fails
+            pass
+
+    def _hook(exc_type, exc_value, exc_tb) -> None:
+        _write(
+            "sys.excepthook",
+            "".join(traceback.format_exception(exc_type, exc_value, exc_tb)),
+        )
+
+    sys.excepthook = _hook
+    # Threads (pygls runs synchronous features in a thread pool).
+    # Without this, exceptions from a worker thread don't reach
+    # excepthook on older Pythons.
+    if hasattr(threading, "excepthook"):
+        def _thread_hook(args):
+            _write(
+                f"thread {args.thread.name}",
+                "".join(traceback.format_exception(
+                    args.exc_type, args.exc_value, args.exc_traceback,
+                )),
+            )
+        threading.excepthook = _thread_hook
+
+    _write("startup", "crash hook installed; logging to this file")
