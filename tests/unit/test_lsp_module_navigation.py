@@ -135,6 +135,55 @@ def test_module_hover_unresolved(tmp_path: Path):
             _server._last_result = None
 
 
+def test_goto_definition_variable(tmp_path: Path):
+    """Cmd-click on a variable reference jumps to its declaration."""
+    f = tmp_path / "vars.f90"
+    f.write_text(
+        "subroutine foo\n"          # line 1
+        "  real :: pte\n"           # line 2 — declaration here
+        "  pte = 1.0\n"             # line 3 — usage
+        "end subroutine\n"          # line 4
+    )
+    try:
+        _drive([f])
+        uri = f.resolve().as_uri()
+        # Cursor on the 'pte' usage at line 3, column 3 (0-based: line 2, col 2).
+        locs = _goto_definition_inline(uri, line_0based=2, col_0based=2)
+        assert locs and len(locs) == 1, locs
+        loc = locs[0]
+        assert loc.uri == f.resolve().as_uri()
+        # The declaration's 'pte' identifier is on line 2, column 10 (0-based: 1, 10).
+        assert loc.range.start.line == 1
+    finally:
+        with _server._last_result_lock:
+            _server._last_result = None
+
+
+def test_goto_definition_callable(tmp_path: Path):
+    """Cmd-click on a call-callee jumps to the function/sub definition."""
+    f = tmp_path / "calls.f90"
+    f.write_text(
+        "subroutine target(x)\n"            # line 1
+        "  real :: x\n"
+        "end subroutine\n"
+        "subroutine caller\n"
+        "  call target(1.0)\n"              # line 5 — callee here
+        "end subroutine\n"
+    )
+    try:
+        _drive([f])
+        uri = f.resolve().as_uri()
+        # Cursor on 'target' at line 5, column 8 (0-based: line 4, col 7).
+        locs = _goto_definition_inline(uri, line_0based=4, col_0based=8)
+        assert locs and len(locs) == 1, locs
+        loc = locs[0]
+        # Declaration is at line 1 (0-based 0) — 'subroutine target'.
+        assert loc.range.start.line == 0
+    finally:
+        with _server._last_result_lock:
+            _server._last_result = None
+
+
 def test_goto_definition_module(tmp_path: Path):
     """Go-to-def on ``use foo`` jumps to the ``module foo`` header."""
     physics = tmp_path / "physics.f90"
