@@ -46,7 +46,7 @@ from dimfort.core import units as _units_mod
 from dimfort.core._source_io import FORTRAN_EXTS as _FORTRAN_EXTS
 from dimfort.core.diagnostics import Diagnostic, Severity
 from dimfort.core.multifile import WorksetResult, check_files
-from dimfort.core.symbols import FuncSig
+from dimfort.core.symbols import FuncSig, ModuleExports
 from dimfort.core.units import Unit
 from dimfort.core.units import base_symbols as _base_symbols
 from dimfort.core.workspace_index import (
@@ -534,6 +534,84 @@ def _hover_signature(name: str, sig: FuncSig) -> str:
     return f"**DimFort**\n\n{_sig_render_md(name, sig)}"
 
 
+# Module hover caps. VSCode's hover popup is scrollable, so we
+# don't actually need to truncate to fit on screen — the cap is
+# only a safety belt against pathological re-export modules with
+# thousands of entries. Set well above realistic LMDZ-scale module
+# sizes (≤ ~100 vars, ≤ ~50 procs); anything bigger gets the "more"
+# tail so the popup doesn't pretend to be authoritative.
+_MODULE_HOVER_VAR_LIMIT = 500
+_MODULE_HOVER_SIG_LIMIT = 100
+
+
+def _module_hover_md(
+    module_name: str, exports: ModuleExports | None,
+    *, external: bool, unresolved: bool,
+) -> str:
+    """Render a module summary for a ``use foo`` hover.
+
+    Three states matter to the reader:
+
+    - ``external``: in the user's external-modules allowlist; we
+      know not to expect a definition in the workset.
+    - ``unresolved``: referenced by ``use`` but no module of that
+      name was loaded (typical for libraries DimFort doesn't
+      track).
+    - resolved: ``exports`` is populated; render var + sig surface.
+    """
+    if external:
+        return (
+            f"**DimFort**\n\n"
+            f"**module `{module_name}`** *(external — treated as known)*"
+        )
+    if exports is None or unresolved:
+        return (
+            f"**DimFort**\n\n"
+            f"**module `{module_name}`** — *not found in workset*"
+        )
+    lines: list[str] = ["**DimFort**\n", f"**module `{exports.name}`**"]
+    # Walk every declared module variable (in source order), emitting
+    # the unit when one was attached and a "no unit annotation"
+    # placeholder when not. Surfacing both states in the same list
+    # makes the gap actionable: the hover doubles as a TODO of
+    # which variables in this module still need annotation.
+    if exports.all_var_names:
+        lines.append("")
+        annotated_count = sum(1 for n in exports.all_var_names if n in exports.var_units)
+        total = len(exports.all_var_names)
+        if annotated_count < total:
+            lines.append(f"**Variables** ({annotated_count}/{total} annotated):")
+        else:
+            lines.append("**Variables**:")
+        # Stable order: annotated first, then unannotated. Easier to
+        # scan when you're looking for "what's known" vs "what's missing".
+        annotated = [n for n in exports.all_var_names if n in exports.var_units]
+        unannotated = [n for n in exports.all_var_names if n not in exports.var_units]
+        shown: list[str] = []
+        for n in annotated:
+            shown.append(f"- `{n}`: {_unit_pretty(exports.var_units[n])}")
+        for n in unannotated:
+            shown.append(f"- `{n}` — *no unit annotation*")
+        if len(shown) > _MODULE_HOVER_VAR_LIMIT:
+            lines.extend(shown[:_MODULE_HOVER_VAR_LIMIT])
+            lines.append(f"- *… {len(shown) - _MODULE_HOVER_VAR_LIMIT} more*")
+        else:
+            lines.extend(shown)
+    sig_items = list(exports.signatures.items())
+    if sig_items:
+        lines.append("")
+        lines.append("**Procedures**:")
+        for n, sig in sig_items[:_MODULE_HOVER_SIG_LIMIT]:
+            lines.append(f"- {_sig_render_md(n, sig)}")
+        if len(sig_items) > _MODULE_HOVER_SIG_LIMIT:
+            extra = len(sig_items) - _MODULE_HOVER_SIG_LIMIT
+            lines.append(f"- *… {extra} more*")
+    if not exports.all_var_names and not sig_items:
+        lines.append("")
+        lines.append("*(no module-level exports)*")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Hover dispatch (tree-sitter)
 # ---------------------------------------------------------------------------
@@ -584,6 +662,29 @@ def _resolve_hover(
         result = _last_result
     if result is None:
         return None
+
+    # 0. ``use foo`` — cursor on the module-name token of a use
+    # statement renders a module summary (exports + signatures).
+    # Sits before the function-header branch because a `use` line
+    # never overlaps a definition header.
+    for use_node in _ts_h.walk_use_statements(tree):
+        nm = _ts_h.use_statement_module_name(use_node, source)
+        if nm is None:
+            continue
+        mod_name, mod_name_node = nm
+        if not _ts_h.node_contains(mod_name_node, line_1based, col_1based):
+            continue
+        mod_lc = mod_name.lower()
+        exports = result.module_exports.get(mod_lc)
+        external = mod_lc in _external_modules
+        return (
+            _module_hover_md(
+                mod_name, exports,
+                external=external,
+                unresolved=exports is None and not external,
+            ),
+            _node_lsp_range(mod_name_node),
+        )
 
     # 1. Function / subroutine definition header on this line.
     for func_or_sub in _ts_h.walk_function_definitions(tree):
@@ -1178,24 +1279,35 @@ def _definition(
     line = params.position.line + 1
     col = params.position.character + 1
 
-    # Identify the target: a callee name (under a call), or a plain
-    # identifier (a variable use). Prefer the call-callee match because
-    # it's more specific.
+    # Identify the target. Order matters: the most specific node
+    # type wins. ``use foo`` first (its module_name token isn't an
+    # identifier or call-callee), then call-callees, then plain
+    # identifiers.
     target_name: str | None = None
-    target_kind: str | None = None  # "var" or "callable"
-    for call in _ts_h.walk_calls(tree):
-        name = _ts_h.call_name(call, source)
-        if name is None:
+    target_kind: str | None = None  # "module", "var", or "callable"
+    for use_node in _ts_h.walk_use_statements(tree):
+        nm = _ts_h.use_statement_module_name(use_node, source)
+        if nm is None:
             continue
-        # Match only if the cursor is on the callee identifier (not on
-        # an argument inside the call).
-        for c in call.children:
-            if c.type == "identifier" and _ts_h.node_contains(c, line, col):
-                target_name = name
-                target_kind = "callable"
-                break
-        if target_name:
+        mod_name, mod_name_node = nm
+        if _ts_h.node_contains(mod_name_node, line, col):
+            target_name = mod_name
+            target_kind = "module"
             break
+    if target_name is None:
+        for call in _ts_h.walk_calls(tree):
+            name = _ts_h.call_name(call, source)
+            if name is None:
+                continue
+            # Match only if the cursor is on the callee identifier
+            # (not on an argument inside the call).
+            for c in call.children:
+                if c.type == "identifier" and _ts_h.node_contains(c, line, col):
+                    target_name = name
+                    target_kind = "callable"
+                    break
+            if target_name:
+                break
     if target_name is None:
         for ident in _ts_h.walk_identifiers(tree):
             if not _ts_h.node_contains(ident, line, col):
@@ -1226,6 +1338,15 @@ def _definition(
     # ``a(1)`` in Fortran could be either an array index or a function
     # call, and tree-sitter can't distinguish them syntactically.
     for tree_path, (other_tree, other_source) in result.trees.items():
+        if target_kind == "module":
+            for mod in _ts_h.walk_module_definitions(other_tree):
+                nm = _ts_h.module_definition_name(mod, other_source)
+                if nm is None:
+                    continue
+                name, name_node = nm
+                if name.lower() == target_lc:
+                    return [_name_node_location(tree_path, name_node)]
+            continue
         if target_kind == "callable":
             for func in _ts_h.walk_function_definitions(other_tree):
                 nm = _ts_h.function_definition_name(func, other_source)

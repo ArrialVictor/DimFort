@@ -79,6 +79,11 @@ class WorksetResult:
     )
     # Function / subroutine signatures resolved across the whole workset.
     signatures: dict[str, FuncSig] = field(default_factory=dict)
+    # Module-name → exports map, populated during Phase C. Reused by
+    # the LSP for module hover (summary of exported vars/signatures)
+    # and module-name goto-definition. Keyed by lower-cased module
+    # name to match ``apply_use_clauses`` lookups.
+    module_exports: dict[str, ModuleExports] = field(default_factory=dict)
     # Wall-clock seconds spent in each pipeline phase. Populated by
     # ``check_files``; consulted by the CLI's ``--timings`` flag and by
     # ad-hoc profiling scripts. Keys: "load", "aggregate", "index",
@@ -461,6 +466,7 @@ def check_files(
         if progress_cb is not None:
             progress_cb("index", i, total, entry.path)
     result.signatures = global_signatures
+    result.module_exports = module_exports
     result.var_units_by_scope = per_file_var_units_by_scope
     result.phase_timings["index"] = time.perf_counter() - t_phase_start
 
