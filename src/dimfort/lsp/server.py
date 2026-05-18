@@ -1760,4 +1760,30 @@ def _install_crash_trace_hook() -> None:
             )
         threading.excepthook = _thread_hook
 
+    # Pygls wraps feature handler bodies in its own try/except and
+    # converts exceptions into JSON-RPC error responses. Those
+    # exceptions are logged through the ``pygls`` logger but never
+    # reach sys.excepthook / threading.excepthook. Attach a stream
+    # handler that mirrors ERROR-level logs into our crash file so
+    # we capture them too.
+    class _CrashFileHandler(logging.Handler):
+        def emit(self, record):  # type: ignore[override]
+            try:
+                msg = self.format(record)
+            except Exception:  # noqa: BLE001
+                msg = record.getMessage()
+            _write(f"pygls logger {record.name}/{record.levelname}", msg)
+
+    crash_handler = _CrashFileHandler(level=logging.ERROR)
+    crash_handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s\n"
+        )
+    )
+    # ``pygls`` covers handler-wrap errors; ``asyncio`` covers the
+    # loop's default exception handler (which logs unhandled
+    # task exceptions). Attach to both.
+    logging.getLogger("pygls").addHandler(crash_handler)
+    logging.getLogger("asyncio").addHandler(crash_handler)
+
     _write("startup", "crash hook installed; logging to this file")
