@@ -19,8 +19,9 @@ strings instead of the LFortran ``node`` discriminator.
 """
 from __future__ import annotations
 
+import bisect
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
 
@@ -61,6 +62,62 @@ class _Ctx:
     var_types: dict[str, str]                       # varname → derived-type name
     type_field_types: dict[tuple[str, str], str]    # (type, field) → field's struct type
     field_units: dict[tuple[str, str], Unit]        # (type, field) → unit
+    # Scope-aware annotation table. ``var_units`` above remains the
+    # flat first-seen view (compat). When ``var_units_by_scope`` is
+    # populated, ``unit_for(name, byte_offset)`` honours the enclosing
+    # subroutine/function so same-named params across routines don't
+    # alias. Empty dict ⇒ behaves identically to flat lookup.
+    var_units_by_scope: dict[tuple[str | None, str], Unit] = field(
+        default_factory=dict
+    )
+    # Byte-range cover of every subroutine/function (sorted by
+    # ``start_byte``). Used to map a node's byte offset to its
+    # enclosing scope name for scope-aware lookups.
+    routine_scopes: tuple[tuple[int, int, str], ...] = ()
+    # Cached parallel arrays for bisect: starts[i] == routine_scopes[i][0].
+    _scope_starts: tuple[int, ...] = ()
+
+    def scope_at(self, byte_offset: int) -> str | None:
+        """Innermost enclosing routine scope name (lower-cased) for ``byte_offset``.
+
+        ``None`` if the offset isn't inside any routine (module-level
+        or file-level). The byte ranges are nested-tolerant: a
+        CONTAINS-nested procedure's range is fully contained in its
+        parent's, so the innermost match wins.
+        """
+        if not self.routine_scopes:
+            return None
+        # Bisect to the rightmost range whose start <= byte_offset, then
+        # walk backward through any earlier ranges that also contain it
+        # (handles nesting where an outer range starts earlier).
+        idx = bisect.bisect_right(self._scope_starts, byte_offset) - 1
+        best: tuple[int, int, str] | None = None
+        while idx >= 0:
+            lo, hi, name = self.routine_scopes[idx]
+            if lo <= byte_offset < hi and (
+                best is None or (hi - lo) < (best[1] - best[0])
+            ):
+                best = (lo, hi, name)
+            idx -= 1
+        return best[2] if best else None
+
+    def unit_for(self, name: str, byte_offset: int) -> Unit | None:
+        """Resolve ``name`` at ``byte_offset`` honouring subroutine scope.
+
+        Order: enclosing routine's scope → file/module-level scope →
+        flat fallback (so callers that didn't populate the scoped
+        table keep working).
+        """
+        if self.var_units_by_scope:
+            scope = self.scope_at(byte_offset)
+            if scope is not None:
+                u = self.var_units_by_scope.get((scope, name))
+                if u is not None:
+                    return u
+            u = self.var_units_by_scope.get((None, name))
+            if u is not None:
+                return u
+        return self.var_units.get(name)
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +345,7 @@ def _resolve(node: Node | None, ctx: _Ctx, source: bytes) -> Unit | None:
 
     if kind == "identifier":
         name = _text(node, source)
-        return ctx.var_units.get(name)
+        return ctx.unit_for(name, node.start_byte)
 
     if kind == "number_literal":
         # Numeric literals are dimensionless; model as the unit-algebra
@@ -421,8 +478,9 @@ def _resolve_call(node: Node, ctx: _Ctx, source: bytes) -> Unit | None:
     # If the callee resolves to a known variable, the result unit is
     # the variable's own unit (element access, slice, range all carry
     # the same unit as the array).
-    if name in ctx.var_units:
-        return ctx.var_units[name]
+    u = ctx.unit_for(name, node.start_byte)
+    if u is not None:
+        return u
     for k, v in ctx.var_units.items():
         if k.lower() == name_lc:
             return v
@@ -994,10 +1052,36 @@ def collect_var_types_and_type_field_types(
     return var_types, type_field_types
 
 
+def _make_scoped_lookup(
+    var_units: dict[str, Unit],
+    var_units_by_scope: dict[tuple[str | None, str], Unit] | None,
+):
+    """Build a ``(name, scope_lc) -> Unit | None`` lookup.
+
+    When ``var_units_by_scope`` is empty/None we fall back to the flat
+    ``var_units`` dict (same behaviour as before scope-aware
+    annotations existed). Otherwise we try the routine's scope first,
+    then module/file-level (scope=None).
+    """
+    if not var_units_by_scope:
+        return lambda name, scope: var_units.get(name)
+
+    def lookup(name: str, scope: str | None) -> Unit | None:
+        if scope is not None:
+            u = var_units_by_scope.get((scope, name))
+            if u is not None:
+                return u
+        return var_units_by_scope.get((None, name))
+
+    return lookup
+
+
 def collect_function_signatures_and_module_exports(
     tree: Tree,
     var_units: dict[str, Unit],
     source: bytes,
+    *,
+    var_units_by_scope: dict[tuple[str | None, str], Unit] | None = None,
 ) -> tuple[dict[str, FuncSig], dict[str, ModuleExports]]:
     """Produce both function/subroutine signatures *and* module exports
     in a single tree walk.
@@ -1007,18 +1091,23 @@ def collect_function_signatures_and_module_exports(
     instead of twice. Profiling LMDZ workset showed those two walks
     accounted for ~6-7s in the index phase; consolidating saves about
     half. Public collectors are kept for back-compat (LSP hover etc.).
+
+    When ``var_units_by_scope`` is supplied, argument units are looked
+    up per-routine so two subroutines declaring the same name with
+    different units no longer alias.
     """
+    lookup = _make_scoped_lookup(var_units, var_units_by_scope)
     signatures: dict[str, FuncSig] = {}
     module_exports: dict[str, ModuleExports] = {}
     for n in _ts.walk(tree.root_node):
         ntype = n.type
         if ntype == "function" or ntype == "subroutine":
-            sig = _signature_for_node(n, var_units, source)
+            sig = _signature_for_node(n, lookup, source)
             if sig is not None:
                 name_lc, func_sig = sig
                 signatures[name_lc] = func_sig
         elif ntype == "module":
-            mod = _module_exports_for_node(n, var_units, source)
+            mod = _module_exports_for_node(n, lookup, source)
             if mod is not None:
                 name_lc, exp = mod
                 module_exports[name_lc] = exp
@@ -1027,7 +1116,7 @@ def collect_function_signatures_and_module_exports(
 
 def _signature_for_node(
     node: Node,
-    var_units: dict[str, Unit],
+    lookup,
     source: bytes,
 ) -> tuple[str, FuncSig] | None:
     """Extract a single ``FuncSig`` from a ``function`` / ``subroutine`` node.
@@ -1044,6 +1133,7 @@ def _signature_for_node(
     if name_node is None:
         return None
     func_name = _text(name_node, source)
+    scope_lc = func_name.lower()
 
     params = next((c for c in stmt.children if c.type == "parameters"), None)
     arg_names: list[str] = []
@@ -1051,7 +1141,7 @@ def _signature_for_node(
         for c in params.children:
             if c.type == "identifier":
                 arg_names.append(_text(c, source))
-    arg_units = tuple(var_units.get(a) for a in arg_names)
+    arg_units = tuple(lookup(a, scope_lc) for a in arg_names)
 
     return_unit: Unit | None = None
     if not is_subroutine:
@@ -1063,11 +1153,11 @@ def _signature_for_node(
                 (c for c in result.children if c.type == "identifier"), None
             )
             if ret_id is not None:
-                return_unit = var_units.get(_text(ret_id, source))
+                return_unit = lookup(_text(ret_id, source), scope_lc)
         if return_unit is None:
-            return_unit = var_units.get(func_name)
+            return_unit = lookup(func_name, scope_lc)
 
-    return func_name.lower(), FuncSig(
+    return scope_lc, FuncSig(
         arg_names=tuple(arg_names),
         arg_units=arg_units,
         return_unit=return_unit,
@@ -1077,7 +1167,7 @@ def _signature_for_node(
 
 def _module_exports_for_node(
     node: Node,
-    var_units: dict[str, Unit],
+    lookup,
     source: bytes,
 ) -> tuple[str, ModuleExports] | None:
     """Extract ``ModuleExports`` from a single ``module`` node."""
@@ -1089,23 +1179,25 @@ def _module_exports_for_node(
         return None
     name = _text(name_node, source)
 
+    # Module-level variables live at scope=None.
     export_var_units: dict[str, Unit] = {}
     for decl in node.children:
         if decl.type != "variable_declaration":
             continue
         for vn in _collect_decl_names(decl, source):
-            if vn in var_units:
-                export_var_units[vn] = var_units[vn]
+            u = lookup(vn, None)
+            if u is not None:
+                export_var_units[vn] = u
 
     signatures: dict[str, FuncSig] = {}
     for child in node.children:
         if child.type in ("function", "subroutine"):
-            signatures.update(_signatures_for_subtree(child, var_units, source))
+            signatures.update(_signatures_for_subtree(child, lookup, source))
         elif child.type == "internal_procedures":
             for grandchild in child.children:
                 if grandchild.type in ("function", "subroutine"):
                     signatures.update(
-                        _signatures_for_subtree(grandchild, var_units, source)
+                        _signatures_for_subtree(grandchild, lookup, source)
                     )
 
     return name.lower(), ModuleExports(
@@ -1117,7 +1209,7 @@ def _module_exports_for_node(
 
 def _signatures_for_subtree(
     node: Node,
-    var_units: dict[str, Unit],
+    lookup,
     source: bytes,
 ) -> dict[str, FuncSig]:
     """Run :func:`collect_function_signatures` over a sub-tree only.
@@ -1137,13 +1229,14 @@ def _signatures_for_subtree(
     if name_node is None:
         return out
     func_name = _text(name_node, source)
+    scope_lc = func_name.lower()
     params = next((c for c in stmt.children if c.type == "parameters"), None)
     arg_names: list[str] = []
     if params is not None:
         for c in params.children:
             if c.type == "identifier":
                 arg_names.append(_text(c, source))
-    arg_units = tuple(var_units.get(a) for a in arg_names)
+    arg_units = tuple(lookup(a, scope_lc) for a in arg_names)
     return_unit: Unit | None = None
     if not is_subroutine:
         result = next(
@@ -1154,10 +1247,10 @@ def _signatures_for_subtree(
                 (c for c in result.children if c.type == "identifier"), None
             )
             if ret_id is not None:
-                return_unit = var_units.get(_text(ret_id, source))
+                return_unit = lookup(_text(ret_id, source), scope_lc)
         if return_unit is None:
-            return_unit = var_units.get(func_name)
-    out[func_name.lower()] = FuncSig(
+            return_unit = lookup(func_name, scope_lc)
+    out[scope_lc] = FuncSig(
         arg_names=tuple(arg_names),
         arg_units=arg_units,
         return_unit=return_unit,
@@ -1215,6 +1308,8 @@ def check(
     table: UnitTable | None = None,
     signatures: dict[str, FuncSig] | None = None,
     field_units: dict[tuple[str, str], str | Unit] | None = None,
+    var_units_by_scope: dict[tuple[str | None, str], str | Unit] | None = None,
+    routine_scopes: tuple[tuple[int, int, str], ...] = (),
 ) -> list[Diagnostic]:
     """Run the checker over a tree-sitter-parsed file.
 
@@ -1251,8 +1346,23 @@ def check(
             except UnitError:
                 continue
 
+    # Parse the by-scope table the same way (strings → Unit). Empty
+    # ⇒ the resolver falls back to the flat ``parsed_vars`` dict.
+    parsed_vars_by_scope: dict[tuple[str | None, str], Unit] = {}
+    for key, value in (var_units_by_scope or {}).items():
+        if isinstance(value, Unit):
+            parsed_vars_by_scope[key] = value
+        else:
+            try:
+                parsed_vars_by_scope[key] = _units_mod.parse(value, active_table)
+            except UnitError:
+                continue
+
     if signatures is None:
-        signatures = collect_function_signatures(tree, parsed_vars, source)
+        signatures, _ = collect_function_signatures_and_module_exports(
+            tree, parsed_vars, source,
+            var_units_by_scope=parsed_vars_by_scope or None,
+        )
 
     var_types, type_field_types = collect_var_types_and_type_field_types(
         tree, source
@@ -1265,6 +1375,9 @@ def check(
         var_types=var_types,
         type_field_types=type_field_types,
         field_units=parsed_fields,
+        var_units_by_scope=parsed_vars_by_scope,
+        routine_scopes=tuple(routine_scopes),
+        _scope_starts=tuple(r[0] for r in routine_scopes),
     )
     out: list[Diagnostic] = []
     out.extend(_emit_u005_for_unannotated(tree, ctx, source))

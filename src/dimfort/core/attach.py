@@ -86,7 +86,21 @@ class IntermediateContinuationAnnotation:
 
 @dataclass
 class AttachmentResult:
+    # Flat first-seen-wins view, kept for callers that don't care about
+    # scope (LSP hover fallback, U005 annotated-set, U002 parse loop).
     var_units: dict[str, str] = field(default_factory=dict)
+    # Scope-aware view. Key: ``(scope_lc, name)`` where ``scope_lc`` is
+    # the lower-cased enclosing subroutine/function name, or ``None``
+    # for module-level / file-level declarations. This is the
+    # authoritative table for checker work; ``var_units`` is derived
+    # from it for back-compat.
+    var_units_by_scope: dict[tuple[str | None, str], str] = field(
+        default_factory=dict
+    )
+    # Byte-range cover of every subroutine/function in the file, sorted
+    # by start_byte. Carried through from the scan so the checker can
+    # resolve a node's enclosing scope without re-walking the tree.
+    routine_scopes: tuple[tuple[int, int, str], ...] = ()
     # Derived-type field annotations live under their own table so they
     # don't collide with same-named local variables. Keyed by
     # ``(type_name, field_name)``.
@@ -131,6 +145,7 @@ def _assign(
     line: int,
     *,
     enclosing_type: str | None,
+    scope: str | None,
 ) -> None:
     if enclosing_type is not None:
         key = (enclosing_type, name)
@@ -147,23 +162,31 @@ def _assign(
             return
         result.field_units[key] = unit_text
         return
-    existing = result.var_units.get(name)
-    if existing is not None and existing != unit_text:
+    # Per-scope: U-conflict fires only when the SAME scope re-declares
+    # ``name`` with a different unit. Same name in two different
+    # subroutines is normal and silent.
+    scope_key = (scope, name)
+    existing_scoped = result.var_units_by_scope.get(scope_key)
+    if existing_scoped is not None and existing_scoped != unit_text:
         result.conflicts.append(
             ConflictingAnnotation(
                 variable=name,
-                first_unit=existing,
+                first_unit=existing_scoped,
                 second_unit=unit_text,
                 second_line=line,
             )
         )
         return
-    result.var_units[name] = unit_text
+    result.var_units_by_scope[scope_key] = unit_text
+    # Flat view: first-seen-wins across the whole file. Callers that
+    # consult ``var_units`` accept that ambiguity; the authoritative
+    # answer lives in ``var_units_by_scope``.
+    result.var_units.setdefault(name, unit_text)
 
 
 def attach(scan: ScanResult) -> AttachmentResult:
     """Match a stage-1 :class:`ScanResult`'s annotations to its declarations."""
-    result = AttachmentResult()
+    result = AttachmentResult(routine_scopes=scan.routine_scopes)
     for ann in scan.annotations:
         if ann.kind is AnnotationKind.POST:
             decl = _decl_containing_line(ann.line, scan.declarations)
@@ -212,5 +235,6 @@ def attach(scan: ScanResult) -> AttachmentResult:
                 ann.unit_text,
                 ann.line,
                 enclosing_type=decl.enclosing_type,
+                scope=decl.scope,
             )
     return result

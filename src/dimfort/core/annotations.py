@@ -184,6 +184,11 @@ class DeclarationSite:
     line_end: int              # 1-based: the last physical line of the statement
     names: tuple[str, ...]     # variable names declared, in source order
     enclosing_type: str | None = None  # type-block name, if inside `type :: …`
+    # Lower-cased name of the innermost enclosing ``subroutine`` /
+    # ``function``. ``None`` for declarations at module or file top
+    # level. Used by stage 2 (``attach``) to key annotations per scope
+    # so same-named arguments in two routines don't collide.
+    scope: str | None = None
 
 
 @dataclass(frozen=True)
@@ -196,6 +201,11 @@ class ScanResult:
     pre_block_lines: frozenset[int] = frozenset()
     # Every declaration statement found in the source, in textual order.
     declarations: tuple[DeclarationSite, ...] = ()
+    # Byte-range cover of every ``subroutine`` / ``function`` in the
+    # file as ``(start_byte, end_byte, name_lc)``. Sorted by
+    # ``start_byte`` so the checker can bisect a node's byte offset to
+    # find its enclosing routine scope.
+    routine_scopes: tuple[tuple[int, int, str], ...] = ()
 
 
 def scan_text(source: str) -> ScanResult:
@@ -218,12 +228,13 @@ def scan_text(source: str) -> ScanResult:
         errors.extend(errs)
         if kind is AnnotationKind.PRE:
             pre_block_lines.add(line_no)
-    declarations = tuple(_scan_declarations(source))
+    declarations, routine_scopes = _scan_declarations(source)
     return ScanResult(
         annotations=tuple(annotations),
         errors=tuple(errors),
         pre_block_lines=frozenset(pre_block_lines),
-        declarations=declarations,
+        declarations=tuple(declarations),
+        routine_scopes=tuple(routine_scopes),
     )
 
 
@@ -309,8 +320,28 @@ def _ts_type_name(type_def_node) -> str | None:
     return name_node.text.decode("utf-8", "replace") if name_node else None
 
 
-def _scan_declarations(source: str) -> list[DeclarationSite]:
+def _ts_routine_name(node) -> str | None:
+    """Pull the name of a ``subroutine`` / ``function`` node."""
+    stmt_type = (
+        "subroutine_statement"
+        if node.type == "subroutine"
+        else "function_statement"
+    )
+    stmt = next((c for c in node.children if c.type == stmt_type), None)
+    if stmt is None:
+        return None
+    name_node = next((c for c in stmt.children if c.type == "name"), None)
+    return name_node.text.decode("utf-8", "replace") if name_node else None
+
+
+def _scan_declarations(
+    source: str,
+) -> tuple[list[DeclarationSite], list[tuple[int, int, str]]]:
     """Walk a tree-sitter Fortran tree and emit one :class:`DeclarationSite` per decl.
+
+    Also returns the byte-range cover of every ``subroutine`` /
+    ``function`` (sorted by ``start_byte``) so consumers can map a
+    byte offset to its enclosing routine scope without re-walking.
 
     The scanner is deliberately tolerant: a parse with ``ERROR`` nodes
     (e.g. a syntactically broken statement somewhere in the file) still
@@ -321,20 +352,39 @@ def _scan_declarations(source: str) -> list[DeclarationSite]:
     tree = _ts.parse_text(source)
     root = tree.root_node
 
-    # First pass: every derived-type definition's byte-range → its name.
+    # First pass: every derived-type definition's byte-range → its name,
+    # and every subroutine/function's byte-range → its lower-cased name.
     # Storing byte-ranges (not line ranges) lets us nest correctly when
     # one type definition starts on the same line another ends on.
     type_ranges: list[tuple[int, int, str]] = []
+    routine_ranges: list[tuple[int, int, str]] = []
     for n in _ts.walk(root):
         if n.type == "derived_type_definition":
             name = _ts_type_name(n)
             if name is not None:
                 type_ranges.append((n.start_byte, n.end_byte, name))
+        elif n.type in ("subroutine", "function"):
+            name = _ts_routine_name(n)
+            if name is not None:
+                routine_ranges.append((n.start_byte, n.end_byte, name.lower()))
+
+    routine_ranges.sort(key=lambda r: r[0])
 
     def enclosing_type_at(byte_offset: int) -> str | None:
         # Smallest containing range wins (handles nested definitions).
         best: tuple[int, int, str] | None = None
         for lo, hi, name in type_ranges:
+            if lo <= byte_offset < hi and (
+                best is None or (hi - lo) < (best[1] - best[0])
+            ):
+                best = (lo, hi, name)
+        return best[2] if best else None
+
+    def enclosing_routine_at(byte_offset: int) -> str | None:
+        # Innermost (smallest) containing routine wins; handles a
+        # CONTAINS-nested procedure inside its parent's range.
+        best: tuple[int, int, str] | None = None
+        for lo, hi, name in routine_ranges:
             if lo <= byte_offset < hi and (
                 best is None or (hi - lo) < (best[1] - best[0])
             ):
@@ -364,9 +414,10 @@ def _scan_declarations(source: str) -> list[DeclarationSite]:
                 line_end=end,
                 names=tuple(names),
                 enclosing_type=enclosing_type_at(n.start_byte),
+                scope=enclosing_routine_at(n.start_byte),
             )
         )
-    return out
+    return out, routine_ranges
 
 
 def scan_file(path: str | Path) -> ScanResult:
