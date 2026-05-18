@@ -455,9 +455,16 @@ def check_files(
                 entry.attachment.var_units_by_scope, active_table
             )
             per_file_var_units_by_scope[entry.path] = file_scoped
+            # Pass the scoped table even when empty — switching to the
+            # ``None`` branch would re-enable flat-var_units fallback,
+            # which causes unannotated params (e.g. a NetCDF wrapper's
+            # ``v``) to absorb annotations from same-named variables
+            # elsewhere in the workset (e.g. a wind ``v: m/s``). The
+            # by-scope path returns ``None`` for unannotated names,
+            # which is the correct semantic.
             sigs, modules = ts_checker.collect_function_signatures_and_module_exports(
                 entry.tree, merged_var_units, entry.source,
-                var_units_by_scope=file_scoped or None,
+                var_units_by_scope=file_scoped,
             )
             for mname, exp in modules.items():
                 module_exports.setdefault(mname, exp)

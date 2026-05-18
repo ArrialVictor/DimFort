@@ -1062,12 +1062,21 @@ def _make_scoped_lookup(
 ):
     """Build a ``(name, scope_lc) -> Unit | None`` lookup.
 
-    When ``var_units_by_scope`` is empty/None we fall back to the flat
-    ``var_units`` dict (same behaviour as before scope-aware
-    annotations existed). Otherwise we try the routine's scope first,
-    then module/file-level (scope=None).
+    Semantics distinguish None from empty dict:
+
+    - ``var_units_by_scope is None``: caller has only flat data (the
+      back-compat path for legacy standalone collectors). Fall back
+      to ``var_units.get(name)``, which conflates same-named symbols
+      across files but matches pre-scope-aware behaviour.
+    - ``var_units_by_scope`` (possibly empty dict): scope-aware
+      mode. Try ``(scope, name)`` then ``(None, name)``; return
+      ``None`` if neither matches. **No flat fallback** — otherwise an
+      unannotated parameter of a generic wrapper (e.g. a NetCDF
+      ``put_var(...,v)``) would absorb the unit of an unrelated
+      same-named variable elsewhere in the workset (e.g. a wind
+      ``v: m/s``), producing spurious H004 diagnostics.
     """
-    if not var_units_by_scope:
+    if var_units_by_scope is None:
         return lambda name, scope: var_units.get(name)
 
     def lookup(name: str, scope: str | None) -> Unit | None:
