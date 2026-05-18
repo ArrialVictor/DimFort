@@ -69,6 +69,14 @@ class WorksetResult:
     # as ``trees``.
     merged_var_units: dict[str, Unit] = field(default_factory=dict)
     merged_field_units: dict[tuple[str, str], Unit] = field(default_factory=dict)
+    # Per-file scope-aware unit table. Key: file path → (scope_lc|None,
+    # name) → Unit. Consumed by LSP hover/inlay so identifier lookups
+    # honour the enclosing subroutine instead of falling back to the
+    # flat merged_var_units (which is first-seen-wins across the
+    # workset).
+    var_units_by_scope: dict[Path, dict[tuple[str | None, str], Unit]] = field(
+        default_factory=dict
+    )
     # Function / subroutine signatures resolved across the whole workset.
     signatures: dict[str, FuncSig] = field(default_factory=dict)
     # Wall-clock seconds spent in each pipeline phase. Populated by
@@ -453,6 +461,7 @@ def check_files(
         if progress_cb is not None:
             progress_cb("index", i, total, entry.path)
     result.signatures = global_signatures
+    result.var_units_by_scope = per_file_var_units_by_scope
     result.phase_timings["index"] = time.perf_counter() - t_phase_start
 
     # Phase D — check each file with its imports merged in.

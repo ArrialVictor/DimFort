@@ -424,13 +424,29 @@ def _trees_for(uri: str) -> tuple[Path, object, bytes] | None:
     return path.resolve(), tree, source
 
 
-def _build_ts_ctx(result: WorksetResult, source: bytes, file: str) -> ts_checker._Ctx:
+def _build_ts_ctx(
+    result: WorksetResult, source: bytes, file: str,
+    *, path: Path | None = None,
+) -> ts_checker._Ctx:
     """Spin up a ts_checker ``_Ctx`` pre-loaded with the workset's tables.
 
     Reused by hover / inlay so identifier-to-unit lookup goes through
     the same logic as the diagnostic pipeline — no second source of
     truth for derived-type / use-chain resolution.
+
+    When ``path`` is provided we also splice in the per-file scoped
+    annotation table and routine byte-ranges, so ``ctx.unit_for(name,
+    byte_offset)`` honours the cursor's enclosing subroutine. Without
+    ``path`` we degrade to flat ``merged_var_units`` (same behaviour
+    as before scope-aware lookups existed).
     """
+    var_units_by_scope: dict[tuple[str | None, str], Unit] = {}
+    routine_scopes: tuple[tuple[int, int, str], ...] = ()
+    if path is not None:
+        var_units_by_scope = result.var_units_by_scope.get(path, {})
+        att = result.attachments.get(path)
+        if att is not None:
+            routine_scopes = att.routine_scopes
     return ts_checker._Ctx(
         file=file,
         var_units=result.merged_var_units,
@@ -441,6 +457,9 @@ def _build_ts_ctx(result: WorksetResult, source: bytes, file: str) -> ts_checker
         var_types={},
         type_field_types={},
         field_units=result.merged_field_units,
+        var_units_by_scope=var_units_by_scope,
+        routine_scopes=routine_scopes,
+        _scope_starts=tuple(r[0] for r in routine_scopes),
     )
 
 
@@ -587,7 +606,7 @@ def _resolve_hover(
         _ts_h.walk_member_exprs(tree), line_1based, col_1based
     )
     if member_hit is not None:
-        ctx = _build_ts_ctx(result, source, str(resolved_path))
+        ctx = _build_ts_ctx(result, source, str(resolved_path), path=resolved_path)
         ctx.var_types.update(ts_checker.collect_var_types(tree, source))
         ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
         unit = ts_checker._resolve_member_chain(member_hit, ctx, source)
@@ -620,16 +639,25 @@ def _resolve_hover(
     # found we still want to show *something* (the variable's unit if
     # known, or "no annotation"). Without this fallback, hovering on
     # the callee of an intrinsic or an unindexed call shows nothing.
+    ident_ctx: ts_checker._Ctx | None = None
     for ident in _ts_h.walk_identifiers(tree):
         if not _ts_h.node_contains(ident, line_1based, col_1based):
             continue
         if _ts_h.is_inside_type_qualifier(ident):
             continue
         name = _ts.node_text(ident, source)
-        unit = result.merged_var_units.get(name)
+        # Scope-aware lookup: same-named params in two routines no
+        # longer alias. Falls back to flat merged_var_units (which
+        # carries imports) when no scoped entry matches.
+        if ident_ctx is None:
+            ident_ctx = _build_ts_ctx(
+                result, source, str(resolved_path), path=resolved_path,
+            )
+        unit = ident_ctx.unit_for(name, ident.start_byte)
         if unit is not None:
             return _hover_text(name, _unit_pretty(unit)), _node_lsp_range(ident)
-        # Lower-case fallback for var_units keyed by original case.
+        # Lower-case fallback for var_units keyed by original case
+        # (covers names whose annotation lives only in the flat view).
         for k, u in result.merged_var_units.items():
             if k.lower() == name.lower():
                 return _hover_text(name, _unit_pretty(u)), _node_lsp_range(ident)
@@ -1002,7 +1030,7 @@ def _inlay_hint(
     visible_start_line = params.range.start.line + 1   # 1-based
     visible_end_line = params.range.end.line + 1
 
-    ctx = _build_ts_ctx(result, source, str(resolved_path))
+    ctx = _build_ts_ctx(result, source, str(resolved_path), path=resolved_path)
     ctx.var_types.update(ts_checker.collect_var_types(tree, source))
     ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
 
