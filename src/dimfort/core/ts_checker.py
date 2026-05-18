@@ -979,34 +979,38 @@ def collect_module_exports(
         # is a *direct* child of the module (not inside a contained
         # function/subroutine or a derived-type block).
         export_var_units: dict[str, Unit] = {}
+        all_var_names: list[str] = []
         for decl in n.children:
             if decl.type != "variable_declaration":
                 continue
             for vn in _collect_decl_names(decl, source):
+                all_var_names.append(vn)
                 if vn in var_units:
                     export_var_units[vn] = var_units[vn]
 
-        # Contained procedures: walk only the children to scope correctly.
+        # Contained procedures: walk only the children to scope
+        # correctly. ``_signatures_for_subtree`` takes a ``(name,
+        # scope)`` lookup callable; the flat-dict back-compat shape
+        # of this function is wrapped to match.
+        lookup = _make_scoped_lookup(var_units, None)
         signatures: dict[str, FuncSig] = {}
         for child in n.children:
             if child.type in ("function", "subroutine"):
-                # Sub-walk: collect_function_signatures iterates the
-                # whole tree by default, so build a mini-context.
                 signatures.update(
-                    _signatures_for_subtree(child, var_units, source)
+                    _signatures_for_subtree(child, lookup, source)
                 )
             elif child.type == "internal_procedures":
-                # `contains` block wrapping function/subroutine defs
                 for grandchild in child.children:
                     if grandchild.type in ("function", "subroutine"):
                         signatures.update(
-                            _signatures_for_subtree(grandchild, var_units, source)
+                            _signatures_for_subtree(grandchild, lookup, source)
                         )
 
         out[name.lower()] = ModuleExports(
             name=name,
             var_units=export_var_units,
             signatures=signatures,
+            all_var_names=tuple(all_var_names),
         )
     return out
 
@@ -1179,12 +1183,17 @@ def _module_exports_for_node(
         return None
     name = _text(name_node, source)
 
-    # Module-level variables live at scope=None.
+    # Module-level variables live at scope=None. Track every declared
+    # name (whether annotated or not) so the LSP can flag unannotated
+    # exports in hover; ``export_var_units`` keeps only the annotated
+    # ones for the actual unit-checking path.
     export_var_units: dict[str, Unit] = {}
+    all_var_names: list[str] = []
     for decl in node.children:
         if decl.type != "variable_declaration":
             continue
         for vn in _collect_decl_names(decl, source):
+            all_var_names.append(vn)
             u = lookup(vn, None)
             if u is not None:
                 export_var_units[vn] = u
@@ -1204,6 +1213,7 @@ def _module_exports_for_node(
         name=name,
         var_units=export_var_units,
         signatures=signatures,
+        all_var_names=tuple(all_var_names),
     )
 
 

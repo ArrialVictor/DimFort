@@ -127,11 +127,17 @@ class ModuleExports:
 
     Phase 2 treats every module-level declaration as exported (no
     ``private`` honouring yet) — refinement in a later phase.
+
+    ``var_units`` lists only annotated variables. ``all_var_names``
+    records every module-level variable declaration so the LSP can
+    surface "this module declares X but it has no @unit{}" in hover
+    summaries without re-walking the tree.
     """
 
     name: str
     var_units: dict[str, Unit]
     signatures: dict[str, FuncSig]
+    all_var_names: tuple[str, ...] = ()
 
 
 def apply_use_clauses(

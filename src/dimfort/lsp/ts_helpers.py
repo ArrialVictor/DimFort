@@ -119,6 +119,48 @@ def walk_function_definitions(tree: Tree) -> Iterator[Node]:
             yield n
 
 
+def walk_use_statements(tree: Tree) -> Iterator[Node]:
+    """Yield every ``use_statement`` node in the file."""
+    for n in _ts.walk(tree.root_node):
+        if n.type == "use_statement":
+            yield n
+
+
+def walk_module_definitions(tree: Tree) -> Iterator[Node]:
+    """Yield every top-level ``module`` definition node."""
+    for n in _ts.walk(tree.root_node):
+        if n.type == "module":
+            yield n
+
+
+def use_statement_module_name(use_node: Node, source: bytes) -> tuple[str, Node] | None:
+    """Return ``(name, name_node)`` for the module referenced by a ``use``.
+
+    The grammar exposes the target as a ``module_name`` child of
+    ``use_statement``. Returns ``None`` on a malformed ``use`` (no
+    name node) so the caller can skip silently.
+    """
+    name_node = next((c for c in use_node.children if c.type == "module_name"), None)
+    if name_node is None:
+        return None
+    return _ts.node_text(name_node, source), name_node
+
+
+def module_definition_name(module_node: Node, source: bytes) -> tuple[str, Node] | None:
+    """Return ``(name, name_node)`` for a ``module`` definition's header.
+
+    The ``module_statement`` child carries a ``name`` token; we
+    surface it the same way we do for function/subroutine headers.
+    """
+    stmt = next((c for c in module_node.children if c.type == "module_statement"), None)
+    if stmt is None:
+        return None
+    name_node = next((c for c in stmt.children if c.type == "name"), None)
+    if name_node is None:
+        return None
+    return _ts.node_text(name_node, source), name_node
+
+
 # ---------------------------------------------------------------------------
 # Smallest-enclosing lookup
 
