@@ -295,6 +295,18 @@ def _parse_var_units(
     return out
 
 
+def _parse_var_units_by_scope(
+    text: dict[tuple[str | None, str], str], table: UnitTable
+) -> dict[tuple[str | None, str], Unit]:
+    out: dict[tuple[str | None, str], Unit] = {}
+    for key, raw in text.items():
+        try:
+            out[key] = _units_mod.parse(raw, table)
+        except UnitError:
+            continue
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -418,10 +430,21 @@ def check_files(
     t_phase_start = time.perf_counter()
     module_exports: dict[str, ModuleExports] = {}
     global_signatures: dict[str, FuncSig] = {}
+    # Per-file parsed scoped table — kept around for Phase D so we don't
+    # re-parse the same annotations in the checker. Empty entries when a
+    # file has no scoped annotations or failed to load.
+    per_file_var_units_by_scope: dict[
+        Path, dict[tuple[str | None, str], Unit]
+    ] = {}
     for i, entry in enumerate(loaded, start=1):
         if entry.tree is not None:
+            file_scoped = _parse_var_units_by_scope(
+                entry.attachment.var_units_by_scope, active_table
+            )
+            per_file_var_units_by_scope[entry.path] = file_scoped
             sigs, modules = ts_checker.collect_function_signatures_and_module_exports(
-                entry.tree, merged_var_units, entry.source
+                entry.tree, merged_var_units, entry.source,
+                var_units_by_scope=file_scoped or None,
             )
             for mname, exp in modules.items():
                 module_exports.setdefault(mname, exp)
@@ -503,6 +526,8 @@ def check_files(
             table=active_table,
             signatures=per_file_sigs,
             field_units=merged_field_units_text,
+            var_units_by_scope=per_file_var_units_by_scope.get(entry.path),
+            routine_scopes=entry.attachment.routine_scopes,
         )
         # Remap to source coordinates when the file went through cpp.
         # No-op when ``line_map`` is None (file parsed raw).
