@@ -39,3 +39,31 @@ def test_cap_ensures_active_is_present_even_if_not_in_tail():
     out = _cap_workset(paths, active, limit=3)
     assert active in out
     assert len(out) == 3
+
+
+def test_cap_preserves_must_keep_entries_against_topo_truncation():
+    # Active file is at the end; must_keep entries sit early in topo
+    # order (typical for direct external-procedure callees with
+    # shallow dep trees). Without the pin, they'd be sliced out by
+    # `paths[-limit:]`; with the pin, they survive.
+    paths = [_mk(f"f{i}.f90") for i in range(10)]
+    active = _mk("f9.f90")
+    must_keep = frozenset({_mk("f0.f90"), _mk("f2.f90")})
+    out = _cap_workset(paths, active, limit=4, must_keep=must_keep)
+    assert active in out
+    for p in must_keep:
+        assert p in out, f"{p} should have been pinned"
+    assert len(out) == 4
+
+
+def test_cap_keeps_topo_order_in_output():
+    # Output must remain in topo order so downstream consumers
+    # process dependencies before users.
+    paths = [_mk(f"f{i}.f90") for i in range(10)]
+    out = _cap_workset(
+        paths, _mk("f9.f90"), limit=5,
+        must_keep=frozenset({_mk("f1.f90")}),
+    )
+    # Out is a subset of `paths` in original order.
+    indices = [paths.index(p) for p in out]
+    assert indices == sorted(indices)

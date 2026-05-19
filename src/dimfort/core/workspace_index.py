@@ -40,6 +40,29 @@ _MODULE_DECL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# `end module` / `end module NAME` — needed to track when a top-level
+# SUBROUTINE/FUNCTION declaration falls outside any MODULE block.
+_END_MODULE_RE = re.compile(r"^\s*end\s*module\b", re.IGNORECASE)
+
+# `SUBROUTINE foo` / `[type, attrs] FUNCTION foo([args]) [RESULT(x)]`.
+# Match the *name* only — we don't care about args / return-type spec at
+# this stage. ``type`` includes `real`, `integer(kind=...)`, `type(T)`,
+# `class(T)`, `pure`, `elemental`, `recursive`, `module`. We tolerate
+# any sequence of those prefixes by allowing a permissive run of word
+# / paren / equals / star / comma tokens before the keyword.
+_PROCEDURE_DECL_RE = re.compile(
+    r"""^\s*
+        (?!end\b)                # reject ``end subroutine NAME`` / ``end function``
+        (?:[\w()=*,\s]*?\s+)?    # optional type/attr prefix for functions
+        (?:subroutine|function)
+        \s+
+        ([A-Za-z_]\w*)           # the name we want
+        \s*
+        (?:\(|$|!|\&)            # followed by '(', EOL, comment, or continuation
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
 # `use NAME` reference. Captures the module name and the trailing tail
 # (after the module name) so a second pass can extract `only:` lists
 # and renames. Handles:
@@ -66,6 +89,18 @@ _USE_RE = re.compile(
 _RENAME_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*=>\s*([A-Za-z_]\w*)\s*$")
 _PLAIN_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*$")
 
+# ``CALL name`` invocation. Captures the callee name only. Permits a
+# leading label (numeric F77-style line label, very rare in F90 code
+# but tolerated). We deliberately don't try to match function-call
+# expressions here — they're harder to disambiguate from array
+# indexing without semantic context, and the dominant external-
+# procedure pattern in LMDZ-class codebases is ``CALL`` to a
+# subroutine. Functions can be added later if needed.
+_CALL_RE = re.compile(
+    r"^\s*(?:\d+\s+)?call\s+([A-Za-z_]\w*)",
+    re.IGNORECASE,
+)
+
 
 # Default file extensions worth scanning. Fixed-form (`.f`, `.for`) is
 # excluded — DimFort doesn't support it (see PROJECT_LOG decision).
@@ -90,10 +125,29 @@ class UseRef:
 
 @dataclass
 class WorkspaceIndex:
-    """Module-to-file map plus per-file ``use`` lists."""
+    """Module-to-file map plus per-file ``use`` lists.
+
+    ``procedures`` maps the lower-cased name of every **top-level**
+    ``SUBROUTINE`` / ``FUNCTION`` declaration (one that is not inside
+    a ``MODULE`` block) to the file that declares it. This covers F77-
+    vintage external procedures that LMDZ-class codebases still call
+    without a ``USE`` clause; without this index, the LSP's per-file
+    workset can't reach those defining files via ``use``-chain
+    resolution.
+
+    Procedures contained inside a module are deliberately excluded —
+    those are reached through the module's exports already.
+
+    ``calls_by_file`` records lower-cased ``CALL`` invocation names per
+    file. The workset resolver consults it after the ``use``-chain
+    expansion to also pull in the files that define any externally-
+    linked procedures the active file calls.
+    """
 
     modules: dict[str, Path] = field(default_factory=dict)
+    procedures: dict[str, Path] = field(default_factory=dict)
     uses_by_file: dict[Path, tuple[UseRef, ...]] = field(default_factory=dict)
+    calls_by_file: dict[Path, tuple[str, ...]] = field(default_factory=dict)
     scan_failures: dict[Path, str] = field(default_factory=dict)
 
 
@@ -135,6 +189,61 @@ def _parse_only_list(tail: str) -> tuple[tuple[str, ...], tuple[tuple[str, str],
         if m:
             plain.append(m.group(1).lower())
     return tuple(plain), tuple(renames)
+
+
+def extract_calls(text: str) -> tuple[str, ...]:
+    """Return every ``CALL name`` callee in ``text``, lower-cased.
+
+    Order-preserving but de-duplicated: the same name called twice
+    appears once. Comments are stripped before matching, so a ``CALL``
+    inside a string-aware comment is ignored.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in text.splitlines():
+        code = _strip_comment(line)
+        m = _CALL_RE.match(code)
+        if m:
+            name = m.group(1).lower()
+            if name not in seen:
+                seen.add(name)
+                out.append(name)
+    return tuple(out)
+
+
+def extract_top_level_procedures(text: str) -> tuple[str, ...]:
+    """Return the names of every top-level SUBROUTINE/FUNCTION in ``text``.
+
+    "Top-level" = not inside any ``MODULE`` block. We track
+    ``MODULE`` / ``END MODULE`` pairs to discriminate. Nested
+    procedures (the F2008 contained-procedure feature) are NOT
+    captured — only ones whose declaration appears at file scope.
+
+    Lower-cased, in source order.
+    """
+    names: list[str] = []
+    module_depth = 0
+    for line in text.splitlines():
+        code = _strip_comment(line)
+        # MODULE ... — enter a module scope. Excludes the
+        # ``module procedure`` interface form (handled by the
+        # ``(?!procedure)`` lookahead in ``_MODULE_DECL_RE``).
+        if _MODULE_DECL_RE.match(code):
+            module_depth += 1
+            continue
+        if _END_MODULE_RE.match(code):
+            if module_depth > 0:
+                module_depth -= 1
+            continue
+        if module_depth > 0:
+            # Inside a module — anything matching the procedure
+            # regex here is a *contained* procedure and isn't a
+            # top-level external. Skip.
+            continue
+        m = _PROCEDURE_DECL_RE.match(code)
+        if m:
+            names.append(m.group(1).lower())
+    return tuple(names)
 
 
 def extract_modules(text: str) -> tuple[str, ...]:
@@ -280,7 +389,11 @@ def update_index(
     for name, owner in list(index.modules.items()):
         if owner == changed:
             del index.modules[name]
+    for name, owner in list(index.procedures.items()):
+        if owner == changed:
+            del index.procedures[name]
     index.uses_by_file.pop(changed, None)
+    index.calls_by_file.pop(changed, None)
     index.scan_failures.pop(changed, None)
     _scan_into_index(index, changed, new_text=new_text)
     return index
@@ -297,7 +410,15 @@ def _scan_into_index(
         return
     for module_name in extract_modules(text):
         index.modules.setdefault(module_name, path)
+    for proc_name in extract_top_level_procedures(text):
+        # First-found wins. Conflict (the same name declared at top
+        # level in two files) is rare but possible in old codebases
+        # with build-time variant selection; first-seen mirrors the
+        # link-time symbol-resolution that LMDZ-class projects rely
+        # on, and avoids re-introducing ordering instability.
+        index.procedures.setdefault(proc_name, path)
     index.uses_by_file[path] = extract_uses(text)
+    index.calls_by_file[path] = extract_calls(text)
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +464,19 @@ def resolve_workset(
                 continue
             if target not in visited:
                 stack.append(target)
+        # External-procedure resolution. For every ``CALL name``
+        # invocation that names a top-level procedure declared
+        # somewhere in the workspace, pull its defining file into
+        # the workset too. This is the LMDZ-style F77-linkage path
+        # that ``use``-chain expansion can't reach. Procedures
+        # declared *inside* a module are not in ``index.procedures``,
+        # so this path doesn't double-pull files already reached via
+        # ``use``.
+        for callee in index.calls_by_file.get(f, ()):
+            target = index.procedures.get(callee)
+            if target is None or target in visited:
+                continue
+            stack.append(target)
 
     # Step 2: topological sort within the visited set.
     order = _topo_sort(visited, index, ext_lower)
@@ -360,9 +494,33 @@ def _topo_sort(
     external: frozenset[str],
 ) -> list[Path]:
     """Kahn-style topo sort. Cycle members come out in arbitrary order
-    but after their non-cycle predecessors."""
+    but after their non-cycle predecessors.
+
+    Edges come from two sources, both flowing dep → user:
+
+    1. ``use`` clauses (module-style imports).
+    2. ``CALL`` invocations of top-level external procedures.
+
+    Including call edges matters for the LSP cap: the LSP truncates
+    a workset to its last N topo entries (closest to the active
+    file). Without call edges, an external callee — which the
+    active file directly needs — ends up scattered through the
+    middle and gets dropped by the cap.
+    """
     indeg: dict[Path, int] = {f: 0 for f in files}
     edges: dict[Path, list[Path]] = {f: [] for f in files}
+    seen_edges: set[tuple[Path, Path]] = set()
+
+    def _add_edge(target: Path, consumer: Path) -> None:
+        if target == consumer:
+            return  # self-reference is harmless
+        key = (target, consumer)
+        if key in seen_edges:
+            return
+        seen_edges.add(key)
+        edges[target].append(consumer)
+        indeg[consumer] += 1
+
     for f in files:
         for use in index.uses_by_file.get(f, ()):
             if use.module in external:
@@ -370,10 +528,12 @@ def _topo_sort(
             target = index.modules.get(use.module)
             if target is None or target not in files:
                 continue
-            if target == f:  # `use M` from inside module M is harmless
+            _add_edge(target, f)
+        for callee in index.calls_by_file.get(f, ()):
+            target = index.procedures.get(callee)
+            if target is None or target not in files:
                 continue
-            edges[target].append(f)
-            indeg[f] += 1
+            _add_edge(target, f)
 
     ready = [f for f, d in indeg.items() if d == 0]
     ready.sort()  # deterministic output

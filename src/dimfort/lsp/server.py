@@ -171,16 +171,45 @@ _max_workset_size: int = _DEFAULT_MAX_WORKSET
 _project_config: DimfortConfig = DimfortConfig()
 
 
-def _cap_workset(paths: list[Path], active: Path, limit: int) -> list[Path]:
+def _cap_workset(
+    paths: list[Path], active: Path, limit: int,
+    *, must_keep: frozenset[Path] = frozenset(),
+) -> list[Path]:
     """Trim a workset down to ``limit`` entries while keeping the active
-    file. Takes the last ``limit`` entries in topo order (closest to
-    the active file's leaves)."""
+    file and any explicit ``must_keep`` entries.
+
+    Topo order alone isn't enough on real codebases: a direct
+    callee that DimFort pulled in via the procedure index can sit
+    early in the topo sort (its own deps are shallow) and get
+    dropped by a naive ``paths[-limit:]`` cap, even though it's
+    semantically central to the active file. ``must_keep`` lets the
+    caller pin those entries.
+
+    Algorithm: keep the active file plus every ``must_keep`` entry,
+    then fill the remaining budget from the topo-last entries that
+    aren't already pinned.
+    """
     if len(paths) <= limit:
         return paths
-    tail = paths[-limit:]
-    if active not in tail:
-        tail = tail[1:] + [active]
-    return tail
+    pinned: set[Path] = {active} | {p for p in must_keep if p in paths}
+    if len(pinned) >= limit:
+        # Pinned set already exceeds the cap; keep all pins, drop
+        # everything else. ``active`` is always present.
+        return [p for p in paths if p in pinned]
+    budget = limit - len(pinned)
+    out_set: set[Path] = set(pinned)
+    # Walk paths from the end backwards, picking topo-last entries
+    # that aren't already pinned, until the budget is exhausted.
+    for p in reversed(paths):
+        if budget == 0:
+            break
+        if p in out_set:
+            continue
+        out_set.add(p)
+        budget -= 1
+    # Return in topo order so downstream consumers (multifile)
+    # process deps before users.
+    return [p for p in paths if p in out_set]
 
 # Tracks every file VSCode (or whichever client) has currently open.
 # Keyed by resolved Path so we can recover the *exact* URI the editor
@@ -311,8 +340,23 @@ def _workset_for(ls: LanguageServer, active_uri: str) -> tuple[list[Path], Path 
         # any workspace folder).
         if resolved_active not in paths:
             paths.append(resolved_active)
+        # Pin the active file's direct dependencies (modules used,
+        # procedures called) so the cap doesn't drop them. Without
+        # this, an external callee can land mid-topo and get cut.
+        must_keep: set[Path] = set()
+        for use in idx.uses_by_file.get(resolved_active, ()):
+            tgt = idx.modules.get(use.module)
+            if tgt is not None:
+                must_keep.add(tgt)
+        for callee in idx.calls_by_file.get(resolved_active, ()):
+            tgt = idx.procedures.get(callee)
+            if tgt is not None:
+                must_keep.add(tgt)
         # Cap to keep the LSP process alive on deep workspaces.
-        capped = _cap_workset(paths, resolved_active, _max_workset_size)
+        capped = _cap_workset(
+            paths, resolved_active, _max_workset_size,
+            must_keep=frozenset(must_keep),
+        )
         if len(capped) < len(paths):
             _notify(
                 ls,
