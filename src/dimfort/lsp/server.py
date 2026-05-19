@@ -137,6 +137,18 @@ _workspace_folders: list[Path] = []
 _workspace_index: WorkspaceIndex | None = None
 _workspace_index_lock = threading.Lock()
 
+# Serialises tree-sitter tree traversal across feature handlers. The
+# Python bindings call into the underlying C library, which is NOT
+# thread-safe for concurrent traversal of the same tree. VSCode's
+# Cmd-hover fires textDocument/hover and textDocument/definition
+# nearly simultaneously; pygls schedules sync handlers on a worker
+# pool, so both run on different threads and can race on the same
+# tree-sitter Tree, producing silent native-level crashes (no Python
+# traceback). Serialising the bodies of the affected handlers
+# eliminates the race; each handler is sub-millisecond, so the
+# serialisation cost is invisible to the user.
+_ts_handler_lock = threading.Lock()
+
 # Modules treated as known-external (Fortran intrinsics + common libs).
 # Anything `use`d that matches this set is silently dropped from the
 # dep chain rather than producing a missing-module diagnostic.
@@ -466,6 +478,33 @@ def _trees_for(uri: str) -> tuple[Path, object, bytes] | None:
         return None
     tree, source = entry
     return path.resolve(), tree, source
+
+
+def _ensure_uri_loaded(ls: LanguageServer, uri: str) -> None:
+    """Re-publish for ``uri`` if its tree isn't in ``_last_result``.
+
+    The LSP keeps a single global ``_last_result``, updated on every
+    didOpen / didSave / didChange. When the user navigates between
+    open tabs, VSCode doesn't fire any LSP event — but the last
+    publish may have been for a *different* active file whose
+    workset doesn't include the now-active one (typical when the
+    user jumped from a caller to a callee via goto-def: the
+    callee's workset is downward-only and doesn't loop back).
+
+    Detect that by asking ``_trees_for`` and, if it returns None
+    for what's actually a known Fortran file, fire a synchronous
+    publish for the URI so the next hover / goto-def / inlay
+    request sees fresh trees.
+    """
+    if _trees_for(uri) is not None:
+        return
+    path = _uri_to_path(uri)
+    if path is None or not path.is_file():
+        return
+    if path.suffix.lower() not in _FORTRAN_EXTS:
+        return
+    with _check_lock:
+        _publish_for_uri(ls, uri)
 
 
 def _build_ts_ctx(
@@ -1123,23 +1162,28 @@ def _did_change(ls: LanguageServer, params: lsp.DidChangeTextDocumentParams) -> 
 
 @server.feature(lsp.TEXT_DOCUMENT_HOVER)
 def _hover(ls: LanguageServer, params: lsp.HoverParams) -> Any:
-    uri = params.text_document.uri
-    # LSP positions are 0-based; our internal helpers are 1-based.
-    line = params.position.line + 1
-    col = params.position.character + 1
-    source_text: str | None = None
-    try:
-        source_text = ls.workspace.get_text_document(uri).source
-    except Exception:
-        log.debug("could not fetch buffer text for %s", uri)
-    hit = _resolve_hover(uri, line, col, source_text)
-    if hit is None:
-        return None
-    text, range_ = hit
-    return lsp.Hover(
-        contents=lsp.MarkupContent(kind=lsp.MarkupKind.Markdown, value=text),
-        range=range_,
-    )
+    # Tab switches to a different open document don't fire any LSP
+    # event, but their workset may not include the now-active file.
+    # Trigger a fresh publish before reading trees.
+    _ensure_uri_loaded(ls, params.text_document.uri)
+    with _ts_handler_lock:
+        uri = params.text_document.uri
+        # LSP positions are 0-based; our internal helpers are 1-based.
+        line = params.position.line + 1
+        col = params.position.character + 1
+        source_text: str | None = None
+        try:
+            source_text = ls.workspace.get_text_document(uri).source
+        except Exception:
+            log.debug("could not fetch buffer text for %s", uri)
+        hit = _resolve_hover(uri, line, col, source_text)
+        if hit is None:
+            return None
+        text, range_ = hit
+        return lsp.Hover(
+            contents=lsp.MarkupContent(kind=lsp.MarkupKind.Markdown, value=text),
+            range=range_,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1161,6 +1205,18 @@ def _inlay_hint(
     the ts_checker resolver so the unit-text matches what the
     diagnostic pipeline computes.
     """
+    # Tab-switch safety: re-publish if the URI isn't currently loaded.
+    _ensure_uri_loaded(ls, params.text_document.uri)
+    # See _ts_handler_lock declaration: tree-sitter's C library isn't
+    # thread-safe for concurrent traversal; serialise alongside hover
+    # and definition.
+    with _ts_handler_lock:
+        return _inlay_hint_locked(params)
+
+
+def _inlay_hint_locked(
+    params: lsp.InlayHintParams,
+) -> list[lsp.InlayHint] | None:
     if not _features.inlay_hints:
         return None
     found = _trees_for(params.text_document.uri)
@@ -1309,6 +1365,19 @@ def _definition(
     match — F90's case-insensitive name resolution is implemented by
     a lower-cased compare on both ends.
     """
+    # Tab-switch safety: re-publish if the URI isn't currently loaded.
+    _ensure_uri_loaded(ls, params.text_document.uri)
+    # See _ts_handler_lock declaration: tree-sitter's C library isn't
+    # thread-safe for concurrent traversal; Cmd-hover fires hover +
+    # definition simultaneously and was triggering native-level
+    # crashes. Serialise.
+    with _ts_handler_lock:
+        return _definition_locked(ls, params)
+
+
+def _definition_locked(
+    ls: LanguageServer, params: lsp.DefinitionParams
+) -> list[lsp.Location] | None:
     if not _features.goto_definition:
         return None
     found = _trees_for(params.text_document.uri)
