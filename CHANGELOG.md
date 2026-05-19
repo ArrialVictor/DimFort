@@ -4,6 +4,23 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-05-19
+
+Second post-release hotfix.
+
+- **README uses absolute URLs everywhere**. PyPI's readme renderer
+  rejects relative image references; the project page on PyPI showed
+  a broken `social_preview.png` (and a "Bad url scheme" error when
+  opened directly). Every `(local-path)` link in the README now
+  points at `https://raw.githubusercontent.com/.../main/...` (for
+  images) or `https://github.com/.../blob/main/...` (for files).
+  GitHub renders both forms; PyPI only renders the absolute form.
+- **CI matrix expanded back to 3×3**. Runs `pytest` + `ruff` on
+  Linux/macOS/Windows across Python 3.11, 3.12, and 3.13. Was
+  reduced to a 3.11-only matrix earlier to save private-repo CI
+  minutes; now that the repo is public, GitHub Actions minutes are
+  unlimited so the wider grid is back.
+
 ## [0.1.1] — 2026-05-19
 
 Post-release hotfix.
