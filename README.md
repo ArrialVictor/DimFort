@@ -30,16 +30,39 @@ force = mass * velocity            ! diagnosed: force unit is kg, expected kg*m/
 
 ## Install
 
+DimFort is published on PyPI as `dimfort`. It's a CLI tool with an
+entry point — install it isolated with [`pipx`](https://pipx.pypa.io/):
+
+```bash
+pipx install 'dimfort[lsp]'      # includes the LSP server extra
+dimfort --version
+```
+
+The `[lsp]` extra pulls in `pygls`; omit it if you only want the
+CLI and never the language server.
+
+> **On macOS with Homebrew Python**: PEP 668 makes plain
+> `pip install` refuse to touch Homebrew's site-packages. Use
+> `pipx` as shown above, or install into a virtual environment.
+> If `pipx install` says "command not found", run
+> `brew install pipx && pipx ensurepath` first.
+
+### From source (contributors)
+
 ```bash
 git clone https://github.com/ArrialVictor/DimFort.git
 cd DimFort
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev,lsp]"
 ```
 
-Requires Python ≥ 3.11. The Fortran parser
+### Requirements
+
+Python ≥ 3.11. The Fortran parser
 ([tree-sitter-fortran](https://pypi.org/project/tree-sitter-fortran/))
-is installed automatically as a runtime dependency — no external
-compiler or subprocess required for parsing. For `.F90` files using
+is a runtime dependency installed automatically — no external
+compiler or subprocess needed for parsing. For `.F90` files using
 CPP `#`-directives DimFort shells out to the system `cpp` if
 `[parser] cpp_defines` or `[parser] include_paths` are set in
 `.dimfort.toml`.
