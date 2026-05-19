@@ -3,7 +3,39 @@
 All notable changes to DimFort are documented here. Format inspired by [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
-- Initial project scaffold: `src/` layout, pyproject, CLI stub, LSP stub, CI workflow.
+
+## [0.1.0] — 2026-05-19
+
+First public release. Pre-alpha; expect breaking changes between
+`0.1.x` versions as the tool matures against real-world Fortran
+codebases.
+
+### Highlights
+
+- **CLI**: `dimfort check FILE/DIR [...]` with per-file H-/U-summary;
+  `dimfort lsp` over stdio.
+- **Annotation pipeline**: scoped per `(subroutine|function, name)` so
+  same-named parameters across two routines in a file don't alias.
+- **Checker**: full H001-H004 (assignment, arithmetic, intrinsics,
+  user-defined calls, derived-type fields, rational `**` exponents)
+  across multi-file worksets.
+- **Workspace orchestration**: `use`-chain resolution plus a
+  workspace-wide top-level-procedure index for F77-vintage external
+  procedures.
+- **LSP server**: live diagnostics, hover (scope-aware bare
+  identifier, derived-type member chains, call signatures, module-
+  summary on `use foo`), inlay hints, go-to-definition for variables,
+  callables, and module names, code lens, completion inside
+  `@unit{...}`, "Add unit annotation" code action, the
+  `dimfort.checkWorkspace` command, didClose republish,
+  `workspace/inlayHint/refresh` push, tab-switch-safe republish, and
+  a `/tmp/dimfort-lsp.crash` excepthook for silent-crash diagnostics.
+- **Editor companions** (separate repos): VSCode, Neovim ≥ 0.11,
+  Emacs (eglot + lsp-mode).
+- **Project config**: `.dimfort.toml` with `[project] src_paths`,
+  `[workset] external_modules` / `max_size`, `[parser] cpp_defines`
+  / `include_paths`, `[units] file`.
+- **Test coverage**: 228 unit + integration tests, ruff-clean.
 
 ### 2026-05-19 — Scope-aware annotations, external-procedure index, tab-switch republish
 

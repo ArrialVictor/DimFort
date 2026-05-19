@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dimfort"
-version = "0.0.1"
+version = "0.1.0"
 description = "Dimensional homogeneity checker for Fortran projects, with LSP support."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,7 +12,7 @@ license = { file = "LICENSE" }
 authors = [{ name = "DimFort contributors" }]
 keywords = ["fortran", "static-analysis", "units", "dimensional-analysis", "lsp"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
@@ -38,8 +38,10 @@ dev = [
 dimfort = "dimfort.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/"  # TODO: fill in once known
-Issues   = "https://github.com/"  # TODO
+Homepage      = "https://github.com/ArrialVictor/DimFort"
+Issues        = "https://github.com/ArrialVictor/DimFort/issues"
+Changelog     = "https://github.com/ArrialVictor/DimFort/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/ArrialVictor/DimFort/tree/main/docs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dimfort"]
