@@ -6,7 +6,9 @@ from textwrap import dedent
 
 from dimfort.core.workspace_index import (
     UseRef,
+    extract_calls,
     extract_modules,
+    extract_top_level_procedures,
     extract_uses,
     resolve_workset,
     scan_workspace,
@@ -201,3 +203,167 @@ def test_resolve_module_using_itself_is_not_a_cycle(tmp_path):
     idx = scan_workspace([tmp_path])
     res = resolve_workset(idx, [f])
     assert res.compile_order == (f.resolve(),)
+
+
+# ---------------------------------------------------------------------------
+# Top-level procedure extraction + external-procedure resolution (F77 idiom)
+# ---------------------------------------------------------------------------
+
+
+class TestExtractTopLevelProcedures:
+    def test_top_level_subroutine(self):
+        src = "subroutine foo()\nend subroutine\n"
+        assert extract_top_level_procedures(src) == ("foo",)
+
+    def test_module_contained_subroutine_is_NOT_top_level(self):
+        # `contains`-style routines belong to the module; the
+        # workspace index reaches them via the module export path.
+        src = dedent("""
+            module m
+            contains
+              subroutine inner()
+              end subroutine
+            end module m
+        """)
+        assert extract_top_level_procedures(src) == ()
+
+    def test_function_with_type_prefix(self):
+        src = "real function compute(x)\nend function\n"
+        assert extract_top_level_procedures(src) == ("compute",)
+
+    def test_subroutine_after_module_block(self):
+        src = dedent("""
+            module m
+            contains
+              subroutine inner()
+              end subroutine
+            end module m
+
+            subroutine outer()
+            end subroutine
+        """)
+        assert extract_top_level_procedures(src) == ("outer",)
+
+    def test_case_insensitive_lowercased_output(self):
+        src = "SUBROUTINE FLUMASS(a, b)\nend subroutine FLUMASS\n"
+        assert extract_top_level_procedures(src) == ("flumass",)
+
+    def test_subroutine_in_comment_ignored(self):
+        src = "! subroutine commented_out()\nend subroutine\n"
+        assert extract_top_level_procedures(src) == ()
+
+
+class TestExtractCalls:
+    def test_simple_call(self):
+        src = "subroutine s\n  call foo(x)\nend subroutine\n"
+        assert extract_calls(src) == ("foo",)
+
+    def test_deduplicates_repeated_calls(self):
+        src = dedent("""
+            subroutine s
+              call foo(x)
+              call bar(y)
+              call foo(z)
+            end subroutine
+        """)
+        assert extract_calls(src) == ("foo", "bar")
+
+    def test_case_insensitive(self):
+        src = "subroutine s\n  CALL Foo(x)\nend subroutine\n"
+        assert extract_calls(src) == ("foo",)
+
+    def test_call_in_comment_ignored(self):
+        src = "subroutine s\n  ! call foo(x)\n  call bar(y)\nend subroutine\n"
+        assert extract_calls(src) == ("bar",)
+
+
+def test_workspace_index_records_top_level_procedure(tmp_path):
+    # External procedure: a top-level subroutine, no enclosing MODULE.
+    _write(
+        tmp_path, "flumass.f90",
+        "subroutine flumass(a, b)\nend subroutine flumass\n",
+    )
+    # Module-contained procedure: should NOT appear in `procedures`.
+    _write(
+        tmp_path, "inner_mod.f90",
+        "module inner_mod\ncontains\nsubroutine helper()\nend subroutine\nend module inner_mod\n",
+    )
+    idx = scan_workspace([tmp_path])
+    assert "flumass" in idx.procedures
+    assert idx.procedures["flumass"].name == "flumass.f90"
+    assert "helper" not in idx.procedures
+
+
+def test_resolve_pulls_in_external_procedure_callee(tmp_path):
+    # Caller in dyn3d/, callee (external SUBROUTINE) in dyn3d_common/.
+    # No USE statement between them — this is the LMDZ pattern.
+    callee = _write(
+        tmp_path, "dyn3d_common/flumass.f90",
+        "subroutine flumass(a, b)\nend subroutine flumass\n",
+    )
+    caller = _write(
+        tmp_path, "dyn3d/caldyn.f90",
+        "subroutine caldyn\n  call flumass(x, y)\nend subroutine\n",
+    )
+    idx = scan_workspace([tmp_path])
+    res = resolve_workset(idx, [caller])
+    # Callee file must appear in the workset so signatures collect and
+    # goto-def can find the definition.
+    assert callee.resolve() in res.compile_order
+    assert caller.resolve() in res.compile_order
+
+
+def test_resolve_does_not_pull_in_module_contained_procedure(tmp_path):
+    # ``foo`` is defined inside a module — workset-resolution should NOT
+    # treat a CALL to it as a procedure-index hit. The module gets
+    # pulled in only if the caller does ``use``.
+    _write(
+        tmp_path, "m.f90",
+        "module m\ncontains\nsubroutine foo()\nend subroutine\nend module m\n",
+    )
+    caller = _write(
+        tmp_path, "caller.f90",
+        "subroutine c\n  call foo(x)\nend subroutine\n",
+    )
+    idx = scan_workspace([tmp_path])
+    res = resolve_workset(idx, [caller])
+    # m.f90 is NOT in the workset — no use-chain reaches it, and
+    # `foo` doesn't appear in idx.procedures.
+    assert {p.name for p in res.compile_order} == {"caller.f90"}
+
+
+def test_resolve_external_procedure_chain(tmp_path):
+    # caller -> external mid -> external leaf. Both externals pulled
+    # transitively via successive CALL discoveries.
+    leaf = _write(
+        tmp_path, "leaf.f90",
+        "subroutine leaf()\nend subroutine\n",
+    )
+    mid = _write(
+        tmp_path, "mid.f90",
+        "subroutine mid()\n  call leaf()\nend subroutine\n",
+    )
+    caller = _write(
+        tmp_path, "caller.f90",
+        "subroutine c\n  call mid()\nend subroutine\n",
+    )
+    idx = scan_workspace([tmp_path])
+    res = resolve_workset(idx, [caller])
+    assert {p.resolve() for p in res.compile_order} == {
+        leaf.resolve(), mid.resolve(), caller.resolve(),
+    }
+
+
+def test_update_index_drops_old_procedure_entries(tmp_path):
+    f = _write(
+        tmp_path, "p.f90",
+        "subroutine old_name()\nend subroutine\n",
+    )
+    idx = scan_workspace([tmp_path])
+    assert "old_name" in idx.procedures
+    # Rename the procedure in the file; rescan.
+    from dimfort.core.workspace_index import update_index as _update
+    f.write_text("subroutine new_name()\nend subroutine\n")
+    _update(idx, f)
+    assert "old_name" not in idx.procedures
+    assert "new_name" in idx.procedures
