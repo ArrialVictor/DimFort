@@ -322,7 +322,17 @@ def _uri_for_path(path: Path) -> str:
 def _uri_to_path(uri: str) -> Path | None:
     if not uri.startswith("file:"):
         return None
-    return Path(unquote(urlparse(uri).path))
+    path = unquote(urlparse(uri).path)
+    # On Windows, a URI like ``file:///C:/Users/...`` decodes to
+    # ``/C:/Users/...`` — the leading slash is a URL-path artefact,
+    # not part of the filesystem path. ``Path("/C:/Users/...")`` on
+    # Windows doesn't equal ``Path("C:/Users/...")``, so a workset
+    # keyed by the latter misses a lookup keyed by the former. Detect
+    # the leading-slash-before-drive-letter pattern and strip it.
+    # POSIX paths (no drive letter) are untouched.
+    if len(path) >= 3 and path[0] == "/" and path[2] == ":" and path[1].isalpha():
+        path = path[1:]
+    return Path(path)
 
 
 def _to_lsp_diagnostic(d: Diagnostic) -> lsp.Diagnostic:
