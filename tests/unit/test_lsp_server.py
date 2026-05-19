@@ -38,6 +38,21 @@ def test_uri_to_path_rejects_non_file_scheme():
     assert _uri_to_path("untitled:Untitled-1") is None
 
 
+def test_uri_to_path_strips_leading_slash_before_drive_letter():
+    """Windows URIs from ``Path.as_uri()`` look like ``file:///C:/...``;
+    the leading slash before the drive letter is a URL-path artefact
+    and must be stripped so the resulting Path matches what
+    ``Path("C:/...").resolve()`` produced. Regression for a Windows-
+    only failure in the LSP hover / goto-def test suite.
+    """
+    assert _uri_to_path("file:///C:/Users/foo.f90") == Path("C:/Users/foo.f90")
+    assert _uri_to_path("file:///D:/x.F90") == Path("D:/x.F90")
+    # Lowercase drive letters in URIs are tolerated.
+    assert _uri_to_path("file:///c:/x.f90") == Path("c:/x.f90")
+    # POSIX paths are untouched.
+    assert _uri_to_path("file:///tmp/foo.f90") == Path("/tmp/foo.f90")
+
+
 def test_to_lsp_diagnostic_converts_to_zero_based():
     d = _to_lsp_diagnostic(_diag(line=5, col=3))
     assert d.range.start.line == 4
