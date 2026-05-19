@@ -4,6 +4,22 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-05-19
+
+Post-release hotfix.
+
+- **`dimfort --version` now reports the installed version**.
+  Previously hardcoded in `src/dimfort/__init__.py` and missed the
+  0.1.0 bump; the CLI printed `0.0.1` against a `0.1.0` wheel.
+  `__version__` is now pulled from `importlib.metadata.version` so
+  `pyproject.toml` stays the single source of truth.
+- **README install instructions favour `pipx`**. The original
+  developer-mode `pip install -e .[dev,lsp]` doesn't work for users
+  on modern Homebrew Python (PEP 668 refuses system-wide pip
+  installs). The README now leads with `pipx install 'dimfort[lsp]'`
+  for users; the source-checkout / dev path is preserved under a
+  separate heading.
+
 ## [0.1.0] — 2026-05-19
 
 First public release. Pre-alpha; expect breaking changes between
