@@ -128,9 +128,16 @@ lives in its own repository, releases on its own cadence, and shares
 the same feature surface (diagnostics, hover, inlay hints,
 go-to-definition, code actions, completion).
 
-- [DimFort-VSCompanion](https://github.com/ArrialVictor/DimFort-VSCompanion) — VSCode extension.
-- [DimFort-NvimCompanion](https://github.com/ArrialVictor/DimFort-NvimCompanion) — Neovim plugin (Neovim ≥ 0.11).
-- [DimFort-EmacsCompanion](https://github.com/ArrialVictor/DimFort-EmacsCompanion) — Emacs package (eglot + lsp-mode).
+- **[VSCode](https://github.com/ArrialVictor/DimFort-VSCompanion)** —
+  on the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=arrialvictor.dimfort-vscode)
+  (`ext install arrialvictor.dimfort-vscode`) and on
+  [Open VSX](https://open-vsx.org/extension/dimfort/dimfort-vscode)
+  for VSCodium / Cursor / Theia / code-server.
+- **[Neovim](https://github.com/ArrialVictor/DimFort-NvimCompanion)**
+  (≥ 0.11) — install via any plugin manager pointing at the repo.
+- **[Emacs](https://github.com/ArrialVictor/DimFort-EmacsCompanion)** —
+  install via straight.el / use-package or manual `require`. Works
+  with both eglot (Emacs 29+) and lsp-mode.
 
 ## License
 
