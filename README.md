@@ -1,5 +1,7 @@
 # DimFort
 
+![preview](social_preview.png)
+
 Static unit-consistency checker for Fortran. You annotate declarations with the
 dimension they should carry, and DimFort verifies that assignments, arithmetic,
 intrinsics, and procedure calls all line up. Annotations are written as a
