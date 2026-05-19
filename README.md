@@ -1,10 +1,10 @@
 # DimFort
 
-![preview](social_preview.png)
+![preview](https://raw.githubusercontent.com/ArrialVictor/DimFort/main/social_preview.png)
 
 [![release](https://github.com/ArrialVictor/DimFort/actions/workflows/release.yml/badge.svg)](https://github.com/ArrialVictor/DimFort/actions/workflows/release.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python: 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/ArrialVictor/DimFort/blob/main/LICENSE)
+[![Python: 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://github.com/ArrialVictor/DimFort/blob/main/pyproject.toml)
 
 Static unit-consistency checker for Fortran. You annotate declarations with the
 dimension they should carry, and DimFort verifies that assignments, arithmetic,
@@ -88,7 +88,7 @@ Diagnostic codes split into two families:
   annotation / metadata problems: something's wrong with the
   annotations themselves, not the math.
 
-Full reference: [docs/usage.md](docs/usage.md).
+Full reference: [docs/usage.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/usage.md).
 
 ## Doxygen integration
 
@@ -109,16 +109,17 @@ Module-level constants follow the same notation:
 real, parameter :: g = 9.81
 ```
 
-See [docs/annotations.md](docs/annotations.md) for the full reference:
-unit-expression grammar, continuation-line forms, declaration lists,
-and the diagnostic codes the scanner can emit.
+See [docs/annotations.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/annotations.md)
+for the full reference: unit-expression grammar, continuation-line
+forms, declaration lists, and the diagnostic codes the scanner can
+emit.
 
 ## Documentation
 
-- [Annotations](docs/annotations.md)
-- [Usage details](docs/usage.md)
-- [Language server](docs/lsp.md)
-- [Releases](docs/release.md)
+- [Annotations](https://github.com/ArrialVictor/DimFort/blob/main/docs/annotations.md)
+- [Usage details](https://github.com/ArrialVictor/DimFort/blob/main/docs/usage.md)
+- [Language server](https://github.com/ArrialVictor/DimFort/blob/main/docs/lsp.md)
+- [Releases](https://github.com/ArrialVictor/DimFort/blob/main/docs/release.md)
 
 ## Editor integrations
 
@@ -133,4 +134,4 @@ go-to-definition, code actions, completion).
 
 ## License
 
-See [LICENSE](LICENSE).
+See [LICENSE](https://github.com/ArrialVictor/DimFort/blob/main/LICENSE).
