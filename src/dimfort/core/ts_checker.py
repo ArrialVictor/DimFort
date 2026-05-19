@@ -714,14 +714,24 @@ def _emit_h003(loc: Node, intrinsic: str, arg_unit: Unit, ctx: _Ctx) -> Diagnost
 
 
 def _emit_h004(
-    loc: Node, func: str, arg_index: int, expected: Unit, actual: Unit, ctx: _Ctx
+    loc: Node, func: str, arg_index: int, expected: Unit, actual: Unit,
+    ctx: _Ctx, arg_name: str | None = None,
 ) -> Diagnostic:
     start, end = _node_span(loc)
+    # Include the formal parameter's name when available so the reader
+    # doesn't have to count argument positions to find the offending
+    # variable. Index is kept too because formals can share names
+    # across overloads or appear multiply via INTENT(INOUT) — counting
+    # by position is still the unambiguous reference.
+    arg_label = (
+        f"argument {arg_index + 1} ({arg_name})"
+        if arg_name else f"argument {arg_index + 1}"
+    )
     return Diagnostic(
         file=ctx.file, start=start, end=end,
         severity=Severity.ERROR, code="H004",
         message=(
-            f"Call to '{func}': argument {arg_index + 1} unit mismatch: "
+            f"Call to '{func}': {arg_label} unit mismatch: "
             f"expected {format_unit(expected)}, got {format_unit(actual)}"
         ),
     )
@@ -815,7 +825,11 @@ def _check_call_args_against_sig(
         if actual is None:
             continue
         if not equal_dim(actual, expected):
-            yield _emit_h004(call_node, func_name, i, expected, actual, ctx)
+            arg_name = sig.arg_names[i] if i < len(sig.arg_names) else None
+            yield _emit_h004(
+                call_node, func_name, i, expected, actual, ctx,
+                arg_name=arg_name,
+            )
 
 
 # ---------------------------------------------------------------------------
