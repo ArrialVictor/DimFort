@@ -20,6 +20,51 @@ Provides:
 - ``textDocument/publishDiagnostics`` — H-series + U-series.
 - ``textDocument/hover`` — resolved unit for the variable or
   derived-type member under the cursor.
+
+File map (top-to-bottom):
+
+1. **Imports and module-level state**: globals, locks, feature
+   toggles, workspace folders, configuration.
+2. **URI / position helpers** (`_uri_to_path`, `_uri_for_path`,
+   `_to_lsp_diagnostic`): conversions between LSP-flavoured strings
+   and DimFort's internal `Path`/`Diagnostic` types.
+3. **Workspace traversal** (`_discover_fortran_files`,
+   `_workset_for`): driving the workspace scan and per-active-file
+   workset resolution.
+4. **Diagnostic publication** (`_publish_for_uri`,
+   `_refresh_inlay_hints`): the pipeline's write side.
+5. **Tree-access helpers** (`_trees_for`, `_ensure_uri_loaded`,
+   `_build_ts_ctx`): how every handler below reaches a parsed
+   tree without racing the publisher.
+6. **Hover rendering** (`_unit_pretty`, `_hover_text`,
+   `_sig_render_md`, `_module_hover_md`): parser-agnostic markdown
+   generation. Pure functions; no LSP state.
+7. **Hover dispatch** (`_resolve_hover`): the four-step dispatch
+   from cursor position to a rendered markdown reply.
+8. **LSP handlers** (one section per feature):
+   8.1 `initialize` / `initialized` — workspace folder capture
+       and background index build.
+   8.2 Document-sync (`did_open`, `did_save`, `did_close`,
+       `did_change`).
+   8.3 `textDocument/hover`.
+   8.4 `textDocument/inlayHint`.
+   8.5 `textDocument/completion` (inside `@unit{…}`).
+   8.6 `textDocument/definition`.
+   8.7 `textDocument/codeAction` (insert `@unit{}` skeleton).
+   8.8 `textDocument/codeLens`.
+9. **Commands and entry point** (`dimfort.checkWorkspace`,
+   `run_stdio`, `_install_crash_trace_hook`).
+
+Cross-cutting concerns:
+
+- All handlers go through `_ensure_uri_loaded(ls, uri)` first so
+  tab switches don't leave them querying a stale workset.
+- All tree-walking handlers (hover, definition, inlay) acquire
+  `_ts_handler_lock` so they can't race on tree-sitter's
+  not-thread-safe traversal.
+- Module-level state mutations (`_last_result`, `_workspace_index`,
+  `_doc_versions`, `_opened_uris`) are guarded by the matching
+  `*_lock` and never accessed without it.
 """
 from __future__ import annotations
 
@@ -460,7 +505,7 @@ def _is_current(uri: str, version: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Hover: variable-unit lookup
+# Tree access for handlers (workset-cache lookup + ctx builder)
 # ---------------------------------------------------------------------------
 
 
@@ -853,7 +898,7 @@ def _resolve_hover(
 
 
 # ---------------------------------------------------------------------------
-# LSP handlers
+# Lifecycle handlers (initialize, initialized, background index build)
 # ---------------------------------------------------------------------------
 
 
@@ -1062,6 +1107,11 @@ def _update_index_for(path: Path, *, new_text: str | None = None) -> None:
         log.exception("workspace index update failed for %s", path)
 
 
+# ---------------------------------------------------------------------------
+# Document-sync handlers (did_open / did_save / did_close / did_change)
+# ---------------------------------------------------------------------------
+
+
 @server.feature(lsp.TEXT_DOCUMENT_DID_OPEN)
 def _did_open(ls: LanguageServer, params: lsp.DidOpenTextDocumentParams) -> None:
     uri = params.text_document.uri
@@ -1158,6 +1208,11 @@ def _did_change(ls: LanguageServer, params: lsp.DidChangeTextDocumentParams) -> 
                 log.exception("debounced check failed for %s", uri)
 
     threading.Thread(target=delayed, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Hover handler (registration; dispatch logic lives in _resolve_hover above)
+# ---------------------------------------------------------------------------
 
 
 @server.feature(lsp.TEXT_DOCUMENT_HOVER)
