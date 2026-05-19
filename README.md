@@ -2,6 +2,10 @@
 
 ![preview](social_preview.png)
 
+[![release](https://github.com/ArrialVictor/DimFort/actions/workflows/release.yml/badge.svg)](https://github.com/ArrialVictor/DimFort/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python: 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](pyproject.toml)
+
 Static unit-consistency checker for Fortran. You annotate declarations with the
 dimension they should carry, and DimFort verifies that assignments, arithmetic,
 intrinsics, and procedure calls all line up. Annotations are written as a
@@ -16,13 +20,13 @@ real :: force     !< @unit{kg*m/s^2}
 force = mass * velocity            ! diagnosed: force unit is kg, expected kg*m/s^2
 ```
 
-> Status: **pre-alpha**. End-to-end the following work: the annotation
+> Status: **pre-alpha**. End-to-end, these work today: the annotation
 > scanner, attachment pass, the full H-series checker (H001–H004),
 > intrinsics, user-defined function and subroutine calls, derived-type
-> field access, rational `**` exponents, multi-file worksets, a workspace-
-> aware LSP server with live-edit diagnostics, hover, inlay hints,
-> go-to-definition, code lens, code actions, completion, and a CLI that
-> accepts files or directories.
+> field access, rational `**` exponents, multi-file worksets, a
+> workspace-aware LSP server with live-edit diagnostics, hover, inlay
+> hints, go-to-definition, code lens, code actions, completion, and a
+> CLI that accepts files or directories.
 
 ## Install
 
@@ -92,6 +96,17 @@ and the diagnostic codes the scanner can emit.
 - [Usage details](docs/usage.md)
 - [Language server](docs/lsp.md)
 - [Releases](docs/release.md)
+
+## Editor integrations
+
+Thin LSP clients that wire `dimfort lsp` into common editors. Each
+lives in its own repository, releases on its own cadence, and shares
+the same feature surface (diagnostics, hover, inlay hints,
+go-to-definition, code actions, completion).
+
+- [DimFort-VSCompanion](https://github.com/ArrialVictor/DimFort-VSCompanion) — VSCode extension.
+- [DimFort-NvimCompanion](https://github.com/ArrialVictor/DimFort-NvimCompanion) — Neovim plugin (Neovim ≥ 0.11).
+- [DimFort-EmacsCompanion](https://github.com/ArrialVictor/DimFort-EmacsCompanion) — Emacs package (eglot + lsp-mode).
 
 ## License
 
