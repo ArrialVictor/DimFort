@@ -413,13 +413,21 @@
     REAL :: x                       # NO annotation
     REAL :: y    !< @unit{m/s}
   expression: "x + y"
-  expected: TBD  # what should DimFort do here?
+  expected: unknown
   rules: []
   notes: |
-    Question: does DimFort error, warn, or treat x as unknown?
-    Per existing DimFort behaviour: probably treats x as unannotated and
-    propagates the result as m/s (taking the annotated side's unit).
-    Confirm with implementation.
+    Resolved 2026-05-20: DimFort returns ``unknown`` (None) for the
+    expression as a whole — it does NOT silently infer that ``x``
+    must share ``y``'s annotation, because that inference could mask
+    real bugs. The actionable diagnostic is ``U005`` on ``x``'s
+    declaration ("'x' is used in a unit-checked expression but has
+    no @unit{} annotation"); the assignment itself produces no
+    H-series error because DimFort can't validate consistency
+    against an unknown operand.
+
+    Same reasoning applies to the other ``missing_*`` cases in this
+    section: missing-on-both-sides → unknown, missing inside ``LOG``
+    → unknown.
 
 - name: missing_annotation_on_both_sides
   context: |
