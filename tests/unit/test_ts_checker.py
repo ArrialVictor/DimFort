@@ -591,3 +591,84 @@ def test_log_homomorphism_addition():
     )
     diags = _check(src, {"p1": "Pa", "p2": "Pa", "lp2": "LOG(Pa^2)"})
     assert [d.code for d in diags] == []
+
+
+# ---------------------------------------------------------------------------
+# Phase B sub-step 4: ExpWrap arithmetic + cross-cases
+# ---------------------------------------------------------------------------
+
+
+def test_exp_product_clean():
+    """EXP(t1) * EXP(t2) → EXP(K) via R6.1."""
+    src = (
+        "subroutine s\n"
+        "  real :: t1, t2, r\n"
+        "  r = exp(t1) * exp(t2)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"t1": "K", "t2": "K", "r": "EXP(K)"})
+    assert [d.code for d in diags] == []
+
+
+def test_exp_plus_exp_emits_d13():
+    src = (
+        "subroutine s\n"
+        "  real :: x, y, r\n"
+        "  r = exp(x) + exp(y)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"x": "K", "y": "K", "r": "1"})
+    assert any("D1.3" in d.message for d in diags)
+
+
+def test_exp_plus_literal_warns_h010():
+    """R6.6 D1.5 demotion: EXP(x) + 1.0 → H010 warning."""
+    src = (
+        "subroutine s\n"
+        "  real :: x, r\n"
+        "  r = exp(x) + 1.0\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"x": "K", "r": "EXP(K)"})
+    codes = [d.code for d in diags]
+    assert "H010" in codes
+    assert "H002" not in codes
+
+
+def test_exp_times_pressure_emits_d12():
+    src = (
+        "subroutine s\n"
+        "  real :: t, p, r\n"
+        "  r = exp(t) * p\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"t": "K", "p": "Pa", "r": "1"})
+    assert any("D1.2" in d.message for d in diags)
+
+
+def test_log_times_exp_emits_d12():
+    """R7.1 — LogWrap × ExpWrap is undefined."""
+    src = (
+        "subroutine s\n"
+        "  real :: p, t, r\n"
+        "  r = log(p) * exp(t)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"p": "Pa", "t": "K", "r": "1"})
+    assert any("D1.2" in d.message for d in diags)
+
+
+def test_magnus_formula_no_diag():
+    """Magnus-shape: ``e0 * EXP(dim'less)`` types as Pa via R2.3 + R4.2.
+
+    ``EXP(dim'less)`` collapses to ``Regular(dim'less)`` per R2.3; the
+    outer product is then ``Pa × 1 = Pa`` via R4.2.
+    """
+    src = (
+        "subroutine s\n"
+        "  real :: e0, ratio, p\n"
+        "  p = e0 * exp(ratio)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"e0": "Pa", "ratio": "1", "p": "Pa"})
+    assert [d.code for d in diags] == []

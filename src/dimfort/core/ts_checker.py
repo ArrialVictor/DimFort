@@ -903,7 +903,17 @@ def _walk_expressions(
         elif diag == "D1.2":
             yield _emit_d12(node, lu, ru, op, ctx)
         elif diag == "D1.3":
-            yield _emit_d13(node, lu, ru, op, ctx)
+            # R6.6 demotion: ExpWrap + literal → H010 (D1.5) — the
+            # literal is absorbed into the exp's exponent. Mirrors the
+            # D1.1 literal-cast logic above but for the wrapper case.
+            left_lit_node = _is_pure_numeric_constant(left)
+            right_lit_node = _is_pure_numeric_constant(right)
+            if left_lit_node and isinstance(lu, Unit) and _is_dimensionless(lu) and isinstance(ru, ExpWrap):
+                yield _emit_h010(left, _text(left, source), ru, ctx)
+            elif right_lit_node and isinstance(ru, Unit) and _is_dimensionless(ru) and isinstance(lu, ExpWrap):
+                yield _emit_h010(right, _text(right, source), lu, ctx)
+            else:
+                yield _emit_d13(node, lu, ru, op, ctx)
         elif diag == "D1.4":
             yield _emit_d14(
                 node, ctx,
