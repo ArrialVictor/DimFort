@@ -1655,9 +1655,12 @@ _SEMANTIC_TOKENS_LEGEND = lsp.SemanticTokensLegend(
 
 @server.feature(
     lsp.TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL,
-    lsp.SemanticTokensOptions(
-        legend=_SEMANTIC_TOKENS_LEGEND, full=True, range=False,
-    ),
+    # pygls 2.x expects the legend itself here, not a
+    # ``SemanticTokensOptions``. It wraps the legend internally; passing
+    # the full options object trips an AttributeError at registration
+    # because pygls tries to ``.token_types`` on what it thinks is a
+    # legend.
+    _SEMANTIC_TOKENS_LEGEND,
 )
 def _semantic_tokens_full(
     ls: LanguageServer, params: lsp.SemanticTokensParams,
