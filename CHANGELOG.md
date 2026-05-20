@@ -81,6 +81,25 @@ set is documented in
 - **`mbar`, `hPa`, `bar` added to the default unit table** via a
   new `factor` field on derived-unit specs.
 
+### Spec & test coverage
+
+- **All 55 unit-algebra YAML fixture cases now run** (was 48 / 7
+  skipped). The fixture runner gained slot-order translation for
+  `Regular(...)` tuples (the spec uses spec slot order, the impl
+  uses impl slot order) and multi-statement support (`;`-separated
+  statements share the synthetic subroutine scope, the last
+  statement's RHS is what's compared).
+- **OQ5 resolved**: missing-annotation propagation. `x + y` with
+  `x` unannotated produces `unknown` (None); DimFort never silently
+  infers the missing annotation from a sibling operand. Same path
+  applies inside wrapper intrinsics — `LOG(unannotated)` is
+  unknown, U005 fires on the declaration. Recorded in
+  [docs/unit-algebra.md §11](https://github.com/ArrialVictor/DimFort/blob/main/docs/unit-algebra.md#oq5--resolved-missing-annotation-propagation).
+- **Outer-unary-minus sign propagation in `_resolve`**: `-1.0 *
+  LOG(p)` (parsed by tree-sitter as `-(1.0 * LOG(p))`) now sees
+  R5.4 with `k = -1` and types as `LOG(1/Pa)` rather than the
+  pre-fix `LOG(Pa)`.
+
 ### Tooling
 
 - **Per-push CI**: ruff + pytest on `ubuntu-latest` / Python 3.12
