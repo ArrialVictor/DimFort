@@ -112,6 +112,13 @@ def walk_member_exprs(tree: Tree) -> Iterator[Node]:
             yield n
 
 
+def walk_assignments(tree: Tree) -> Iterator[Node]:
+    """Yield ``assignment_statement`` nodes."""
+    for n in _ts.walk(tree.root_node):
+        if n.type == "assignment_statement":
+            yield n
+
+
 def walk_function_definitions(tree: Tree) -> Iterator[Node]:
     """Yield ``function`` and ``subroutine`` definition nodes."""
     for n in _ts.walk(tree.root_node):
