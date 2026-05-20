@@ -480,8 +480,13 @@ def test_hydrostatic_projection_types_cleanly():
     assert [d.code for d in diags] == []
 
 
-def test_assignment_mismatch_logwrap_vs_regular_fires_h001():
-    """Assigning ``LOG(p)`` to a Regular-typed Pa LHS still flags H001."""
+def test_assignment_logwrap_to_matching_regular_warns_d16():
+    """Pre-Phase-C this fired H001; Phase C demotes to H010 (D1.6).
+
+    Assigning ``LOG(p)`` to a Regular Pa LHS is the implicit-untag
+    case described by D1.6 — inner dimension matches LHS, so the
+    assignment is allowed with a warning rather than rejected.
+    """
     src = (
         "subroutine s\n"
         "  real :: p, q\n"
@@ -490,7 +495,9 @@ def test_assignment_mismatch_logwrap_vs_regular_fires_h001():
     )
     diags = _check(src, {"p": "Pa", "q": "Pa"})
     codes = [d.code for d in diags]
-    assert "H001" in codes
+    assert "H010" in codes
+    assert "H001" not in codes
+    assert any("D1.6" in d.message for d in diags)
 
 
 # ---------------------------------------------------------------------------
@@ -671,4 +678,65 @@ def test_magnus_formula_no_diag():
         "end subroutine\n"
     )
     diags = _check(src, {"e0": "Pa", "ratio": "1", "p": "Pa"})
+    assert [d.code for d in diags] == []
+
+
+# ---------------------------------------------------------------------------
+# Phase C: D1.6 — implicit wrapper untag at assignment
+# ---------------------------------------------------------------------------
+
+
+def test_d16_logwrap_untag_to_regular_warns_h010():
+    """LHS Pa, RHS LOG(p) where p :: Pa — H010 (D1.6), not H001."""
+    src = (
+        "subroutine s\n"
+        "  real :: p, q\n"
+        "  q = log(p)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"p": "Pa", "q": "Pa"})
+    codes = [d.code for d in diags]
+    assert "H010" in codes
+    assert "H001" not in codes
+    assert any("D1.6" in d.message for d in diags)
+
+
+def test_d16_expwrap_untag_to_regular_warns_h010():
+    """LHS K, RHS EXP(t) where t :: K — H010 (D1.6), not H001."""
+    src = (
+        "subroutine s\n"
+        "  real :: t, u\n"
+        "  u = exp(t)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"t": "K", "u": "K"})
+    codes = [d.code for d in diags]
+    assert "H010" in codes
+    assert "H001" not in codes
+    assert any("D1.6" in d.message for d in diags)
+
+
+def test_d16_inner_dim_mismatch_still_h001():
+    """LHS Pa, RHS LOG(t) where t :: K — H001 (inner dim mismatch)."""
+    src = (
+        "subroutine s\n"
+        "  real :: t, q\n"
+        "  q = log(t)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"t": "K", "q": "Pa"})
+    codes = [d.code for d in diags]
+    assert "H001" in codes
+    assert "H010" not in codes
+
+
+def test_d16_matching_wrapper_lhs_no_diag():
+    """LHS LOG(Pa), RHS LOG(p) — exact match, no diagnostic."""
+    src = (
+        "subroutine s\n"
+        "  real :: p, lp\n"
+        "  lp = log(p)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"p": "Pa", "lp": "LOG(Pa)"})
     assert [d.code for d in diags] == []
