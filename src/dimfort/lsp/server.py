@@ -1363,11 +1363,11 @@ def _trace_hover_for(
     lhs_unit = ts_checker._resolve(lhs, ctx, source)
     from dimfort.core.units import format_unit
     if lhs_unit is None or rhs_unit is None:
-        match_tag = "?"
+        match_tag = "🟡"
     elif _checker_equal(lhs_unit, rhs_unit):
-        match_tag = "✓"
+        match_tag = "🟢"
     else:
-        match_tag = "✗ MISMATCH"
+        match_tag = "🔴"
     # Marker is surfaced in the bold header below; the root row is
     # just the assignment text with no marker / unit column.
     rows.append((_node_label(asn, source), None, ""))
@@ -1392,11 +1392,16 @@ def _trace_hover_for(
             # just the match symbol after the padded label.
             lines.append(f"{label.ljust(max_label)}  {rule}".rstrip())
         elif rule:
-            lines.append(f"{label.ljust(max_label)}  ⇒  {unit.ljust(max_unit)}  {rule}")
+            lines.append(f"{label.ljust(max_label)}  ▸  {unit.ljust(max_unit)}  {rule}")
         else:
-            lines.append(f"{label.ljust(max_label)}  ⇒  {unit}".rstrip())
+            lines.append(f"{label.ljust(max_label)}  ▸  {unit}".rstrip())
     body = "\n".join(lines)
-    text = f"**DimFort – {match_tag}**\n\n```\n" + body + "\n```"
+    # No horizontal rule between header and code fence: VSCode places a
+    # natural paragraph margin between a bold paragraph and a code
+    # block already, and every markdown spacer we tried beneath ``---``
+    # was either one full line (too tall) or collapsed (no gap). The
+    # default margin is the cleanest compromise.
+    text = f"**{match_tag} DimFort**\n\n```\n" + body + "\n```"
     return text, _node_lsp_range(asn)
 
 
@@ -1451,9 +1456,9 @@ def _trace_section_for(uri: str, line_1based: int, col_1based: int) -> str | Non
     lines: list[str] = []
     for label, unit, rule in rows:
         if rule:
-            lines.append(f"{label.ljust(max_label)}  ⇒  {unit.ljust(max_unit)}  {rule}")
+            lines.append(f"{label.ljust(max_label)}  ▸  {unit.ljust(max_unit)}  {rule}")
         else:
-            lines.append(f"{label.ljust(max_label)}  ⇒  {unit}".rstrip())
+            lines.append(f"{label.ljust(max_label)}  ▸  {unit}".rstrip())
     body = "\n".join(lines)
     return "**Unit-algebra trace**\n\n```\n" + body + "\n```"
 
@@ -1540,7 +1545,7 @@ def _render_ast_tree(
     else:
         from dimfort.core.units import format_unit
         unit_str = format_unit(unit)
-    rule_str = f"[{rule_id}]" if rule_id else ""
+    rule_str = f"({rule_id})" if rule_id else ""
     rows.append((prefix + connector + label, unit_str, rule_str))
 
     # Leaves stop here. Identifiers / numeric literals are atomic.
