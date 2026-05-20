@@ -701,6 +701,35 @@ def _emit_h002(loc: Node, left: Unit, right: Unit, ctx: _Ctx) -> Diagnostic:
     )
 
 
+def _emit_h010(
+    loc: Node, literal_text: str, target_unit: Unit, ctx: _Ctx
+) -> Diagnostic:
+    """Implicit-literal-cast warning (D1.5).
+
+    Fires when ``+``/``-`` mixes a dim'less numeric literal with a
+    unitful operand. The literal is auto-cast to the target unit; the
+    expression types successfully. The warning surfaces the smell and
+    suggests promoting the literal to a named PARAMETER.
+    """
+    start, end = _node_span(loc)
+    target = format_unit(target_unit)
+    return Diagnostic(
+        file=ctx.file, start=start, end=end,
+        severity=Severity.WARNING, code="H010",
+        message=(
+            f"implicit cast: literal {literal_text!r} to {target} "
+            f"(prefer a named PARAMETER, e.g. "
+            f"`REAL, PARAMETER :: <name> = {literal_text}   "
+            f"!< @unit{{{target}}}`)"
+        ),
+    )
+
+
+def _is_dimensionless(u: Unit) -> bool:
+    """Return True if ``u`` is the dim'less unit (all base exponents zero)."""
+    return all(d == 0 for d in u.dimension)
+
+
 def _emit_h003(loc: Node, intrinsic: str, arg_unit: Unit, ctx: _Ctx) -> Diagnostic:
     start, end = _node_span(loc)
     return Diagnostic(
@@ -758,7 +787,22 @@ def _walk_expressions(
             lu = _resolve(left, ctx, source)
             ru = _resolve(right, ctx, source)
             if lu is not None and ru is not None and not equal_dim(lu, ru):
-                yield _emit_h002(node, lu, ru, ctx)
+                # D1.5: if one operand is a dim'less numeric literal and
+                # the other is unitful, demote H002 → H010 (warning) and
+                # auto-cast the literal to the unitful's unit. This catches
+                # the `1. + speed` regularization-constant idiom without
+                # silencing real bugs (explicit dim'less variables still
+                # fire H002).
+                left_lit = _is_pure_numeric_constant(left)
+                right_lit = _is_pure_numeric_constant(right)
+                left_dimless = _is_dimensionless(lu)
+                right_dimless = _is_dimensionless(ru)
+                if left_lit and left_dimless and not right_dimless:
+                    yield _emit_h010(left, _text(left, source), ru, ctx)
+                elif right_lit and right_dimless and not left_dimless:
+                    yield _emit_h010(right, _text(right, source), lu, ctx)
+                else:
+                    yield _emit_h002(node, lu, ru, ctx)
         return
 
     if kind == "call_expression":

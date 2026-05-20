@@ -101,6 +101,124 @@ def test_h002_addition_mismatch():
     assert "H002" in codes
 
 
+# ---------------------------------------------------------------------------
+# H010 — implicit literal cast (D1.5)
+# ---------------------------------------------------------------------------
+
+
+def test_h010_literal_plus_unitful_emits_warning():
+    """``1. + speed`` fires H010 (warning), not H002 (error).
+
+    The ``1.+speed(i)`` regularization-constant pattern in LMDZ
+    (cdrag_mod / screenc_mod) is dimensionally smelly but not a real
+    bug — the literal has an implicit unit. H010 surfaces the smell
+    at warning severity, allowing the expression to type.
+    """
+    src = (
+        "subroutine s\n"
+        "  real :: speed, result\n"
+        "  result = 1. + speed\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"speed": "m/s", "result": "m/s"})
+    codes = [d.code for d in diags]
+    assert "H010" in codes
+    assert "H002" not in codes
+
+
+def test_h010_fires_with_literal_on_right():
+    """``speed + 1.`` (literal on right) fires H010 symmetrically."""
+    src = (
+        "subroutine s\n"
+        "  real :: speed, result\n"
+        "  result = speed + 1.\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"speed": "m/s", "result": "m/s"})
+    codes = [d.code for d in diags]
+    assert "H010" in codes
+
+
+def test_h010_fires_on_subtraction():
+    """``dt - 0.1`` fires H010; `-` is symmetric to `+` for D1.5."""
+    src = (
+        "subroutine s\n"
+        "  real :: dt, t\n"
+        "  t = dt - 0.1\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"dt": "s", "t": "s"})
+    codes = [d.code for d in diags]
+    assert "H010" in codes
+
+
+def test_h010_severity_is_warning():
+    """H010 is emitted at Severity.WARNING, not Severity.ERROR.
+
+    Editor companions render Warning as yellow squiggles (not red),
+    and CLI exit code is 0 even when H010 is the only diagnostic.
+    """
+    from dimfort.core.diagnostics import Severity
+    src = (
+        "subroutine s\n"
+        "  real :: speed, result\n"
+        "  result = 1. + speed\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"speed": "m/s", "result": "m/s"})
+    h010s = [d for d in diags if d.code == "H010"]
+    assert h010s, "expected at least one H010"
+    assert all(d.severity is Severity.WARNING for d in h010s)
+
+
+def test_h010_does_not_fire_for_two_variables():
+    """Explicit dim'less variable + unitful variable still fires H002.
+
+    The H010 demotion is specifically for *literal* operands. A
+    variable that has been explicitly annotated ``@unit{1}`` is a
+    deliberate dim'less declaration — adding it to a unitful is a
+    real bug, not a smell. H010 must NOT silence this case.
+    """
+    src = (
+        "subroutine s\n"
+        "  real :: count, duration, total\n"
+        "  total = count + duration\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"count": "1", "duration": "s", "total": "s"})
+    codes = [d.code for d in diags]
+    assert "H010" not in codes
+    assert "H002" in codes
+
+
+def test_h010_does_not_fire_when_both_unitful():
+    """``Pa + K`` (both unitful, both variables) still fires H002, not H010."""
+    src = (
+        "subroutine s\n"
+        "  real :: p, t, x\n"
+        "  x = p + t\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"p": "Pa", "t": "K", "x": "Pa"})
+    codes = [d.code for d in diags]
+    assert "H010" not in codes
+    assert "H002" in codes
+
+
+def test_h010_message_suggests_named_parameter():
+    """The H010 message includes the hint to use a named PARAMETER."""
+    src = (
+        "subroutine s\n"
+        "  real :: speed, result\n"
+        "  result = 1. + speed\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"speed": "m/s", "result": "m/s"})
+    h010 = next(d for d in diags if d.code == "H010")
+    assert "PARAMETER" in h010.message
+    assert "@unit" in h010.message
+
+
 def test_h003_dimensionless_intrinsic_violation():
     """Passing a kg argument to ``exp`` fires H003."""
     src = (
