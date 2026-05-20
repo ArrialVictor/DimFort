@@ -4,6 +4,89 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### Unit-algebra for LOG / EXP-tagged quantities (Phase B)
+
+Three new diagnostic classes cover wrapper arithmetic. Each is
+emitted with an existing `H001` / `H002` severity code; the
+specific rule appears as a `(D1.x)` tag in the message and as a
+rule ID (`R5.6`, `R6.5`, etc.) in `--trace` output. The full rule
+set is documented in
+[`docs/unit-algebra.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/unit-algebra.md).
+
+- **`LogWrap` and `ExpWrap` unit types** alongside the existing
+  `Regular` 7-tuple. Wrappers form a recursive `UnitExpr` tree;
+  `LOG ∘ EXP` and `EXP ∘ LOG` cancel at construction (R2.1 / R2.2),
+  and any wrapper around dimensionless collapses immediately
+  (R2.3). Annotations accept `@unit{LOG(Pa)}`, `@unit{EXP(K)}`,
+  and nested forms.
+- **Intrinsic typing.** `LOG` / `LOG10` / `LOG2` of a unit `U`
+  produces `LOG(U)`; `EXP(U)` produces `EXP(U)`. Was previously
+  fixed to require dimensionless input via `H003`. Cancellation
+  through the smart constructors means
+  `EXP(LOG(psol) − dgeop/RT)` now types cleanly to `Pa` (the
+  hydrostatic projection in `cdrag_mod.f90:300`).
+- **`D1.2` Undefined wrapper op** (`H002`). Fires on
+  `LOG(p) * LOG(q)` (R5.6), `LOG(p) * mass` with non-dim mass
+  (R5.7), `LOG(p) ** 2` (R5.9), `EXP(t) * pressure` (R6.7),
+  and `LOG(p) * EXP(t)` (R7.1).
+- **`D1.3` Undefined wrapper sum** (`H002`). Fires on `EXP(t) +
+  EXP(u)` (R6.5), `EXP(t) + variable` (R6.6), and `LOG(p) +
+  EXP(t)` (R6.6 for `+/-` between wrappers).
+- **`D1.4` Runtime-dependent unit** (`H001`). Fires when a power
+  exponent or the scalar coefficient on a `LogWrap` isn't a
+  literal rational (R4.3 / R5.5).
+
+### Implicit casts and untags (Phase A continuation + Phase C)
+
+- **`D1.5` Implicit literal cast** (`H010` warning, severity
+  unchanged). Captures the `1. + speed` regularisation idiom.
+  Now applies to `ExpWrap + literal` too (R6.6 demotion).
+- **`D1.6` Implicit wrapper untag** (`H010` warning) — new in
+  Phase C. Assigning a `LogWrap(Pa)` or `ExpWrap(K)` to a
+  Regular LHS whose unit matches the wrapper's inner is allowed
+  with a warning instead of firing `H001`.
+
+### Trace mechanism (Phase D)
+
+- **`Provenance` records and `with_trace()` context manager** in
+  `dimfort.core.trace`. Hooks at every rule fire in `combine`,
+  `power`, `wrap_log`, `wrap_exp`. Off by default — `trace_step()`
+  is a single dict lookup in the hot path when no trace is active.
+- **`dimfort check --trace`** — prints the rule chain underneath
+  each diagnostic. Each line reads
+  `→ operands  ⇒  result  [Rx.y]`.
+- **Per-statement traces on `Diagnostic.trace`** — the checker
+  opens a fresh `with_trace()` around each top-level statement
+  when tracing is active so each diagnostic carries just its
+  statement's chain.
+- **LSP `traceHoverEnabled` flag** — when on, hovers inside an
+  assignment render the whole expression as an ASCII tree with
+  per-node units and rule IDs. Header reads `🟢 / 🔴 / 🟡 DimFort`
+  for OK / mismatch / unresolved respectively.
+
+### Other LSP / CLI changes
+
+- **`Extract literal to a named PARAMETER` code action** on every
+  H010 D1.5 diagnostic. The VSCode companion prompts via
+  `showInputBox` for the parameter name, then inserts a typed
+  declaration at the end of the enclosing routine's decl block
+  and replaces the literal at the use site.
+- **Hover on a Fortran intrinsic callee** (`exp`, `log`, `sqrt`,
+  `sin`, `sum`, …) now shows the call's resolved unit and the
+  full source text of the call rather than `name(...)`.
+- **`H001` squiggles span the whole assignment**, not just the
+  LHS identifier — easier to see at a glance.
+- **All hover popups carry the `🟢 / 🟡 DimFort` header** matching
+  the trace-mode style.
+- **`mbar`, `hPa`, `bar` added to the default unit table** via a
+  new `factor` field on derived-unit specs.
+
+### Tooling
+
+- **Per-push CI**: ruff + pytest on `ubuntu-latest` / Python 3.12
+  for every push to `main` and every PR. Full 3 × 3 OS × Python
+  matrix still runs on tag push from `release.yml`.
+
 ## [0.1.2] — 2026-05-19
 
 Second post-release hotfix.

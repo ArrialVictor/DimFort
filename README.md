@@ -21,12 +21,15 @@ force = mass * velocity            ! diagnosed: force unit is kg, expected kg*m/
 ```
 
 > Status: **pre-alpha**. End-to-end, these work today: the annotation
-> scanner, attachment pass, the full H-series checker (H001–H004),
-> intrinsics, user-defined function and subroutine calls, derived-type
-> field access, rational `**` exponents, multi-file worksets, a
-> workspace-aware LSP server with live-edit diagnostics, hover, inlay
-> hints, go-to-definition, code lens, code actions, completion, and a
-> CLI that accepts files or directories.
+> scanner, attachment pass, the full H-series checker (H001–H004 +
+> H010), the unit-algebra wrapper rules for `LOG` / `EXP`-tagged
+> quantities (D1.2 – D1.6), per-rule provenance traces, intrinsics,
+> user-defined function and subroutine calls, derived-type field
+> access, rational `**` exponents, multi-file worksets, a workspace-
+> aware LSP server with live-edit diagnostics, hover (compact or
+> full-tree trace mode), inlay hints, go-to-definition, code lens,
+> code actions, completion, and a CLI that accepts files or
+> directories.
 
 ## Install
 
@@ -82,13 +85,21 @@ fail the run.
 
 Diagnostic codes split into two families:
 
-- **H-series** (`H001`–`H004`) — homogeneity violations: the math
-  doesn't balance dimensionally. Real bugs.
+- **H-series** (`H001`–`H004`, `H010`) — homogeneity violations: the
+  math doesn't balance dimensionally. `H010` is a warning (the rest
+  are errors) and covers the implicit-cast / wrapper-untag cases
+  (D1.5, D1.6) where DimFort accepts the expression but flags a
+  smell. Wrapper-arithmetic violations (D1.2 / D1.3 / D1.4) surface
+  via the same `H001` / `H002` codes with a `(D1.x)` tag in the
+  message.
 - **U-series** (`U001`, `U002`, `U005`–`U007`, `U010`, `U-conflict`) —
   annotation / metadata problems: something's wrong with the
   annotations themselves, not the math.
 
 Full reference: [docs/usage.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/usage.md).
+The wrapper-rule specification — including the rule IDs surfaced by
+`--trace` — lives at
+[docs/unit-algebra.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/unit-algebra.md).
 
 ## Doxygen integration
 
@@ -108,6 +119,34 @@ Module-level constants follow the same notation:
 !> @unit{m/s^2}
 real, parameter :: g = 9.81
 ```
+
+For quantities that live in log or exp space, wrap the inner unit
+with `LOG(...)` or `EXP(...)`:
+
+```fortran
+real :: lp     !< @unit{LOG(Pa)}
+real :: tau    !< @unit{EXP(K)}
+```
+
+DimFort tracks the wrapper through arithmetic: `LOG(psol) + LOG(pref)`
+types as `LOG(Pa²)`, `LOG(p1) − LOG(p2)` collapses to dimensionless
+via the pressure-ratio rule, and `EXP(LOG(psol) − ...)` cancels back
+to `Pa`. The full rule set is in
+[docs/unit-algebra.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/unit-algebra.md).
+
+### Trace mode
+
+Pass `--trace` to see the rule chain behind each diagnostic:
+
+```bash
+dimfort check --trace src/cdrag_mod.f90
+```
+
+Each error / warning prints the firing rule IDs (`R3.1`, `R5.6`, …)
+under the message. The VSCode extension toggles the same view in
+hover: run **DimFort: Toggle Full Unit Trace in Hover** from the
+Command Palette and any hover inside an assignment shows an ASCII
+tree of the RHS expression with the rule chain on each node.
 
 See [docs/annotations.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/annotations.md)
 for the full reference: unit-expression grammar, continuation-line

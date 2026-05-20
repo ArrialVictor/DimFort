@@ -26,14 +26,25 @@ It speaks LSP over stdio, the wire format every common editor expects.
   Whole Workspace` command on the command palette re-runs the full
   workspace check on demand.
 - **Hover** (`textDocument/hover`). Point at a variable name (either
-  its declaration or a use site) and the editor shows
-  `**name** — unit \`m/s\`` (or "no unit annotation" if the variable
-  was declared without one). Derived-type member accesses (`b%v`)
-  produce `**particle%v** — unit \`m/s\``.
+  its declaration or a use site) and the editor shows `**🟢 DimFort**`
+  with `**name** : <unit>` below it (or `**🟡 DimFort**` and "no unit
+  annotation" if the variable was declared without one). Derived-type
+  member accesses (`b%v`) produce `**particle%v** : m/s`. Hovering on
+  a Fortran intrinsic callee (`exp`, `log`, `sqrt`, `sin`, `sum`, …)
+  shows the call's resolved unit and the full source text of the
+  call.
+- **Full-unit-trace hover** (opt-in). Set `traceHoverEnabled: true`
+  in `initializationOptions` (in VSCode: run `DimFort: Toggle Full
+  Unit Trace in Hover`). With it on, any hover inside an assignment
+  replaces the compact view with an ASCII tree of the RHS — each
+  node carries its resolved unit and the unit-algebra rule that
+  produced it (`R3.1`, `R5.6`, …). The header reads
+  `🟢 / 🔴 / 🟡 DimFort` for OK / mismatch / unresolved respectively.
 - **Inlay hints**, **go-to-definition**, **code lens**, **code actions**
-  (insert `!< @unit{}` skeletons), and **unit-name completion** are all
-  live; each is toggleable through its respective `DimFort: Toggle …`
-  palette command or VSCode setting.
+  (insert `!< @unit{}` skeletons; extract H010-D1.5 literals to a
+  named PARAMETER), and **unit-name completion** are all live; each
+  is toggleable through its respective `DimFort: Toggle …` palette
+  command or VSCode setting.
 
 ## Limitations
 

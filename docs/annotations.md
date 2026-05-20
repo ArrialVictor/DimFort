@@ -23,9 +23,15 @@ The unit expression follows a small grammar:
 | Power          | `m^2`, `m^-1`, `m^(1/2)`                | Integer or rational exponents. No decimals. |
 | Grouping       | `kg/(m*s)`                              | Use parentheses to disambiguate. |
 | Dimensionless  | `1`                                     | Also `rad`, `sr` by convention. |
+| Log wrapper    | `LOG(Pa)`, `LOG(LOG(K))`                | Tags a value as residing in log space. `LOG ∘ EXP` and `EXP ∘ LOG` cancel; `LOG(1)` collapses to `1`. |
+| Exp wrapper    | `EXP(K)`, `EXP(EXP(s))`                 | Symmetric to `LOG(...)`. Lower-case (`log(Pa)` / `exp(K)`) is accepted; the pretty-printer emits uppercase. |
 
 Whitespace inside `{…}` is allowed and stripped: `@unit{  m / s  }`
-is identical to `@unit{m/s}`.
+is identical to `@unit{m/s}`. Same for the wrapper grammar:
+`@unit{LOG( Pa )}` is identical to `@unit{LOG(Pa)}`. Inverse pairs
+cancel on parse — `@unit{EXP(LOG(Pa))}` is the same annotation as
+`@unit{Pa}`. The full rule set (cancellation, dim'less collapse,
+homomorphisms) is in [docs/unit-algebra.md](unit-algebra.md).
 
 Two slashes at the same paren depth (e.g. `kg/m*s`) produce a
 **`UnitAmbiguityWarning`** — the expression has a defined meaning
