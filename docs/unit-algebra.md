@@ -1020,13 +1020,69 @@ reduces to `unitful × Regular(dim'less)` and is handled by R4.2.
 
 Resolution date: 2026-05-20.
 
-### OQ2 — Soft log-units (dB, Np, pH, log-pressure coords)
+### OQ2 — Soft "quantity kinds" (dB, Np, pH, log-pressure coords)
 
-Not addressed in the current spec. Forward-compatible: future
-extensions would add specific soft-unit tags (`SoftUnit(dB)`,
-`SoftUnit(pH)`, etc.) as distinct types alongside Regular / LogWrap /
-ExpWrap. The R2.3 collapse rule does not block this path — soft
-units are a separate type kind, not generic `LogWrap(dim'less)`.
+**Status**: deferred — out of scope for "DimFort as a dimensional-
+homogeneity tool", in scope for a hypothetical future "DimFort as a
+quantity-kind tracker" extension.
+
+#### Why it isn't homogeneity
+
+Dimensional homogeneity is a structural check on SI-base-unit exponents
+— the 7-tuple `(M, L, T, Θ, I, N, J)`. Under that check, dB / pH /
+log-pressure are all `Regular(0,...,0)` — indistinguishable from any
+other dim'less quantity. Catching `loudness = 2.0 * loudness` (which
+is wrong in dB-space — dB levels add, not multiply by scalars)
+requires tracking *which* dim'less kind the value is, not just *that*
+it's dim'less. That's a richer type system — a *soft tag* on top of
+the dim/unit system.
+
+#### Landscape of existing approaches
+
+Worth surveying before any implementation. Tools that handle, or
+attempt to handle, soft quantity kinds:
+
+| Tool / language | Approach |
+|---|---|
+| **Pint** (Python) | "Offset units" for things like Celsius / Fahrenheit (related to soft units via affine transforms); custom plumbing for true soft tags. |
+| **TypeScript brand types** | `type DB = number & { __dB: never }` — nominal soft tags via structural-typing escape hatches. Manual per kind. |
+| **F# units of measure** | First-class unit-of-measure types; doesn't formally handle dB but the type system is the closest mainstream precedent. |
+| **Fortress** (Sun Labs research) | Had unit-of-measure types with named dim'less kinds. Discontinued. |
+| **ATS** | Dependent types subsume soft tags. Academic. |
+| **CamFort, F18 units proposal** | Homogeneity-only. Same scope as DimFort. |
+
+None of the *Fortran-targeted* tools handle this today. Doing it
+in DimFort would be a deliberate scope expansion that positions it
+against type-system research languages rather than against other
+Fortran-units tools.
+
+#### Triggers to revisit
+
+Reopen this question when at least one of:
+
+1. A DimFort user has a real Fortran codebase with a dB / pH / log-
+   coord quantity they want to annotate, and prose-and-convention
+   has demonstrably been insufficient.
+2. The "quantity-kind tracker" positioning is consciously adopted —
+   product-direction decision, not opportunistic.
+3. A clean design lands for soft-kind arithmetic that doesn't
+   require touching the frozen Regular/LogWrap/ExpWrap algebra
+   (e.g., a fully orthogonal `SoftKind` layer that interacts with
+   `Regular` only at marked boundary points).
+
+Until one of those, the sketch from earlier discussions stands as
+a placeholder: a `SoftKind(name, base_unit)` type alongside
+Regular / LogWrap / ExpWrap, with its own arithmetic rules and a
+new diagnostic class for soft-kind violations. None of it has been
+specified.
+
+#### Forward-compatibility hooks already in place
+
+R2.3 (dim'less collapse) doesn't prevent a future `SoftKind` type
+from existing alongside `Regular`. `SoftKind` would NOT be a special
+case of `LogWrap(Regular(0,...,0))`; it would be its own type
+kind, so the collapse rule applies to genuine wrapper-of-dim'less
+and leaves soft tags alone.
 
 ### OQ3 — Derived-type unit annotations
 
