@@ -990,6 +990,23 @@ for this spec; tracked separately in the DimFort backlog.
 Currently errors via D1.4 (R4.3, R5.5). Forward-compatible with
 future precise typing (e.g. when `y` is a `PARAMETER` literal).
 
+### OQ5 — RESOLVED (missing-annotation propagation)
+
+The previous open question — what `x + y` should produce when `x`
+has no `@unit{}` annotation and `y :: m/s` — is resolved as
+**unknown**. DimFort returns `None` for the expression as a whole;
+it never infers a missing annotation from a sibling operand,
+because silent inference would mask real bugs. The actionable
+diagnostic is `U005` on the unannotated declaration; the assignment
+itself emits no `H`-series error because consistency against an
+unknown operand can't be verified.
+
+Same applies to wrapper cases: `LOG(x)` with `x` unannotated → the
+LOG call resolves to `None`, propagating outward; U005 still fires
+on `x`'s declaration.
+
+Resolution date: 2026-05-20.
+
 ---
 
 ## 12. Trace mechanism
