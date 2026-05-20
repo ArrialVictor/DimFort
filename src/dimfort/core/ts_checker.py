@@ -724,20 +724,20 @@ def _emit_h001(loc: Node, lhs: Unit, rhs: Unit, ctx: _Ctx) -> Diagnostic:
     )
 
 
-def _emit_h002(loc: Node, left: Unit, right: Unit, ctx: _Ctx) -> Diagnostic:
+def _emit_h002(loc: Node, left: UnitExpr, right: UnitExpr, ctx: _Ctx) -> Diagnostic:
     start, end = _node_span(loc)
     return Diagnostic(
         file=ctx.file, start=start, end=end,
         severity=Severity.ERROR, code="H002",
         message=(
             f"Operand unit mismatch in '+'/'-': "
-            f"{format_unit(left)} ≠ {format_unit(right)}"
+            f"{format_unit(left)} ≠ {format_unit(right)} (D1.1)"
         ),
     )
 
 
 def _emit_h010(
-    loc: Node, literal_text: str, target_unit: Unit, ctx: _Ctx
+    loc: Node, literal_text: str, target_unit: UnitExpr, ctx: _Ctx
 ) -> Diagnostic:
     """Implicit-literal-cast warning (D1.5).
 
@@ -889,31 +889,21 @@ def _walk_expressions(
         if diag is None:
             return
         if diag == "D1.1":
-            # D1.5 demotion (literal-cast) — only applies to +/-.
-            left_lit_node = _is_pure_numeric_constant(left)
-            right_lit_node = _is_pure_numeric_constant(right)
-            left_dimless = isinstance(lu, Unit) and _is_dimensionless(lu)
-            right_dimless = isinstance(ru, Unit) and _is_dimensionless(ru)
-            if left_lit_node and left_dimless and not right_dimless:
-                yield _emit_h010(left, _text(left, source), ru, ctx)
-            elif right_lit_node and right_dimless and not left_dimless:
-                yield _emit_h010(right, _text(right, source), lu, ctx)
+            yield _emit_h002(node, lu, ru, ctx)
+        elif diag == "D1.5":
+            # H010 implicit-literal-cast warning. The non-literal side
+            # is the target unit (combine() returned it as ``result``).
+            # Locate the literal operand to anchor the diagnostic span.
+            if left_lit_val is not None:
+                target = ru
+                yield _emit_h010(left, _text(left, source), target, ctx)
             else:
-                yield _emit_h002(node, lu, ru, ctx)
+                target = lu
+                yield _emit_h010(right, _text(right, source), target, ctx)
         elif diag == "D1.2":
             yield _emit_d12(node, lu, ru, op, ctx)
         elif diag == "D1.3":
-            # R6.6 demotion: ExpWrap + literal → H010 (D1.5) — the
-            # literal is absorbed into the exp's exponent. Mirrors the
-            # D1.1 literal-cast logic above but for the wrapper case.
-            left_lit_node = _is_pure_numeric_constant(left)
-            right_lit_node = _is_pure_numeric_constant(right)
-            if left_lit_node and isinstance(lu, Unit) and _is_dimensionless(lu) and isinstance(ru, ExpWrap):
-                yield _emit_h010(left, _text(left, source), ru, ctx)
-            elif right_lit_node and isinstance(ru, Unit) and _is_dimensionless(ru) and isinstance(lu, ExpWrap):
-                yield _emit_h010(right, _text(right, source), lu, ctx)
-            else:
-                yield _emit_d13(node, lu, ru, op, ctx)
+            yield _emit_d13(node, lu, ru, op, ctx)
         elif diag == "D1.4":
             yield _emit_d14(
                 node, ctx,

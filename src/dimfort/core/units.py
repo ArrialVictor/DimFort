@@ -191,7 +191,14 @@ def combine(
         if op in ("+", "-"):
             if equal_dim(a, b):
                 return a, None  # R4.1
-            return None, "D1.1"  # R4.1 mismatch — caller may demote to D1.5
+            # D1.5 demotion — one operand is a dim'less numeric literal
+            # and the other is unitful. Soft-cast the literal to the
+            # unitful's unit; emit a warning rather than an error.
+            if a_literal is not None and is_dimensionless(a) and not is_dimensionless(b):
+                return b, "D1.5"
+            if b_literal is not None and is_dimensionless(b) and not is_dimensionless(a):
+                return a, "D1.5"
+            return None, "D1.1"
         if op == "*":
             return a * b, None  # R4.2
         if op == "/":
@@ -311,8 +318,10 @@ def combine(
         if op == "+":
             return combine("+", b, a, a_literal=b_literal, b_literal=a_literal)
         if op == "-":
-            # a - ExpWrap(b) — per spec table 14.1, R6.6 → D1.3 for the
-            # non-literal case; D1.5 demotion in checker for literal a.
+            # a - ExpWrap(b). D1.5 demotion mirrors the + case for a
+            # literal dim'less a; otherwise R6.6 → D1.3.
+            if a_literal is not None and is_dimensionless(a):
+                return b, "D1.5"
             return None, "D1.3"
         return None, None
 
@@ -326,7 +335,11 @@ def combine(
                 return a, None  # R6.3 (division by dim'less)
             return None, "D1.2"  # R6.7
         if op in ("+", "-"):
-            return None, "D1.3"  # R6.6 (non-literal); caller may demote to D1.5
+            # R6.6 D1.5 demotion: literal dim'less + ExpWrap absorbs
+            # into the exp's inner exponent — emit a warning, keep ExpWrap.
+            if b_literal is not None and is_dimensionless(b):
+                return a, "D1.5"
+            return None, "D1.3"
         return None, None
 
     # ---- LogWrap × ExpWrap (§7) ----
