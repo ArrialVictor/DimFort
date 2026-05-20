@@ -83,17 +83,36 @@ def _parse_expected_unit(expected: str) -> UnitExpr | None:
 def _build_source(context: str, expression: str) -> str:
     """Wrap the fixture context + expression in a synthetic subroutine.
 
-    Adds a ``__probe__`` variable as the LHS of the assignment so the
-    expression sits in an ``assignment_statement`` we can locate after
-    parsing. The probe is intentionally unannotated so it imposes no
-    unit constraint of its own.
+    Multi-statement expressions are accepted: any ``;`` in the
+    expression splits it into a sequence of statements that share the
+    same enclosing scope. The LAST statement is the one whose unit
+    will be compared against ``expected``; if it's a bare expression
+    (not an assignment) it gets the ``__probe__`` LHS attached. Earlier
+    statements run as-is so intermediate assignments can establish
+    typed locals (``lpref = LOG(psol) - dgeop/RT``) that the final
+    statement consumes (``EXP(lpref)``).
+
+    Adds a ``__probe__`` variable as the LHS of the final assignment
+    so the expression sits in an ``assignment_statement`` we can
+    locate after parsing. The probe is intentionally unannotated so
+    it imposes no unit constraint of its own.
     """
     indented_ctx = "\n".join("  " + line for line in context.rstrip().splitlines())
+    statements = [s.strip() for s in expression.split(";") if s.strip()]
+    body_lines: list[str] = []
+    for stmt in statements[:-1]:
+        body_lines.append(f"  {stmt}")
+    last = statements[-1]
+    if "=" in last:
+        # Already an assignment; drop the LHS and re-route through
+        # __probe__ so the runner can locate the RHS uniformly.
+        last = last.split("=", 1)[1].strip()
+    body_lines.append(f"  __probe__ = {last}")
     return (
         "subroutine probe_routine\n"
         f"{indented_ctx}\n"
         "  real :: __probe__\n"
-        f"  __probe__ = {expression}\n"
+        + "\n".join(body_lines) + "\n"
         "end subroutine\n"
     )
 
@@ -168,13 +187,7 @@ def test_fixture_case(case: dict) -> None:
     if not expected_raw or expected_raw in ("TBD",):
         pytest.skip(f"fixture marked {expected_raw or 'no expected'}")
     expression = case["expression"]
-    if ";" in expression:
-        pytest.skip("multi-statement fixture — out of scope for single-expr runner")
-    if "=" in expression:
-        # The fixture writes ``ratio = LOG(p1) - LOG(p2)`` etc. — a full
-        # assignment statement. Drop the LHS so we re-use the probe-RHS
-        # path.
-        expression = expression.split("=", 1)[1].strip()
+    # Multi-statement and single-statement-with-LHS handled in _build_source.
     context = case.get("context", "")
     source = _build_source(context, expression)
 
