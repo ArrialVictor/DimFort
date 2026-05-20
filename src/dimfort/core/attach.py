@@ -105,6 +105,14 @@ class AttachmentResult:
     # don't collide with same-named local variables. Keyed by
     # ``(type_name, field_name)``.
     field_units: dict[tuple[str, str], str] = field(default_factory=dict)
+    # Provenance tag for each ``var_units_by_scope`` entry: how was its
+    # unit assigned? ``"explicit"`` from a user-written ``@unit{...}``;
+    # ``"intrinsic_default"`` from the INTEGER / LOGICAL / CHARACTER
+    # default-dim'less rule. Used by the LSP hover to surface "this is
+    # the implicit default" to the user.
+    var_unit_sources: dict[tuple[str | None, str], str] = field(
+        default_factory=dict
+    )
     orphans: list[OrphanAnnotation] = field(default_factory=list)
     conflicts: list[ConflictingAnnotation] = field(default_factory=list)
     intermediate_continuations: list[IntermediateContinuationAnnotation] = field(
@@ -178,6 +186,7 @@ def _assign(
         )
         return
     result.var_units_by_scope[scope_key] = unit_text
+    result.var_unit_sources[scope_key] = "explicit"
     # Flat view: first-seen-wins across the whole file. Callers that
     # consult ``var_units`` accept that ambiguity; the authoritative
     # answer lives in ``var_units_by_scope``.
@@ -286,5 +295,6 @@ def _apply_intrinsic_defaults(
             if scope_key in result.var_units_by_scope:
                 continue  # explicit annotation already attached
             result.var_units_by_scope[scope_key] = "1"
+            result.var_unit_sources[scope_key] = "intrinsic_default"
             if name not in result.var_units:
                 result.var_units[name] = "1"
