@@ -753,7 +753,7 @@ def _emit_h010(
         file=ctx.file, start=start, end=end,
         severity=Severity.WARNING, code="H010",
         message=(
-            f"implicit cast: literal {literal_text!r} to {target} "
+            f"Implicit cast: literal {literal_text!r} to {target} "
             f"(prefer a named PARAMETER, e.g. "
             f"`REAL, PARAMETER :: <name> = {literal_text}   "
             f"!< @unit{{{target}}}`)"
@@ -821,7 +821,7 @@ def _emit_d16_untag(
         file=ctx.file, start=start, end=end,
         severity=Severity.WARNING, code="H010",
         message=(
-            f"implicit wrapper untag: {format_unit(rhs)} assigned to "
+            f"Implicit wrapper untag: {format_unit(rhs)} assigned to "
             f"{format_unit(lhs)} — if intentional, annotate the LHS "
             f"as @unit{{{format_unit(rhs)}}} to silence this warning (D1.6)"
         ),
@@ -1535,19 +1535,21 @@ def check(
         )
 
     # Parse the var_units / field_units tables ahead of the walk so
-    # the resolver doesn't pay a parse cost per lookup.
-    parsed_vars: dict[str, Unit] = {}
+    # the resolver doesn't pay a parse cost per lookup. Accepts any
+    # ``UnitExpr`` (Unit / LogWrap / ExpWrap) already parsed by an
+    # upstream pass, or a raw annotation string to parse now.
+    parsed_vars: dict[str, UnitExpr] = {}
     for name, value in var_units.items():
-        if isinstance(value, Unit):
+        if isinstance(value, (Unit, LogWrap, ExpWrap)):
             parsed_vars[name] = value
         else:
             try:
                 parsed_vars[name] = _units_mod.parse(value, active_table)
             except UnitError:
                 continue
-    parsed_fields: dict[tuple[str, str], Unit] = {}
+    parsed_fields: dict[tuple[str, str], UnitExpr] = {}
     for (tn, fn), value in (field_units or {}).items():
-        if isinstance(value, Unit):
+        if isinstance(value, (Unit, LogWrap, ExpWrap)):
             parsed_fields[(tn.lower(), fn.lower())] = value
         else:
             try:
@@ -1557,11 +1559,11 @@ def check(
             except UnitError:
                 continue
 
-    # Parse the by-scope table the same way (strings → Unit). Empty
+    # Parse the by-scope table the same way (strings → UnitExpr). Empty
     # ⇒ the resolver falls back to the flat ``parsed_vars`` dict.
-    parsed_vars_by_scope: dict[tuple[str | None, str], Unit] = {}
+    parsed_vars_by_scope: dict[tuple[str | None, str], UnitExpr] = {}
     for key, value in (var_units_by_scope or {}).items():
-        if isinstance(value, Unit):
+        if isinstance(value, (Unit, LogWrap, ExpWrap)):
             parsed_vars_by_scope[key] = value
         else:
             try:
@@ -1643,11 +1645,11 @@ def check(
                     else:
                         emit_h001 = True
                 if emit_h001:
-                    out.append(
-                        _emit_h001(
-                            target if target is not None else node, tu, ru, ctx,
-                        )
-                    )
+                    # Span the squiggle over the whole assignment so the
+                    # editor highlights both sides of `=`; lets the user
+                    # see the offending statement at a glance instead of
+                    # squinting at the LHS identifier.
+                    out.append(_emit_h001(node, tu, ru, ctx))
             _attach_traces_since(before_len, stmt_trace)
             continue
 

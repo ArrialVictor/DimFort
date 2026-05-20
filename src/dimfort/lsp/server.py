@@ -141,6 +141,11 @@ class _FeatureToggles:
     code_actions: bool = True
     goto_definition: bool = True
     code_lens: bool = False    # opt-in; can clutter dense files
+    # Phase D: append the unit-algebra rule-chain trace to hover
+    # markdown when the hovered position sits inside an assignment.
+    # Opt-in — most hovers don't need the chain and it makes hovers
+    # taller. Toggled via the ``dimfort.toggleTrace`` VSCode command.
+    trace_hover: bool = False
 
 
 _features = _FeatureToggles()
@@ -880,6 +885,42 @@ def _resolve_hover(
                     call_hit,
                 )
                 return _hover_signature(name, sig), _node_lsp_range(callee)
+            # No user-defined signature — but the call might be a known
+            # Fortran intrinsic (log, exp, sqrt, sin, sum, ...). Show
+            # the resolved result unit instead of falling through to the
+            # bare-identifier path which would say "no annotation".
+            from dimfort.core.symbols import (
+                DIMENSIONLESS_INTRINSICS,
+                EXP_INTRINSICS,
+                LOG_INTRINSICS,
+                PRODUCT_INTRINSICS,
+                REDUCTION_INTRINSICS,
+                SAME_UNIT_ARG_INTRINSICS,
+                TRANSFORMING_INTRINSICS,
+                TRANSPARENT_INTRINSICS,
+            )
+            name_lc = name.lower()
+            is_known_intrinsic = (
+                name_lc in DIMENSIONLESS_INTRINSICS
+                or name_lc in EXP_INTRINSICS
+                or name_lc in LOG_INTRINSICS
+                or name_lc in TRANSFORMING_INTRINSICS
+                or name_lc in TRANSPARENT_INTRINSICS
+                or name_lc in SAME_UNIT_ARG_INTRINSICS
+                or name_lc in PRODUCT_INTRINSICS
+                or name_lc in REDUCTION_INTRINSICS
+            )
+            if is_known_intrinsic:
+                callee = next(
+                    (c for c in call_hit.children if c.type == "identifier"),
+                    call_hit,
+                )
+                ctx = _build_ts_ctx(
+                    result, source, str(resolved_path), path=resolved_path,
+                )
+                unit = ts_checker._resolve(call_hit, ctx, source)
+                label = f"{name}(...)"
+                return _hover_text(label, _unit_pretty(unit)), _node_lsp_range(callee)
 
     # 4. Bare identifier — variable reference. Includes call-callee
     # identifiers as a fallback: if step 3 already returned a
@@ -965,6 +1006,7 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         _features.code_actions = bool(opts.get("codeActionsEnabled", True))
         _features.goto_definition = bool(opts.get("gotoDefinitionEnabled", True))
         _features.code_lens = bool(opts.get("codeLensEnabled", False))
+        _features.trace_hover = bool(opts.get("traceHoverEnabled", False))
         # Init options extend whatever config already contributed.
         extra = opts.get("externalModules")
         if isinstance(extra, list):
@@ -1250,6 +1292,19 @@ def _hover(ls: LanguageServer, params: lsp.HoverParams) -> Any:
             source_text = ls.workspace.get_text_document(uri).source
         except Exception:
             log.debug("could not fetch buffer text for %s", uri)
+        # Trace-on path takes precedence when the cursor sits inside an
+        # assignment: the tree carries the LHS unit + the full rule
+        # chain, so the regular hover (name : unit) is redundant noise.
+        if _features.trace_hover:
+            trace_hit = _trace_hover_for(uri, line, col)
+            if trace_hit is not None:
+                text, range_ = trace_hit
+                return lsp.Hover(
+                    contents=lsp.MarkupContent(
+                        kind=lsp.MarkupKind.Markdown, value=text,
+                    ),
+                    range=range_,
+                )
         hit = _resolve_hover(uri, line, col, source_text)
         if hit is None:
             return None
@@ -1257,6 +1312,254 @@ def _hover(ls: LanguageServer, params: lsp.HoverParams) -> Any:
         return lsp.Hover(
             contents=lsp.MarkupContent(kind=lsp.MarkupKind.Markdown, value=text),
             range=range_,
+        )
+
+
+def _trace_hover_for(
+    uri: str, line_1based: int, col_1based: int,
+) -> tuple[str, lsp.Range] | None:
+    """Trace-mode hover: replaces the normal hover with an AST tree of
+    the enclosing assignment.
+
+    Root row is the full ``lhs = rhs`` text. The tree forks into the
+    LHS (just the variable + its annotated unit, no rule) and the RHS
+    (full expression chain). Returns ``None`` when the cursor isn't
+    inside an assignment so the caller can fall back to the normal
+    hover.
+    """
+    found = _trees_for(uri)
+    if found is None:
+        return None
+    resolved_path, tree, source = found
+    with _last_result_lock:
+        result = _last_result
+    if result is None:
+        return None
+    asn = _ts_h.smallest_enclosing(
+        _ts_h.walk_assignments(tree), line_1based, col_1based
+    )
+    if asn is None:
+        return None
+    lhs = None
+    rhs = None
+    saw_eq = False
+    for c in asn.children:
+        if c.type == "=":
+            saw_eq = True
+            continue
+        if not saw_eq and c.type not in ("=",):
+            lhs = lhs or c
+        elif saw_eq:
+            rhs = c
+            break
+    if lhs is None or rhs is None:
+        return None
+    ctx = _build_ts_ctx(result, source, str(resolved_path), path=resolved_path)
+    rows: list[tuple[str, str, str]] = []
+    # Root: the whole assignment. No rule fires "for" an assignment
+    # itself; we tag it with the RHS-resolved unit and a ``=`` marker
+    # so the row reads as a final check rather than a rule application.
+    rhs_unit = ts_checker._resolve(rhs, ctx, source)
+    lhs_unit = ts_checker._resolve(lhs, ctx, source)
+    from dimfort.core.units import format_unit
+    if lhs_unit is None or rhs_unit is None:
+        match_tag = "?"
+    elif _checker_equal(lhs_unit, rhs_unit):
+        match_tag = "✓"
+    else:
+        match_tag = "✗ MISMATCH"
+    # Marker is surfaced in the bold header below; the root row is
+    # just the assignment text with no marker / unit column.
+    rows.append((_node_label(asn, source), None, ""))
+    # Two branches: LHS (variable + annotated unit, leaf) and RHS (full sub-tree).
+    rows.append((
+        "├── " + _node_label(lhs, source),
+        format_unit(lhs_unit) if lhs_unit is not None else "?",
+        "",
+    ))
+    _render_ast_tree(
+        rhs, ctx, source,
+        prefix="", is_last=True, is_root=False, rows=rows,
+    )
+    if not rows:
+        return None
+    max_label = max(len(r[0]) for r in rows)
+    max_unit = max(len(r[1]) for r in rows if r[1] is not None)
+    lines: list[str] = []
+    for label, unit, rule in rows:
+        if unit is None:
+            # Marker-only row (the assignment root): no ⇒ column,
+            # just the match symbol after the padded label.
+            lines.append(f"{label.ljust(max_label)}  {rule}".rstrip())
+        elif rule:
+            lines.append(f"{label.ljust(max_label)}  ⇒  {unit.ljust(max_unit)}  {rule}")
+        else:
+            lines.append(f"{label.ljust(max_label)}  ⇒  {unit}".rstrip())
+    body = "\n".join(lines)
+    text = f"**DimFort – {match_tag}**\n\n```\n" + body + "\n```"
+    return text, _node_lsp_range(asn)
+
+
+def _checker_equal(a, b) -> bool:
+    """Wrapper-aware dimension equality (delegates to units.equal_dim)."""
+    from dimfort.core.units import equal_dim
+    return equal_dim(a, b)
+
+
+def _trace_section_for(uri: str, line_1based: int, col_1based: int) -> str | None:
+    """Render the unit-algebra trace as an ASCII tree of the RHS expression.
+
+    Walks the tree, finds the smallest enclosing ``assignment_statement``
+    around ``(line, col)``, then renders the RHS as a tree where each
+    node carries its resolved unit and the rule that produced it. The
+    tree mirrors the source's nesting so readers can map each step to
+    a subexpression visually.
+    """
+    found = _trees_for(uri)
+    if found is None:
+        return None
+    resolved_path, tree, source = found
+    with _last_result_lock:
+        result = _last_result
+    if result is None:
+        return None
+    asn = _ts_h.smallest_enclosing(
+        _ts_h.walk_assignments(tree), line_1based, col_1based
+    )
+    if asn is None:
+        return None
+    rhs = None
+    saw_eq = False
+    for c in asn.children:
+        if c.type == "=":
+            saw_eq = True
+            continue
+        if saw_eq:
+            rhs = c
+            break
+    if rhs is None:
+        return None
+    ctx = _build_ts_ctx(result, source, str(resolved_path), path=resolved_path)
+    rows: list[tuple[str, str, str]] = []  # (label, unit, rule)
+    _render_ast_tree(rhs, ctx, source, prefix="", is_last=True, is_root=True, rows=rows)
+    if not rows:
+        return None
+    # Vertical alignment — pad the label and unit columns to their
+    # max width so the ⇒ and [Rx.y] stack into clean columns.
+    max_label = max(len(r[0]) for r in rows)
+    max_unit = max(len(r[1]) for r in rows)
+    lines: list[str] = []
+    for label, unit, rule in rows:
+        if rule:
+            lines.append(f"{label.ljust(max_label)}  ⇒  {unit.ljust(max_unit)}  {rule}")
+        else:
+            lines.append(f"{label.ljust(max_label)}  ⇒  {unit}".rstrip())
+    body = "\n".join(lines)
+    return "**Unit-algebra trace**\n\n```\n" + body + "\n```"
+
+
+# Token types we never want to render as their own tree nodes — operators
+# and punctuation that visually belong to their parent expression.
+_SKIP_TOKEN_TYPES = frozenset({
+    "+", "-", "*", "/", "**", "=", "(", ")", ",", "::", "%", "&",
+    "[", "]",
+})
+
+
+def _interesting_children(node) -> list:
+    """Return the children worth rendering as sub-tree nodes.
+
+    Skips punctuation/operator tokens. For ``call_expression``, expands
+    the argument list inline so each argument shows up at the same
+    indent level as a binary operator's operands would.
+    """
+    out = []
+    for c in node.children:
+        if c.type in _SKIP_TOKEN_TYPES:
+            continue
+        if c.type == "argument_list":
+            for ac in c.children:
+                if ac.type in _SKIP_TOKEN_TYPES:
+                    continue
+                if ac.type == "keyword_argument":
+                    continue
+                out.append(ac)
+            continue
+        out.append(c)
+    return out
+
+
+def _node_label(node, source: bytes) -> str:
+    """One-line preview of a node's source text, truncated for hover width."""
+    text = source[node.start_byte:node.end_byte].decode("utf-8", "replace")
+    text = " ".join(text.split())  # collapse newlines / runs of spaces
+    if len(text) > 52:
+        text = text[:49] + "..."
+    return text
+
+
+def _render_ast_tree(
+    node, ctx, source: bytes,
+    *,
+    prefix: str, is_last: bool, is_root: bool,
+    rows: list[tuple[str, str, str]],
+) -> None:
+    """Recursively collect ``(label, unit, rule)`` rows for the tree.
+
+    The caller pads each column to the global max so ``⇒`` and the
+    rule tag align vertically across nodes.
+    """
+    # Skip wrapper-only nodes (parenthesised exprs) so the tree doesn't
+    # explode with structural-only intermediate nodes — descend straight
+    # into their inner expression instead.
+    if node.type == "parenthesized_expression":
+        inner = _interesting_children(node)
+        if len(inner) == 1:
+            _render_ast_tree(
+                inner[0], ctx, source,
+                prefix=prefix, is_last=is_last, is_root=is_root, rows=rows,
+            )
+            return
+
+    from dimfort.core.trace import with_trace
+    with with_trace() as trace:
+        unit = ts_checker._resolve(node, ctx, source)
+    snap = trace.snapshot()
+    rule_id = snap[-1].rule_id if snap else None
+
+    if is_root:
+        connector = ""
+        next_prefix = prefix
+    else:
+        connector = "└── " if is_last else "├── "
+        next_prefix = prefix + ("    " if is_last else "│   ")
+
+    label = _node_label(node, source)
+    if unit is None:
+        unit_str = "?"
+    else:
+        from dimfort.core.units import format_unit
+        unit_str = format_unit(unit)
+    rule_str = f"[{rule_id}]" if rule_id else ""
+    rows.append((prefix + connector + label, unit_str, rule_str))
+
+    # Leaves stop here. Identifiers / numeric literals are atomic.
+    if node.type in ("identifier", "number_literal", "string_literal", "complex_literal"):
+        return
+
+    children = _interesting_children(node)
+    # call_expression: drop the callee identifier from the child list —
+    # the parent line already reads ``log(p)`` etc., so re-rendering the
+    # bare ``log`` identifier is noise.
+    if node.type == "call_expression" and children:
+        first = children[0]
+        if first.type == "identifier":
+            children = children[1:]
+    for i, c in enumerate(children):
+        _render_ast_tree(
+            c, ctx, source,
+            prefix=next_prefix, is_last=(i == len(children) - 1),
+            is_root=False, rows=rows,
         )
 
 
@@ -1633,7 +1936,143 @@ def _code_action(
             ),
         )
         actions.append(action)
+
+    # D1.5 quick action — "Extract literal to a named PARAMETER".
+    # Reads the H010 diagnostics in the requested range and offers a
+    # one-click refactor that lifts the offending literal into a typed
+    # PARAMETER declaration.
+    actions.extend(
+        _h010_extract_to_parameter_actions(params, doc, resolved)
+    )
     return actions or None
+
+
+_H010_CAST_RE = re.compile(
+    r"^Implicit cast: literal '([^']+)' to (.+?) \(prefer"
+)
+
+
+def _h010_extract_to_parameter_actions(
+    params: lsp.CodeActionParams, doc, resolved_path: Path,
+) -> list[lsp.CodeAction]:
+    """Build the 'extract literal to PARAMETER' action for each H010 D1.5
+    diagnostic in the requested range.
+
+    The action edits two places: the literal use-site is replaced with
+    a generated parameter name, and a ``REAL, PARAMETER :: <name> =
+    <literal>   !< @unit{<target>}`` declaration is inserted at the
+    end of the enclosing routine's declaration block so the new symbol
+    is visible to the executable section under ``IMPLICIT NONE``.
+    """
+    out: list[lsp.CodeAction] = []
+    diagnostics = params.context.diagnostics or []
+    for diag in diagnostics:
+        if diag.code != "H010":
+            continue
+        m = _H010_CAST_RE.match(diag.message)
+        if m is None:
+            continue  # D1.6 untag — separate action below if/when added
+        literal_text = m.group(1)
+        target_unit = m.group(2)
+        # Locate the enclosing routine via tree-sitter so the new
+        # PARAMETER declaration lands in a syntactically valid spot.
+        found = _trees_for(params.text_document.uri)
+        if found is None:
+            continue
+        _path, tree, source_bytes = found
+        line_1based = diag.range.start.line + 1
+        col_1based = diag.range.start.character + 1
+        routine = _smallest_enclosing_routine(tree, line_1based, col_1based)
+        if routine is None:
+            continue
+        insert_line = _routine_decl_insertion_line(routine, source_bytes)
+        if insert_line is None:
+            continue
+        if insert_line >= len(doc.lines):
+            continue
+        # Match the indent of the row we're inserting before so the
+        # declaration sits flush with sibling decls.
+        sibling_line = doc.lines[insert_line - 1] if insert_line > 0 else ""
+        indent = sibling_line[: len(sibling_line) - len(sibling_line.lstrip())]
+        if not indent:
+            indent = "  "
+        # Suggested default name — the extension shows this in the
+        # input box; the user can accept or rewrite before applying.
+        default_name = f"c_h010_{diag.range.start.line + 1}"
+        action = lsp.CodeAction(
+            title=(
+                f"DimFort: Extract literal {literal_text!r} into a named "
+                f"PARAMETER ({target_unit})"
+            ),
+            kind=lsp.CodeActionKind.QuickFix,
+            diagnostics=[diag],
+            # Delegate to the extension so it can prompt the user for
+            # the parameter name with showInputBox before applying the
+            # two-edit refactor. Non-VSCode clients that don't have the
+            # command registered see this action as a no-op.
+            command=lsp.Command(
+                title="DimFort: extract literal to PARAMETER",
+                command="dimfort.extractToParameter",
+                arguments=[
+                    params.text_document.uri,
+                    {
+                        "line": diag.range.start.line,
+                        "character": diag.range.start.character,
+                    },
+                    {
+                        "line": diag.range.end.line,
+                        "character": diag.range.end.character,
+                    },
+                    insert_line,
+                    indent,
+                    literal_text,
+                    target_unit,
+                    default_name,
+                ],
+            ),
+        )
+        out.append(action)
+    return out
+
+
+def _smallest_enclosing_routine(tree, line_1based: int, col_1based: int):
+    """Return the innermost ``subroutine`` / ``function`` node enclosing
+    the position, or ``None`` if the position isn't inside any routine
+    (file-level / module-level code)."""
+    best = None
+    best_size = None
+    for n in _ts.walk(tree.root_node):
+        if n.type not in ("subroutine", "function"):
+            continue
+        sp = _ts.position_for(n)
+        ep = _ts.end_position_for(n)
+        if (sp.line, sp.column) <= (line_1based, col_1based) <= (ep.line, ep.column):
+            size = n.end_byte - n.start_byte
+            if best_size is None or size < best_size:
+                best, best_size = n, size
+    return best
+
+
+def _routine_decl_insertion_line(routine, source: bytes) -> int | None:
+    """Return the 0-based line index right after the last
+    ``variable_declaration`` direct child of ``routine``.
+
+    Fallback: the line after the routine's ``*_statement`` header. None
+    if neither is locatable.
+    """
+    last_decl_line = None
+    header_line = None
+    for c in routine.children:
+        if c.type in ("subroutine_statement", "function_statement"):
+            header_line = _ts.end_position_for(c).line
+        elif c.type == "variable_declaration":
+            last_decl_line = _ts.end_position_for(c).line
+    target_1based = last_decl_line if last_decl_line is not None else header_line
+    if target_1based is None:
+        return None
+    # tree-sitter's end_point includes the trailing newline; convert to
+    # 0-based and add one so the insertion lands on the next line.
+    return target_1based
 
 
 def _last_scan_declarations(path: Path):
