@@ -112,20 +112,32 @@ def is_dimensionless(u: UnitExpr) -> bool:
 
 def wrap_log(u: UnitExpr) -> UnitExpr:
     """Construct ``LOG(u)`` with canonicalization (R3.1 + R2.1 + R2.3)."""
+    from dimfort.core.trace import trace_step
     if isinstance(u, ExpWrap):
-        return u.inner  # R2.1
+        result = u.inner  # R2.1
+        trace_step("R2.1", (u,), result)
+        return result
     if is_dimensionless(u):
-        return u  # R2.3 — log of dim'less is dim'less
-    return LogWrap(u)
+        trace_step("R2.3", (u,), u)  # R2.3 — log of dim'less is dim'less
+        return u
+    result = LogWrap(u)
+    trace_step("R3.1", (u,), result)
+    return result
 
 
 def wrap_exp(u: UnitExpr) -> UnitExpr:
     """Construct ``EXP(u)`` with canonicalization (R3.2 + R2.2 + R2.3)."""
+    from dimfort.core.trace import trace_step
     if isinstance(u, LogWrap):
-        return u.inner  # R2.2
+        result = u.inner  # R2.2
+        trace_step("R2.2", (u,), result)
+        return result
     if is_dimensionless(u):
-        return u  # R2.3 — exp of dim'less is dim'less
-    return ExpWrap(u)
+        trace_step("R2.3", (u,), u)  # R2.3 — exp of dim'less is dim'less
+        return u
+    result = ExpWrap(u)
+    trace_step("R3.2", (u,), result)
+    return result
 
 
 def _u(dim: Dim, factor: Number = 1) -> Unit:
@@ -186,43 +198,45 @@ def combine(
     diag_code with a None result means the op is undefined (rule error);
     a non-None result with no diag_code is success.
     """
+    from dimfort.core.trace import trace_step
+
+    def _ok(rule_id: str, result: UnitExpr) -> tuple[UnitExpr, None]:
+        trace_step(rule_id, (a, b), result)
+        return result, None
+
+    def _err(rule_id: str, diag: str) -> tuple[None, str]:
+        trace_step(rule_id, (a, b), None)
+        return None, diag
     # ---- Regular × Regular (§4) ----
     if isinstance(a, Unit) and isinstance(b, Unit):
         if op in ("+", "-"):
             if equal_dim(a, b):
-                return a, None  # R4.1
-            # D1.5 demotion — one operand is a dim'less numeric literal
-            # and the other is unitful. Soft-cast the literal to the
-            # unitful's unit; emit a warning rather than an error.
+                return _ok("R4.1", a)
             if a_literal is not None and is_dimensionless(a) and not is_dimensionless(b):
                 return b, "D1.5"
             if b_literal is not None and is_dimensionless(b) and not is_dimensionless(a):
                 return a, "D1.5"
-            return None, "D1.1"
+            return _err("R4.1", "D1.1")
         if op == "*":
-            return a * b, None  # R4.2
+            return _ok("R4.2", a * b)
         if op == "/":
-            return a / b, None  # R4.2
+            return _ok("R4.2", a / b)
         return None, None
 
     # ---- LogWrap × LogWrap (§5) ----
     if isinstance(a, LogWrap) and isinstance(b, LogWrap):
         if op == "+":
-            # R5.1 — log homomorphism. Recurse into inner via combine
-            # so nested wrappers cascade through R5.6 / R7.1 if they
-            # bottom out at an undefined op (R7.2).
             inner, diag = combine("*", a.inner, b.inner)
             if inner is None:
-                return None, diag or "D1.2"
-            return wrap_log(inner), None
+                return _err("R5.1", diag or "D1.2")
+            return _ok("R5.1", wrap_log(inner))
         if op == "-":
-            # R5.2 — derived; inner becomes a / b.
             inner, diag = combine("/", a.inner, b.inner)
             if inner is None:
-                return None, diag or "D1.2"
-            return wrap_log(inner), None
+                return _err("R5.2", diag or "D1.2")
+            return _ok("R5.2", wrap_log(inner))
         if op in ("*", "/"):
-            return None, "D1.2"  # R5.6
+            return _err("R5.6", "D1.2")
         return None, None
 
     # ---- LogWrap with Regular (commute for + and *) ----
@@ -230,45 +244,35 @@ def combine(
         if op == "+":
             return combine("+", b, a, a_literal=b_literal, b_literal=a_literal)
         if op == "-":
-            # Spec table 14.1 treats LogWrap ± Rd as symmetric. The
-            # inner-direction nuance (c - log(p) ≠ log(p) - c) is
-            # documented as a known imprecision; for now, mirror the
-            # LogWrap-on-left case.
             if is_dimensionless(a):
-                return b, None  # R5.3 (mirrored)
-            return None, "D1.3"  # R5.10 (mirrored)
+                return _ok("R5.3", b)
+            return _err("R5.10", "D1.3")
         if op == "*":
             return combine("*", b, a, a_literal=b_literal, b_literal=a_literal)
         if op == "/":
-            # Regular / LogWrap → R5.9 (LogWrap^(-1) is undefined).
-            return None, "D1.2"
+            return _err("R5.9", "D1.2")
         return None, None
 
     if isinstance(a, LogWrap) and isinstance(b, Unit):
         if op in ("+", "-"):
             if is_dimensionless(b):
-                return a, None  # R5.3
-            return None, "D1.3"  # R5.10
+                return _ok("R5.3", a)
+            return _err("R5.10", "D1.3")
         if op == "*":
             if is_dimensionless(b):
-                # R5.4 (literal k) vs R5.5 (non-literal k)
                 if b_literal is None:
-                    return None, "D1.4"
+                    return _err("R5.5", "D1.4")
                 new_inner = _logwrap_inner_pow(a.inner, b_literal)
                 if new_inner is None:
-                    return None, None  # nested inner — sub-step 4
-                return wrap_log(new_inner), None
-            return None, "D1.2"  # R5.7
+                    return None, None
+                return _ok("R5.4", wrap_log(new_inner))
+            return _err("R5.7", "D1.2")
         if op == "/":
             if is_dimensionless(b):
-                # LogWrap / dim'less: equivalent to LogWrap × (1/dim'less).
-                # For literal k: inner^(1/k) — handled below. For
-                # non-literal: R5.5 → D1.4 (same as *).
                 if b_literal is None:
-                    return None, "D1.4"
+                    return _err("R5.5", "D1.4")
                 if b_literal == 0:
-                    return None, None  # divide-by-zero, leave unknown
-                # 1/k for an integer k is a Fraction; for a Fraction, invert.
+                    return None, None
                 inv = (
                     Fraction(1, b_literal)
                     if isinstance(b_literal, int)
@@ -277,27 +281,24 @@ def combine(
                 new_inner = _logwrap_inner_pow(a.inner, inv)
                 if new_inner is None:
                     return None, None
-                return wrap_log(new_inner), None
-            return None, "D1.2"  # R5.7 mirrored for division
+                return _ok("R5.4", wrap_log(new_inner))
+            return _err("R5.7", "D1.2")
         return None, None
 
     # ---- ExpWrap × ExpWrap (§6) ----
     if isinstance(a, ExpWrap) and isinstance(b, ExpWrap):
         if op == "*":
-            # R6.1 — exp homomorphism. Inner uses R4.1 ('+'); may
-            # cascade D1.1 if inner tuples disagree.
             inner, diag = combine("+", a.inner, b.inner)
             if inner is None:
-                return None, diag or "D1.1"
-            return wrap_exp(inner), None
+                return _err("R6.1", diag or "D1.1")
+            return _ok("R6.1", wrap_exp(inner))
         if op == "/":
-            # R6.2 — derived from R6.1; inner '-' via R4.1.
             inner, diag = combine("-", a.inner, b.inner)
             if inner is None:
-                return None, diag or "D1.1"
-            return wrap_exp(inner), None
+                return _err("R6.2", diag or "D1.1")
+            return _ok("R6.2", wrap_exp(inner))
         if op in ("+", "-"):
-            return None, "D1.3"  # R6.5
+            return _err("R6.5", "D1.3")
         return None, None
 
     # ---- ExpWrap with Regular (commute for × and +) ----
@@ -305,41 +306,33 @@ def combine(
         if op == "*":
             return combine("*", b, a, a_literal=b_literal, b_literal=a_literal)
         if op == "/":
-            # Regular / ExpWrap = Regular × ExpWrap^(-1). For dim'less
-            # Regular this collapses to ExpWrap (via inner inverse).
-            # For non-dim'less Regular this is R6.7 → D1.2.
             if is_dimensionless(a):
-                # 1 / ExpWrap(U) = ExpWrap(-U) — inner scaled by -1.
                 inv_inner = _logwrap_inner_pow(b.inner, -1) if isinstance(b.inner, Unit) else None
                 if inv_inner is None:
                     return None, None
-                return wrap_exp(inv_inner), None
-            return None, "D1.2"  # R6.7
+                return _ok("R6.3", wrap_exp(inv_inner))
+            return _err("R6.7", "D1.2")
         if op == "+":
             return combine("+", b, a, a_literal=b_literal, b_literal=a_literal)
         if op == "-":
-            # a - ExpWrap(b). D1.5 demotion mirrors the + case for a
-            # literal dim'less a; otherwise R6.6 → D1.3.
             if a_literal is not None and is_dimensionless(a):
                 return b, "D1.5"
-            return None, "D1.3"
+            return _err("R6.6", "D1.3")
         return None, None
 
     if isinstance(a, ExpWrap) and isinstance(b, Unit):
         if op == "*":
             if is_dimensionless(b):
-                return a, None  # R6.3
-            return None, "D1.2"  # R6.7
+                return _ok("R6.3", a)
+            return _err("R6.7", "D1.2")
         if op == "/":
             if is_dimensionless(b):
-                return a, None  # R6.3 (division by dim'less)
-            return None, "D1.2"  # R6.7
+                return _ok("R6.3", a)
+            return _err("R6.7", "D1.2")
         if op in ("+", "-"):
-            # R6.6 D1.5 demotion: literal dim'less + ExpWrap absorbs
-            # into the exp's inner exponent — emit a warning, keep ExpWrap.
             if b_literal is not None and is_dimensionless(b):
                 return a, "D1.5"
-            return None, "D1.3"
+            return _err("R6.6", "D1.3")
         return None, None
 
     # ---- LogWrap × ExpWrap (§7) ----
@@ -347,9 +340,9 @@ def combine(
         isinstance(a, ExpWrap) and isinstance(b, LogWrap)
     ):
         if op in ("*", "/"):
-            return None, "D1.2"  # R7.1
+            return _err("R7.1", "D1.2")
         if op in ("+", "-"):
-            return None, "D1.3"  # R6.6 dominates for +/- per spec note
+            return _err("R6.6", "D1.3")
         return None, None
 
     return None, None
@@ -364,26 +357,33 @@ def power(base: UnitExpr, exponent: Number, *, exponent_is_literal: bool) -> tup
     checker only resolves literal exponents — non-literal returns
     ``(None, 'D1.4')`` here).
     """
+    from dimfort.core.trace import trace_step
     if not exponent_is_literal:
-        return None, "D1.4"  # R4.3 / R5.5 / R6.4 with non-literal
+        trace_step("R4.3", (base,), None)
+        return None, "D1.4"
     if isinstance(base, Unit):
         try:
-            return base.pow(exponent), None  # R4.3
+            result = base.pow(exponent)
+            trace_step("R4.3", (base,), result)
+            return result, None
         except Exception:
             return None, None
     if isinstance(base, LogWrap):
         if exponent == 1:
-            return base, None  # R5.9 identity
-        return None, "D1.2"  # R5.9
+            trace_step("R5.9", (base,), base)
+            return base, None
+        trace_step("R5.9", (base,), None)
+        return None, "D1.2"
     if isinstance(base, ExpWrap):
-        # R6.4 — ExpWrap(U)^k = ExpWrap(k·U). For Regular inner, k·U
-        # equals U^k via R4.3. Nested-wrapper inner cascades to None.
         if exponent == 1:
+            trace_step("R6.4", (base,), base)
             return base, None
         new_inner = _logwrap_inner_pow(base.inner, exponent)
         if new_inner is None:
             return None, None
-        return wrap_exp(new_inner), None
+        result = wrap_exp(new_inner)
+        trace_step("R6.4", (base,), result)
+        return result, None
     return None, None
 
 
