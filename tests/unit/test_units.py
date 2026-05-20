@@ -363,3 +363,102 @@ def test_power_r43_nonliteral_errors():
     result, diag = power(_u("m"), 2, exponent_is_literal=False)
     assert diag == "D1.4"
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Phase B sub-step 4: ExpWrap (R6.x) + cross-cases (R7.1)
+# ---------------------------------------------------------------------------
+
+
+# R6.1 — ExpWrap × ExpWrap → ExpWrap(inner + inner)
+def test_combine_r61_exp_product():
+    a, b = wrap_exp(_u("K")), wrap_exp(_u("K"))
+    result, diag = combine("*", a, b)
+    assert diag is None
+    assert result == wrap_exp(_u("K"))  # K + K = K
+
+
+def test_combine_r61_exp_product_mismatch_d11():
+    a, b = wrap_exp(_u("K")), wrap_exp(_u("Pa"))
+    result, diag = combine("*", a, b)
+    # Inner K + Pa mismatches per R4.1 → cascades as D1.1.
+    assert diag == "D1.1"
+    assert result is None
+
+
+# R6.2 — ExpWrap / ExpWrap → ExpWrap(inner - inner)
+def test_combine_r62_exp_quotient():
+    a, b = wrap_exp(_u("K")), wrap_exp(_u("K"))
+    result, diag = combine("/", a, b)
+    assert diag is None
+    assert result == wrap_exp(_u("K"))
+
+
+# R6.3 — ExpWrap × dim'less → ExpWrap
+def test_combine_r63_exp_times_dimless():
+    a = wrap_exp(_u("K"))
+    result, diag = combine("*", a, _u("1"))
+    assert diag is None
+    assert result == a
+
+
+def test_combine_r63_exp_div_dimless():
+    a = wrap_exp(_u("K"))
+    result, diag = combine("/", a, _u("1"))
+    assert diag is None
+    assert result == a
+
+
+# R6.4 — ExpWrap ^ literal_k → ExpWrap(k · inner)
+def test_power_r64_exp_squared():
+    a = wrap_exp(_u("K"))
+    result, diag = power(a, 2, exponent_is_literal=True)
+    assert diag is None
+    assert result == wrap_exp(_u("K").pow(2))
+
+
+# R6.5 — ExpWrap + ExpWrap → D1.3
+def test_combine_r65_exp_plus_exp_errors():
+    a, b = wrap_exp(_u("K")), wrap_exp(_u("K"))
+    result, diag = combine("+", a, b)
+    assert diag == "D1.3"
+    assert result is None
+
+
+# R6.6 — ExpWrap + non-ExpWrap (non-literal) → D1.3
+def test_combine_r66_exp_plus_pressure_errors():
+    a, b = wrap_exp(_u("K")), _u("Pa")
+    result, diag = combine("+", a, b)
+    assert diag == "D1.3"
+    assert result is None
+
+
+# R6.7 — ExpWrap × non-dim'less Regular → D1.2
+def test_combine_r67_exp_times_pressure_errors():
+    a = wrap_exp(_u("K"))
+    result, diag = combine("*", a, _u("Pa"))
+    assert diag == "D1.2"
+    assert result is None
+
+
+# R7.1 — LogWrap × ExpWrap → D1.2
+def test_combine_r71_log_times_exp_errors():
+    a, b = wrap_log(_u("Pa")), wrap_exp(_u("K"))
+    result, diag = combine("*", a, b)
+    assert diag == "D1.2"
+    assert result is None
+
+
+def test_combine_r71_exp_div_log_errors():
+    a, b = wrap_exp(_u("K")), wrap_log(_u("Pa"))
+    result, diag = combine("/", a, b)
+    assert diag == "D1.2"
+    assert result is None
+
+
+# Mixed wrapper + : LogWrap + ExpWrap goes through R6.6 path (D1.3)
+def test_combine_log_plus_exp_d13():
+    a, b = wrap_log(_u("Pa")), wrap_exp(_u("K"))
+    result, diag = combine("+", a, b)
+    assert diag == "D1.3"
+    assert result is None

@@ -274,7 +274,71 @@ def combine(
             return None, "D1.2"  # R5.7 mirrored for division
         return None, None
 
-    # ExpWrap and cross-wrapper cases — sub-step 4.
+    # ---- ExpWrap × ExpWrap (§6) ----
+    if isinstance(a, ExpWrap) and isinstance(b, ExpWrap):
+        if op == "*":
+            # R6.1 — exp homomorphism. Inner uses R4.1 ('+'); may
+            # cascade D1.1 if inner tuples disagree.
+            inner, diag = combine("+", a.inner, b.inner)
+            if inner is None:
+                return None, diag or "D1.1"
+            return wrap_exp(inner), None
+        if op == "/":
+            # R6.2 — derived from R6.1; inner '-' via R4.1.
+            inner, diag = combine("-", a.inner, b.inner)
+            if inner is None:
+                return None, diag or "D1.1"
+            return wrap_exp(inner), None
+        if op in ("+", "-"):
+            return None, "D1.3"  # R6.5
+        return None, None
+
+    # ---- ExpWrap with Regular (commute for × and +) ----
+    if isinstance(a, Unit) and isinstance(b, ExpWrap):
+        if op == "*":
+            return combine("*", b, a, a_literal=b_literal, b_literal=a_literal)
+        if op == "/":
+            # Regular / ExpWrap = Regular × ExpWrap^(-1). For dim'less
+            # Regular this collapses to ExpWrap (via inner inverse).
+            # For non-dim'less Regular this is R6.7 → D1.2.
+            if is_dimensionless(a):
+                # 1 / ExpWrap(U) = ExpWrap(-U) — inner scaled by -1.
+                inv_inner = _logwrap_inner_pow(b.inner, -1) if isinstance(b.inner, Unit) else None
+                if inv_inner is None:
+                    return None, None
+                return wrap_exp(inv_inner), None
+            return None, "D1.2"  # R6.7
+        if op == "+":
+            return combine("+", b, a, a_literal=b_literal, b_literal=a_literal)
+        if op == "-":
+            # a - ExpWrap(b) — per spec table 14.1, R6.6 → D1.3 for the
+            # non-literal case; D1.5 demotion in checker for literal a.
+            return None, "D1.3"
+        return None, None
+
+    if isinstance(a, ExpWrap) and isinstance(b, Unit):
+        if op == "*":
+            if is_dimensionless(b):
+                return a, None  # R6.3
+            return None, "D1.2"  # R6.7
+        if op == "/":
+            if is_dimensionless(b):
+                return a, None  # R6.3 (division by dim'less)
+            return None, "D1.2"  # R6.7
+        if op in ("+", "-"):
+            return None, "D1.3"  # R6.6 (non-literal); caller may demote to D1.5
+        return None, None
+
+    # ---- LogWrap × ExpWrap (§7) ----
+    if (isinstance(a, LogWrap) and isinstance(b, ExpWrap)) or (
+        isinstance(a, ExpWrap) and isinstance(b, LogWrap)
+    ):
+        if op in ("*", "/"):
+            return None, "D1.2"  # R7.1
+        if op in ("+", "-"):
+            return None, "D1.3"  # R6.6 dominates for +/- per spec note
+        return None, None
+
     return None, None
 
 
@@ -298,7 +362,15 @@ def power(base: UnitExpr, exponent: Number, *, exponent_is_literal: bool) -> tup
         if exponent == 1:
             return base, None  # R5.9 identity
         return None, "D1.2"  # R5.9
-    # ExpWrap power: R6.4 — sub-step 4.
+    if isinstance(base, ExpWrap):
+        # R6.4 — ExpWrap(U)^k = ExpWrap(k·U). For Regular inner, k·U
+        # equals U^k via R4.3. Nested-wrapper inner cascades to None.
+        if exponent == 1:
+            return base, None
+        new_inner = _logwrap_inner_pow(base.inner, exponent)
+        if new_inner is None:
+            return None, None
+        return wrap_exp(new_inner), None
     return None, None
 
 
