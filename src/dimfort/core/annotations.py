@@ -189,6 +189,14 @@ class DeclarationSite:
     # level. Used by stage 2 (``attach``) to key annotations per scope
     # so same-named arguments in two routines don't collide.
     scope: str | None = None
+    # Lower-cased intrinsic type qualifier (``real``, ``integer``,
+    # ``logical``, ``character``, ``complex``, ``double precision``,
+    # ``type``). ``None`` if not detected. Used by ``attach`` to inject
+    # an implicit dim'less default for unannotated ``integer``
+    # declarations (counts / indices / loop iterators) so the U005
+    # firehose is restricted to REAL variables where unit consistency
+    # actually matters.
+    intrinsic_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -415,9 +423,32 @@ def _scan_declarations(
                 names=tuple(names),
                 enclosing_type=enclosing_type_at(n.start_byte),
                 scope=enclosing_routine_at(n.start_byte),
+                intrinsic_type=_ts_decl_intrinsic_type(n),
             )
         )
     return out, routine_ranges
+
+
+# Tree-sitter Fortran wraps the type qualifier of an intrinsic-typed
+# declaration in an ``intrinsic_type`` node whose first content child
+# carries the qualifier as its node type — ``real``, ``integer``,
+# ``logical``, ``character``, ``complex``, or ``double`` (for ``double
+# precision``). We return the qualifier lower-cased; derived-type
+# declarations (``type(particle) :: …``) return ``None``.
+_INTRINSIC_QUALIFIER_TYPES = frozenset({
+    "real", "integer", "logical", "character", "complex", "double",
+})
+
+
+def _ts_decl_intrinsic_type(decl_node) -> str | None:
+    for c in decl_node.children:
+        if c.type != "intrinsic_type":
+            continue
+        for gc in c.children:
+            if gc.type in _INTRINSIC_QUALIFIER_TYPES:
+                return "double precision" if gc.type == "double" else gc.type
+        return None
+    return None
 
 
 def scan_file(path: str | Path) -> ScanResult:

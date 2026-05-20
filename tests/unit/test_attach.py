@@ -4,6 +4,7 @@ from dimfort.core.annotations import (
     DeclarationSite,
     RawAnnotation,
     ScanResult,
+    scan_text,
 )
 from dimfort.core.attach import attach
 
@@ -237,3 +238,72 @@ def test_pre_and_post_disagree_records_conflict():
     assert len(res.conflicts) == 1
     c = res.conflicts[0]
     assert (c.variable, c.first_unit, c.second_unit) == ("v", "m", "kg")
+
+
+# ---------------------------------------------------------------------------
+# Intrinsic-type default dim'less (INTEGER / LOGICAL / CHARACTER)
+# ---------------------------------------------------------------------------
+
+
+def test_integer_decl_defaults_to_dimless():
+    src = (
+        "subroutine s\n"
+        "  integer :: i, j\n"
+        "  real :: r            !< @unit{m/s}\n"
+        "end subroutine\n"
+    )
+    result = attach(scan_text(src))
+    assert result.var_units["i"] == "1"
+    assert result.var_units["j"] == "1"
+    assert result.var_units["r"] == "m/s"
+    # Scope-aware view carries the same entries.
+    assert result.var_units_by_scope[("s", "i")] == "1"
+    assert result.var_units_by_scope[("s", "j")] == "1"
+
+
+def test_explicit_integer_annotation_wins_over_default():
+    """``integer :: t  !< @unit{s}`` keeps ``s``, not the dim'less default."""
+    src = "integer :: t   !< @unit{s}\n"
+    result = attach(scan_text(src))
+    assert result.var_units["t"] == "s"
+
+
+def test_logical_decl_defaults_to_dimless():
+    src = "logical :: flag\n"
+    result = attach(scan_text(src))
+    assert result.var_units["flag"] == "1"
+
+
+def test_character_decl_defaults_to_dimless():
+    src = "character(len=10) :: name\n"
+    result = attach(scan_text(src))
+    assert result.var_units["name"] == "1"
+
+
+def test_real_decl_does_not_default():
+    """Unannotated ``real ::`` declarations stay out of the table —
+    they're the U005-eligible population."""
+    src = "real :: x\n"
+    result = attach(scan_text(src))
+    assert "x" not in result.var_units
+
+
+def test_complex_decl_does_not_default():
+    """``complex`` carries physical measurements (impedance, wave
+    amplitudes) — no dim'less default."""
+    src = "complex :: z\n"
+    result = attach(scan_text(src))
+    assert "z" not in result.var_units
+
+
+def test_integer_field_of_derived_type_does_not_default():
+    """Fields of a derived type keep needing explicit annotation —
+    the dim'less default is local-only."""
+    src = (
+        "type :: state\n"
+        "  integer :: counter\n"
+        "end type\n"
+    )
+    result = attach(scan_text(src))
+    assert "counter" not in result.var_units
+    assert ("state", "counter") not in result.field_units

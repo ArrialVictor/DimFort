@@ -95,20 +95,20 @@ def test_combine_records_r71_log_times_exp():
 
 def test_power_records_r43_literal():
     with with_trace() as trace:
-        power(parse("m"), 2, exponent_is_literal=True)
+        power(parse("m"), parse("1"), 2)
     assert trace.steps[-1].rule_id == "R4.3"
 
 
 def test_power_records_r43_nonliteral_error():
     with with_trace() as trace:
-        power(parse("m"), 2, exponent_is_literal=False)
+        power(parse("m"), None, None)
     assert trace.steps[-1].rule_id == "R4.3"
     assert trace.steps[-1].after is None
 
 
 def test_power_records_r64_exp_squared():
     with with_trace() as trace:
-        power(wrap_exp(parse("K")), 2, exponent_is_literal=True)
+        power(wrap_exp(parse("K")), parse("1"), 2)
     assert trace.steps[-1].rule_id == "R6.4"
 
 

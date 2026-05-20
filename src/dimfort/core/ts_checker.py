@@ -409,8 +409,9 @@ def _resolve(node: Node | None, ctx: _Ctx, source: bytes) -> Unit | None:
             base = _resolve(left, ctx, source)
             if base is None or right is None:
                 return None
-            exponent = _constant_exponent(right, source)
-            result, _ = power(base, exponent, exponent_is_literal=exponent is not None)
+            exponent_value = _constant_exponent(right, source)
+            exponent_unit = _resolve(right, ctx, source)
+            result, _ = power(base, exponent_unit, exponent_value)
             return result
         left_u = _resolve(left, ctx, source)
         right_u = _resolve(right, ctx, source)
@@ -843,6 +844,35 @@ def _emit_d14(loc: Node, ctx: _Ctx, *, detail: str) -> Diagnostic:
     )
 
 
+def _emit_d17(
+    loc: Node, base: UnitExpr, exp_unit: UnitExpr | None, ctx: _Ctx
+) -> Diagnostic:
+    """D1.7 — exponent must be dimensionless (default WARNING).
+
+    Fires when an expression of the form ``base ^ exponent`` has an
+    exponent whose unit is non-dim'less. The wrapper algebra would
+    formally type this as ``ExpWrap(exp_unit)`` via the ``a^b =
+    exp(b·log(a))`` derivation, but in practice such expressions are
+    virtually always bugs in scientific Fortran code (``2.0 ** speed``
+    style typos). Default severity is WARNING so the rare intentional
+    case ("I really want exp-tagged space") isn't blocking; projects
+    can promote to ERROR or suppress entirely via the
+    ``[diagnostics]`` section of ``.dimfort.toml``.
+    """
+    start, end = _node_span(loc)
+    return Diagnostic(
+        file=ctx.file, start=start, end=end,
+        severity=Severity.WARNING, code="H010",
+        message=(
+            f"Exponent must be dimensionless: "
+            f"{format_unit(base)} ** {format_unit(exp_unit) if exp_unit is not None else '?'} "
+            f"— ``{format_unit(exp_unit) if exp_unit is not None else '?'}`` is not dim'less. "
+            f"If you genuinely intend an exp-tagged result, write "
+            f"``EXP(b * LOG(a))`` explicitly (D1.7)"
+        ),
+    )
+
+
 def _emit_d16_untag(
     loc: Node, lhs: UnitExpr, rhs: UnitExpr, ctx: _Ctx
 ) -> Diagnostic:
@@ -925,8 +955,9 @@ def _walk_expressions(
             base = _resolve(left, ctx, source)
             if base is None or right is None:
                 return
-            exponent = _constant_exponent(right, source)
-            _, diag = power(base, exponent, exponent_is_literal=exponent is not None)
+            exponent_value = _constant_exponent(right, source)
+            exponent_unit = _resolve(right, ctx, source)
+            _, diag = power(base, exponent_unit, exponent_value)
             if diag == "D1.4":
                 yield _emit_d14(
                     node, ctx,
@@ -937,6 +968,8 @@ def _walk_expressions(
                 )
             elif diag == "D1.2":
                 yield _emit_d12(node, base, base, "**", ctx)
+            elif diag == "D1.7":
+                yield _emit_d17(node, base, exponent_unit, ctx)
             return
         if op not in ("+", "-", "*", "/"):
             return
@@ -1712,7 +1745,9 @@ def check(
                     )
             _attach_traces_since(before_len, stmt_trace)
 
-    return out
+    # Apply per-rule severity overrides from .dimfort.toml.
+    from dimfort.core.diagnostics import finalize_diagnostics
+    return finalize_diagnostics(out)
 
 
 __all__ = [

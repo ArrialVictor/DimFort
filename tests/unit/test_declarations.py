@@ -4,11 +4,23 @@ The scanner is backed by tree-sitter (``core.ts_parser``). These tests
 exercise the public ``scan_text`` API; the implementation can be
 replaced as long as it produces the same ``DeclarationSite`` records.
 """
+import dataclasses
+
 from dimfort.core.annotations import DeclarationSite, scan_text
 
 
 def _decls(src: str) -> list[DeclarationSite]:
-    return list(scan_text(src).declarations)
+    """Scan and return declarations, with ``intrinsic_type`` masked out.
+
+    These tests focus on declaration ranges, names, and scope/type
+    nesting — the intrinsic-type field is exercised separately in
+    test_intrinsic_dimless_default. Masking it here keeps each
+    test's expected value compact.
+    """
+    return [
+        dataclasses.replace(d, intrinsic_type=None)
+        for d in scan_text(src).declarations
+    ]
 
 
 def test_single_real():
@@ -214,3 +226,39 @@ def test_declarations_recover_around_syntax_errors():
     names = [d.names for d in decls]
     assert ("a",) in names
     assert ("c",) in names
+
+
+# ---------------------------------------------------------------------------
+# Intrinsic-type capture (for INTEGER-default-dimless)
+# ---------------------------------------------------------------------------
+
+
+def test_intrinsic_type_real():
+    decl = list(scan_text("real :: r\n").declarations)[0]
+    assert decl.intrinsic_type == "real"
+
+
+def test_intrinsic_type_integer():
+    decl = list(scan_text("integer :: i\n").declarations)[0]
+    assert decl.intrinsic_type == "integer"
+
+
+def test_intrinsic_type_logical():
+    decl = list(scan_text("logical :: flag\n").declarations)[0]
+    assert decl.intrinsic_type == "logical"
+
+
+def test_intrinsic_type_double_precision():
+    decl = list(scan_text("double precision :: d\n").declarations)[0]
+    assert decl.intrinsic_type == "double precision"
+
+
+def test_intrinsic_type_with_attributes():
+    """``integer, parameter`` keeps ``integer`` as the intrinsic type."""
+    decl = list(scan_text("integer, parameter :: N = 10\n").declarations)[0]
+    assert decl.intrinsic_type == "integer"
+
+
+def test_intrinsic_type_derived_returns_none():
+    decl = list(scan_text("type(particle) :: p\n").declarations)[0]
+    assert decl.intrinsic_type is None

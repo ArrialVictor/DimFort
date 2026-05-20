@@ -32,6 +32,10 @@
 > R3.3, R5.2, R5.5, R5.8, R6.2, R7.2.
 >
 > **Removed rules**: R7.3 (superseded by R2.3 eager collapse).
+>
+> **Diagnostic classes**: D1.1, D1.2, D1.3, D1.4, D1.5, D1.6, D1.7.
+> §15 documents the per-rule severity-override mechanism for project
+> policy.
 
 ---
 
@@ -323,12 +327,24 @@ For literal rational `k`:
 Regular(t) ^ k  ⇒  Regular(k · t)
 ```
 
-For non-literal `k`: ERROR (D1.4 — runtime-dependent unit).
+For non-literal `k`:
+
+- **Rd base** (`t = 0,...,0`): result is `Rd` — `0·k = 0` for every
+  `k`, literal or not. (Refinement of 2026-05-21 closing the LMDZ
+  noise from interpolation-weight and stride-doubling patterns like
+  `2 ** (ig2 - 1)`.)
+- **Rn base** (`t ≠ 0,...,0`): ERROR D1.4 (runtime-dependent unit;
+  classic Exner `p^kappa` case).
+
+The exponent's own unit is checked by Gate 1 of Table 14.4 (D1.7 —
+"exponent must be dim'less"). R4.3 assumes the exponent is dim'less;
+non-dim'less exponents are rejected before this rule is consulted.
 
 **Example:**
 ```
 m^2          → Regular(2, 0, 0, 0, 0, 0, 0)  = m²
 m^0.5        → Regular(0.5, 0, ...)          = m^(1/2)  (allowed; from SQRT)
+2 ** (ig2-1) → Regular(0,...,0)              = 1        (Rd base + non-literal k)
 Pa^kappa     → ERROR D1.4 if kappa is non-literal
              → Regular(-kappa, -2·kappa, kappa, ...) if kappa is a literal PARAMETER
 ```
@@ -866,6 +882,38 @@ scaling = EXP(arg)                            # arg :: dim'less
   → H010 D1.6 (allow, warn implicit untag)
 ```
 
+### D1.7 — Exponent must be dimensionless (`H010`, warning)
+
+The exponent of a `**` operator must resolve to a dim'less unit. An
+exponent whose unit is non-dim'less would derive (via `a^b = exp(b ·
+log(a))`) to an `ExpWrap`-typed result, but in practice this almost
+always indicates a typo rather than an intentional entry into
+exp-tagged space.
+
+Default severity: **warning**. Promote to error or silence entirely
+via `.dimfort.toml`'s `[diagnostics]` section (see §15).
+
+**Example:**
+```
+real :: speed                                 # speed :: m/s
+real :: r
+r = 2.0 ** speed
+  → 2.0 :: Rd (dim'less literal)
+  → speed :: m/s (Rn, non-dim'less)
+  → power(Rd, Rn) fires D1.7 (exponent not dim'less)
+  → H010 D1.7 warning
+```
+
+Rewrite to enter exp-tagged space explicitly when intentional:
+```
+r = EXP(speed * LOG(2.0))     ! same type, explicit intent
+```
+
+The derivation route through this rewrite is allowed because `EXP(...)`
+is an explicit user signal of intent, whereas `**` is the conventional
+power operator and carries the conventional "exponent is a pure number"
+expectation.
+
 ---
 
 ## 9. Pretty-printing
@@ -1149,17 +1197,90 @@ Convention: `A ÷ B = A × B^(−1)`. Inverses: `Rd^(−1) = Rd`,
 
 ### Table 14.4 — Power (`^`)
 
-> **Status**: frozen 2026-05-20. Any rule change that would alter a
-> cell in this table must be flagged explicitly.
+> **Status**: revised 2026-05-21. Expanded from 4×3 (k-literalness)
+> to 4×4 (exponent unit category) with a value-level sub-table for
+> the dim'less-exponent column. The previous frozen cells are
+> preserved except for the (Rd, k non-literal) cell, which flipped
+> from ERR D1.4 to Rd — the spec note that justified the literal
+> case (`0·k = 0`) applies for any k, literal or not. Adds D1.7
+> ("exponent must be dim'less") covering the 12 non-Rd-exponent
+> cells.
 
-Unary on a unit, parameterised by scalar exponent `k`.
+Binary on a unit pair (base, exponent). The exponent's *unit
+category* selects the column; only the `Rd` column produces a
+well-typed result. The other three columns fire D1.7 to surface
+the typo before the formal derivation through `a^b = exp(b·log(a))`
+would let it propagate as an ExpWrap further downstream.
 
-| Base | k = 1 | k literal, ≠ 1 | k non-literal |
-|---|---|---|---|
-| **Rd** | Rd (identity) | R4.3 → Rd *(0·k = 0)* | R4.3 → ERR D1.4 |
-| **Rn** | Rn (identity) | R4.3 → Rn *(scaled tuple)* | R4.3 → ERR D1.4 |
-| **Ln** | Ln (identity) | R5.9 → ERR D1.2 | R5.9 → ERR D1.2 |
-| **En** | En (identity) | R6.4 → En *(scaled inner)* | R6.4 → ERR D1.4 |
+| Base \ Exponent | **Rd** | **Rn** | **Ln** | **En** |
+|---|---|---|---|---|
+| **Rd** | Rd | ERR D1.7 | ERR D1.7 | ERR D1.7 |
+| **Rn** | *see sub-table* | ERR D1.7 | ERR D1.7 | ERR D1.7 |
+| **Ln** | *see sub-table* | ERR D1.7 | ERR D1.7 | ERR D1.7 |
+| **En** | *see sub-table* | ERR D1.7 | ERR D1.7 | ERR D1.7 |
+
+**Sub-table — Rd-exponent column** (value-level dispatch):
+
+| Base | k = 1 | k literal, ≠ 1 | k non-literal | k's unit unknown |
+|---|---|---|---|---|
+| **Rd** | Rd (identity) | Rd *(0·k = 0)* | **Rd** *(0·k = 0 for any k)* | Rd |
+| **Rn** | Rn (identity) | R4.3 → Rn *(scaled tuple)* | ERR D1.4 | ERR D1.4 |
+| **Ln** | Ln (identity) | R5.9 → ERR D1.2 | R5.9 → ERR D1.2 | R5.9 → ERR D1.2 |
+| **En** | En (identity) | R6.4 → En *(scaled inner)* | ERR D1.4 | ERR D1.4 |
+
+The "k's unit unknown" column ("exponent variable has no `@unit{}`
+annotation") still resolves the *value* gate; the underlying issue
+("annotation missing") is the proper signal of `U005`, which fires
+at the declaration. D1.7 is NOT raised for unknown-unit exponents
+— that would double-flag the same code, and the unknown case is
+much more likely benign (an unannotated integer index) than the
+known-but-unitful case (`2.0 ** speed`).
+
+#### Why D1.7 is a *warning* by default
+
+The wrapper algebra would formally type `Rd ^ Rn` as
+`exp(Rn · log(Rd)) = exp(Rn) = ExpWrap(Rn)` via R3.2 — i.e., it
+has a coherent type. The strict reading would let this pass and
+fire errors only when the resulting ExpWrap collides with downstream
+operations. The pragmatic reading is that `**` is virtually always
+intended to operate on numbers, not unitful quantities; an unitful
+exponent reads as a typo more often than as an intentional entry
+into exp-tagged space.
+
+D1.7 captures this with a warning at the power site. Projects with
+heavier log-coordinate usage can demote it (`"D1.7" = "off"` in
+`.dimfort.toml`), and projects that want hard errors can promote
+it (`"D1.7" = "error"`). See §15 for the override mechanism.
+
+#### Derivation commentary
+
+The cells in Table 14.4 are consistent with the operational
+interpretation `a^b = exp(b · log(a))` under the spec's wrapper
+homomorphisms, with one explicit override:
+
+- **Rd ^ Rd** (any value of k): `log(Rd) → Rd` via R2.3; `b · Rd →
+  Rd` via R4.2; `exp(Rd) → Rd` via R2.3. Result: Rd. ✓ The
+  derivation transparently recovers the `0·k = 0` rule across the
+  whole Rd row.
+- **Rn ^ Rd-literal**: `log(Rn) → LogWrap(Rn)`; `k · LogWrap(Rn) →
+  LogWrap(Rn^k)` via R5.4 (literal-scalar lifts to inner power);
+  `exp(LogWrap(Rn^k)) → Rn^k` via R2.2. Matches R4.3. ✓
+- **Ln ^ Rd-k≠1**: `log(Ln) → LogWrap(LogWrap(Rn))`; `k ·
+  LogWrap(LogWrap(Rn)) → LogWrap(LogWrap(Rn)^k)`; the inner
+  `LogWrap(Rn)^k` for k≠1 fires R5.9 D1.2. ✓
+- **Rd ^ Rn** (the override): the derivation gives `log(Rd) ·
+  Rn · exp(...) → ExpWrap(Rn)`. We override this to D1.7 because
+  the syntactic form `a ** b` carries a stronger physical-correctness
+  expectation than the explicit `EXP(b * LOG(a))` rewrite that
+  would produce the same type.
+
+The scalar-to-power lift in R5.4 / R6.4 is the load-bearing axiom
+that the derivation route depends on. Without it, `Rn ^ k` would
+lose the scalar `k` to dimensional collapse (R4.2 makes
+`Regular(0,...,0) × Regular(t) = Regular(t)`, dropping the value
+of the scalar). With R5.4 / R6.4 in place, the derivation
+recovers Table 14.4 faithfully — except for the four D1.7 cells
+which we surface earlier than the derivation would.
 
 ### Table 14.5 — `LOG` (unary)
 
@@ -1199,6 +1320,38 @@ Unary on a unit, parameterised by scalar exponent `k`.
 Every cell maps to at least one rule. The collapse rule (R2.3)
 significantly reduces table size from 6×6 to 4×4 by eliminating
 wrapper-of-dim'less as a distinct type.
+
+---
+
+## 15. Per-rule severity overrides (project policy)
+
+The diagnostic severities listed in §8 are spec **defaults**. Each
+project can override them per-rule via the `[diagnostics]` section
+of its `.dimfort.toml`:
+
+```toml
+[diagnostics]
+"D1.7" = "error"      # promote D1.7 from warning to hard error
+"D1.6" = "off"        # silence D1.6 (implicit wrapper untag) entirely
+"H010" = "error"      # treat ALL H010 warnings as errors
+```
+
+Keys may be:
+
+- **Rule markers** (`D1.4`, `D1.5`, `D1.6`, `D1.7`, …) — most
+  specific; affects only diagnostics carrying that marker.
+- **Diagnostic codes** (`H001`, `H002`, `H010`) — broader; affects
+  every diagnostic with that code unless a more specific rule
+  marker is also configured.
+
+Values are `"error"`, `"warning"`, or `"off"`. Rule markers take
+precedence over codes; both override the spec default.
+
+This decouples *spec opinion* (the rules and their default
+severities) from *project policy* (CI strictness, intentional
+exp-tagged-space usage, etc.). The same source file may produce
+different diagnostic severities under different projects — that's
+by design.
 
 ---
 
