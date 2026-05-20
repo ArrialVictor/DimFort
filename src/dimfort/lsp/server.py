@@ -146,6 +146,15 @@ class _FeatureToggles:
     # Opt-in — most hovers don't need the chain and it makes hovers
     # taller. Toggled via the ``dimfort.toggleTrace`` VSCode command.
     trace_hover: bool = False
+    # Experimental: tag identifier uses with a custom semantic token
+    # ``unannotated`` modifier when the referenced declaration has
+    # no ``@unit{}`` and isn't covered by the intrinsic-type default.
+    # Lets a theme render annotation-coverage-as-style (e.g. fade
+    # unannotated names) so the user sees migration progress at a
+    # glance. Opt-in via ``dimfort.toggleSemanticTokens`` — default
+    # off because semantic tokens recompute per-document and can
+    # add visible noise on themes that don't style the modifier.
+    semantic_tokens: bool = False
 
 
 _features = _FeatureToggles()
@@ -1069,6 +1078,7 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         _features.goto_definition = bool(opts.get("gotoDefinitionEnabled", True))
         _features.code_lens = bool(opts.get("codeLensEnabled", False))
         _features.trace_hover = bool(opts.get("traceHoverEnabled", False))
+        _features.semantic_tokens = bool(opts.get("semanticTokensEnabled", False))
         # Init options extend whatever config already contributed.
         extra = opts.get("externalModules")
         if isinstance(extra, list):
@@ -1633,6 +1643,146 @@ def _render_ast_tree(
 # ---------------------------------------------------------------------------
 # Inlay hints
 # ---------------------------------------------------------------------------
+
+
+_SEMANTIC_TOKEN_TYPES = ["variable"]
+_SEMANTIC_TOKEN_MODIFIERS = ["unannotated"]
+_SEMANTIC_TOKENS_LEGEND = lsp.SemanticTokensLegend(
+    token_types=_SEMANTIC_TOKEN_TYPES,
+    token_modifiers=_SEMANTIC_TOKEN_MODIFIERS,
+)
+
+
+@server.feature(
+    lsp.TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL,
+    lsp.SemanticTokensOptions(
+        legend=_SEMANTIC_TOKENS_LEGEND, full=True, range=False,
+    ),
+)
+def _semantic_tokens_full(
+    ls: LanguageServer, params: lsp.SemanticTokensParams,
+) -> lsp.SemanticTokens | None:
+    """Tag every unannotated variable use with ``variable.unannotated``.
+
+    Experimental — opt-in via ``dimfort.toggleSemanticTokens``. When
+    on, the LSP emits a custom-modifier semantic token at each
+    identifier whose declaration carries no ``@unit{}`` annotation and
+    isn't covered by the INTEGER / LOGICAL / CHARACTER intrinsic-type
+    default. Themes that style the ``unannotated`` modifier render
+    these names distinctly (typically faded) so the user can see
+    annotation coverage at a glance.
+    """
+    if not _features.semantic_tokens:
+        return None
+    _ensure_uri_loaded(ls, params.text_document.uri)
+    with _ts_handler_lock:
+        return _semantic_tokens_locked(params)
+
+
+def _semantic_tokens_locked(
+    params: lsp.SemanticTokensParams,
+) -> lsp.SemanticTokens | None:
+    uri = params.text_document.uri
+    found = _trees_for(uri)
+    if found is None:
+        return lsp.SemanticTokens(data=[])
+    resolved_path, tree, source = found
+    with _last_result_lock:
+        result = _last_result
+    if result is None:
+        return lsp.SemanticTokens(data=[])
+
+    attached = result.attachments.get(resolved_path)
+    if attached is None:
+        return lsp.SemanticTokens(data=[])
+
+    # Annotated set: every (scope_or_None, name_lc) the attachment
+    # has on record. Both intrinsic-default and explicit entries
+    # count as annotated for the purpose of "should this identifier
+    # be tagged?" — the goal is to highlight the names the user
+    # hasn't decided about yet, not the ones DimFort filled in for
+    # them.
+    annotated: set[tuple[str | None, str]] = {
+        (scope, name.lower())
+        for (scope, name) in attached.var_units_by_scope
+    }
+    # Names that have an annotation in *any* scope of this file.
+    # Used as a permissive fallback for the U005-style "if the name
+    # is annotated anywhere, assume the use refers to that" rule.
+    annotated_names: set[str] = {n for (_, n) in annotated}
+
+    # Build (line, column, length, modifiers) raw tokens.
+    raw: list[tuple[int, int, int, int]] = []
+    UNANNOTATED_BIT = 1 << 0  # first modifier in the legend
+    routine_scopes = attached.routine_scopes
+    starts = tuple(r[0] for r in routine_scopes)
+
+    def _scope_at(byte_offset: int) -> str | None:
+        if not routine_scopes:
+            return None
+        import bisect
+        idx = bisect.bisect_right(starts, byte_offset) - 1
+        best: tuple[int, int, str] | None = None
+        while idx >= 0:
+            lo, hi, name = routine_scopes[idx]
+            if lo <= byte_offset < hi and (
+                best is None or (hi - lo) < (best[1] - best[0])
+            ):
+                best = (lo, hi, name)
+            idx -= 1
+        return best[2] if best else None
+
+    for node in _ts_h.walk_identifiers(tree):
+        if _ts_h.is_inside_type_qualifier(node):
+            continue
+        # Don't tag the bare identifier sitting inside a
+        # variable_declaration — that's the declaration itself, not
+        # a use site. We tag only *references*.
+        parent = node.parent
+        while parent is not None:
+            if parent.type == "variable_declaration":
+                node = None  # type: ignore[assignment]
+                break
+            if parent.type in (
+                "assignment_statement", "math_expression", "unary_expression",
+                "call_expression", "subroutine_call",
+                "parenthesized_expression", "derived_type_member_expression",
+                "argument_list", "if_statement", "do_loop_statement",
+            ):
+                break
+            parent = parent.parent
+        if node is None:
+            continue
+        name = _ts.node_text(node, source)
+        name_lc = name.lower()
+        scope = _scope_at(node.start_byte)
+        if (scope, name_lc) in annotated:
+            continue
+        if (None, name_lc) in annotated:
+            continue
+        if name_lc in annotated_names:
+            # The name is annotated in *some* scope of this file —
+            # don't tag it. Avoids flagging same-named params across
+            # routines (one explicit, the other relying on the
+            # flat-merge view).
+            continue
+        sr, sc = node.start_point
+        length = (node.end_point[1] - sc) if node.end_point[0] == sr else (
+            node.end_byte - node.start_byte
+        )
+        raw.append((sr, sc, length, UNANNOTATED_BIT))
+
+    raw.sort()
+    data: list[int] = []
+    prev_line = 0
+    prev_col = 0
+    for sr, sc, length, mods in raw:
+        delta_line = sr - prev_line
+        delta_col = sc - (prev_col if delta_line == 0 else 0)
+        data.extend([delta_line, delta_col, length, 0, mods])
+        prev_line = sr
+        prev_col = sc
+    return lsp.SemanticTokens(data=data)
 
 
 @server.feature(
