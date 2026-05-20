@@ -43,6 +43,7 @@ from dimfort.core.symbols import (
     ModuleExports,
     apply_use_clauses,
 )
+from dimfort.core.trace import current_trace, with_trace
 from dimfort.core.units import (
     ExpWrap,
     LogWrap,
@@ -1592,60 +1593,83 @@ def check(
     out: list[Diagnostic] = []
     out.extend(_emit_u005_for_unannotated(tree, ctx, source))
 
+    # Phase D: if tracing was activated by the caller, open a fresh
+    # per-statement trace so each diagnostic carries just its own
+    # statement's chain rather than the whole file's accumulated steps.
+    tracing_on = current_trace() is not None
+
+    def _attach_traces_since(start_idx: int, trace_obj) -> None:
+        if trace_obj is None:
+            return
+        snapshot = trace_obj.snapshot()
+        if not snapshot:
+            return
+        import dataclasses
+        for i in range(start_idx, len(out)):
+            out[i] = dataclasses.replace(out[i], trace=snapshot)
+
+    from contextlib import nullcontext
+
+    def _stmt_trace_ctx():
+        return with_trace() if tracing_on else nullcontext()
+
     for node in _ts.walk(tree.root_node):
         kind = node.type
 
         if kind == "assignment_statement":
-            target, value = _assignment_sides(node)
-            out.extend(_walk_expressions(value, ctx, source))
-            tu = _resolve(target, ctx, source)
-            ru = _resolve(value, ctx, source)
-            if tu is None or ru is None:
-                continue
-            if not equal_dim(tu, ru):
-                # Suppress when the RHS is a pure numeric constant
-                # (e.g. ``g = 9.81``). That's an initialisation with a
-                # default value, not a unit-math error; treating the
-                # literal as dimensionless would flag every physical
-                # constant declaration in the model.
-                if _is_pure_numeric_constant(value):
-                    continue
-                # Phase C D1.6: if LHS is a Regular and RHS is a
-                # wrapper whose inner dimensionally matches the LHS,
-                # demote H001 → H010 (implicit untag).
-                if (
-                    isinstance(tu, Unit)
-                    and _is_wrapper(ru)
-                    and isinstance(ru.inner, Unit)
-                    and equal_dim(tu, ru.inner)
-                ):
+            before_len = len(out)
+            with _stmt_trace_ctx() as stmt_trace:
+                target, value = _assignment_sides(node)
+                out.extend(_walk_expressions(value, ctx, source))
+                tu = _resolve(target, ctx, source)
+                ru = _resolve(value, ctx, source)
+                emit_h001 = False
+                if tu is not None and ru is not None and not equal_dim(tu, ru):
+                    if _is_pure_numeric_constant(value):
+                        pass
+                    elif (
+                        isinstance(tu, Unit)
+                        and _is_wrapper(ru)
+                        and isinstance(ru.inner, Unit)
+                        and equal_dim(tu, ru.inner)
+                    ):
+                        # Phase C D1.6 — implicit wrapper untag.
+                        out.append(
+                            _emit_d16_untag(
+                                target if target is not None else node,
+                                tu, ru, ctx,
+                            )
+                        )
+                    else:
+                        emit_h001 = True
+                if emit_h001:
                     out.append(
-                        _emit_d16_untag(
-                            target if target is not None else node,
-                            tu, ru, ctx,
+                        _emit_h001(
+                            target if target is not None else node, tu, ru, ctx,
                         )
                     )
-                    continue
-                # Position points at the LHS (parity with ast_checker).
-                out.append(_emit_h001(target if target is not None else node, tu, ru, ctx))
+            _attach_traces_since(before_len, stmt_trace)
             continue
 
         if kind == "subroutine_call":
-            name = _call_callee_name(node, source)
-            if name is None:
-                continue
-            name_lc = name.lower()
-            arg_exprs = _call_args(node, source)
-            for a in arg_exprs:
-                out.extend(_walk_expressions(a, ctx, source))
-            sig = ctx.signatures.get(name_lc)
-            if sig is None or not sig.is_subroutine:
-                continue
-            out.extend(
-                _check_call_args_against_sig(
-                    sig, name_lc, arg_exprs, node, ctx, source
-                )
-            )
+            before_len = len(out)
+            with _stmt_trace_ctx() as stmt_trace:
+                name = _call_callee_name(node, source)
+                if name is None:
+                    _attach_traces_since(before_len, stmt_trace)
+                    continue
+                name_lc = name.lower()
+                arg_exprs = _call_args(node, source)
+                for a in arg_exprs:
+                    out.extend(_walk_expressions(a, ctx, source))
+                sig = ctx.signatures.get(name_lc)
+                if sig is not None and sig.is_subroutine:
+                    out.extend(
+                        _check_call_args_against_sig(
+                            sig, name_lc, arg_exprs, node, ctx, source
+                        )
+                    )
+            _attach_traces_since(before_len, stmt_trace)
 
     return out
 
