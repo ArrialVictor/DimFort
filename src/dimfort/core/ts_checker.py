@@ -32,6 +32,8 @@ from dimfort.core import units as _units_mod
 from dimfort.core.diagnostics import Diagnostic, Position, Severity
 from dimfort.core.symbols import (
     DIMENSIONLESS_INTRINSICS,
+    EXP_INTRINSICS,
+    LOG_INTRINSICS,
     PRODUCT_INTRINSICS,
     REDUCTION_INTRINSICS,
     SAME_UNIT_ARG_INTRINSICS,
@@ -41,7 +43,22 @@ from dimfort.core.symbols import (
     ModuleExports,
     apply_use_clauses,
 )
-from dimfort.core.units import Unit, UnitError, UnitTable, equal_dim, format_unit
+from dimfort.core.units import (
+    ExpWrap,
+    LogWrap,
+    Unit,
+    UnitError,
+    UnitExpr,
+    UnitTable,
+    equal_dim,
+    format_unit,
+    wrap_exp,
+    wrap_log,
+)
+
+
+def _is_wrapper(u: UnitExpr | None) -> bool:
+    return isinstance(u, (LogWrap, ExpWrap))
 
 _RATIONAL_EXPONENT_MAX_DENOMINATOR = 100
 
@@ -365,6 +382,9 @@ def _resolve(node: Node | None, ctx: _Ctx, source: bytes) -> Unit | None:
             exponent = _constant_exponent(right, source)
             if exponent is None:
                 return None
+            # Wrapper powers (R5.9 / R6.4) are sub-step 4; bail for now.
+            if not isinstance(base, Unit):
+                return None
             try:
                 return base.pow(exponent)
             except Exception:
@@ -374,9 +394,16 @@ def _resolve(node: Node | None, ctx: _Ctx, source: bytes) -> Unit | None:
         if left_u is None or right_u is None:
             return None
         if op in ("+", "-"):
-            # The walker will already have emitted H002 if these
-            # disagree dimensionally. The result unit is the LHS.
+            # Result unit is the LHS — for Regular this matches R4.1; for
+            # LogWrap(U) ± Regular(0,...,0) this matches R5.3 (constant
+            # absorbed inside log). Other wrapper-mixing cases (R5.10 /
+            # R6.5 / R6.6 / R7.1) are sub-step 3+; the walker will not
+            # emit a diagnostic for those yet — see _walk_expressions.
             return left_u
+        # Multiplication / division on wrappers is sub-step 3+; bail
+        # rather than crash on missing __mul__/__truediv__.
+        if _is_wrapper(left_u) or _is_wrapper(right_u):
+            return None
         if op == "*":
             return left_u * right_u
         if op == "/":
@@ -434,12 +461,30 @@ def _resolve_call(node: Node, ctx: _Ctx, source: bytes) -> Unit | None:
     if name_lc in DIMENSIONLESS_INTRINSICS:
         return _units_mod.parse("1", ctx.table)
 
+    if name_lc in LOG_INTRINSICS:
+        if not arg_exprs:
+            return None
+        arg = _resolve(arg_exprs[0], ctx, source)
+        if arg is None:
+            return None
+        return wrap_log(arg)
+
+    if name_lc in EXP_INTRINSICS:
+        if not arg_exprs:
+            return None
+        arg = _resolve(arg_exprs[0], ctx, source)
+        if arg is None:
+            return None
+        return wrap_exp(arg)
+
     if name_lc in TRANSFORMING_INTRINSICS:
         if not arg_exprs:
             return None
         base = _resolve(arg_exprs[0], ctx, source)
         if base is None:
             return None
+        if not isinstance(base, Unit):
+            return None  # SQRT/ABS on a wrapper: sub-step 4
         try:
             return base.pow(TRANSFORMING_INTRINSICS[name_lc])
         except Exception:
@@ -462,6 +507,8 @@ def _resolve_call(node: Node, ctx: _Ctx, source: bytes) -> Unit | None:
         b = _resolve(arg_exprs[1], ctx, source)
         if a is None or b is None:
             return None
+        if not (isinstance(a, Unit) and isinstance(b, Unit)):
+            return None  # wrapper product is sub-step 3
         return a * b
 
     if name_lc in REDUCTION_INTRINSICS:
@@ -786,6 +833,13 @@ def _walk_expressions(
         if _math_op(node) in ("+", "-"):
             lu = _resolve(left, ctx, source)
             ru = _resolve(right, ctx, source)
+            # Wrapper-mixing diagnostics (R5.3 allow, R5.10 / R6.5 /
+            # R6.6 / R7.1 error) are sub-step 3+; suppress the legacy
+            # H002 check rather than mis-fire on a now-valid case
+            # like LogWrap(Pa) - Regular(dim'less). The hydrostatic
+            # projection in cdrag_mod.f90:300 relies on this.
+            if _is_wrapper(lu) or _is_wrapper(ru):
+                return
             if lu is not None and ru is not None and not equal_dim(lu, ru):
                 # D1.5: if one operand is a dim'less numeric literal and
                 # the other is unitful, demote H002 → H010 (warning) and

@@ -617,13 +617,22 @@ def _to_superscript(s: str) -> str:
     return "".join(_SUPERSCRIPTS.get(c, c) for c in s)
 
 
-def _unit_pretty(u: Unit | None) -> str:
+def _unit_pretty(u: "UnitExpr | None") -> str:
     """Render a Unit using Unicode (× for product, ⁿ superscripts, /
     for division). KaTeX isn't enabled in VSCode's default hover, so
     we keep everything in plain text.
+
+    ``LogWrap`` / ``ExpWrap`` recursively print as ``LOG(...)`` /
+    ``EXP(...)`` per spec §9.
     """
     if u is None:
         return "?"
+    from dimfort.core.units import ExpWrap as _ExpWrap
+    from dimfort.core.units import LogWrap as _LogWrap
+    if isinstance(u, _LogWrap):
+        return f"LOG({_unit_pretty(u.inner)})"
+    if isinstance(u, _ExpWrap):
+        return f"EXP({_unit_pretty(u.inner)})"
     names = _base_symbols()
     pos: list[str] = []
     neg: list[str] = []
