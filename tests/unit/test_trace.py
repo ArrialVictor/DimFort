@@ -1,8 +1,6 @@
 """Tests for the unit-algebra trace mechanism (Phase D, spec §12)."""
 from __future__ import annotations
 
-from fractions import Fraction
-
 from dimfort.core import unit_config  # noqa: F401 — populates DEFAULT_TABLE
 from dimfort.core.trace import current_trace, trace_step, with_trace
 from dimfort.core.units import (

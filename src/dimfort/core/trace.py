@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
     from dimfort.core.units import UnitExpr
 
 
@@ -41,8 +42,8 @@ class Provenance:
     is available.
     """
     rule_id: str
-    before: tuple["UnitExpr", ...]
-    after: "UnitExpr | None"
+    before: tuple[UnitExpr, ...]
+    after: UnitExpr | None
     source_text: str | None = None
 
 
@@ -70,8 +71,8 @@ def current_trace() -> Trace | None:
 
 def trace_step(
     rule_id: str,
-    before: tuple["UnitExpr", ...],
-    after: "UnitExpr | None",
+    before: tuple[UnitExpr, ...],
+    after: UnitExpr | None,
     source_text: str | None = None,
 ) -> None:
     """Record a rule fire if a trace is active; otherwise no-op."""
@@ -82,7 +83,7 @@ def trace_step(
 
 
 @contextmanager
-def with_trace() -> "Iterator[Trace]":
+def with_trace() -> Iterator[Trace]:
     """Activate a fresh trace for the duration of the ``with`` block."""
     trace = Trace()
     token = _active_trace.set(trace)

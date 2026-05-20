@@ -89,13 +89,13 @@ class Unit:
 @dataclass(frozen=True)
 class LogWrap:
     """Unit tagged as residing in log space (spec §1.2)."""
-    inner: "UnitExpr"
+    inner: UnitExpr
 
 
 @dataclass(frozen=True)
 class ExpWrap:
     """Unit tagged as residing in exp space (spec §1.2)."""
-    inner: "UnitExpr"
+    inner: UnitExpr
 
 
 UnitExpr = Unit | LogWrap | ExpWrap
@@ -348,7 +348,9 @@ def combine(
     return None, None
 
 
-def power(base: UnitExpr, exponent: Number, *, exponent_is_literal: bool) -> tuple[UnitExpr | None, str | None]:
+def power(
+    base: UnitExpr, exponent: Number, *, exponent_is_literal: bool,
+) -> tuple[UnitExpr | None, str | None]:
     """Apply ``base ^ exponent`` at the unit level.
 
     ``exponent_is_literal`` is True when the exponent comes from a
