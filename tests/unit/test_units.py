@@ -235,3 +235,131 @@ def test_equal_dim_recurses_into_wrappers():
     assert not equal_dim(parse("LOG(Pa)"), parse("Pa"))
     # LogWrap ≠ ExpWrap even if inner matches
     assert not equal_dim(LogWrap(parse("Pa")), ExpWrap(parse("Pa")))
+
+
+# ---------------------------------------------------------------------------
+# Phase B sub-step 3: combine() dispatch for Regular + LogWrap (R4 / R5)
+# ---------------------------------------------------------------------------
+
+from dimfort.core.units import combine, power  # noqa: E402
+
+
+def _u(expr):
+    return parse(expr)
+
+
+# R5.1 — LogWrap + LogWrap → LogWrap(inner · inner)
+def test_combine_r51_log_plus_log():
+    a, b = wrap_log(_u("Pa")), wrap_log(_u("Pa"))
+    result, diag = combine("+", a, b)
+    assert diag is None
+    assert result == wrap_log(_u("Pa") * _u("Pa"))
+
+
+# R5.2 — LogWrap - LogWrap → LogWrap(inner / inner); collapse via R2.3
+def test_combine_r52_log_minus_log_pressure_ratio():
+    a, b = wrap_log(_u("Pa")), wrap_log(_u("Pa"))
+    result, diag = combine("-", a, b)
+    assert diag is None
+    assert result == _u("1")  # collapse
+
+
+# R5.3 — LogWrap ± dim'less → LogWrap
+def test_combine_r53_log_minus_dimless():
+    a = wrap_log(_u("Pa"))
+    result, diag = combine("-", a, _u("1"))
+    assert diag is None
+    assert result == a
+
+
+def test_combine_r53_log_plus_dimless():
+    a = wrap_log(_u("Pa"))
+    result, diag = combine("+", a, _u("1"))
+    assert diag is None
+    assert result == a
+
+
+# R5.4 — literal_k · LogWrap(U) → LogWrap(U^k)
+def test_combine_r54_literal_times_log():
+    a = wrap_log(_u("Pa"))
+    result, diag = combine("*", _u("1"), a, a_literal=Fraction(2))
+    assert diag is None
+    assert result == wrap_log(_u("Pa").pow(Fraction(2)))
+
+
+# R5.5 — non-literal scalar · LogWrap → D1.4
+def test_combine_r55_nonliteral_times_log_errors():
+    a = wrap_log(_u("Pa"))
+    result, diag = combine("*", _u("1"), a)  # no a_literal/b_literal
+    assert diag == "D1.4"
+    assert result is None
+
+
+# R5.6 — LogWrap × LogWrap → D1.2
+def test_combine_r56_log_times_log_errors():
+    a, b = wrap_log(_u("Pa")), wrap_log(_u("Pa"))
+    result, diag = combine("*", a, b)
+    assert diag == "D1.2"
+    assert result is None
+
+
+# R5.7 — LogWrap × non-dim'less Regular → D1.2
+def test_combine_r57_log_times_unitful_errors():
+    a = wrap_log(_u("Pa"))
+    result, diag = combine("*", a, _u("kg"))
+    assert diag == "D1.2"
+    assert result is None
+
+
+# R5.8 — literal 1.0 · LogWrap → LogWrap (identity case of R5.4)
+def test_combine_r58_identity_times_log():
+    a = wrap_log(_u("Pa"))
+    result, diag = combine("*", _u("1"), a, a_literal=Fraction(1))
+    assert diag is None
+    assert result == a
+
+
+# R5.9 — LogWrap^k for k ≠ 1 → D1.2
+def test_power_r59_log_squared_errors():
+    a = wrap_log(_u("Pa"))
+    result, diag = power(a, 2, exponent_is_literal=True)
+    assert diag == "D1.2"
+    assert result is None
+
+
+def test_power_r59_log_to_one_is_identity():
+    a = wrap_log(_u("Pa"))
+    result, diag = power(a, 1, exponent_is_literal=True)
+    assert diag is None
+    assert result == a
+
+
+# R5.10 — LogWrap ± non-dim'less Regular → D1.3
+def test_combine_r510_log_plus_pressure_errors():
+    a = wrap_log(_u("Pa"))
+    result, diag = combine("+", a, _u("Pa"))
+    assert diag == "D1.3"
+    assert result is None
+
+
+# R7.2 — nested LogWrap addition errors via inner R5.6
+def test_combine_r72_nested_log_addition_errors():
+    a = wrap_log(wrap_log(_u("Pa")))
+    b = wrap_log(wrap_log(_u("Pa")))
+    result, diag = combine("+", a, b)
+    assert diag == "D1.2"
+    assert result is None
+
+
+# R4.1 — Regular ± Regular dim mismatch → D1.1
+def test_combine_r41_mismatch_d11():
+    result, diag = combine("+", _u("Pa"), _u("K"))
+    assert diag == "D1.1"
+    assert result is None
+
+
+# R4.3 — Regular ^ non-literal → D1.4
+def test_power_r43_nonliteral_errors():
+    result, diag = power(_u("m"), 2, exponent_is_literal=False)
+    assert diag == "D1.4"
+    assert result is None

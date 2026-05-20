@@ -50,8 +50,10 @@ from dimfort.core.units import (
     UnitError,
     UnitExpr,
     UnitTable,
+    combine,
     equal_dim,
     format_unit,
+    power,
     wrap_exp,
     wrap_log,
 )
@@ -380,35 +382,21 @@ def _resolve(node: Node | None, ctx: _Ctx, source: bytes) -> Unit | None:
             if base is None or right is None:
                 return None
             exponent = _constant_exponent(right, source)
-            if exponent is None:
-                return None
-            # Wrapper powers (R5.9 / R6.4) are sub-step 4; bail for now.
-            if not isinstance(base, Unit):
-                return None
-            try:
-                return base.pow(exponent)
-            except Exception:
-                return None
+            result, _ = power(base, exponent, exponent_is_literal=exponent is not None)
+            return result
         left_u = _resolve(left, ctx, source)
         right_u = _resolve(right, ctx, source)
         if left_u is None or right_u is None:
             return None
-        if op in ("+", "-"):
-            # Result unit is the LHS — for Regular this matches R4.1; for
-            # LogWrap(U) ± Regular(0,...,0) this matches R5.3 (constant
-            # absorbed inside log). Other wrapper-mixing cases (R5.10 /
-            # R6.5 / R6.6 / R7.1) are sub-step 3+; the walker will not
-            # emit a diagnostic for those yet — see _walk_expressions.
-            return left_u
-        # Multiplication / division on wrappers is sub-step 3+; bail
-        # rather than crash on missing __mul__/__truediv__.
-        if _is_wrapper(left_u) or _is_wrapper(right_u):
+        if op not in ("+", "-", "*", "/"):
             return None
-        if op == "*":
-            return left_u * right_u
-        if op == "/":
-            return left_u / right_u
-        return None
+        left_lit = _constant_exponent(left, source) if left is not None else None
+        right_lit = _constant_exponent(right, source) if right is not None else None
+        result, _diag = combine(
+            op, left_u, right_u,
+            a_literal=left_lit, b_literal=right_lit,
+        )
+        return result
 
     if kind == "call_expression":
         return _resolve_call(node, ctx, source)
@@ -777,6 +765,44 @@ def _is_dimensionless(u: Unit) -> bool:
     return all(d == 0 for d in u.dimension)
 
 
+def _emit_d12(loc: Node, left: UnitExpr, right: UnitExpr, op: str, ctx: _Ctx) -> Diagnostic:
+    """D1.2 — undefined wrapper operation (e.g. LOG(p) × LOG(q))."""
+    start, end = _node_span(loc)
+    return Diagnostic(
+        file=ctx.file, start=start, end=end,
+        severity=Severity.ERROR, code="H002",
+        message=(
+            f"Undefined unit operation '{op}': "
+            f"{format_unit(left)} {op} {format_unit(right)} "
+            f"has no closed-form unit (D1.2)"
+        ),
+    )
+
+
+def _emit_d13(loc: Node, left: UnitExpr, right: UnitExpr, op: str, ctx: _Ctx) -> Diagnostic:
+    """D1.3 — undefined sum involving a wrapper (e.g. LOG(p) + Pa)."""
+    start, end = _node_span(loc)
+    return Diagnostic(
+        file=ctx.file, start=start, end=end,
+        severity=Severity.ERROR, code="H002",
+        message=(
+            f"Undefined unit sum '{op}': "
+            f"{format_unit(left)} {op} {format_unit(right)} (D1.3)"
+        ),
+    )
+
+
+def _emit_d14(loc: Node, ctx: _Ctx, *, detail: str) -> Diagnostic:
+    """D1.4 — unit depends on a runtime-only quantity (non-literal exponent
+    or non-literal scalar on a LogWrap)."""
+    start, end = _node_span(loc)
+    return Diagnostic(
+        file=ctx.file, start=start, end=end,
+        severity=Severity.ERROR, code="H001",
+        message=f"Runtime-dependent unit: {detail} (D1.4)",
+    )
+
+
 def _emit_h003(loc: Node, intrinsic: str, arg_unit: Unit, ctx: _Ctx) -> Diagnostic:
     start, end = _node_span(loc)
     return Diagnostic(
@@ -830,33 +856,62 @@ def _walk_expressions(
         left, right = _math_operands(node)
         yield from _walk_expressions(left, ctx, source)
         yield from _walk_expressions(right, ctx, source)
-        if _math_op(node) in ("+", "-"):
-            lu = _resolve(left, ctx, source)
-            ru = _resolve(right, ctx, source)
-            # Wrapper-mixing diagnostics (R5.3 allow, R5.10 / R6.5 /
-            # R6.6 / R7.1 error) are sub-step 3+; suppress the legacy
-            # H002 check rather than mis-fire on a now-valid case
-            # like LogWrap(Pa) - Regular(dim'less). The hydrostatic
-            # projection in cdrag_mod.f90:300 relies on this.
-            if _is_wrapper(lu) or _is_wrapper(ru):
+        op = _math_op(node)
+        if op == "**":
+            base = _resolve(left, ctx, source)
+            if base is None or right is None:
                 return
-            if lu is not None and ru is not None and not equal_dim(lu, ru):
-                # D1.5: if one operand is a dim'less numeric literal and
-                # the other is unitful, demote H002 → H010 (warning) and
-                # auto-cast the literal to the unitful's unit. This catches
-                # the `1. + speed` regularization-constant idiom without
-                # silencing real bugs (explicit dim'less variables still
-                # fire H002).
-                left_lit = _is_pure_numeric_constant(left)
-                right_lit = _is_pure_numeric_constant(right)
-                left_dimless = _is_dimensionless(lu)
-                right_dimless = _is_dimensionless(ru)
-                if left_lit and left_dimless and not right_dimless:
-                    yield _emit_h010(left, _text(left, source), ru, ctx)
-                elif right_lit and right_dimless and not left_dimless:
-                    yield _emit_h010(right, _text(right, source), lu, ctx)
-                else:
-                    yield _emit_h002(node, lu, ru, ctx)
+            exponent = _constant_exponent(right, source)
+            _, diag = power(base, exponent, exponent_is_literal=exponent is not None)
+            if diag == "D1.4":
+                yield _emit_d14(
+                    node, ctx,
+                    detail=(
+                        f"power exponent is not a literal rational "
+                        f"(base unit: {format_unit(base)})"
+                    ),
+                )
+            elif diag == "D1.2":
+                yield _emit_d12(node, base, base, "**", ctx)
+            return
+        if op not in ("+", "-", "*", "/"):
+            return
+        lu = _resolve(left, ctx, source)
+        ru = _resolve(right, ctx, source)
+        if lu is None or ru is None:
+            return
+        left_lit_val = _constant_exponent(left, source) if left is not None else None
+        right_lit_val = _constant_exponent(right, source) if right is not None else None
+        _, diag = combine(
+            op, lu, ru,
+            a_literal=left_lit_val, b_literal=right_lit_val,
+        )
+        if diag is None:
+            return
+        if diag == "D1.1":
+            # D1.5 demotion (literal-cast) — only applies to +/-.
+            left_lit_node = _is_pure_numeric_constant(left)
+            right_lit_node = _is_pure_numeric_constant(right)
+            left_dimless = isinstance(lu, Unit) and _is_dimensionless(lu)
+            right_dimless = isinstance(ru, Unit) and _is_dimensionless(ru)
+            if left_lit_node and left_dimless and not right_dimless:
+                yield _emit_h010(left, _text(left, source), ru, ctx)
+            elif right_lit_node and right_dimless and not left_dimless:
+                yield _emit_h010(right, _text(right, source), lu, ctx)
+            else:
+                yield _emit_h002(node, lu, ru, ctx)
+        elif diag == "D1.2":
+            yield _emit_d12(node, lu, ru, op, ctx)
+        elif diag == "D1.3":
+            yield _emit_d13(node, lu, ru, op, ctx)
+        elif diag == "D1.4":
+            yield _emit_d14(
+                node, ctx,
+                detail=(
+                    f"scalar multiplier of {format_unit(lu)} / "
+                    f"{format_unit(ru)} is not a literal rational"
+                ),
+            )
         return
 
     if kind == "call_expression":
