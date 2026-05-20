@@ -82,3 +82,156 @@ def test_no_warning_when_unambiguous():
         parse("kg/s")
         parse("kg/(m*s)")
         parse("kg*m/s^2")
+
+
+# ---------------------------------------------------------------------------
+# Phase B sub-step 1: wrapper types, canonicalization, parser, pretty-print
+# ---------------------------------------------------------------------------
+
+from dimfort.core.units import (  # noqa: E402
+    ExpWrap,
+    LogWrap,
+    Unit,
+    format_unit,
+    is_dimensionless,
+    wrap_exp,
+    wrap_log,
+)
+
+
+def test_wrap_log_of_regular_creates_logwrap():
+    pa = parse("Pa")
+    u = wrap_log(pa)
+    assert isinstance(u, LogWrap)
+    assert u.inner == pa
+
+
+def test_wrap_exp_of_regular_creates_expwrap():
+    k = parse("K")
+    u = wrap_exp(k)
+    assert isinstance(u, ExpWrap)
+    assert u.inner == k
+
+
+def test_r21_log_of_exp_cancels():
+    k = parse("K")
+    assert wrap_log(wrap_exp(k)) == k
+
+
+def test_r22_exp_of_log_cancels():
+    pa = parse("Pa")
+    assert wrap_exp(wrap_log(pa)) == pa
+
+
+def test_r23_log_of_dimless_collapses():
+    one = parse("1")
+    assert wrap_log(one) == one
+    assert not isinstance(wrap_log(one), LogWrap)
+
+
+def test_r23_exp_of_dimless_collapses():
+    one = parse("1")
+    assert wrap_exp(one) == one
+    assert not isinstance(wrap_exp(one), ExpWrap)
+
+
+def test_nested_log_no_cancellation():
+    pa = parse("Pa")
+    nested = wrap_log(wrap_log(pa))
+    assert isinstance(nested, LogWrap)
+    assert isinstance(nested.inner, LogWrap)
+    assert nested.inner.inner == pa
+
+
+def test_deep_round_trip_inverse():
+    k = parse("K")
+    # LOG(EXP(LOG(EXP(K)))) — peels two layers, ends at K
+    assert wrap_log(wrap_exp(wrap_log(wrap_exp(k)))) == k
+
+
+def test_parse_log_wrapper():
+    pa = parse("Pa")
+    assert parse("LOG(Pa)") == LogWrap(pa)
+
+
+def test_parse_exp_wrapper():
+    k = parse("K")
+    assert parse("EXP(K)") == ExpWrap(k)
+
+
+def test_parse_nested_wrapper():
+    pa = parse("Pa")
+    assert parse("LOG(LOG(Pa))") == LogWrap(LogWrap(pa))
+
+
+def test_parse_wrapper_lowercase():
+    # A2 — parser accepts lowercase
+    assert parse("log(Pa)") == parse("LOG(Pa)")
+    assert parse("exp(K)") == parse("EXP(K)")
+
+
+def test_parse_wrapper_whitespace_tolerance():
+    # A2 — internal whitespace
+    assert parse("LOG( Pa )") == parse("LOG(Pa)")
+    assert parse("LOG (Pa)") == parse("LOG(Pa)")
+
+
+def test_parse_inverse_pair_cancels_on_parse():
+    # A3 — canonicalization on read
+    assert parse("EXP(LOG(Pa))") == parse("Pa")
+    assert parse("LOG(EXP(K))") == parse("K")
+
+
+def test_parse_log_of_dimless_collapses():
+    assert parse("LOG(1)") == parse("1")
+    assert parse("EXP(1)") == parse("1")
+
+
+def test_format_wrapper_prefix():
+    # The inner Unit prints via the existing base-symbol formatter,
+    # which expands derived names like ``Pa`` into base SI form. Only
+    # the wrapper layer is checked here.
+    assert format_unit(parse("LOG(Pa)")).startswith("LOG(")
+    assert format_unit(parse("LOG(Pa)")).endswith(")")
+
+
+def test_format_wrapper_with_base_inner():
+    # ``K`` is a base symbol so the inner round-trips cleanly through
+    # the formatter — exercises wrapper nesting.
+    assert format_unit(parse("EXP(K)")) == "EXP(K)"
+    assert format_unit(LogWrap(LogWrap(parse("K")))) == "LOG(LOG(K))"
+
+
+def test_log_bare_word_rejected():
+    # P5 — parens required after LOG / EXP
+    with pytest.raises(UnitError):
+        parse("LOG Pa")
+
+
+def test_log_without_paren_after_treated_as_unknown():
+    # 'LOG' alone is not a unit identifier
+    with pytest.raises(UnitError):
+        parse("LOG")
+
+
+def test_is_dimensionless_regular():
+    assert is_dimensionless(parse("1"))
+    assert not is_dimensionless(parse("Pa"))
+
+
+def test_is_dimensionless_wrapper():
+    # Wrappers are never dim'less after canonicalization (R2.3 collapses
+    # any wrapper-of-dim'less). A constructed wrapper around a unitful
+    # leaf is dimensionally distinct.
+    assert not is_dimensionless(parse("LOG(Pa)"))
+    assert not is_dimensionless(parse("EXP(K)"))
+
+
+def test_equal_dim_recurses_into_wrappers():
+    assert equal_dim(parse("LOG(Pa)"), parse("LOG(Pa)"))
+    # Different inners → unequal
+    assert not equal_dim(parse("LOG(Pa)"), parse("LOG(K)"))
+    # Wrapper ≠ leaf
+    assert not equal_dim(parse("LOG(Pa)"), parse("Pa"))
+    # LogWrap ≠ ExpWrap even if inner matches
+    assert not equal_dim(LogWrap(parse("Pa")), ExpWrap(parse("Pa")))
