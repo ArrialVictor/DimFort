@@ -33,6 +33,9 @@ N   = { expr = "kg*m/s^2" }
 J   = { expr = "N*m" }
 W   = { expr = "J/s" }
 Pa  = { expr = "N/m^2" }
+bar = { expr = "Pa", factor = 100000 }
+mbar = { expr = "Pa", factor = 100 }
+hPa = { expr = "Pa", factor = 100 }
 Hz  = { expr = "1/s" }
 C   = { expr = "A*s" }
 V   = { expr = "W/A" }

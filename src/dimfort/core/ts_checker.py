@@ -63,6 +63,33 @@ from dimfort.core.units import (
 def _is_wrapper(u: UnitExpr | None) -> bool:
     return isinstance(u, (LogWrap, ExpWrap))
 
+
+def _outer_unary_sign(node: Node) -> int:
+    """Walk up the AST from ``node``, counting enclosing unary minuses.
+
+    Peels ``unary_expression(-)`` and ``parenthesized_expression``
+    layers; stops at the first other parent. Returns +1 or -1. Used
+    by the math_expression resolver to propagate an outer ``-`` sign
+    to the literal coefficient of an inner ``*`` / ``/`` so R5.4
+    receives the correct ``k``.
+    """
+    sign = 1
+    parent = node.parent
+    while parent is not None:
+        if parent.type == "unary_expression":
+            for c in parent.children:
+                if c.type == "-":
+                    sign = -sign
+                    break
+                if c.type == "+":
+                    break
+            parent = parent.parent
+        elif parent.type == "parenthesized_expression":
+            parent = parent.parent
+        else:
+            break
+    return sign
+
 _RATIONAL_EXPONENT_MAX_DENOMINATOR = 100
 
 
@@ -393,6 +420,18 @@ def _resolve(node: Node | None, ctx: _Ctx, source: bytes) -> Unit | None:
             return None
         left_lit = _constant_exponent(left, source) if left is not None else None
         right_lit = _constant_exponent(right, source) if right is not None else None
+        # Outer-unary-minus sign propagation. Tree-sitter parses
+        # ``-1.0 * LOG(p)`` as ``-(1.0 * LOG(p))`` — the literal child
+        # of the inner math_expression is positive, so R5.4 sees
+        # ``1 × LOG(Pa) → LOG(Pa)`` instead of ``-1 × LOG(Pa) →
+        # LOG(1/Pa)``. Peel any enclosing unary_expression layers and
+        # flip the single literal operand's sign accordingly.
+        sign = _outer_unary_sign(node)
+        if sign == -1 and op in ("*", "/"):
+            if left_lit is not None and right_lit is None:
+                left_lit = -left_lit
+            elif right_lit is not None and left_lit is None:
+                right_lit = -right_lit
         result, _diag = combine(
             op, left_u, right_u,
             a_literal=left_lit, b_literal=right_lit,
