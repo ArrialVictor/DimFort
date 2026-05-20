@@ -661,14 +661,28 @@ def _unit_pretty(u: UnitExpr | None) -> str:
     return body
 
 
-def _hover_text(name: str, unit_or_message: str, *, show_unit_label: bool = True) -> str:
+def _hover_text(
+    name: str,
+    unit_or_message: str,
+    *,
+    show_unit_label: bool = True,
+    unit_source: str | None = None,
+) -> str:
     """Render a single-symbol hover (variable or struct member).
 
     Marker convention mirrors the trace-mode hover header:
     🟢 = known unit, 🟡 = no annotation / unresolved.
+
+    ``unit_source`` (``"explicit"`` / ``"intrinsic_default"`` / ``None``)
+    annotates *how* the unit was determined. ``"intrinsic_default"``
+    appends *(implicit — INTEGER default)* so the user can see the
+    Fortran-type-driven default at work rather than wondering why a
+    bare ``integer :: i`` is showing as dim'less.
     """
     if show_unit_label:
         body = f"**{name}** : {unit_or_message}"
+        if unit_source == "intrinsic_default":
+            body += " *(implicit — INTEGER default)*"
         marker = "🟢"
     else:
         body = f"**{name}** — {unit_or_message}"
@@ -954,7 +968,13 @@ def _resolve_hover(
             )
         unit = ident_ctx.unit_for(name, ident.start_byte)
         if unit is not None:
-            return _hover_text(name, _unit_pretty(unit)), _node_lsp_range(ident)
+            source = _unit_source_for(
+                result, resolved_path, name, ident_ctx.scope_at(ident.start_byte),
+            )
+            return (
+                _hover_text(name, _unit_pretty(unit), unit_source=source),
+                _node_lsp_range(ident),
+            )
         # Lower-case fallback for var_units keyed by original case
         # (covers names whose annotation lives only in the flat view).
         for k, u in result.merged_var_units.items():
@@ -964,6 +984,38 @@ def _resolve_hover(
             _hover_text(name, "no unit annotation", show_unit_label=False),
             _node_lsp_range(ident),
         )
+    return None
+
+
+def _unit_source_for(
+    result, resolved_path: Path, name: str, scope_lc: str | None,
+) -> str | None:
+    """Return the provenance tag (``"explicit"`` / ``"intrinsic_default"``)
+    for a variable's annotation, or ``None`` if unknown.
+
+    Looks up the file's :class:`AttachmentResult` via the workset
+    result; falls back to ``None`` for variables that came in through
+    a ``use`` clause (the source-file tag isn't accessible at the
+    consumer site without a deeper rewrite).
+    """
+    attached = result.attachments.get(resolved_path)
+    if attached is None:
+        return None
+    sources = getattr(attached, "var_unit_sources", None)
+    if not sources:
+        return None
+    # Scope-aware lookup first, then module-level, then any-scope.
+    if scope_lc is not None:
+        s = sources.get((scope_lc, name))
+        if s is not None:
+            return s
+    s = sources.get((None, name))
+    if s is not None:
+        return s
+    # Loose fallback: any scope that knows this name.
+    for (_, n), src in sources.items():
+        if n == name:
+            return src
     return None
 
 

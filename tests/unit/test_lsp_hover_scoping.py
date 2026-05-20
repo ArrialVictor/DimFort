@@ -187,3 +187,29 @@ def test_h010_extract_to_parameter_action(tmp_path: Path):
     assert args[5] == "1."
     assert args[6] == "m/s"
     assert args[7].startswith("c_h010_")
+
+
+def test_hover_marks_intrinsic_default_on_integer(tmp_path: Path):
+    """Hover on a bare ``integer :: i`` (implicit dim'less default) shows
+    the *(implicit — INTEGER default)* suffix; an explicitly-annotated
+    integer does not."""
+    src = (
+        "subroutine s\n"
+        "  integer :: ig2\n"                # implicit default
+        "  integer :: epoch   !< @unit{s}\n" # explicit
+        "  ig2 = 1\n"
+        "  epoch = 0\n"
+        "end subroutine\n"
+    )
+    f = tmp_path / "hover_int.f90"
+    f.write_text(src)
+    hit_ig = _drive_hover(f, 4, 3)
+    assert hit_ig is not None
+    text_ig, _ = hit_ig
+    assert "implicit" in text_ig and "INTEGER default" in text_ig
+
+    hit_ep = _drive_hover(f, 5, 3)
+    assert hit_ep is not None
+    text_ep, _ = hit_ep
+    assert "implicit" not in text_ep
+    assert "INTEGER default" not in text_ep
