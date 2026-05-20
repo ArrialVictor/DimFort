@@ -67,6 +67,15 @@ def build_parser() -> argparse.ArgumentParser:
             "(load / aggregate / index / check / total) at the end of the run."
         ),
     )
+    check.add_argument(
+        "--trace",
+        action="store_true",
+        help=(
+            "Attach a unit-algebra rule-chain trace to each diagnostic "
+            "and render it below the message. Useful for explaining "
+            "wrapper-arithmetic diagnostics (D1.2 / D1.3 / D1.6)."
+        ),
+    )
 
     lsp = sub.add_parser("lsp", help="Start the DimFort language server (stdio).")
     # Some LSP clients (vscode-languageclient with TransportKind.stdio) tack
@@ -144,12 +153,21 @@ def _run_check(args: argparse.Namespace) -> int:
     config = load_config(roots[0])
     if config.units_file is not None:
         unit_config.install_default(config.units_file)
-    result = check_files(
-        paths,
-        cpp_defines=config.cpp_defines,
-        include_paths=config.include_paths,
-        external_modules=frozenset(config.external_modules),
-    )
+    # Phase D: activate unit-algebra tracing for the duration of the
+    # check if --trace was passed. Per-statement traces inside the
+    # checker pick up activation via current_trace() != None.
+    from contextlib import nullcontext
+
+    from dimfort.core.trace import format_trace, with_trace
+
+    trace_ctx = with_trace() if getattr(args, "trace", False) else nullcontext()
+    with trace_ctx:
+        result = check_files(
+            paths,
+            cpp_defines=config.cpp_defines,
+            include_paths=config.include_paths,
+            external_modules=frozenset(config.external_modules),
+        )
 
     per_file_counts: list[tuple[Path, int, int]] = []
     for p in paths:
@@ -160,6 +178,9 @@ def _run_check(args: argparse.Namespace) -> int:
         for d in diags:
             severity = "error" if d.severity is Severity.ERROR else "warning"
             emit(d.file, d.start.line, severity, d.code, d.message)
+            if getattr(args, "trace", False) and d.trace and not args.quiet:
+                for line in format_trace(d.trace).splitlines():
+                    print(f"  {line}")
 
     if args.summary and not args.quiet:
         total_h = sum(h for _, h, _ in per_file_counts)

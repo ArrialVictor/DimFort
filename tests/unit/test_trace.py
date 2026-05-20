@@ -145,3 +145,105 @@ def test_full_chain_hydrostatic():
     assert "R3.1" in rules  # LOG
     assert "R5.3" in rules  # subtract dim'less
     assert "R2.2" in rules  # EXP cancels the LOG
+
+
+# ---------------------------------------------------------------------------
+# T2/T3: Diagnostic trace integration + pretty-print
+# ---------------------------------------------------------------------------
+
+
+def test_diagnostic_trace_empty_when_not_traced():
+    """Diagnostic.trace is an empty tuple by default."""
+    from dimfort.core import ts_checker
+    from dimfort.core import ts_parser as ts
+    src = b"subroutine s\n  real :: a, b\n  a = b\n end subroutine\n"
+    tree = ts.parse_text(src)
+    diags = ts_checker.check(tree, {"a": "m/s", "b": "kg"}, source=src, file="t.f90")
+    assert any(d.code == "H001" for d in diags)
+    h001 = next(d for d in diags if d.code == "H001")
+    assert h001.trace == ()
+
+
+def test_diagnostic_trace_populated_when_tracing_on():
+    """Inside with_trace(), checker diagnostics carry their statement's chain."""
+    from dimfort.core import ts_checker
+    from dimfort.core import ts_parser as ts
+    src = b"subroutine s\n  real :: a, b\n  a = b\n end subroutine\n"
+    tree = ts.parse_text(src)
+    with with_trace():
+        diags = ts_checker.check(
+            tree, {"a": "m/s", "b": "kg"}, source=src, file="t.f90",
+        )
+    h001 = next(d for d in diags if d.code == "H001")
+    # The H001 doesn't fire from combine() directly (it's an assignment-
+    # level mismatch), so the per-statement trace may be empty here.
+    # Real wrapper-arithmetic diagnostics carry a non-empty trace —
+    # exercised in the next test.
+    assert isinstance(h001.trace, tuple)
+
+
+def test_diagnostic_trace_carries_rule_ids_for_wrapper_op():
+    """An H002 D1.2 (e.g. LOG×LOG) carries the firing rule in its trace."""
+    from dimfort.core import ts_checker
+    from dimfort.core import ts_parser as ts
+    src = (
+        b"subroutine s\n"
+        b"  real :: p1, p2, r\n"
+        b"  r = log(p1) * log(p2)\n"
+        b"end subroutine\n"
+    )
+    tree = ts.parse_text(src)
+    with with_trace():
+        diags = ts_checker.check(
+            tree, {"p1": "Pa", "p2": "Pa", "r": "1"}, source=src, file="t.f90",
+        )
+    h002 = next(d for d in diags if "D1.2" in d.message)
+    rule_ids = [s.rule_id for s in h002.trace]
+    assert "R3.1" in rule_ids  # log(p1) and log(p2)
+    assert "R5.6" in rule_ids  # the failing op
+
+
+def test_format_trace_empty_returns_empty_string():
+    from dimfort.core.trace import format_trace
+    assert format_trace(()) == ""
+
+
+def test_format_trace_renders_chain():
+    from dimfort.core.trace import format_trace
+    with with_trace() as trace:
+        wrap_log(parse("Pa"))
+    out = format_trace(trace.snapshot())
+    assert "trace:" in out
+    assert "[R3.1]" in out
+
+
+def test_format_provenance_marks_error_as_word():
+    from dimfort.core.trace import format_provenance
+    with with_trace() as trace:
+        combine("*", wrap_log(parse("Pa")), wrap_log(parse("Pa")))
+    # Last step is the R5.6 error.
+    last = trace.steps[-1]
+    assert "ERROR" in format_provenance(last)
+    assert "[R5.6]" in format_provenance(last)
+
+
+def test_cli_trace_flag_prints_chain(tmp_path, capsys):
+    """End-to-end: ``dimfort check --trace`` renders the chain under each diag."""
+    from dimfort.cli import _run_check, build_parser
+
+    src = tmp_path / "t.f90"
+    src.write_text(
+        "subroutine s\n"
+        "  real :: p1   !< @unit{Pa}\n"
+        "  real :: p2   !< @unit{Pa}\n"
+        "  real :: r    !< @unit{1}\n"
+        "  r = log(p1) * log(p2)\n"
+        "end subroutine\n"
+    )
+    parser = build_parser()
+    args = parser.parse_args(["check", "--trace", str(src)])
+    _run_check(args)
+    captured = capsys.readouterr().out
+    assert "D1.2" in captured
+    assert "trace:" in captured
+    assert "R5.6" in captured

@@ -92,10 +92,46 @@ def with_trace() -> "Iterator[Trace]":
         _active_trace.reset(token)
 
 
+def format_provenance(step: Provenance) -> str:
+    """Render one rule fire as ``A <op> B  ⇒  Result   [Rx.y]`` (spec §12 T3).
+
+    Wrapper types print using ``format_unit`` so the LOG(...)/EXP(...)
+    layer is visible; "ERROR" stands in for ``after=None``.
+    """
+    from dimfort.core.units import format_unit
+    before = ", ".join(format_unit(u) for u in step.before)
+    after = format_unit(step.after) if step.after is not None else "ERROR"
+    return f"{before}  ⇒  {after}   [{step.rule_id}]"
+
+
+def format_trace(steps: tuple[Provenance, ...] | list[Provenance]) -> str:
+    """Render a full trace chain as multi-line text suitable for CLI / hover.
+
+    Consecutive duplicate steps are collapsed (the checker's parallel
+    _resolve / _walk_expressions walks both invoke combine() on the
+    same subexpressions, so each rule otherwise appears twice). Each
+    step occupies one line, prefixed with ``→`` so the chain reads
+    top-to-bottom. Empty traces return an empty string.
+    """
+    if not steps:
+        return ""
+    seen: set[tuple] = set()
+    lines = ["trace:"]
+    for step in steps:
+        key = (step.rule_id, step.before, step.after)
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(f"  → {format_provenance(step)}")
+    return "\n".join(lines)
+
+
 __all__ = [
     "Provenance",
     "Trace",
     "current_trace",
+    "format_provenance",
+    "format_trace",
     "trace_step",
     "with_trace",
 ]
