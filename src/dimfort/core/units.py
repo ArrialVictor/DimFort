@@ -132,6 +132,176 @@ def _u(dim: Dim, factor: Number = 1) -> Unit:
     return Unit(dim, Fraction(factor))
 
 
+# ---------------------------------------------------------------------------
+# Binary unit-algebra dispatch (Phase B sub-steps 3+)
+# ---------------------------------------------------------------------------
+#
+# ``combine(op, a, b, ...)`` is the single entry point for applying a
+# binary operator at the unit-algebra level. It centralises the rules
+# in §4–§7 of the spec so the checker doesn't have to keep them in
+# sync across two recursive walks (_resolve for result, _walk for
+# diagnostics).
+#
+# Diagnostic codes (strings, intentionally simple): None on success;
+# otherwise one of 'D1.1' / 'D1.2' / 'D1.3' / 'D1.4'. The caller maps
+# the code to a concrete Diagnostic with AST position. (D1.5 — implicit
+# literal cast — is handled in the checker, not here, because it
+# requires "is this operand a literal" which is an AST property.)
+#
+# Sub-step 3 implements the Regular and LogWrap rules. ExpWrap and
+# cross-cases land in sub-step 4; until then ExpWrap operands return
+# ``(None, None)`` (unknown, no diagnostic).
+
+
+def _logwrap_inner_pow(inner: UnitExpr, k: Number) -> UnitExpr | None:
+    """Compute ``inner ^ k`` for use under LogWrap (R5.4 inner side).
+
+    Only defined when ``inner`` is ``Unit``; nested-wrapper inners fall
+    through to the caller as ``None`` (sub-step 4 territory).
+    """
+    if not isinstance(inner, Unit):
+        return None
+    try:
+        return inner.pow(k)
+    except Exception:
+        return None
+
+
+def combine(
+    op: str,
+    a: UnitExpr,
+    b: UnitExpr,
+    *,
+    a_literal: Number | None = None,
+    b_literal: Number | None = None,
+) -> tuple[UnitExpr | None, str | None]:
+    """Apply binary op ``a <op> b`` at the unit level.
+
+    ``op`` is one of ``'+', '-', '*', '/'``. ``*_literal`` carries the
+    operand's literal-rational value when the corresponding source-AST
+    operand is a pure numeric literal (used by R5.4 to decide
+    literal-scalar × LogWrap vs R5.5 runtime-scalar × LogWrap).
+
+    Returns ``(result_unit_or_None, diag_code_or_None)``. A non-None
+    diag_code with a None result means the op is undefined (rule error);
+    a non-None result with no diag_code is success.
+    """
+    # ---- Regular × Regular (§4) ----
+    if isinstance(a, Unit) and isinstance(b, Unit):
+        if op in ("+", "-"):
+            if equal_dim(a, b):
+                return a, None  # R4.1
+            return None, "D1.1"  # R4.1 mismatch — caller may demote to D1.5
+        if op == "*":
+            return a * b, None  # R4.2
+        if op == "/":
+            return a / b, None  # R4.2
+        return None, None
+
+    # ---- LogWrap × LogWrap (§5) ----
+    if isinstance(a, LogWrap) and isinstance(b, LogWrap):
+        if op == "+":
+            # R5.1 — log homomorphism. Recurse into inner via combine
+            # so nested wrappers cascade through R5.6 / R7.1 if they
+            # bottom out at an undefined op (R7.2).
+            inner, diag = combine("*", a.inner, b.inner)
+            if inner is None:
+                return None, diag or "D1.2"
+            return wrap_log(inner), None
+        if op == "-":
+            # R5.2 — derived; inner becomes a / b.
+            inner, diag = combine("/", a.inner, b.inner)
+            if inner is None:
+                return None, diag or "D1.2"
+            return wrap_log(inner), None
+        if op in ("*", "/"):
+            return None, "D1.2"  # R5.6
+        return None, None
+
+    # ---- LogWrap with Regular (commute for + and *) ----
+    if isinstance(a, Unit) and isinstance(b, LogWrap):
+        if op == "+":
+            return combine("+", b, a, a_literal=b_literal, b_literal=a_literal)
+        if op == "-":
+            # Spec table 14.1 treats LogWrap ± Rd as symmetric. The
+            # inner-direction nuance (c - log(p) ≠ log(p) - c) is
+            # documented as a known imprecision; for now, mirror the
+            # LogWrap-on-left case.
+            if is_dimensionless(a):
+                return b, None  # R5.3 (mirrored)
+            return None, "D1.3"  # R5.10 (mirrored)
+        if op == "*":
+            return combine("*", b, a, a_literal=b_literal, b_literal=a_literal)
+        if op == "/":
+            # Regular / LogWrap → R5.9 (LogWrap^(-1) is undefined).
+            return None, "D1.2"
+        return None, None
+
+    if isinstance(a, LogWrap) and isinstance(b, Unit):
+        if op in ("+", "-"):
+            if is_dimensionless(b):
+                return a, None  # R5.3
+            return None, "D1.3"  # R5.10
+        if op == "*":
+            if is_dimensionless(b):
+                # R5.4 (literal k) vs R5.5 (non-literal k)
+                if b_literal is None:
+                    return None, "D1.4"
+                new_inner = _logwrap_inner_pow(a.inner, b_literal)
+                if new_inner is None:
+                    return None, None  # nested inner — sub-step 4
+                return wrap_log(new_inner), None
+            return None, "D1.2"  # R5.7
+        if op == "/":
+            if is_dimensionless(b):
+                # LogWrap / dim'less: equivalent to LogWrap × (1/dim'less).
+                # For literal k: inner^(1/k) — handled below. For
+                # non-literal: R5.5 → D1.4 (same as *).
+                if b_literal is None:
+                    return None, "D1.4"
+                if b_literal == 0:
+                    return None, None  # divide-by-zero, leave unknown
+                # 1/k for an integer k is a Fraction; for a Fraction, invert.
+                inv = (
+                    Fraction(1, b_literal)
+                    if isinstance(b_literal, int)
+                    else Fraction(1) / b_literal
+                )
+                new_inner = _logwrap_inner_pow(a.inner, inv)
+                if new_inner is None:
+                    return None, None
+                return wrap_log(new_inner), None
+            return None, "D1.2"  # R5.7 mirrored for division
+        return None, None
+
+    # ExpWrap and cross-wrapper cases — sub-step 4.
+    return None, None
+
+
+def power(base: UnitExpr, exponent: Number, *, exponent_is_literal: bool) -> tuple[UnitExpr | None, str | None]:
+    """Apply ``base ^ exponent`` at the unit level.
+
+    ``exponent_is_literal`` is True when the exponent comes from a
+    numeric literal in source; False when it's a variable / expression
+    whose value we know rationally but not statically (currently the
+    checker only resolves literal exponents — non-literal returns
+    ``(None, 'D1.4')`` here).
+    """
+    if not exponent_is_literal:
+        return None, "D1.4"  # R4.3 / R5.5 / R6.4 with non-literal
+    if isinstance(base, Unit):
+        try:
+            return base.pow(exponent), None  # R4.3
+        except Exception:
+            return None, None
+    if isinstance(base, LogWrap):
+        if exponent == 1:
+            return base, None  # R5.9 identity
+        return None, "D1.2"  # R5.9
+    # ExpWrap power: R6.4 — sub-step 4.
+    return None, None
+
+
 @dataclass(frozen=True)
 class UnitTable:
     base: dict[str, Unit]

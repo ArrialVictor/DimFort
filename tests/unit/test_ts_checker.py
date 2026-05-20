@@ -491,3 +491,103 @@ def test_assignment_mismatch_logwrap_vs_regular_fires_h001():
     diags = _check(src, {"p": "Pa", "q": "Pa"})
     codes = [d.code for d in diags]
     assert "H001" in codes
+
+
+# ---------------------------------------------------------------------------
+# Phase B sub-step 3: LogWrap arithmetic diagnostics (D1.2 / D1.3 / D1.4)
+# ---------------------------------------------------------------------------
+
+
+def test_log_times_log_emits_d12():
+    src = (
+        "subroutine s\n"
+        "  real :: p1, p2, r\n"
+        "  r = log(p1) * log(p2)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"p1": "Pa", "p2": "Pa", "r": "1"})
+    codes = [d.code for d in diags]
+    assert "H002" in codes
+    assert any("D1.2" in d.message for d in diags)
+
+
+def test_log_times_unitful_emits_d12():
+    src = (
+        "subroutine s\n"
+        "  real :: p, mass, r\n"
+        "  r = log(p) * mass\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"p": "Pa", "mass": "kg", "r": "1"})
+    assert any("D1.2" in d.message for d in diags)
+
+
+def test_log_plus_pressure_emits_d13():
+    src = (
+        "subroutine s\n"
+        "  real :: p, q, r\n"
+        "  r = log(p) + q\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"p": "Pa", "q": "Pa", "r": "1"})
+    assert any("D1.3" in d.message for d in diags)
+
+
+def test_nonliteral_scalar_times_log_emits_d14():
+    src = (
+        "subroutine s\n"
+        "  real :: p, k, r\n"
+        "  r = k * log(p)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"p": "Pa", "k": "1", "r": "1"})
+    assert any("D1.4" in d.message for d in diags)
+
+
+def test_literal_scalar_times_log_no_diag():
+    src = (
+        "subroutine s\n"
+        "  real :: p, r\n"
+        "  r = 2.0 * log(p)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"p": "Pa", "r": "LOG(Pa^2)"})
+    codes = [d.code for d in diags]
+    # No H001 / H002; result LogWrap(Pa^2) matches LHS annotation.
+    assert "H001" not in codes
+    assert "H002" not in codes
+
+
+def test_log_squared_emits_d12():
+    src = (
+        "subroutine s\n"
+        "  real :: p, r\n"
+        "  r = log(p) ** 2\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"p": "Pa", "r": "1"})
+    assert any("D1.2" in d.message for d in diags)
+
+
+def test_pressure_ratio_log_diff_clean():
+    """LOG(p1) - LOG(p2) → 1 via R5.2 + R2.3; clean assignment to dim'less."""
+    src = (
+        "subroutine s\n"
+        "  real :: p1, p2, ratio\n"
+        "  ratio = log(p1) - log(p2)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"p1": "Pa", "p2": "Pa", "ratio": "1"})
+    assert [d.code for d in diags] == []
+
+
+def test_log_homomorphism_addition():
+    """LOG(p1) + LOG(p2) → LOG(Pa^2) via R5.1."""
+    src = (
+        "subroutine s\n"
+        "  real :: p1, p2, lp2\n"
+        "  lp2 = log(p1) + log(p2)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"p1": "Pa", "p2": "Pa", "lp2": "LOG(Pa^2)"})
+    assert [d.code for d in diags] == []
