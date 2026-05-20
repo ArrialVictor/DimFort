@@ -73,11 +73,20 @@ Pre-alpha. Working pipeline pieces:
 - attachment (annotations → variables, with U010 enforcement)
 - semantic checker for **H001** (assignment mismatch), **H002**
   (additive / same-unit-intrinsic operand mismatch), **H003**
-  (dimensionless-intrinsic violation), and **H004** (user-defined
-  function/subroutine argument mismatch), plus a useful subset of
-  Fortran intrinsics (`sqrt`, `abs`, `exp`, `log`, trig family,
-  `min`/`max`/`mod`/`merge`, `dot_product`/`matmul`,
-  `sum`/`minval`/`maxval`, the kind-conversion family)
+  (dimensionless-intrinsic violation), **H004** (user-defined
+  function/subroutine argument mismatch), and **H010** (warnings:
+  implicit literal cast D1.5, implicit wrapper untag D1.6). Plus
+  a useful subset of Fortran intrinsics (`sqrt`, `abs`, `exp`,
+  `log`, trig family, `min`/`max`/`mod`/`merge`,
+  `dot_product`/`matmul`, `sum`/`minval`/`maxval`, the
+  kind-conversion family)
+- unit-algebra rules for `LOG` / `EXP`-tagged quantities (Phase
+  B): `@unit{LOG(Pa)}`, `@unit{EXP(K)}`, and nested forms.
+  Wrapper arithmetic raises H001 / H002 with `(D1.2)` / `(D1.3)` /
+  `(D1.4)` markers identifying the firing rule. See
+  [docs/unit-algebra.md](unit-algebra.md) for the full rule set.
+- per-rule provenance traces (`dimfort check --trace`, and in the
+  VSCode hover when the trace toggle is on)
 - derived-type field access (`b%v`) both as a read and as an
   assignment target, with field annotations declared inside the
   `type :: …` block

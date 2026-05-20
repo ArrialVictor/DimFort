@@ -1,6 +1,10 @@
-# Unit algebra — design specification
+# Unit algebra — specification
 
-> **Status**: design spec, not yet implemented.
+> **Status**: implemented as of 2026-05-20 (Phase B / C / D landed
+> across commits `b4ae113..62993f8`). The runtime now applies every
+> rule below; this document is the canonical reference for the rule
+> IDs, the operation tables in §14, and the diagnostic codes.
+>
 > Captures the rules agreed in the 2026-05-20 design session.
 > Rules are numbered (`R<section>.<rule>`) so they can be referenced
 > from code comments, diagnostics, and future design discussions.
@@ -833,9 +837,12 @@ the literal to the unitful's unit; emit warning.
   to <unit>`. Example: `H010 implicit cast: literal '1.' to m/s`.
 - **Extended hover text**: short paragraph explaining the smell, plus
   the suggested rewrite with a named PARAMETER.
-- **Code-action**: NOT in Phase A. Future enhancement could offer an
-  auto-refactor that inserts a `PARAMETER` declaration and replaces
-  the literal at the use site.
+- **Code-action**: ✅ shipped. The LSP exposes an `Extract literal
+  to a named PARAMETER` quick-fix. In the VSCode companion the
+  refactor prompts via `showInputBox` for the parameter name, then
+  applies two edits: a typed `REAL, PARAMETER :: <name> = <literal>
+  !< @unit{<unit>}` declaration at the end of the enclosing routine's
+  declaration block, plus the use-site replacement.
 
 **Example:**
 ```
@@ -1027,16 +1034,26 @@ trace for RHS:
 
 ## 13. Implementation phasing
 
-1. **Phase A** — `H010` severity tier (D1.5 only). Smallest change;
-   validates the diagnostic-class extension workflow.
-2. **Phase B** — Log/Exp wrapper representation, rules R1–R7,
-   diagnostics D1.2 / D1.3 / D1.4, R5/R6 reductions.
-3. **Phase C** — `H010` assignment soft-cast (D1.6) for the rare
-   case of explicit wrapper-typed assignments to Regular targets.
-   Lower priority than originally planned: with R2.3 collapse, most
-   wrapper-of-dim'less assignments resolve naturally without needing
-   D1.6.
-4. **Phase D** — Trace mechanism (T1–T3).
+All four phases have shipped. The list is preserved for historical
+reference and to anchor cross-links from code comments.
+
+1. **Phase A** — ✅ shipped. `H010` severity tier (D1.5 only).
+2. **Phase B** — ✅ shipped (5 sub-step commits). Log/Exp wrapper
+   representation, rules R1–R7, diagnostics D1.2 / D1.3 / D1.4,
+   R5/R6 reductions.
+3. **Phase C** — ✅ shipped. `H010` assignment soft-cast (D1.6) for
+   the rare case of explicit wrapper-typed assignments to Regular
+   targets. With R2.3 collapse most wrapper-of-dim'less assignments
+   resolve naturally, so D1.6 fires only when the inner unit is
+   non-dim'less and matches the LHS — i.e. when the assignment
+   "drops" a log/exp tag whose carrier is unitful.
+4. **Phase D** — ✅ shipped. Trace mechanism: `Provenance` records
+   in `dimfort.core.trace`, hooks at every rule fire in
+   `combine` / `power` / `wrap_log` / `wrap_exp`, opt-in via
+   `dimfort check --trace` and the LSP `traceHoverEnabled` flag
+   (toggled from VSCode via `DimFort: Toggle Full Unit Trace in
+   Hover`). LSP hover renders the trace as an ASCII tree of the
+   enclosing assignment.
 
 A and B are independent. C depends on B. D can ship any time after B.
 
