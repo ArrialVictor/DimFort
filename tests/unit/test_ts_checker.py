@@ -220,7 +220,30 @@ def test_h010_message_suggests_named_parameter():
 
 
 def test_h003_dimensionless_intrinsic_violation():
-    """Passing a kg argument to ``exp`` fires H003."""
+    """SIN/COS/TAN still require dim'less input — H003 on a kg arg.
+
+    Pre-Phase-B this test used ``exp``; ``exp`` / ``log`` now accept
+    any unit via the wrapper rules (R3.1 / R3.2), so the dim'less-
+    intrinsic check is verified through ``sin`` instead.
+    """
+    src = (
+        "subroutine s\n"
+        "  real :: a, b\n"
+        "  b = sin(a)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"a": "kg", "b": "1"})
+    codes = [d.code for d in diags]
+    assert "H003" in codes
+
+
+def test_exp_of_unitful_types_as_expwrap():
+    """Phase B: ``exp`` no longer requires a dim'less arg (R3.2).
+
+    ``b = exp(a)`` with ``a :: kg``, ``b :: 1`` types the RHS as
+    ``ExpWrap(kg)``; the assignment to ``b :: 1`` fires H001 — the
+    diagnostic class shifts (H003 → H001) but the error is preserved.
+    """
     src = (
         "subroutine s\n"
         "  real :: a, b\n"
@@ -229,7 +252,8 @@ def test_h003_dimensionless_intrinsic_violation():
     )
     diags = _check(src, {"a": "kg", "b": "1"})
     codes = [d.code for d in diags]
-    assert "H003" in codes
+    assert "H003" not in codes
+    assert "H001" in codes
 
 
 def test_h004_function_argument_mismatch():
@@ -362,3 +386,108 @@ def test_unsupported_expression_does_not_emit_false_positive():
     )
     diags = _check(src, {"a": "m/s", "b": "kg"})
     assert all(d.code != "H001" for d in diags)
+
+
+# ---------------------------------------------------------------------------
+# Phase B sub-step 2: LOG/EXP intrinsic typing (R3.1, R3.2) + cancellation
+# ---------------------------------------------------------------------------
+
+
+def test_log_of_pa_types_as_logwrap():
+    """``LOG(p)`` with ``p :: Pa`` types as ``LogWrap(Pa)`` (R3.1).
+
+    Used here as the RHS of an assignment to an ``@unit{LOG(Pa)}``-
+    annotated LHS — no H001 should fire.
+    """
+    src = (
+        "subroutine s\n"
+        "  real :: p, lp\n"
+        "  lp = log(p)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"p": "Pa", "lp": "LOG(Pa)"})
+    assert all(d.code != "H001" for d in diags)
+
+
+def test_exp_of_log_cancels_in_assignment():
+    """``EXP(LOG(p))`` ⇒ ``p`` via R2.2 cancellation — clean assignment."""
+    src = (
+        "subroutine s\n"
+        "  real :: psol, pref\n"
+        "  pref = exp(log(psol))\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"psol": "Pa", "pref": "Pa"})
+    assert [d.code for d in diags] == []
+
+
+def test_log_of_exp_cancels_in_assignment():
+    """``LOG(EXP(x))`` ⇒ ``x`` via R2.1 cancellation."""
+    src = (
+        "subroutine s\n"
+        "  real :: x, y\n"
+        "  y = log(exp(x))\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"x": "K", "y": "K"})
+    assert [d.code for d in diags] == []
+
+
+def test_log_of_dimless_collapses():
+    """``LOG(c)`` with ``c :: 1`` ⇒ Regular(dim'less) via R2.3.
+
+    Assignment to a dim'less LHS is clean — no H001.
+    """
+    src = (
+        "subroutine s\n"
+        "  real :: c, r\n"
+        "  r = log(c)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"c": "1", "r": "1"})
+    assert [d.code for d in diags] == []
+
+
+def test_log10_same_as_log():
+    """LOG10 types identically to LOG per R3.3."""
+    src = (
+        "subroutine s\n"
+        "  real :: p, lp\n"
+        "  lp = log10(p)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"p": "Pa", "lp": "LOG(Pa)"})
+    assert all(d.code != "H001" for d in diags)
+
+
+def test_hydrostatic_projection_types_cleanly():
+    """The cdrag_mod.f90:300 hydrostatic idiom should type to Pa.
+
+    ``EXP(LOG(psol) - dgeop/RT)`` — the inner ``LOG(psol) - dim'less``
+    types as ``LogWrap(Pa)`` (R5.3 absorbs the dim'less constant; in
+    sub-step 2 this is the default ``return left_u`` behaviour). The
+    outer ``EXP`` cancels via R2.2 → Pa. No diagnostics.
+    """
+    src = (
+        "subroutine s\n"
+        "  real :: psol, dgeop, RT, pref\n"
+        "  pref = exp(log(psol) - dgeop / RT)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {
+        "psol": "Pa", "dgeop": "m^2/s^2", "RT": "m^2/s^2", "pref": "Pa",
+    })
+    assert [d.code for d in diags] == []
+
+
+def test_assignment_mismatch_logwrap_vs_regular_fires_h001():
+    """Assigning ``LOG(p)`` to a Regular-typed Pa LHS still flags H001."""
+    src = (
+        "subroutine s\n"
+        "  real :: p, q\n"
+        "  q = log(p)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"p": "Pa", "q": "Pa"})
+    codes = [d.code for d in diags]
+    assert "H001" in codes

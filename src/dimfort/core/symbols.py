@@ -78,12 +78,20 @@ class FuncSig:
 # ---------------------------------------------------------------------------
 
 # Require dimensionless input; produce dimensionless output.
+# Note: ``exp`` / ``log`` / ``log10`` were here before Phase B but moved
+# out — they now type via the unit-algebra wrapper rules (R3.1, R3.2)
+# rather than requiring a dim'less argument.
 DIMENSIONLESS_INTRINSICS: frozenset[str] = frozenset({
-    "exp", "log", "log10",
     "sin", "cos", "tan",
     "asin", "acos", "atan",
     "sinh", "cosh", "tanh",
 })
+
+# LOG / LOG10 / LOG2 — produce ``LogWrap(arg-unit)`` per R3.1 / R3.3.
+LOG_INTRINSICS: frozenset[str] = frozenset({"log", "log10", "log2"})
+
+# EXP — produces ``ExpWrap(arg-unit)`` per R3.2.
+EXP_INTRINSICS: frozenset[str] = frozenset({"exp"})
 
 # Raise the argument's unit to a fixed exponent. Keys are intrinsic
 # names; values are the exponent to apply.
@@ -214,6 +222,8 @@ __all__ = [
     "CODES",
     "CodeSpec",
     "DIMENSIONLESS_INTRINSICS",
+    "EXP_INTRINSICS",
+    "LOG_INTRINSICS",
     "FuncSig",
     "ModuleExports",
     "PRODUCT_INTRINSICS",
