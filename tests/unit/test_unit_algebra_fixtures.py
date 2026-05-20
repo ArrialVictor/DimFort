@@ -51,14 +51,32 @@ def _parse_expected_unit(expected: str) -> UnitExpr | None:
     """Decode a fixture ``expected`` string into a UnitExpr.
 
     ``Regular(...)`` tuples in the fixture follow the spec's slot order
-    ``(m, s, kg, K, mol, A, cd)`` which differs from the implementation's
-    table order. Resolving the impl ordering on the fly would couple the
-    runner to the unit table; instead we raise ``NotImplementedError``
-    here so the caller can ``pytest.skip``.
+    ``(m, s, kg, K, mol, A, cd)``; the implementation's default unit
+    table stores them as ``(kg, m, s, K, mol, A, cd)``. We translate
+    on the fly so the fixture stays in spec notation.
     """
     expected = expected.strip()
-    if _REGULAR_TUPLE_RE.match(expected):
-        raise NotImplementedError("Regular(...) tuple uses spec slot order")
+    m = _REGULAR_TUPLE_RE.match(expected)
+    if m:
+        from fractions import Fraction
+        raw = [p.strip() for p in m.group(1).split(",")]
+        def _num(s: str):
+            if "/" in s:
+                return Fraction(s)
+            try:
+                return int(s)
+            except ValueError:
+                return Fraction(s)
+        spec_tuple = tuple(_num(p) for p in raw)
+        if len(spec_tuple) != 7:
+            raise ValueError(
+                f"expected 7-tuple in spec slot order, got {len(spec_tuple)}: {raw}"
+            )
+        # Spec slot order: (m, s, kg, K, mol, A, cd)
+        # Impl slot order: (kg, m, s, K, mol, A, cd)
+        m_e, s_e, kg_e, k_e, mol_e, a_e, cd_e = spec_tuple
+        impl_tuple = (kg_e, m_e, s_e, k_e, mol_e, a_e, cd_e)
+        return Unit(impl_tuple, Fraction(1))
     return parse_unit(expected)
 
 
@@ -152,13 +170,6 @@ def test_fixture_case(case: dict) -> None:
     expression = case["expression"]
     if ";" in expression:
         pytest.skip("multi-statement fixture — out of scope for single-expr runner")
-    name = case.get("name", "")
-    if name == "scalar_neg_one_times_log":
-        # AST shape: `-1.0 * LOG(p)` parses as `-(1.0 * LOG(p))` so the
-        # `-` sign never reaches the math_expression's literal operand.
-        # The R5.4 rule itself is implemented (verified by unit tests
-        # via combine()) — only the unary-sign propagation is missing.
-        pytest.skip("unary-minus sign propagation not implemented (known)")
     if "=" in expression:
         # The fixture writes ``ratio = LOG(p1) - LOG(p2)`` etc. — a full
         # assignment statement. Drop the LHS so we re-use the probe-RHS
@@ -215,8 +226,6 @@ def test_fixture_case(case: dict) -> None:
     # === positive unit case ===
     try:
         expected = _parse_expected_unit(expected_raw)
-    except NotImplementedError as e:
-        pytest.skip(str(e))
     except Exception:
         pytest.skip(f"unparseable expected unit: {expected_raw!r}")
     ctx, tree = _build_ctx(source)

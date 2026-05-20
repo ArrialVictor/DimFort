@@ -89,6 +89,14 @@ def _build_derived(
                 u = _units_mod.parse(expr, partial)
             except UnknownUnitError:
                 continue
+            # Optional scalar ``factor`` multiplies the parsed unit's
+            # factor. Used for non-SI units whose value can't be
+            # expressed by combining symbols (mbar = 100 Pa, atm =
+            # 101325 Pa, etc.). Without this the only way to introduce
+            # a scale was via the prefix table.
+            factor_spec = spec.get("factor")
+            if factor_spec is not None:
+                u = Unit(u.dimension, u.factor * _coerce_factor(factor_spec))
             derived[name] = u
             if spec.get("prefixable", False):
                 prefixable.add(name)
