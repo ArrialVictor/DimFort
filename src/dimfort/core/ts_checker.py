@@ -803,6 +803,30 @@ def _emit_d14(loc: Node, ctx: _Ctx, *, detail: str) -> Diagnostic:
     )
 
 
+def _emit_d16_untag(
+    loc: Node, lhs: UnitExpr, rhs: UnitExpr, ctx: _Ctx
+) -> Diagnostic:
+    """D1.6 — implicit wrapper untag at assignment (H010 warning).
+
+    Fires when the LHS is a Regular unit and the RHS is a ``LogWrap`` /
+    ``ExpWrap`` whose inner unit dimensionally matches the LHS. The
+    assignment "untags" the wrapper — semantically OK because log/exp
+    of a unitful quantity is just a numerical value with the same
+    dimensions, but flagged so the user can decide whether the untag
+    was intentional.
+    """
+    start, end = _node_span(loc)
+    return Diagnostic(
+        file=ctx.file, start=start, end=end,
+        severity=Severity.WARNING, code="H010",
+        message=(
+            f"implicit wrapper untag: {format_unit(rhs)} assigned to "
+            f"{format_unit(lhs)} — if intentional, annotate the LHS "
+            f"as @unit{{{format_unit(rhs)}}} to silence this warning (D1.6)"
+        ),
+    )
+
+
 def _emit_h003(loc: Node, intrinsic: str, arg_unit: Unit, ctx: _Ctx) -> Diagnostic:
     start, end = _node_span(loc)
     return Diagnostic(
@@ -1585,6 +1609,22 @@ def check(
                 # literal as dimensionless would flag every physical
                 # constant declaration in the model.
                 if _is_pure_numeric_constant(value):
+                    continue
+                # Phase C D1.6: if LHS is a Regular and RHS is a
+                # wrapper whose inner dimensionally matches the LHS,
+                # demote H001 → H010 (implicit untag).
+                if (
+                    isinstance(tu, Unit)
+                    and _is_wrapper(ru)
+                    and isinstance(ru.inner, Unit)
+                    and equal_dim(tu, ru.inner)
+                ):
+                    out.append(
+                        _emit_d16_untag(
+                            target if target is not None else node,
+                            tu, ru, ctx,
+                        )
+                    )
                     continue
                 # Position points at the LHS (parity with ast_checker).
                 out.append(_emit_h001(target if target is not None else node, tu, ru, ctx))
