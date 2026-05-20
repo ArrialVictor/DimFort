@@ -1,0 +1,585 @@
+# Unit-algebra test cases — spec validation for DimFort/docs/unit-algebra.md
+#
+# Each case has:
+#   name        — short descriptive name
+#   context     — Fortran-style declarations with @unit{} annotations
+#                 (omit the annotation to test missing-unit behaviour)
+#   expression  — the RHS expression to type-check
+#   expected    — the expected resulting unit (or ERROR / WARNING marker)
+#   rules       — list of rule IDs that should fire (for trace verification)
+#   notes       — optional commentary
+
+# ============================================================================
+# Section 1: Cancellation (R2.1, R2.2)
+# ============================================================================
+
+- name: r21_log_of_exp_cancels
+  context: |
+    REAL :: x   !< @unit{K}
+  expression: "LOG(EXP(x))"
+  expected: K
+  rules: [R3.1, R3.2, R2.1]
+
+- name: r22_exp_of_log_cancels
+  context: |
+    REAL :: p   !< @unit{Pa}
+  expression: "EXP(LOG(p))"
+  expected: Pa
+  rules: [R3.1, R3.2, R2.2]
+
+- name: r22_exp_of_log_dimless_round_trip
+  context: |
+    REAL :: c   !< @unit{1}
+  expression: "EXP(LOG(c))"
+  expected: 1
+  rules: [R3.1, R2.3, R3.2, R2.3]
+  notes: |
+    Under R2.3 (collapse): LOG(c) → Rd (collapsed); EXP(Rd) → Rd (collapsed).
+    Round-trips to dim'less. Same end result as cancellation rules.
+
+- name: nested_log_exp_cancellation
+  context: |
+    REAL :: x   !< @unit{K}
+  expression: "LOG(EXP(LOG(EXP(x))))"
+  expected: K
+  rules: [R2.1, R2.2]
+  notes: cancellation applies recursively
+
+# ============================================================================
+# Section 2: LOG/EXP typing (R3.1, R3.2, R3.3, R3.4)
+# ============================================================================
+
+- name: r31_log_of_pa
+  context: |
+    REAL :: p   !< @unit{Pa}
+  expression: "LOG(p)"
+  expected: LOG(Pa)
+  rules: [R3.1]
+
+- name: r31_log_of_dimless_collapses
+  context: |
+    REAL :: x   !< @unit{1}
+  expression: "LOG(x)"
+  expected: 1
+  rules: [R3.1, R2.3]
+  notes: per R2.3, LOG(dim'less) collapses to dim'less
+
+- name: r32_exp_of_dimless_collapses
+  context: |
+    REAL :: c   !< @unit{1}
+  expression: "EXP(c)"
+  expected: 1
+  rules: [R3.2, R2.3]
+  notes: per R2.3, EXP(dim'less) collapses to dim'less
+
+- name: r33_log10_same_as_log
+  context: |
+    REAL :: p   !< @unit{Pa}
+  expression: "LOG10(p)"
+  expected: LOG(Pa)
+  rules: [R3.3]
+  notes: LOG10 has same unit semantics as LOG
+
+- name: r34_log_of_log
+  context: |
+    REAL :: p   !< @unit{Pa}
+  expression: "LOG(LOG(p))"
+  expected: LOG(LOG(Pa))
+  rules: [R3.1]
+  notes: no automatic cancellation between two LOGs; only LOG∘EXP cancels
+
+# ============================================================================
+# Section 3: Regular arithmetic (R4.1, R4.2, R4.3)
+# ============================================================================
+
+- name: r41_matching_add
+  context: |
+    REAL :: p1   !< @unit{Pa}
+    REAL :: p2   !< @unit{Pa}
+  expression: "p1 + p2"
+  expected: Pa
+  rules: [R4.1]
+
+- name: r41_mismatch_add
+  context: |
+    REAL :: p    !< @unit{Pa}
+    REAL :: t    !< @unit{K}
+  expression: "p + t"
+  expected: ERROR D1.1
+  rules: [R4.1]
+
+- name: r41_literal_cast_with_warning
+  context: |
+    REAL :: speed   !< @unit{m/s}
+  expression: "1. + speed"
+  expected: WARNING H010 D1.5; result m/s
+  rules: [R4.1, D1.5]
+  notes: numeric literal auto-cast to m/s with warning
+
+- name: r42_mul_compose
+  context: |
+    REAL :: p    !< @unit{Pa}
+    REAL :: m    !< @unit{m}
+  expression: "p * m"
+  expected: Regular(0, -2, 1, 0, 0, 0, 0)
+  rules: [R4.2]
+  notes: Pa·m = kg/(m·s²) · m = kg/s²
+
+- name: r43_power_literal
+  context: |
+    REAL :: x   !< @unit{m}
+  expression: "x ** 2"
+  expected: Regular(2, 0, 0, 0, 0, 0, 0)
+  rules: [R4.3]
+  notes: m^2
+
+- name: r43_power_nonliteral_errors
+  context: |
+    REAL :: x   !< @unit{m}
+    REAL :: k   !< @unit{1}
+  expression: "x ** k"
+  expected: ERROR D1.4
+  rules: [R4.3]
+
+- name: r43_sqrt_via_half_power
+  context: |
+    REAL :: a   !< @unit{m^2}
+  expression: "SQRT(a)"
+  expected: Regular(1, 0, 0, 0, 0, 0, 0)
+  rules: [R4.3]
+  notes: SQRT(m²) = m via fractional exponent
+
+# ============================================================================
+# Section 4: LogWrap arithmetic (R5.1 – R5.9)
+# ============================================================================
+
+- name: r51_log_homomorphism_pa
+  context: |
+    REAL :: p1   !< @unit{Pa}
+    REAL :: p2   !< @unit{Pa}
+  expression: "LOG(p1) + LOG(p2)"
+  expected: LOG(Pa^2)
+  rules: [R3.1, R5.1, R4.2]
+
+- name: r52_log_diff_pressure_ratio
+  context: |
+    REAL :: p_top   !< @unit{Pa}
+    REAL :: p_bot   !< @unit{Pa}
+  expression: "LOG(p_top) - LOG(p_bot)"
+  expected: 1
+  rules: [R3.1, R5.2, R4.2, R2.3]
+  notes: |
+    LogWrap(Pa) - LogWrap(Pa) → LogWrap(Pa/Pa) = LogWrap(dim'less)
+    → COLLAPSE via R2.3 → Regular(dim'less) = 1.
+    Log-tag lost in collapse — semantically a pressure ratio is just a number.
+
+- name: r53_hydrostatic_inner
+  context: |
+    REAL :: psol    !< @unit{Pa}
+    REAL :: dgeop   !< @unit{m^2/s^2}
+    REAL :: RT      !< @unit{m^2/s^2}
+  expression: "LOG(psol) - dgeop / RT"
+  expected: LOG(Pa)
+  rules: [R3.1, R5.3, R4.2]
+  notes: the hydrostatic-projection inner expression
+
+- name: r54_scalar_times_log
+  context: |
+    REAL :: p   !< @unit{Pa}
+  expression: "2.0 * LOG(p)"
+  expected: LOG(Pa^2)
+  rules: [R3.1, R5.4, R4.3]
+
+- name: r55_nonliteral_scalar_times_log_errors
+  context: |
+    REAL :: p    !< @unit{Pa}
+    REAL :: k    !< @unit{1}
+  expression: "k * LOG(p)"
+  expected: ERROR D1.4
+  rules: [R5.5]
+
+- name: r56_log_times_log_errors
+  context: |
+    REAL :: p1   !< @unit{Pa}
+    REAL :: p2   !< @unit{Pa}
+  expression: "LOG(p1) * LOG(p2)"
+  expected: ERROR D1.2
+  rules: [R5.6]
+
+- name: r57_log_times_unitful_errors
+  context: |
+    REAL :: p     !< @unit{Pa}
+    REAL :: mass  !< @unit{kg}
+  expression: "LOG(p) * mass"
+  expected: ERROR D1.2
+  rules: [R5.7]
+
+- name: r58_identity_times_log
+  context: |
+    REAL :: p   !< @unit{Pa}
+  expression: "1.0 * LOG(p)"
+  expected: LOG(Pa)
+  rules: [R5.8, R5.4]
+
+- name: r59_log_squared_errors
+  context: |
+    REAL :: p   !< @unit{Pa}
+  expression: "LOG(p) ** 2"
+  expected: ERROR D1.2
+  rules: [R5.9]
+  notes: (log u)^2 is not log of anything
+
+- name: r59_one_over_log_errors
+  context: |
+    REAL :: p   !< @unit{Pa}
+  expression: "1.0 / LOG(p)"
+  expected: ERROR D1.2
+  rules: [R5.9]
+  notes: division by LogWrap closes via R5.9 (LogWrap^(-1) errors)
+
+# ============================================================================
+# Section 5: ExpWrap arithmetic (R6.1 – R6.7)
+# ============================================================================
+
+- name: r61_exp_product
+  context: |
+    REAL :: t1   !< @unit{K}
+    REAL :: t2   !< @unit{K}
+  expression: "EXP(t1) * EXP(t2)"
+  expected: EXP(K)
+  rules: [R3.2, R6.1, R4.1]
+  notes: exp(t1) · exp(t2) = exp(t1+t2); inner K+K = K
+
+- name: r61_exp_product_mismatch_errors
+  context: |
+    REAL :: t   !< @unit{K}
+    REAL :: p   !< @unit{Pa}
+  expression: "EXP(t) * EXP(p)"
+  expected: ERROR D1.1
+  rules: [R6.1, R4.1]
+  notes: inner K + Pa fails per R4.1
+
+- name: r62_exp_quotient
+  context: |
+    REAL :: t1   !< @unit{K}
+    REAL :: t2   !< @unit{K}
+  expression: "EXP(t1) / EXP(t2)"
+  expected: EXP(K)
+  rules: [R6.2, R4.1]
+  notes: K - K = K (same unit, subtraction OK)
+
+- name: r63_exp_times_dimless
+  context: |
+    REAL :: x   !< @unit{K}
+  expression: "EXP(x) * 2.0"
+  expected: EXP(K)
+  rules: [R6.3]
+  notes: dim'less literal absorbed; ExpWrap tag preserved
+
+- name: r64_exp_power
+  context: |
+    REAL :: x   !< @unit{K}
+  expression: "EXP(x) ** 2"
+  expected: EXP(K^2)
+  rules: [R6.4, R4.3]
+  notes: exp(x)^2 = exp(2x); inner K scaled by 2
+
+- name: r65_exp_plus_exp_errors
+  context: |
+    REAL :: x   !< @unit{K}
+    REAL :: y   !< @unit{K}
+  expression: "EXP(x) + EXP(y)"
+  expected: ERROR D1.3
+  rules: [R6.5]
+  notes: exp(a)+exp(b) has no clean closed form
+
+- name: r66_exp_plus_unitful_errors
+  context: |
+    REAL :: x       !< @unit{K}
+    REAL :: pres    !< @unit{Pa}
+  expression: "EXP(x) + pres"
+  expected: ERROR D1.3
+  rules: [R6.6]
+
+- name: r66_exp_plus_literal_warns
+  context: |
+    REAL :: x   !< @unit{K}
+  expression: "EXP(x) + 1.0"
+  expected: WARNING H010 D1.5; result EXP(K)
+  rules: [R6.6, D1.5]
+
+- name: r67_exp_unitful_times_pressure_errors
+  context: |
+    REAL :: temp    !< @unit{K}
+    REAL :: pres    !< @unit{Pa}
+  expression: "EXP(temp) * pres"
+  expected: ERROR D1.2
+  rules: [R6.7]
+  notes: exp(K) × Pa is meaningless; R6.7 catches it
+
+# ============================================================================
+# Section 6: Cross-cases (R7.1, R7.2, R7.3)
+# ============================================================================
+
+- name: r71_log_plus_exp_errors
+  context: |
+    REAL :: p    !< @unit{Pa}
+    REAL :: t    !< @unit{K}
+  expression: "LOG(p) + EXP(t)"
+  expected: ERROR D1.3
+  rules: [R7.1]
+
+- name: r72_nested_log_addition_errors
+  context: |
+    REAL :: p1   !< @unit{Pa}
+    REAL :: p2   !< @unit{Pa}
+  expression: "LOG(LOG(p1)) + LOG(LOG(p2))"
+  expected: ERROR D1.2
+  rules: [R5.1, R5.6, R7.2]
+  notes: outer R5.1 reduces to LogWrap(LogWrap(Pa) · LogWrap(Pa)); inner R5.6 errors
+
+- name: magnus_formula
+  context: |
+    REAL, PARAMETER :: e_0 = 6.1121   !< @unit{mbar}
+    REAL :: T   !< @unit{K}
+  expression: "e_0 * EXP(17.502 * (T - 273.15) / (T - 32.18))"
+  expected: mbar
+  rules: [R4.1, R4.2, R2.3, R3.2]
+  notes: |
+    Magnus saturation-vapor-pressure formula.
+    EXP(dim'less) → Regular(dim'less) by R2.3 (collapse).
+    e_0 * Regular(dim'less) → mbar via R4.2.
+    Note: T - 273.15 will fire D1.5 (literal cast) unless 273.15 is annotated K.
+
+- name: log_dimless_times_mass
+  context: |
+    REAL :: p1   !< @unit{Pa}
+    REAL :: p2   !< @unit{Pa}
+    REAL :: m    !< @unit{kg}
+  expression: "(LOG(p1) - LOG(p2)) * m"
+  expected: kg
+  rules: [R5.2, R2.3, R4.2]
+  notes: |
+    Inner: LogWrap(Pa) - LogWrap(Pa) → LogWrap(dim'less) → Regular(dim'less) (R2.3).
+    Regular(dim'less) × kg → kg (R4.2).
+    Log-tag was already gone before the multiplication step.
+
+# ============================================================================
+# Section 7: Hydrostatic projection (the motivating real-world case)
+# ============================================================================
+
+- name: cdrag_hydrostatic_inline
+  context: |
+    REAL :: psol     !< @unit{Pa}
+    REAL :: zgeop1   !< @unit{m^2/s^2}
+    REAL :: RD       !< @unit{J/(kg*K)}
+    REAL :: t1       !< @unit{K}
+    REAL :: RETV     !< @unit{1}
+    REAL :: q1       !< @unit{1}
+  expression: "EXP(LOG(psol) - zgeop1 / (RD * t1 * (1. + RETV * MAX(q1, 0.0))))"
+  expected: Pa
+  rules: [R4.1, R4.2, R5.3, R3.1, R3.2, R2.2]
+  notes: |
+    The full hydrostatic projection from cdrag_mod.f90:300.
+    Inside-out:
+      RETV * MAX(q1, 0.0)                  :: 1
+      1. + RETV * MAX(...)                 :: 1
+      RD * t1 * (1. + ...)                 :: m^2/s^2
+      zgeop1 / (RD * t1 * (...))           :: 1   (via R4.2)
+      LOG(psol)                            :: LOG(Pa)   (via R3.1)
+      LOG(psol) - dim'less                 :: LOG(Pa)   (via R5.3)
+      EXP(LOG(Pa))                         :: Pa        (via R2.2)
+
+- name: hydrostatic_factored
+  context: |
+    REAL :: psol     !< @unit{Pa}
+    REAL :: dgeop    !< @unit{m^2/s^2}
+    REAL :: RT       !< @unit{m^2/s^2}
+    REAL :: lpref    !< @unit{LOG(Pa)}
+  expression: "lpref = LOG(psol) - dgeop / RT ; EXP(lpref)"
+  expected: Pa
+  rules: [R3.1, R5.3, R2.2]
+  notes: |
+    Factored form — Log-tag rides through the local variable.
+    The first statement: lpref :: LOG(Pa) (assignment matches annotation).
+    The second statement: EXP(LOG(Pa)) → Pa.
+
+# ============================================================================
+# Section 8: Missing-unit handling (open question — TBD behaviour)
+# ============================================================================
+
+- name: missing_annotation_propagates_unknown
+  context: |
+    REAL :: x                       # NO annotation
+    REAL :: y    !< @unit{m/s}
+  expression: "x + y"
+  expected: TBD  # what should DimFort do here?
+  rules: []
+  notes: |
+    Question: does DimFort error, warn, or treat x as unknown?
+    Per existing DimFort behaviour: probably treats x as unannotated and
+    propagates the result as m/s (taking the annotated side's unit).
+    Confirm with implementation.
+
+- name: missing_annotation_on_both_sides
+  context: |
+    REAL :: a       # NO annotation
+    REAL :: b       # NO annotation
+  expression: "a + b"
+  expected: unknown
+  rules: []
+  notes: both sides unannotated → result unknown, no error.
+
+- name: missing_inside_log
+  context: |
+    REAL :: x       # NO annotation
+  expression: "LOG(x)"
+  expected: unknown   # or LOG(unknown)?
+  rules: [R3.1]
+  notes: |
+    Question: does LOG of unknown produce LOG(unknown) or just unknown?
+    Affects subsequent diagnostics if the result is used.
+
+# ============================================================================
+# Section 9: Assignment-time soft cast (D1.6, future Phase C)
+# ============================================================================
+
+- name: assign_log_ratio_to_dimless
+  context: |
+    REAL :: p1     !< @unit{Pa}
+    REAL :: p2     !< @unit{Pa}
+    REAL :: ratio  !< @unit{1}
+  expression: "ratio = LOG(p1) - LOG(p2)"
+  expected: 1
+  rules: [R5.2, R2.3]
+  notes: |
+    With R2.3 collapse, RHS types as Regular(dim'less) = 1 directly.
+    Assignment to ratio (dim'less) is clean — no H010 warning needed.
+    (This case used to require D1.6 implicit untag; obsolete after collapse.)
+
+- name: assign_exp_dimless_to_dimless
+  context: |
+    REAL :: x       !< @unit{1}
+    REAL :: result  !< @unit{1}
+  expression: "result = EXP(x)"
+  expected: 1
+  rules: [R3.2, R2.3]
+  notes: EXP(dim'less) → dim'less (R2.3); clean assignment.
+
+# ============================================================================
+# Section 10: Adversarial / edge cases
+# ============================================================================
+
+- name: deep_nesting_round_trip
+  context: |
+    REAL :: x   !< @unit{K}
+  expression: "EXP(EXP(LOG(LOG(x))))"
+  expected: K
+  rules: [R2.1, R2.2]
+  notes: full inverse round-trip; cancellation peels one layer at a time
+
+- name: pure_dim_less_log_chain
+  context: |
+    REAL :: c1   !< @unit{1}
+    REAL :: c2   !< @unit{1}
+  expression: "LOG(c1) + LOG(c2)"
+  expected: 1
+  rules: [R3.1, R2.3, R4.1]
+  notes: |
+    LOG(c1) → Rd (collapse), LOG(c2) → Rd (collapse).
+    Rd + Rd → Rd via R4.1. Result: 1.
+
+- name: exp_zero_power
+  context: |
+    REAL :: c   !< @unit{1}
+  expression: "EXP(c) ** 0"
+  expected: 1
+  rules: [R3.2, R2.3, R4.3]
+  notes: |
+    EXP(c) → Rd by R2.3 (collapse).
+    Rd ^ 0 → Rd by R4.3. Result: 1.
+
+- name: scalar_neg_one_times_log
+  context: |
+    REAL :: p   !< @unit{Pa}
+  expression: "-1.0 * LOG(p)"
+  expected: LOG(1/Pa)
+  rules: [R5.4]
+  notes: |
+    -log(p) = log(1/p). Inner exponents negated.
+    Pa = Regular(-1,-2,1,...). Inverse = Regular(1,2,-1,...) = Pa^(-1).
+
+# ============================================================================
+# Section 11: Error propagation (R2.4) — one diagnostic per cascading error
+# ============================================================================
+
+- name: error_propagates_through_log
+  context: |
+    REAL :: p1   !< @unit{Pa}
+    REAL :: p2   !< @unit{Pa}
+  expression: "LOG(LOG(p1) * LOG(p2))"
+  expected: ERROR D1.2
+  rules: [R5.6, R2.4]
+  diagnostics_count: 1
+  notes: |
+    Inner LOG(p1) * LOG(p2) → Error via R5.6 (one D1.2 diagnostic emitted).
+    Outer LOG sees Error → propagates Error silently per R2.4.
+    Total diagnostics emitted: 1 (at the inner site).
+
+- name: error_propagates_through_exp_chain
+  context: |
+    REAL :: p1   !< @unit{Pa}
+    REAL :: p2   !< @unit{Pa}
+  expression: "EXP(LOG(p1) * LOG(p2)) + 1.0"
+  expected: ERROR D1.2
+  rules: [R5.6, R2.4]
+  diagnostics_count: 1
+  notes: |
+    LOG(p1) * LOG(p2) → Error via R5.6 (1 diagnostic).
+    EXP(Error) → Error silently (R2.4).
+    Error + 1.0 → Error silently (R2.4).
+    Total diagnostics: 1.
+
+- name: error_propagates_through_assignment
+  context: |
+    REAL :: p     !< @unit{Pa}
+    REAL :: t     !< @unit{K}
+    REAL :: out   !< @unit{Pa}
+  expression: "out = (p + t) * 2.0"
+  expected: ERROR D1.1
+  rules: [R4.1, R2.4]
+  diagnostics_count: 1
+  notes: |
+    p + t → Error via R4.1 (Pa + K mismatch; 1 diagnostic).
+    Error * 2.0 → Error silently.
+    Assignment of Error to out → Error silently (no additional diagnostic).
+    Total diagnostics: 1.
+
+- name: independent_errors_each_emit_diagnostic
+  context: |
+    REAL :: p     !< @unit{Pa}
+    REAL :: t     !< @unit{K}
+    REAL :: m     !< @unit{m}
+    REAL :: s     !< @unit{s}
+  expression: "(p + t) * (m + s)"
+  expected: ERROR D1.1
+  rules: [R4.1, R2.4]
+  diagnostics_count: 2
+  notes: |
+    TWO independent erroring sub-expressions: (p+t) and (m+s).
+    Each fires R4.1 → 2 D1.1 diagnostics.
+    Outer multiplication: Error × Error → Error silently.
+    Total diagnostics: 2 (one per independent error site).
+
+- name: error_in_log_argument
+  context: |
+    REAL :: p   !< @unit{Pa}
+    REAL :: t   !< @unit{K}
+  expression: "LOG(p + t)"
+  expected: ERROR D1.1
+  rules: [R4.1, R2.4]
+  diagnostics_count: 1
+  notes: |
+    p + t errors via R4.1.
+    LOG(Error) → Error silently per R2.4 (does NOT fire R3.1's typing rule).
+    Total diagnostics: 1.
