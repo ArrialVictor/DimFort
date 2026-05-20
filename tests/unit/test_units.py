@@ -321,14 +321,14 @@ def test_combine_r58_identity_times_log():
 # R5.9 — LogWrap^k for k ≠ 1 → D1.2
 def test_power_r59_log_squared_errors():
     a = wrap_log(_u("Pa"))
-    result, diag = power(a, 2, exponent_is_literal=True)
+    result, diag = power(a, parse("1"), 2)
     assert diag == "D1.2"
     assert result is None
 
 
 def test_power_r59_log_to_one_is_identity():
     a = wrap_log(_u("Pa"))
-    result, diag = power(a, 1, exponent_is_literal=True)
+    result, diag = power(a, parse("1"), 1)
     assert diag is None
     assert result == a
 
@@ -359,7 +359,7 @@ def test_combine_r41_mismatch_d11():
 
 # R4.3 — Regular ^ non-literal → D1.4
 def test_power_r43_nonliteral_errors():
-    result, diag = power(_u("m"), 2, exponent_is_literal=False)
+    result, diag = power(_u("m"), None, None)
     assert diag == "D1.4"
     assert result is None
 
@@ -411,7 +411,7 @@ def test_combine_r63_exp_div_dimless():
 # R6.4 — ExpWrap ^ literal_k → ExpWrap(k · inner)
 def test_power_r64_exp_squared():
     a = wrap_exp(_u("K"))
-    result, diag = power(a, 2, exponent_is_literal=True)
+    result, diag = power(a, parse("1"), 2)
     assert diag is None
     assert result == wrap_exp(_u("K").pow(2))
 
@@ -461,3 +461,88 @@ def test_combine_log_plus_exp_d13():
     result, diag = combine("+", a, b)
     assert diag == "D1.3"
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Phase B follow-up: 4×4 power() table + D1.7 (exponent must be dim'less)
+# ---------------------------------------------------------------------------
+
+
+# Gate 1 — exponent type-check (D1.7) fires regardless of base.
+
+def test_power_d17_rd_base_rn_exponent():
+    """``2.0 ** speed`` style: dim'less base, unitful exponent → D1.7."""
+    result, diag = power(_u("1"), _u("m/s"), None)
+    assert diag == "D1.7"
+    assert result is None
+
+
+def test_power_d17_rn_base_rn_exponent():
+    """``Pa ** speed``: D1.7 (regardless of base's units)."""
+    result, diag = power(_u("Pa"), _u("m/s"), None)
+    assert diag == "D1.7"
+
+
+def test_power_d17_ln_exponent_errors():
+    """Exponent is a LogWrap → D1.7."""
+    result, diag = power(_u("Pa"), wrap_log(_u("Pa")), None)
+    assert diag == "D1.7"
+
+
+def test_power_d17_en_exponent_errors():
+    """Exponent is an ExpWrap → D1.7."""
+    result, diag = power(_u("Pa"), wrap_exp(_u("K")), None)
+    assert diag == "D1.7"
+
+
+def test_power_d17_skipped_when_exponent_unit_unknown():
+    """Unknown exponent unit (unannotated variable) does NOT fire D1.7 —
+    U005 on the declaration is the right signal."""
+    result, diag = power(_u("Pa"), None, None)
+    # Rn base with non-literal exponent → D1.4 (existing rule), not D1.7.
+    assert diag == "D1.4"
+
+
+# Gate 2 — base-specific rules (when exponent is dim'less).
+
+def test_power_rd_base_non_literal_exponent_returns_rd():
+    """The (α) refinement: Rd ^ non-literal-dim'less → Rd. 0·k = 0."""
+    result, diag = power(_u("1"), _u("1"), None)
+    assert diag is None
+    assert result == _u("1")
+
+
+def test_power_rd_base_literal_exponent_returns_rd():
+    result, diag = power(_u("1"), _u("1"), 5)
+    assert diag is None
+    assert result == _u("1")
+
+
+def test_power_rn_base_literal_exponent_scales():
+    result, diag = power(_u("m"), _u("1"), 2)
+    assert diag is None
+    assert result == _u("m").pow(2)
+
+
+def test_power_rn_base_non_literal_exponent_fires_d14():
+    """Real Exner-pattern case: ``p ** kappa`` where kappa is non-literal."""
+    result, diag = power(_u("Pa"), _u("1"), None)
+    assert diag == "D1.4"
+
+
+def test_power_ln_base_identity_only():
+    result, diag = power(wrap_log(_u("Pa")), _u("1"), 1)
+    assert diag is None
+    result, diag = power(wrap_log(_u("Pa")), _u("1"), 2)
+    assert diag == "D1.2"
+
+
+def test_power_en_base_literal_scales_inner():
+    result, diag = power(wrap_exp(_u("K")), _u("1"), 2)
+    assert diag is None
+    assert result == wrap_exp(_u("K").pow(2))
+
+
+def test_power_en_base_non_literal_fires_d14():
+    result, diag = power(wrap_exp(_u("K")), _u("1"), None)
+    assert diag == "D1.4"

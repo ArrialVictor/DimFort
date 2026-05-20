@@ -185,7 +185,17 @@ def _assign(
 
 
 def attach(scan: ScanResult) -> AttachmentResult:
-    """Match a stage-1 :class:`ScanResult`'s annotations to its declarations."""
+    """Match a stage-1 :class:`ScanResult`'s annotations to its declarations.
+
+    INTEGER (and LOGICAL / CHARACTER) declarations that carry no
+    explicit ``@unit{}`` annotation default to dimensionless. The
+    Fortran convention is that INTEGER variables are indices, counts,
+    iteration bounds, enumerations, or flags — all dim'less. Treating
+    them as dim'less by default keeps the U005 "missing annotation"
+    signal focused on REAL variables, where unit mismatches actually
+    matter. A user who needs a unit-bearing integer (epoch seconds,
+    say) writes the annotation explicitly.
+    """
     result = AttachmentResult(routine_scopes=scan.routine_scopes)
     for ann in scan.annotations:
         if ann.kind is AnnotationKind.POST:
@@ -237,4 +247,44 @@ def attach(scan: ScanResult) -> AttachmentResult:
                 enclosing_type=decl.enclosing_type,
                 scope=decl.scope,
             )
+    _apply_intrinsic_defaults(result, scan.declarations)
     return result
+
+
+# Intrinsic Fortran types whose declared variables are dim'less by
+# language convention when the user provides no ``@unit{}`` annotation:
+#
+#   integer       — indices, counts, iteration variables, flags
+#   logical       — boolean; not a measured quantity
+#   character     — text; not a measured quantity
+#
+# REAL, COMPLEX, and DOUBLE PRECISION carry physical measurements
+# by convention and are NOT defaulted — those declarations still
+# fire U005 when unannotated.
+_DIMLESS_DEFAULT_TYPES = frozenset({"integer", "logical", "character"})
+
+
+def _apply_intrinsic_defaults(
+    result: AttachmentResult, declarations: tuple[DeclarationSite, ...]
+) -> None:
+    """Fill in ``@unit{1}`` for unannotated INTEGER / LOGICAL / CHARACTER
+    declarations.
+
+    Annotated declarations win — if the user wrote ``integer :: t  !<
+    @unit{s}`` we keep ``s``. Derived-type fields skip the default
+    (each field still needs an explicit annotation; the default would
+    interfere with U002 on the type-block).
+    """
+    for decl in declarations:
+        if decl.intrinsic_type not in _DIMLESS_DEFAULT_TYPES:
+            continue
+        if decl.enclosing_type is not None:
+            # Field of a derived type — leave to the user.
+            continue
+        for name in decl.names:
+            scope_key = (decl.scope, name)
+            if scope_key in result.var_units_by_scope:
+                continue  # explicit annotation already attached
+            result.var_units_by_scope[scope_key] = "1"
+            if name not in result.var_units:
+                result.var_units[name] = "1"

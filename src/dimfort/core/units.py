@@ -349,43 +349,101 @@ def combine(
 
 
 def power(
-    base: UnitExpr, exponent: Number, *, exponent_is_literal: bool,
+    base: UnitExpr,
+    exponent_unit: UnitExpr | None = None,
+    exponent_value: Number | None = None,
 ) -> tuple[UnitExpr | None, str | None]:
-    """Apply ``base ^ exponent`` at the unit level.
+    """Apply ``base ^ exponent`` at the unit level (spec Table 14.4).
 
-    ``exponent_is_literal`` is True when the exponent comes from a
-    numeric literal in source; False when it's a variable / expression
-    whose value we know rationally but not statically (currently the
-    checker only resolves literal exponents — non-literal returns
-    ``(None, 'D1.4')`` here).
+    Dispatch is a 4×4 (base × exponent) table that decomposes into two
+    gates:
+
+    1. **Exponent type-check (D1.7)** — an exponent must be
+       dimensionless. ``base ^ Rn``, ``base ^ Ln``, ``base ^ En``
+       all error with D1.7 regardless of ``base``. The mathematical
+       reading via ``a^b = exp(b·log(a))`` would give a typed
+       ExpWrap result, but in practice ``2.0 ** speed`` style
+       expressions are virtually always bugs; the gate surfaces
+       them at the power site. (D1.7 defaults to a WARNING, so
+       projects that genuinely live in exp-tagged space can opt
+       out or be tolerated by default.)
+
+    2. **Base-specific value gate** — once the exponent is known
+       to be dim'less, the base determines whether the value
+       matters:
+
+         - ``Rd`` (dim'less): result is always ``Rd``. ``0·k = 0``
+           for any ``k`` — literal, non-literal, integer, irrational.
+           This is the LMDZ-noise-closing refinement to R4.3's
+           (Rd, non-literal-k) cell.
+         - ``Rn``: result is ``Rn(k·t)`` if the exponent value is
+           a known literal rational; ``D1.4`` if not (classic Exner
+           ``p^kappa`` pattern needing OQ4 to resolve precisely).
+         - ``Ln``: result is ``Ln`` only for the trivial identity
+           ``k = 1`` (R5.9); otherwise ``D1.2``.
+         - ``En``: ``ExpWrap(k·U)`` if ``k`` is known literal
+           (R6.4); ``D1.4`` if not.
+
+    ``exponent_unit`` is the resolved unit of the exponent expression
+    (or ``None`` if the checker couldn't determine it — usually
+    because the variable lacks an annotation; U005 surfaces that
+    underlying issue, so we do NOT fire D1.7 on unknown-unit
+    exponents).
+
+    ``exponent_value`` is the literal rational extracted at the
+    AST level, or ``None`` for non-literal expressions.
     """
     from dimfort.core.trace import trace_step
-    if not exponent_is_literal:
+
+    # ---- Gate 1: exponent must be dimensionless --------------------
+    # Unknown exponent unit is treated as "could be dim'less" —
+    # don't fire D1.7. The unannotated-declaration warning (U005)
+    # is the right diagnostic for the underlying issue; firing
+    # D1.7 here would double-flag the same code.
+    if exponent_unit is not None and not is_dimensionless(exponent_unit):
         trace_step("R4.3", (base,), None)
-        return None, "D1.4"
+        return None, "D1.7"
+
+    # ---- Gate 2: base-specific result ------------------------------
     if isinstance(base, Unit):
+        if is_dimensionless(base):
+            # Rd ^ anything-dim'less = Rd. ``0·k = 0`` for every k,
+            # so the result's dimension is independent of the
+            # exponent's value or literalness.
+            trace_step("R4.3", (base,), base)
+            return base, None
+        # Rn base — need the literal value to scale dims.
+        if exponent_value is None:
+            trace_step("R4.3", (base,), None)
+            return None, "D1.4"
         try:
-            result = base.pow(exponent)
+            result = base.pow(exponent_value)
             trace_step("R4.3", (base,), result)
             return result, None
         except Exception:
             return None, None
+
     if isinstance(base, LogWrap):
-        if exponent == 1:
+        if exponent_value == 1:
             trace_step("R5.9", (base,), base)
             return base, None
         trace_step("R5.9", (base,), None)
         return None, "D1.2"
+
     if isinstance(base, ExpWrap):
-        if exponent == 1:
+        if exponent_value is None:
+            trace_step("R6.4", (base,), None)
+            return None, "D1.4"
+        if exponent_value == 1:
             trace_step("R6.4", (base,), base)
             return base, None
-        new_inner = _logwrap_inner_pow(base.inner, exponent)
+        new_inner = _logwrap_inner_pow(base.inner, exponent_value)
         if new_inner is None:
             return None, None
         result = wrap_exp(new_inner)
         trace_step("R6.4", (base,), result)
         return result, None
+
     return None, None
 
 

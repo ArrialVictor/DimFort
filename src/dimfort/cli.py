@@ -153,6 +153,9 @@ def _run_check(args: argparse.Namespace) -> int:
     config = load_config(roots[0])
     if config.units_file is not None:
         unit_config.install_default(config.units_file)
+    if config.diagnostic_severities:
+        from dimfort.core.diagnostics import set_severity_overrides
+        set_severity_overrides(config.diagnostic_severities)
     # Phase D: activate unit-algebra tracing for the duration of the
     # check if --trace was passed. Per-statement traces inside the
     # checker pick up activation via current_trace() != None.
