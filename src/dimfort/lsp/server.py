@@ -92,7 +92,7 @@ from dimfort.core._source_io import FORTRAN_EXTS as _FORTRAN_EXTS
 from dimfort.core.diagnostics import Diagnostic, Severity
 from dimfort.core.multifile import WorksetResult, check_files
 from dimfort.core.symbols import FuncSig, ModuleExports
-from dimfort.core.units import Unit
+from dimfort.core.units import Unit, UnitExpr
 from dimfort.core.units import base_symbols as _base_symbols
 from dimfort.core.workspace_index import (
     WorkspaceIndex,
@@ -622,7 +622,7 @@ def _to_superscript(s: str) -> str:
     return "".join(_SUPERSCRIPTS.get(c, c) for c in s)
 
 
-def _unit_pretty(u: "UnitExpr | None") -> str:
+def _unit_pretty(u: UnitExpr | None) -> str:
     """Render a Unit using Unicode (× for product, ⁿ superscripts, /
     for division). KaTeX isn't enabled in VSCode's default hover, so
     we keep everything in plain text.

@@ -22,20 +22,20 @@ from pathlib import Path
 import pytest
 import yaml
 
-from dimfort.core import ts_parser, unit_config  # noqa: F401
 from dimfort.core import annotations as _ann
 from dimfort.core import attach as _attach
-from dimfort.core import ts_checker
+from dimfort.core import ts_checker, ts_parser, unit_config  # noqa: F401
 from dimfort.core import ts_parser as ts
+from dimfort.core.ts_checker import _Ctx, _resolve
 from dimfort.core.units import (
     DEFAULT_TABLE,
-    LogWrap,
     Unit,
     UnitExpr,
     equal_dim,
+)
+from dimfort.core.units import (
     parse as parse_unit,
 )
-from dimfort.core.ts_checker import _Ctx, _resolve
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "unit_algebra_cases.yaml"
 

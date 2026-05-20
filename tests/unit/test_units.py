@@ -91,7 +91,6 @@ def test_no_warning_when_unambiguous():
 from dimfort.core.units import (  # noqa: E402
     ExpWrap,
     LogWrap,
-    Unit,
     format_unit,
     is_dimensionless,
     wrap_exp,
