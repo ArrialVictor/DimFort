@@ -662,12 +662,18 @@ def _unit_pretty(u: "UnitExpr | None") -> str:
 
 
 def _hover_text(name: str, unit_or_message: str, *, show_unit_label: bool = True) -> str:
-    """Render a single-symbol hover (variable or struct member)."""
+    """Render a single-symbol hover (variable or struct member).
+
+    Marker convention mirrors the trace-mode hover header:
+    🟢 = known unit, 🟡 = no annotation / unresolved.
+    """
     if show_unit_label:
         body = f"**{name}** : {unit_or_message}"
+        marker = "🟢"
     else:
         body = f"**{name}** — {unit_or_message}"
-    return f"**DimFort**\n\n{body}"
+        marker = "🟡"
+    return f"**{marker} DimFort**\n\n{body}"
 
 
 def _sig_render_md(name: str, sig: FuncSig) -> str:
@@ -683,7 +689,7 @@ def _sig_render_md(name: str, sig: FuncSig) -> str:
 
 
 def _hover_signature(name: str, sig: FuncSig) -> str:
-    return f"**DimFort**\n\n{_sig_render_md(name, sig)}"
+    return f"**🟢 DimFort**\n\n{_sig_render_md(name, sig)}"
 
 
 # Module hover caps. VSCode's hover popup is scrollable, so we
@@ -713,15 +719,15 @@ def _module_hover_md(
     """
     if external:
         return (
-            f"**DimFort**\n\n"
+            f"**🟢 DimFort**\n\n"
             f"**module `{module_name}`** *(external — treated as known)*"
         )
     if exports is None or unresolved:
         return (
-            f"**DimFort**\n\n"
+            f"**🟡 DimFort**\n\n"
             f"**module `{module_name}`** — *not found in workset*"
         )
-    lines: list[str] = ["**DimFort**\n", f"**module `{exports.name}`**"]
+    lines: list[str] = ["**🟢 DimFort**\n", f"**module `{exports.name}`**"]
     # Walk every declared module variable (in source order), emitting
     # the unit when one was attached and a "no unit annotation"
     # placeholder when not. Surfacing both states in the same list
@@ -919,7 +925,11 @@ def _resolve_hover(
                     result, source, str(resolved_path), path=resolved_path,
                 )
                 unit = ts_checker._resolve(call_hit, ctx, source)
-                label = f"{name}(...)"
+                # Show the full source text of the call rather than
+                # `name(...)` — the user sees the exact expression
+                # whose unit is being reported.
+                label = _ts.node_text(call_hit, source)
+                label = " ".join(label.split())  # collapse stray whitespace
                 return _hover_text(label, _unit_pretty(unit)), _node_lsp_range(callee)
 
     # 4. Bare identifier — variable reference. Includes call-callee
