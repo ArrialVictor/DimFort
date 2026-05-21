@@ -26,8 +26,10 @@ force = mass * velocity            ! diagnosed: force unit is kg, expected kg*m/
 > quantities (D1.2 – D1.6), per-rule provenance traces, intrinsics,
 > user-defined function and subroutine calls, derived-type field
 > access, rational `**` exponents, multi-file worksets, a workspace-
-> aware LSP server with live-edit diagnostics, hover (compact or
-> full-tree trace mode), inlay hints, go-to-definition, code lens,
+> aware LSP server with live-edit diagnostics, per-surface hover
+> (call / subroutine / expression, each Short or Detailed with a
+> formal-vs-actual pairing or full unit-algebra trace), inlay
+> hints, go-to-definition, code lens,
 > code actions, completion, and a CLI that accepts files or
 > directories.
 
@@ -143,10 +145,19 @@ dimfort check --trace src/cdrag_mod.f90
 ```
 
 Each error / warning prints the firing rule IDs (`R3.1`, `R5.6`, …)
-under the message. The VSCode extension toggles the same view in
-hover: run **DimFort: Toggle Full Unit Trace in Hover** from the
-Command Palette and any hover inside an assignment shows an ASCII
-tree of the RHS expression with the rule chain on each node.
+under the message. The VSCode extension surfaces the same trace in
+hover, and lets you pick the depth per surface — call, subroutine,
+expression — via the `DimFort: Hover` settings (`Short` for a
+one-line summary, `Detailed` for the full unit-algebra tree with
+per-row 🟢/🟡/🔴 markers).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/hover-expression-detailed-violation_dark.png">
+  <img width="640" src="docs/img/hover-expression-detailed-violation_light.png" alt="Detailed expression hover showing a homogeneity violation propagating up the unit-algebra tree">
+</picture>
+
+See [docs/hover-ui.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/hover-ui.md)
+for the layout spec.
 
 See [docs/annotations.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/annotations.md)
 for the full reference: unit-expression grammar, continuation-line

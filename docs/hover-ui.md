@@ -23,6 +23,12 @@ Header is always `**{marker} DimFort**` followed by a blank line and the
 body. The body uses a fenced code block (` ``` `) so monospace
 alignment is preserved.
 
+The header marker aggregates the per-row markers in the body:
+**🔴** if any row is 🔴, else **🟡** if any row is 🟡, else **🟢**.
+A 🔴 deeper in a sub-tree propagates up — every ancestor whose unit
+is `?` because of that violation is also tagged 🔴 (a 🟡 leaf is just
+unknown, but a 🔴 leaf forces every operator above it to fail too).
+
 
 ## Surfaces and settings
 
@@ -55,6 +61,11 @@ When multiple surfaces would fire at the same cursor position, the
 
 ### Short (`functionCalls = "Short"`)
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/hover-call-short_dark.png">
+  <img width="640" src="img/hover-call-short_light.png" alt="Short call hover">
+</picture>
+
 ```
 log : ?
 
@@ -74,9 +85,15 @@ else 🟡 if any row is 🟡; else 🟢.
 
 ### Detailed (`functionCalls = "Detailed"`)
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/hover-call-detailed_dark.png">
+  <img width="640" src="img/hover-call-detailed_light.png" alt="Detailed call hover with sub-trees">
+</picture>
+
 Same as Short, plus a sub-tree under any non-trivial actual argument
 showing how its unit was derived. Bare identifiers and literals do not
-expand (the row already shows everything).
+expand (the row already shows everything). Sub-tree rows carry their
+own 🟢/🟡/🔴 marker, right-aligned after the resolved unit.
 
 ```
 foo : Pa
@@ -84,8 +101,8 @@ foo : Pa
      Signature      Call
   🟢  a : Pa    ◂  p1 : Pa
   🟢  b : Pa    ◂  p2 + p1 : Pa
-      ├── p2  :  Pa
-      └── p1  :  Pa
+      ├── p2  :  Pa   🟢
+      └── p1  :  Pa   🟢
 ```
 
 
@@ -116,16 +133,19 @@ As above, with sub-trees under any computed actual.
 
 ## Layout: expression
 
-The expression surface covers five cursor positions:
+The expression surface covers six cursor positions:
 
 1. Bare identifier
-2. Assignment statement (cursor not on a bare identifier — on `=`, an
-   operator, or whitespace inside the statement)
-3. Relational expression (`<`, `<=`, `==`, `/=`, `>`, `>=`) — has no
+2. Binary operator (`+`, `-`, `*`, `/`, `**`) — local check on its
+   parent math expression. `+` / `-` are homogeneity-checked
+   (operands must match); `*` / `/` / `**` aren't and report the
+   sub-expression's resolved unit.
+3. Assignment `=` token, or whitespace inside the assignment
+4. Relational expression (`<`, `<=`, `==`, `/=`, `>`, `>=`) — has no
    resulting unit, but its two operands must be homogeneous
-4. Computed sub-expression (call arg, IF/ELSEIF/WHERE condition body, DO
+5. Computed sub-expression (call arg, IF/ELSEIF/WHERE condition body, DO
    loop bound, SELECT CASE selector)
-5. Numeric literal
+6. Numeric literal
 
 
 ### Short
@@ -140,8 +160,41 @@ paprs : kg/(m×s²)
 
 Header marker: 🟢 if annotated, 🟡 if unannotated.
 
-**Assignment** (cursor not on a bare identifier — on `=`, operator,
-whitespace inside the statement)
+**Binary operator** (cursor on `+`, `-`, `*`, `/`, `**`)
+
+For `+` and `-` — one-line homogeneity check on the operator's two
+operands (the same shape as the assignment hover, since both rules
+require unit equality):
+
+```
+🟢 DimFort
+
+a : K   ◂   b : K
+```
+
+For `*`, `/`, `**` — there's no homogeneity requirement, so the
+hover just reports the resolved unit of the whole sub-expression:
+
+```
+🟢 DimFort
+
+a * b : K×m
+```
+
+**Assignment** (cursor on `=` or whitespace inside the statement)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/hover-expression-short-assignment_dark.png">
+  <img width="640" src="img/hover-expression-short-assignment_light.png" alt="Short assignment hover">
+</picture>
+
+A homogeneity violation in the same shape — Pa²/s² vs m/s² (real LMDZ
+finding at `calfis.f90:671`):
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/hover-expression-short-mismatch_dark.png">
+  <img width="640" src="img/hover-expression-short-mismatch_light.png" alt="Short assignment hover with a homogeneity mismatch">
+</picture>
 
 ```
 🟢 DimFort
@@ -192,24 +245,60 @@ Cursor on a bare identifier behaves the same as Short — there's nothing
 to expand.
 
 For the other three cursor positions, the body is the unit-algebra rule
-chain rendered as an ASCII tree:
+chain rendered as an ASCII tree. Each row carries a per-node marker in
+a right-aligned column so the reader can scan vertically for trouble:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/hover-expression-detailed-clean_dark.png">
+  <img width="640" src="img/hover-expression-detailed-clean_light.png" alt="Detailed expression hover, all rows green">
+</picture>
 
 ```
 🟢 DimFort
 
 x = log(p1) + log(p2)
-├── x  :  LOG(Pa²)
-└── log(p1) + log(p2)  :  LOG(Pa²)  (R4.1)
-    ├── log(p1)  :  LOG(Pa)  (R5.1)
-    │   └── p1   :  Pa
-    └── log(p2)  :  LOG(Pa)  (R5.1)
-        └── p2   :  Pa
+├── x                  :  LOG(Pa²)   🟢
+└── log(p1) + log(p2)  :  LOG(Pa²)   🟢   (R4.1)
+    ├── log(p1)        :  LOG(Pa)    🟢   (R5.1)
+    │   └── p1         :  Pa         🟢
+    └── log(p2)        :  LOG(Pa)    🟢   (R5.1)
+        └── p2         :  Pa         🟢
+```
+
+A violation example — `+` on two different units propagates 🔴 up the
+spine:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/hover-expression-detailed-violation_dark.png">
+  <img width="640" src="img/hover-expression-detailed-violation_light.png" alt="Detailed expression hover with a homogeneity violation propagating up the tree">
+</picture>
+
+```
+🔴 DimFort
+
+0.5 * (a + b) * c  :  ?  🔴
+├── 0.5            :  1  🟢
+├── a + b          :  ?  🔴   (R4.1)
+│   ├── a          :  m²/s²  🟢
+│   └── b          :  m/s²   🟢
+└── c              :  ?  🟡
 ```
 
 Root row is the whole assignment / condition / argument. Each branch is
 a sub-expression; rule IDs (R3.1, R4.1, R5.1, …) annotate each rule
 fire so the reader can map the trace to
 [unit-algebra.md](unit-algebra.md).
+
+**Per-row marker semantics:**
+
+- 🟢 — this node resolved to a unit.
+- 🔴 — *local* homogeneity check failed (a `+` / `-` / relational with
+  two known-but-different operand units), *or* a 🔴 descendant
+  propagated upward through `*` / `/` / a call etc. — anywhere the
+  parent's unit is `?` because of the deeper violation.
+- 🟡 — the node's unit is `?` for some other reason: an unannotated
+  identifier, an intrinsic outside the supported set, a partial
+  resolution where one operand is unknown.
 
 
 ## Examples by cursor position
@@ -222,7 +311,7 @@ These ground the rules above with concrete cursor placements.
 |---|---|---|---|
 | `r` | identifier | `r : LOG(Pa²)` | (same as Short) |
 | `=` | assignment | `r : LOG(Pa²)   ◂   log(p1) + log(p2) : LOG(Pa²)` | tree |
-| `+` | assignment | (same) | tree |
+| `+` | binary operator | `log(p1) : LOG(Pa)   ◂   log(p2) : LOG(Pa)` (homogeneity check on the operands of `+`) | tree |
 | `log` (first) | function call | `log : ?` + pairing | + sub-trees |
 | `p1` | identifier | `p1 : Pa` | (same as Short) |
 | `(`, `)`, spaces | assignment | (same as on `=`) | tree |
@@ -233,7 +322,7 @@ These ground the rules above with concrete cursor placements.
 | Cursor on | Surface | Short body | Detailed body |
 |---|---|---|---|
 | `p` | identifier | `p : Pa` | (same as Short) |
-| `>` | relational | `p : Pa   ◂   0.0 : 1   🟡` (homogeneity check; literals are dim'less) | tree |
+| `>` | relational | `p : Pa   ◂   0.0 : 1   🔴` (Pa vs dim'less literal — homogeneity violation) | tree |
 | `0.0` | numeric literal | `0.0 : 1` | (same as Short) |
 | `if`, `then`, `(`, `)` | (no hover) | — | — |
 
@@ -245,6 +334,6 @@ These ground the rules above with concrete cursor placements.
 | `drag_noro_strato` | subroutine call | pairing layout (see above) |
 | `p1` | identifier | `p1 : Pa` |
 | `p2` | identifier | `p2 : Pa` |
-| `+` | computed sub-expr | `p2 + 1.0 : Pa` |
+| `+` | binary operator | `p2 : Pa   ◂   1.0 : 1   🔴` (homogeneity violation — Pa vs dim'less literal) |
 | `1.0` | numeric literal | `1.0 : 1` |
 | `t_seri` | identifier | `t_seri : ?` (unannotated) |

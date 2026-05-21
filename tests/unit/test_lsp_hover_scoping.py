@@ -447,12 +447,15 @@ def test_expression_short_subexpr_in_call_arg(tmp_path: Path):
     f = tmp_path / "subexpr.f90"
     f.write_text(src)
     _server._features.hover_expressions = "short"
-    # Cursor on `+` inside `a + b` (col 14 of line 4).
+    # Cursor on `+` inside `a + b` (col 14 of line 4). The operator
+    # is more specific than the enclosing call arg, so the hover
+    # renders the homogeneity check on the two operands.
     hit = _drive_hover(f, 4, 14)
     assert hit is not None
     text, _ = hit
-    assert "a + b" in text
-    # Both operands are Pa, so the sub-expression resolves cleanly.
+    assert "a" in text and "b" in text
+    assert "◂" in text
+    # Both operands are Pa → 🟢.
     assert "🟢 DimFort" in text
 
 
