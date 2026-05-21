@@ -248,9 +248,9 @@ def test_trace_hover_inside_call_argument(tmp_path: Path):
         hit = _drive_trace_hover(f, 4, 14)
         assert hit is not None
         text, _ = hit
-        assert "🟡 DimFort" in text
+        # Header now reflects the worst row — all clean → 🟢.
+        assert "🟢 DimFort" in text
         assert "p1 + p2" in text
-        # Both operands resolved to the same unit (Pa, shown in base form).
         assert "R4.1" in text  # addition homogeneity rule fired
     finally:
         _server._features.hover_expressions = "short"
@@ -270,11 +270,12 @@ def test_trace_hover_inside_if_condition(tmp_path: Path):
     f.write_text(src)
     _server._features.hover_expressions = "detailed"
     try:
-        # Column 9 sits inside `p1 + p2 > 0.0`.
+        # Column 9 sits inside `p1 + p2 > 0.0`. The relational compares
+        # Pa to a dim'less literal → 🔴 homogeneity violation.
         hit = _drive_trace_hover(f, 4, 9)
         assert hit is not None
         text, _ = hit
-        assert "🟡 DimFort" in text
+        assert "🔴 DimFort" in text
         assert "p1" in text and "p2" in text
     finally:
         _server._features.hover_expressions = "short"
@@ -294,11 +295,12 @@ def test_trace_hover_inside_do_bound(tmp_path: Path):
     f.write_text(src)
     _server._features.hover_expressions = "detailed"
     try:
-        # Column 15 sits inside `n + 1`.
+        # Column 15 sits inside `n + 1`. Both operands are integer
+        # default dim'less → 🟢.
         hit = _drive_trace_hover(f, 4, 15)
         assert hit is not None
         text, _ = hit
-        assert "🟡 DimFort" in text
+        assert "🟢 DimFort" in text
     finally:
         _server._features.hover_expressions = "short"
 
@@ -452,6 +454,32 @@ def test_expression_short_subexpr_in_call_arg(tmp_path: Path):
     assert "a + b" in text
     # Both operands are Pa, so the sub-expression resolves cleanly.
     assert "🟢 DimFort" in text
+
+
+def test_expression_short_assignment_skips_line_continuation(tmp_path: Path):
+    """Fortran line-continuation tokens (``&``) appear as children of
+    the assignment alongside the actual RHS expression. The RHS picker
+    must skip them and land on the real expression, not on ``&``."""
+    src = (
+        "subroutine demo\n"
+        "  real :: a   !< @unit{Pa}\n"
+        "  real :: b   !< @unit{Pa}\n"
+        "  real :: r   !< @unit{Pa}\n"
+        "  r = &\n"
+        "    a + b\n"
+        "end subroutine\n"
+    )
+    f = tmp_path / "cont.f90"
+    f.write_text(src)
+    _server._features.hover_expressions = "short"
+    # Cursor on `=` (col 5 of line 5).
+    hit = _drive_hover(f, 5, 5)
+    assert hit is not None
+    text, _ = hit
+    # The RHS in the rendered hover must be the actual expression,
+    # not the continuation glyph.
+    assert "a + b" in text
+    assert "& : ?" not in text
 
 
 def test_expression_short_numeric_literal(tmp_path: Path):

@@ -1480,7 +1480,13 @@ def _expression_hover_for(
         if c.type == "=":
             saw_eq = True
             continue
-        if not saw_eq and c.type not in ("=",):
+        # Fortran line-continuation tokens (``&`` at end of one line
+        # and start of the next) appear as children alongside the
+        # actual RHS expression. Skip them so the RHS picker lands on
+        # the real expression instead of the continuation glyph.
+        if c.type == "&":
+            continue
+        if not saw_eq:
             lhs = lhs or c
         elif saw_eq:
             rhs = c
@@ -1492,7 +1498,7 @@ def _expression_hover_for(
     ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
     if _features.hover_expressions == "short":
         return _render_assignment_short(asn, lhs, rhs, ctx, source)
-    rows: list[tuple[str, str, str]] = []
+    rows: list[tuple[str, str | None, str, str]] = []
     # Root: the whole assignment. No rule fires "for" an assignment
     # itself; we tag it with the RHS-resolved unit and a ``=`` marker
     # so the row reads as a final check rather than a rule application.
@@ -1505,13 +1511,20 @@ def _expression_hover_for(
         match_tag = "🟢"
     else:
         match_tag = "🔴"
-    # Marker is surfaced in the bold header below; the root row is
-    # just the assignment text with no marker / unit column.
-    rows.append((_node_label(asn, source), None, ""))
-    # Two branches: LHS (variable + annotated unit, leaf) and RHS (full sub-tree).
+    # Root row has no unit / mark column — the verdict lives in the
+    # bold header above. Pass ``None`` so the renderer omits the row.
+    rows.append((_node_label(asn, source), None, "", ""))
+    # LHS leaf: variable + annotated unit. Mark is the same homogeneity
+    # tag as the header (the LHS is one side of the check).
+    lhs_mark = (
+        "🟢" if (lhs_unit is not None and rhs_unit is not None
+                  and _checker_equal(lhs_unit, rhs_unit))
+        else ("🟡" if lhs_unit is None or rhs_unit is None else "🔴")
+    )
     rows.append((
         "├── " + _node_label(lhs, source),
         format_unit(lhs_unit) if lhs_unit is not None else "?",
+        lhs_mark,
         "",
     ))
     _render_ast_tree(
@@ -1523,16 +1536,27 @@ def _expression_hover_for(
     max_label = max(len(r[0]) for r in rows)
     max_unit = max(len(r[1]) for r in rows if r[1] is not None)
     lines: list[str] = []
-    for label, unit, rule in rows:
+    for label, unit, mark, rule in rows:
         if unit is None:
-            # Marker-only row (the assignment root): no ⇒ column,
-            # just the match symbol after the padded label.
+            # Root row: no unit / mark column.
             lines.append(f"{label.ljust(max_label)}  {rule}".rstrip())
         elif rule:
-            lines.append(f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {rule}")
+            lines.append(
+                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}  {rule}"
+            )
         else:
-            lines.append(f"{label.ljust(max_label)}  :  {unit}".rstrip())
+            lines.append(
+                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}".rstrip()
+            )
     body = "\n".join(lines)
+    # If the LHS/RHS top-level homogeneity check is fine but a nested
+    # violation fires inside the RHS, the header still needs to reflect
+    # that — aggregate across all rows.
+    nested = _aggregate_marker(r[2] for r in rows if r[1] is not None)
+    if nested == "🔴" or match_tag == "🔴":
+        match_tag = "🔴"
+    elif match_tag == "🟢" and nested == "🟡":
+        match_tag = "🟡"
     # No horizontal rule between header and code fence: VSCode places a
     # natural paragraph margin between a bold paragraph and a code
     # block already, and every markdown spacer we tried beneath ``---``
@@ -1577,7 +1601,7 @@ def _expression_hover_for_context(
         if expr.type == "relational_expression":
             return _render_relational_short(expr, rctx, source)
         return _render_subexpr_short(expr, rctx, source)
-    rows: list[tuple[str, str, str]] = []
+    rows: list[tuple[str, str, str, str]] = []
     _render_ast_tree(
         expr, rctx, source,
         prefix="", is_last=True, is_root=True, rows=rows,
@@ -1587,13 +1611,18 @@ def _expression_hover_for_context(
     max_label = max(len(r[0]) for r in rows)
     max_unit = max(len(r[1]) for r in rows)
     lines: list[str] = []
-    for label, unit, rule in rows:
+    for label, unit, mark, rule in rows:
         if rule:
-            lines.append(f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {rule}")
+            lines.append(
+                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}  {rule}"
+            )
         else:
-            lines.append(f"{label.ljust(max_label)}  :  {unit}".rstrip())
+            lines.append(
+                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}".rstrip()
+            )
     body = "\n".join(lines)
-    text = "**🟡 DimFort**\n\n```\n" + body + "\n```"
+    header_marker = _aggregate_marker(r[2] for r in rows)
+    text = f"**{header_marker} DimFort**\n\n```\n" + body + "\n```"
     return text, _node_lsp_range(expr)
 
 
@@ -1813,7 +1842,7 @@ def _render_call_pairing_c(
         # Expand sub-tree for computed args only — a bare identifier or
         # literal would just repeat what the actual cell already says.
         if an is not None and an.type not in ("identifier", "number_literal"):
-            sub_rows: list[tuple[str, str, str]] = []
+            sub_rows: list[tuple[str, str, str, str]] = []
             _render_ast_tree(
                 an, rctx, source,
                 prefix="", is_last=True, is_root=True, rows=sub_rows,
@@ -1823,14 +1852,14 @@ def _render_call_pairing_c(
             if len(sub_rows) > 1:
                 max_l = max(len(r[0]) for r in sub_rows[1:])
                 max_u = max(len(r[1]) for r in sub_rows[1:])
-                for label, unit, rule in sub_rows[1:]:
+                for label, unit, mk, rule in sub_rows[1:]:
                     if rule:
                         sub_lines.append(
-                            f"      {label.ljust(max_l)}  :  {unit.ljust(max_u)}  {rule}"
+                            f"      {label.ljust(max_l)}  :  {unit.ljust(max_u)}  {mk}  {rule}"
                         )
                     else:
                         sub_lines.append(
-                            f"      {label.ljust(max_l)}  :  {unit}".rstrip()
+                            f"      {label.ljust(max_l)}  :  {unit.ljust(max_u)}  {mk}".rstrip()
                         )
         rows.append(_Row(mark, fname, funit_s, atext, aunit_s, sub_lines))
 
@@ -1901,6 +1930,9 @@ def _trace_section_for(uri: str, line_1based: int, col_1based: int) -> str | Non
         if c.type == "=":
             saw_eq = True
             continue
+        # Skip Fortran line-continuation tokens — see _expression_hover_for.
+        if c.type == "&":
+            continue
         if saw_eq:
             rhs = c
             break
@@ -1909,20 +1941,22 @@ def _trace_section_for(uri: str, line_1based: int, col_1based: int) -> str | Non
     ctx = _build_ts_ctx(result, source, str(resolved_path), path=resolved_path)
     ctx.var_types.update(ts_checker.collect_var_types(tree, source))
     ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
-    rows: list[tuple[str, str, str]] = []  # (label, unit, rule)
+    rows: list[tuple[str, str, str, str]] = []  # (label, unit, mark, rule)
     _render_ast_tree(rhs, ctx, source, prefix="", is_last=True, is_root=True, rows=rows)
     if not rows:
         return None
-    # Vertical alignment — pad the label and unit columns to their
-    # max width so the ⇒ and [Rx.y] stack into clean columns.
     max_label = max(len(r[0]) for r in rows)
     max_unit = max(len(r[1]) for r in rows)
     lines: list[str] = []
-    for label, unit, rule in rows:
+    for label, unit, mark, rule in rows:
         if rule:
-            lines.append(f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {rule}")
+            lines.append(
+                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}  {rule}"
+            )
         else:
-            lines.append(f"{label.ljust(max_label)}  :  {unit}".rstrip())
+            lines.append(
+                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}".rstrip()
+            )
     body = "\n".join(lines)
     return "**Unit-algebra trace**\n\n```\n" + body + "\n```"
 
@@ -2055,6 +2089,75 @@ def _node_label(node, source: bytes) -> str:
     return text
 
 
+# Operators whose operands must be unit-homogeneous; a mismatch here
+# is a real diagnostic (H001/H002), not just an unknown.
+_HOMOGENEITY_OPS = frozenset({"+", "-"})
+_RELATIONAL_OP_TYPES = frozenset({
+    "<", "<=", "==", "/=", ">", ">=",
+    ".lt.", ".le.", ".eq.", ".ne.", ".gt.", ".ge.",
+})
+
+
+def _aggregate_marker(marks) -> str:
+    """Worst-of aggregate: 🔴 > 🟡 > 🟢. Empty stream → 🟢."""
+    worst = "🟢"
+    for m in marks:
+        if m == "🔴":
+            return "🔴"
+        if m == "🟡":
+            worst = "🟡"
+    return worst
+
+
+def _local_homogeneity_violation(node, ctx, source: bytes) -> bool:
+    """True iff this specific node's own homogeneity check fails —
+    both operands resolved to non-None units that disagree.
+    Doesn't look at descendants.
+    """
+    if node.type == "math_expression":
+        op_child = next(
+            (c for c in node.children if c.type in _HOMOGENEITY_OPS), None,
+        )
+        if op_child is None:
+            return False
+        operands = [c for c in node.children if c.type not in _SKIP_TOKEN_TYPES]
+    elif node.type == "relational_expression":
+        operands = [
+            c for c in node.children
+            if c.type not in _SKIP_TOKEN_TYPES
+            and c.type not in _RELATIONAL_OP_TYPES
+        ]
+    else:
+        return False
+    if len(operands) < 2:
+        return False
+    lu = ts_checker._resolve(operands[0], ctx, source)
+    ru = ts_checker._resolve(operands[1], ctx, source)
+    return lu is not None and ru is not None and not _checker_equal(lu, ru)
+
+
+def _node_trace_mark(node, unit, ctx, source: bytes) -> str:
+    """Per-row marker for the trace tree.
+
+    🟢 resolved cleanly. 🔴 a local homogeneity check failed *or* any
+    descendant did (a mismatch in an operand bubbles up through ``*``,
+    ``/``, function calls, etc.). 🟡 unresolved for some other reason
+    (unannotated leaf, intrinsic outside our supported set).
+    """
+    if unit is not None:
+        return "🟢"
+    if _local_homogeneity_violation(node, ctx, source):
+        return "🔴"
+    # Propagation — descend into children. Stops at the first 🔴 found.
+    for c in _interesting_children(node):
+        if _local_homogeneity_violation(c, ctx, source):
+            return "🔴"
+        c_unit = ts_checker._resolve(c, ctx, source)
+        if c_unit is None and _node_trace_mark(c, c_unit, ctx, source) == "🔴":
+            return "🔴"
+    return "🟡"
+
+
 def _render_ast_tree(
     node, ctx, source: bytes,
     *,
@@ -2098,7 +2201,10 @@ def _render_ast_tree(
         from dimfort.core.units import format_unit
         unit_str = format_unit(unit)
     rule_str = f"({rule_id})" if rule_id else ""
-    rows.append((prefix + connector + label, unit_str, rule_str))
+    mark = _node_trace_mark(node, unit, ctx, source)
+    # Mark is a separate column so the unit can be ljust-padded
+    # independently; markers then align vertically on the right.
+    rows.append((prefix + connector + label, unit_str, mark, rule_str))
 
     # Leaves stop here. Identifiers / numeric literals are atomic.
     if node.type in ("identifier", "number_literal", "string_literal", "complex_literal"):
