@@ -19,17 +19,19 @@ from dimfort.lsp import server as _server
 
 
 def _drive_hover(file: Path, line_1based: int, col_1based: int):
-    """Populate ``_last_result`` and dispatch ``_resolve_hover`` directly.
-
-    Bypasses pygls so we can exercise the resolver against a real
-    workset without spinning a client/server pair.
+    """Populate ``_last_result`` and dispatch the full hover pipeline:
+    specific hover first, then the expression-context fallback —
+    mirroring ``_hover``'s logic without pygls.
     """
     result = check_files([file])
     with _server._last_result_lock:
         _server._last_result = result
     uri = file.resolve().as_uri()
     try:
-        return _server._resolve_hover(uri, line_1based, col_1based, None)
+        hit = _server._resolve_hover(uri, line_1based, col_1based, None)
+        if hit is None:
+            hit = _server._expression_hover_for(uri, line_1based, col_1based)
+        return hit
     finally:
         with _server._last_result_lock:
             _server._last_result = None
@@ -78,7 +80,7 @@ def test_hover_trace_section_when_enabled(tmp_path: Path):
     )
     f = tmp_path / "trace.f90"
     f.write_text(src)
-    _server._features.trace_hover = True
+    _server._features.hover_expressions = "detailed"
     try:
         # Hover on `r` (column 3 of line 5) — inside the assignment.
         hit = _drive_hover(f, 5, 3)
@@ -101,7 +103,7 @@ def test_hover_trace_section_when_enabled(tmp_path: Path):
         # ASCII tree connectors signal the new tree layout
         assert "├──" in extra or "└──" in extra
     finally:
-        _server._features.trace_hover = False
+        _server._features.hover_expressions = "short"
 
 
 def test_hover_no_trace_section_when_disabled(tmp_path: Path):
@@ -213,3 +215,279 @@ def test_hover_marks_intrinsic_default_on_integer(tmp_path: Path):
     text_ep, _ = hit_ep
     assert "implicit" not in text_ep
     assert "INTEGER default" not in text_ep
+
+
+def _drive_trace_hover(file: Path, line_1based: int, col_1based: int):
+    """Populate ``_last_result`` and dispatch ``_expression_hover_for`` directly."""
+    result = check_files([file])
+    with _server._last_result_lock:
+        _server._last_result = result
+    uri = file.resolve().as_uri()
+    try:
+        return _server._expression_hover_for(uri, line_1based, col_1based)
+    finally:
+        with _server._last_result_lock:
+            _server._last_result = None
+
+
+def test_trace_hover_inside_call_argument(tmp_path: Path):
+    """Cursor inside a subroutine-call argument expression renders a
+    trace tree rooted at that argument, with the neutral 🟡 marker."""
+    src = (
+        "subroutine demo\n"
+        "  real :: p1   !< @unit{Pa}\n"
+        "  real :: p2   !< @unit{Pa}\n"
+        "  call foo(p1 + p2)\n"
+        "end subroutine\n"
+    )
+    f = tmp_path / "call_arg.f90"
+    f.write_text(src)
+    _server._features.hover_expressions = "detailed"
+    try:
+        # Column 14 sits inside `p1 + p2` (the argument).
+        hit = _drive_trace_hover(f, 4, 14)
+        assert hit is not None
+        text, _ = hit
+        assert "🟡 DimFort" in text
+        assert "p1 + p2" in text
+        # Both operands resolved to the same unit (Pa, shown in base form).
+        assert "R4.1" in text  # addition homogeneity rule fired
+    finally:
+        _server._features.hover_expressions = "short"
+
+
+def test_trace_hover_inside_if_condition(tmp_path: Path):
+    """Cursor inside an IF condition traces the relational expression."""
+    src = (
+        "subroutine demo\n"
+        "  real :: p1   !< @unit{Pa}\n"
+        "  real :: p2   !< @unit{Pa}\n"
+        "  if (p1 + p2 > 0.0) then\n"
+        "  end if\n"
+        "end subroutine\n"
+    )
+    f = tmp_path / "if_cond.f90"
+    f.write_text(src)
+    _server._features.hover_expressions = "detailed"
+    try:
+        # Column 9 sits inside `p1 + p2 > 0.0`.
+        hit = _drive_trace_hover(f, 4, 9)
+        assert hit is not None
+        text, _ = hit
+        assert "🟡 DimFort" in text
+        assert "p1" in text and "p2" in text
+    finally:
+        _server._features.hover_expressions = "short"
+
+
+def test_trace_hover_inside_do_bound(tmp_path: Path):
+    """Cursor inside a DO loop bound expression traces that bound."""
+    src = (
+        "subroutine demo\n"
+        "  integer :: i\n"
+        "  integer :: n\n"
+        "  do i = 1, n + 1\n"
+        "  end do\n"
+        "end subroutine\n"
+    )
+    f = tmp_path / "do_bound.f90"
+    f.write_text(src)
+    _server._features.hover_expressions = "detailed"
+    try:
+        # Column 15 sits inside `n + 1`.
+        hit = _drive_trace_hover(f, 4, 15)
+        assert hit is not None
+        text, _ = hit
+        assert "🟡 DimFort" in text
+    finally:
+        _server._features.hover_expressions = "short"
+
+
+def test_call_hover_short_renders_pairing_b(tmp_path: Path):
+    """In short mode, hovering on the callee of a known subroutine
+    renders the B-style pairing (one row per arg, formal ◂ actual)."""
+    src = (
+        "module m\n"
+        "contains\n"
+        "  subroutine foo(a, b)\n"
+        "    real, intent(in) :: a   !< @unit{Pa}\n"
+        "    real, intent(in) :: b   !< @unit{Pa}\n"
+        "  end subroutine\n"
+        "  subroutine demo\n"
+        "    real :: p1   !< @unit{Pa}\n"
+        "    real :: p2   !< @unit{Pa}\n"
+        "    call foo(p1, p2 + p1)\n"
+        "  end subroutine\n"
+        "end module\n"
+    )
+    f = tmp_path / "call_short.f90"
+    f.write_text(src)
+    _server._features.hover_subroutine_calls = "short"
+    try:
+        # Column 10 sits on `foo` (the callee) on line 10.
+        hit = _drive_hover(f, 10, 10)
+        assert hit is not None
+        text, _ = hit
+        assert "Signature" in text and "Call" in text
+        assert "◂" in text
+        # All args resolve to Pa → 🟢.
+        assert "🟢 DimFort" in text
+    finally:
+        _server._features.hover_subroutine_calls = "short"
+
+
+def test_call_hover_detailed_expands_computed_args(tmp_path: Path):
+    """In detailed mode (layout C), a computed actual arg expands a
+    sub-tree showing its operand chain."""
+    src = (
+        "module m\n"
+        "contains\n"
+        "  subroutine foo(a, b)\n"
+        "    real, intent(in) :: a   !< @unit{Pa}\n"
+        "    real, intent(in) :: b   !< @unit{Pa}\n"
+        "  end subroutine\n"
+        "  subroutine demo\n"
+        "    real :: p1   !< @unit{Pa}\n"
+        "    real :: p2   !< @unit{Pa}\n"
+        "    call foo(p1, p2 + p1)\n"
+        "  end subroutine\n"
+        "end module\n"
+    )
+    f = tmp_path / "call_detailed.f90"
+    f.write_text(src)
+    _server._features.hover_subroutine_calls = "detailed"
+    try:
+        hit = _drive_hover(f, 10, 10)
+        assert hit is not None
+        text, _ = hit
+        # The computed arg `p2 + p1` should have a sub-tree underneath.
+        assert "p2 + p1" in text
+        assert "├──" in text or "└──" in text
+    finally:
+        _server._features.hover_subroutine_calls = "short"
+
+
+def test_expression_short_assignment(tmp_path: Path):
+    """Short mode: cursor on `=` inside `r = a + b` renders the
+    one-line homogeneity check `r : K  ◂  a + b : K  🟢/🔴/🟡`."""
+    src = (
+        "subroutine demo\n"
+        "  real :: a   !< @unit{Pa}\n"
+        "  real :: b   !< @unit{Pa}\n"
+        "  real :: r   !< @unit{Pa}\n"
+        "  r = a + b\n"
+        "end subroutine\n"
+    )
+    f = tmp_path / "asn_short.f90"
+    f.write_text(src)
+    _server._features.hover_expressions = "short"
+    # Cursor on `=` (col 5 of line 5).
+    hit = _drive_hover(f, 5, 5)
+    assert hit is not None
+    text, _ = hit
+    assert "🟢 DimFort" in text
+    assert "◂" in text
+    assert "r" in text and "a + b" in text
+
+
+def test_expression_short_assignment_mismatch_marker(tmp_path: Path):
+    """A unit mismatch on the assignment surfaces as 🔴 in short mode."""
+    src = (
+        "subroutine demo\n"
+        "  real :: a   !< @unit{Pa}\n"
+        "  real :: r   !< @unit{K}\n"
+        "  r = a\n"
+        "end subroutine\n"
+    )
+    f = tmp_path / "asn_mismatch.f90"
+    f.write_text(src)
+    _server._features.hover_expressions = "short"
+    hit = _drive_hover(f, 4, 5)  # on `=`
+    assert hit is not None
+    text, _ = hit
+    assert "🔴 DimFort" in text
+
+
+def test_expression_short_relational(tmp_path: Path):
+    """Cursor on `>` inside `if (p > 0.0) then` renders a homogeneity
+    check on the two operands."""
+    src = (
+        "subroutine demo\n"
+        "  real :: p   !< @unit{Pa}\n"
+        "  if (p > 0.0) then\n"
+        "    p = 0.0\n"
+        "  end if\n"
+        "end subroutine\n"
+    )
+    f = tmp_path / "rel_short.f90"
+    f.write_text(src)
+    _server._features.hover_expressions = "short"
+    # Cursor on `>` (col 9 of line 3).
+    hit = _drive_hover(f, 3, 9)
+    assert hit is not None
+    text, _ = hit
+    # Pa ◂ 1 → unknown overlap, but both sides resolved → tag depends
+    # on equality of the operand units; 0.0 is dim'less so 🔴.
+    assert "◂" in text
+    assert "p" in text and "0.0" in text
+
+
+def test_expression_short_subexpr_in_call_arg(tmp_path: Path):
+    """Cursor inside a computed call argument renders the sub-expression's
+    resolved unit, not a homogeneity check."""
+    src = (
+        "subroutine demo\n"
+        "  real :: a   !< @unit{Pa}\n"
+        "  real :: b   !< @unit{Pa}\n"
+        "  call foo(a + b)\n"
+        "end subroutine\n"
+    )
+    f = tmp_path / "subexpr.f90"
+    f.write_text(src)
+    _server._features.hover_expressions = "short"
+    # Cursor on `+` inside `a + b` (col 14 of line 4).
+    hit = _drive_hover(f, 4, 14)
+    assert hit is not None
+    text, _ = hit
+    assert "a + b" in text
+    # Both operands are Pa, so the sub-expression resolves cleanly.
+    assert "🟢 DimFort" in text
+
+
+def test_expression_short_numeric_literal(tmp_path: Path):
+    """A bare numeric literal hover resolves to dim'less (`1`)."""
+    src = (
+        "subroutine demo\n"
+        "  real :: p   !< @unit{Pa}\n"
+        "  p = 3.14\n"
+        "end subroutine\n"
+    )
+    f = tmp_path / "lit_short.f90"
+    f.write_text(src)
+    _server._features.hover_expressions = "short"
+    # Cursor on `3.14` (col 8 of line 3).
+    hit = _drive_hover(f, 3, 8)
+    assert hit is not None
+    text, _ = hit
+    assert "3.14" in text
+    assert "🟢 DimFort" in text
+
+
+def test_trace_hover_outside_any_context_returns_none(tmp_path: Path):
+    """Cursor on a declaration line (no expression context) returns None
+    so the regular hover takes over."""
+    src = (
+        "subroutine demo\n"
+        "  real :: p   !< @unit{Pa}\n"
+        "  p = 0.0\n"
+        "end subroutine\n"
+    )
+    f = tmp_path / "decl.f90"
+    f.write_text(src)
+    _server._features.hover_expressions = "detailed"
+    try:
+        # Line 2 is the declaration — no enclosing assignment or context.
+        hit = _drive_trace_hover(f, 2, 11)
+        assert hit is None
+    finally:
+        _server._features.hover_expressions = "short"

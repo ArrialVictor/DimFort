@@ -63,6 +63,36 @@ set is documented in
   assignment render the whole expression as an ASCII tree with
   per-node units and rule IDs. Header reads `🟢 / 🔴 / 🟡 DimFort`
   for OK / mismatch / unresolved respectively.
+- **Trace hover beyond assignments** — the same flag also fires
+  inside call arguments, IF / ELSEIF / WHERE conditions, DO loop
+  bounds, and SELECT CASE selectors. There's no LHS to compare
+  against, so the header uses the neutral `🟡 DimFort` marker and
+  the tree is rooted at the cursor's sub-expression.
+
+### Hover UX overhaul (Phase E)
+
+- **Per-surface hover layouts.** Three settings —
+  `dimfort.hover.functionCalls`, `dimfort.hover.subroutineCalls`,
+  `dimfort.hover.expressions` — each Short or Detailed. Replaces the
+  single `traceHoverEnabled` toggle (kept as a legacy master switch).
+- **Call short** renders a header + one row per arg pairing formal
+  vs. actual unit with 🟢/🟡/🔴 markers; aggregate header marker
+  reflects the worst row.
+- **Call detailed** adds a sub-tree under any computed actual
+  showing how its unit was derived.
+- **Expression short** — one-line homogeneity check on assignments
+  (`LHS : u  ◂  RHS : u`) and relational expressions; bare hover on
+  identifiers and literals; resolved-unit hover on computed
+  sub-expressions.
+- **Expression detailed** — the unit-algebra rule-chain tree.
+- **Notation unified.** `:` between expression and unit, `◂`
+  between target slot and value, 🟢/🟡/🔴 in row markers and headers.
+- **Spec at [`docs/hover-ui.md`](docs/hover-ui.md)** — six layouts
+  (3 surfaces × 2 levels), notation legend, conflict-resolution
+  rules ("most-specific wins"), examples by cursor position.
+- **Most-specific wins** dispatch: identifier, member, callee, and
+  numeric-literal hovers run first; the expression-context hover
+  fires only when nothing more specific matched.
 
 ### Other LSP / CLI changes
 

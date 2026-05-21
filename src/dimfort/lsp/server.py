@@ -73,6 +73,7 @@ import logging
 import re
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -146,6 +147,13 @@ class _FeatureToggles:
     # Opt-in — most hovers don't need the chain and it makes hovers
     # taller. Toggled via the ``dimfort.toggleTrace`` VSCode command.
     trace_hover: bool = False
+    # Per-surface hover verbosity: "short" (one-line summary) or
+    # "detailed" (full pairing / tree). When ``trace_hover`` is on, any
+    # surface still set to "short" gets upgraded to "detailed" so the
+    # legacy single toggle keeps working as a master switch.
+    hover_function_calls: str = "short"   # "short" | "detailed"
+    hover_subroutine_calls: str = "short"
+    hover_expressions: str = "short"
 
 
 _features = _FeatureToggles()
@@ -703,7 +711,14 @@ def _sig_render_md(name: str, sig: FuncSig) -> str:
 
 
 def _hover_signature(name: str, sig: FuncSig) -> str:
-    return f"**🟢 DimFort**\n\n{_sig_render_md(name, sig)}"
+    # 🟡 when any formal param (or the return unit, for a function)
+    # has no annotation — the signature renders that arg as `?`, so
+    # the header should reflect the partial-knowledge state.
+    any_unknown = any(u is None for u in sig.arg_units)
+    if not sig.is_subroutine and sig.return_unit is None:
+        any_unknown = True
+    marker = "🟡" if any_unknown else "🟢"
+    return f"**{marker} DimFort**\n\n{_sig_render_md(name, sig)}"
 
 
 # Module hover caps. VSCode's hover popup is scrollable, so we
@@ -904,7 +919,34 @@ def _resolve_hover(
                     (c for c in call_hit.children if c.type == "identifier"),
                     call_hit,
                 )
-                return _hover_signature(name, sig), _node_lsp_range(callee)
+                # Only fire the call-pairing hover when the cursor is
+                # actually on the callee identifier — hovering on an
+                # arg expression should fall through to that arg's
+                # own hover (or the trace path).
+                if _ts_h.node_contains(callee, line_1based, col_1based):
+                    level = (
+                        _features.hover_subroutine_calls
+                        if sig.is_subroutine
+                        else _features.hover_function_calls
+                    )
+                    rctx = _build_ts_ctx(
+                        result, source, str(resolved_path), path=resolved_path,
+                    )
+                    rctx.var_types.update(ts_checker.collect_var_types(tree, source))
+                    rctx.type_field_types.update(
+                        ts_checker.collect_type_field_types(tree, source)
+                    )
+                    if level == "detailed":
+                        text = _render_call_pairing_c(
+                            name, call_hit, sig, rctx, source,
+                        )
+                    else:
+                        text = _render_call_pairing_a(
+                            name, call_hit, sig, rctx, source,
+                        )
+                    if text is None:
+                        text = _hover_signature(name, sig)
+                    return text, _node_lsp_range(callee)
             # No user-defined signature — but the call might be a known
             # Fortran intrinsic (log, exp, sqrt, sin, sum, ...). Show
             # the resolved result unit instead of falling through to the
@@ -984,6 +1026,21 @@ def _resolve_hover(
             _hover_text(name, "no unit annotation", show_unit_label=False),
             _node_lsp_range(ident),
         )
+
+    # 5. Numeric literal — dim'less by construction. Most-specific
+    # match wins over the enclosing assignment / expression context.
+    for n in _ts.walk(tree.root_node):
+        if n.type != "number_literal":
+            continue
+        if not _ts_h.node_contains(n, line_1based, col_1based):
+            continue
+        from dimfort.core.units import format_unit
+        ctx = _build_ts_ctx(result, source, str(resolved_path), path=resolved_path)
+        u = ts_checker._resolve(n, ctx, source)
+        u_s = format_unit(u) if u is not None else "1"
+        body = f"{_node_label(n, source)} : {u_s}"
+        text = f"**🟢 DimFort**\n\n```\n{body}\n```"
+        return text, _node_lsp_range(n)
     return None
 
 
@@ -1069,6 +1126,22 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         _features.goto_definition = bool(opts.get("gotoDefinitionEnabled", True))
         _features.code_lens = bool(opts.get("codeLensEnabled", False))
         _features.trace_hover = bool(opts.get("traceHoverEnabled", False))
+        def _level(key: str, default: str) -> str:
+            v = opts.get(key, default)
+            return v if v in ("short", "detailed") else default
+        _features.hover_function_calls = _level("hoverFunctionCalls", "short")
+        _features.hover_subroutine_calls = _level("hoverSubroutineCalls", "short")
+        _features.hover_expressions = _level("hoverExpressions", "short")
+        # Legacy toggle: traceHoverEnabled = true acts as a master
+        # upgrade from short to detailed for any surface still on the
+        # default. Explicit per-surface settings still win.
+        if _features.trace_hover:
+            if "hoverFunctionCalls" not in opts:
+                _features.hover_function_calls = "detailed"
+            if "hoverSubroutineCalls" not in opts:
+                _features.hover_subroutine_calls = "detailed"
+            if "hoverExpressions" not in opts:
+                _features.hover_expressions = "detailed"
         # Init options extend whatever config already contributed.
         extra = opts.get("externalModules")
         if isinstance(extra, list):
@@ -1354,20 +1427,14 @@ def _hover(ls: LanguageServer, params: lsp.HoverParams) -> Any:
             source_text = ls.workspace.get_text_document(uri).source
         except Exception:
             log.debug("could not fetch buffer text for %s", uri)
-        # Trace-on path takes precedence when the cursor sits inside an
-        # assignment: the tree carries the LHS unit + the full rule
-        # chain, so the regular hover (name : unit) is redundant noise.
-        if _features.trace_hover:
-            trace_hit = _trace_hover_for(uri, line, col)
-            if trace_hit is not None:
-                text, range_ = trace_hit
-                return lsp.Hover(
-                    contents=lsp.MarkupContent(
-                        kind=lsp.MarkupKind.Markdown, value=text,
-                    ),
-                    range=range_,
-                )
+        # Most-specific wins: try the specific hovers (identifier,
+        # member access, call callee) first. The expression hover fires
+        # only when nothing more specific matched — that's what catches
+        # cursor positions on operators, ``=``, or whitespace inside an
+        # assignment or condition.
         hit = _resolve_hover(uri, line, col, source_text)
+        if hit is None:
+            hit = _expression_hover_for(uri, line, col)
         if hit is None:
             return None
         text, range_ = hit
@@ -1377,17 +1444,19 @@ def _hover(ls: LanguageServer, params: lsp.HoverParams) -> Any:
         )
 
 
-def _trace_hover_for(
+def _expression_hover_for(
     uri: str, line_1based: int, col_1based: int,
 ) -> tuple[str, lsp.Range] | None:
-    """Trace-mode hover: replaces the normal hover with an AST tree of
-    the enclosing assignment.
+    """Expression hover. Fires when no more-specific hover matched
+    (i.e. cursor isn't on an identifier or callee). Renders Short or
+    Detailed depending on ``_features.hover_expressions``.
 
-    Root row is the full ``lhs = rhs`` text. The tree forks into the
-    LHS (just the variable + its annotated unit, no rule) and the RHS
-    (full expression chain). Returns ``None`` when the cursor isn't
-    inside an assignment so the caller can fall back to the normal
-    hover.
+    Surfaces handled:
+
+    - Enclosing assignment (cursor on ``=``, operator, whitespace).
+    - Enclosing relational expression (homogeneity check on operands).
+    - Computed sub-expression (call arg, IF/DO/WHERE condition, ...).
+    - Numeric literal.
     """
     found = _trees_for(uri)
     if found is None:
@@ -1401,7 +1470,9 @@ def _trace_hover_for(
         _ts_h.walk_assignments(tree), line_1based, col_1based
     )
     if asn is None:
-        return None
+        return _expression_hover_for_context(
+            tree, source, resolved_path, result, line_1based, col_1based,
+        )
     lhs = None
     rhs = None
     saw_eq = False
@@ -1417,6 +1488,10 @@ def _trace_hover_for(
     if lhs is None or rhs is None:
         return None
     ctx = _build_ts_ctx(result, source, str(resolved_path), path=resolved_path)
+    ctx.var_types.update(ts_checker.collect_var_types(tree, source))
+    ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
+    if _features.hover_expressions == "short":
+        return _render_assignment_short(asn, lhs, rhs, ctx, source)
     rows: list[tuple[str, str, str]] = []
     # Root: the whole assignment. No rule fires "for" an assignment
     # itself; we tag it with the RHS-resolved unit and a ``=`` marker
@@ -1454,9 +1529,9 @@ def _trace_hover_for(
             # just the match symbol after the padded label.
             lines.append(f"{label.ljust(max_label)}  {rule}".rstrip())
         elif rule:
-            lines.append(f"{label.ljust(max_label)}  ▸  {unit.ljust(max_unit)}  {rule}")
+            lines.append(f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {rule}")
         else:
-            lines.append(f"{label.ljust(max_label)}  ▸  {unit}".rstrip())
+            lines.append(f"{label.ljust(max_label)}  :  {unit}".rstrip())
     body = "\n".join(lines)
     # No horizontal rule between header and code fence: VSCode places a
     # natural paragraph margin between a bold paragraph and a code
@@ -1465,6 +1540,331 @@ def _trace_hover_for(
     # default margin is the cleanest compromise.
     text = f"**{match_tag} DimFort**\n\n```\n" + body + "\n```"
     return text, _node_lsp_range(asn)
+
+
+def _expression_hover_for_context(
+    tree, source: bytes, resolved_path, result,
+    line_1based: int, col_1based: int,
+) -> tuple[str, lsp.Range] | None:
+    """Trace-mode hover for non-assignment contexts.
+
+    Fires when the cursor sits inside a call argument, IF/ELSEIF/WHERE
+    condition, DO loop bound, or SELECT CASE selector. Renders the
+    sub-expression as a unit-algebra tree with a neutral 🟡 marker —
+    no LHS to compare against, so there's no homogeneity verdict.
+    """
+    ctx = _ts_h.smallest_enclosing(
+        (n for n in _ts.walk(tree.root_node) if n.type in _TRACE_CONTEXT_TYPES),
+        line_1based, col_1based,
+    )
+    if ctx is None:
+        return None
+    expr = _pick_trace_subexpr(ctx, line_1based, col_1based)
+    if expr is None:
+        return None
+    rctx = _build_ts_ctx(result, source, str(resolved_path), path=resolved_path)
+    rctx.var_types.update(ts_checker.collect_var_types(tree, source))
+    rctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
+    # The callee-on-call case is handled by ``_resolve_hover`` (which
+    # dispatches to layout B or C based on the per-surface setting).
+    # Here we only render for actual expression contexts (arg
+    # expressions, conditions, loop bounds, selectors).
+    if expr is ctx and ctx.type in ("call_expression", "subroutine_call"):
+        return None
+    if _features.hover_expressions == "short":
+        # Relational expressions are a homogeneity check on their
+        # operands — the relation itself has no unit.
+        if expr.type == "relational_expression":
+            return _render_relational_short(expr, rctx, source)
+        return _render_subexpr_short(expr, rctx, source)
+    rows: list[tuple[str, str, str]] = []
+    _render_ast_tree(
+        expr, rctx, source,
+        prefix="", is_last=True, is_root=True, rows=rows,
+    )
+    if not rows:
+        return None
+    max_label = max(len(r[0]) for r in rows)
+    max_unit = max(len(r[1]) for r in rows)
+    lines: list[str] = []
+    for label, unit, rule in rows:
+        if rule:
+            lines.append(f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {rule}")
+        else:
+            lines.append(f"{label.ljust(max_label)}  :  {unit}".rstrip())
+    body = "\n".join(lines)
+    text = "**🟡 DimFort**\n\n```\n" + body + "\n```"
+    return text, _node_lsp_range(expr)
+
+
+def _render_assignment_short(asn, lhs, rhs, ctx, source: bytes) -> tuple[str, lsp.Range] | None:
+    """One-line homogeneity hover for an assignment cursor position."""
+    from dimfort.core.units import format_unit
+    lhs_u = ts_checker._resolve(lhs, ctx, source)
+    rhs_u = ts_checker._resolve(rhs, ctx, source)
+    if lhs_u is None or rhs_u is None:
+        marker = "🟡"
+    elif _checker_equal(lhs_u, rhs_u):
+        marker = "🟢"
+    else:
+        marker = "🔴"
+    lhs_s = format_unit(lhs_u) if lhs_u is not None else "?"
+    rhs_s = format_unit(rhs_u) if rhs_u is not None else "?"
+    body = (
+        f"{_node_label(lhs, source)} : {lhs_s}"
+        f"   ◂   {_node_label(rhs, source)} : {rhs_s}"
+    )
+    text = f"**{marker} DimFort**\n\n```\n{body}\n```"
+    return text, _node_lsp_range(asn)
+
+
+def _render_relational_short(rel, ctx, source: bytes) -> tuple[str, lsp.Range] | None:
+    """One-line homogeneity hover for a relational expression
+    (``<``, ``<=``, ``==``, ``/=``, ``>``, ``>=``). The relation
+    itself has no unit; only the operands must agree."""
+    from dimfort.core.units import format_unit
+    # Operands are the non-token children, in source order.
+    operands = [c for c in rel.children if c.type not in _SKIP_TOKEN_TYPES
+                and c.type not in {"<", "<=", "==", "/=", ">", ">=",
+                                   ".lt.", ".le.", ".eq.", ".ne.", ".gt.", ".ge."}]
+    if len(operands) < 2:
+        return None
+    lhs, rhs = operands[0], operands[1]
+    lhs_u = ts_checker._resolve(lhs, ctx, source)
+    rhs_u = ts_checker._resolve(rhs, ctx, source)
+    if lhs_u is None or rhs_u is None:
+        marker = "🟡"
+    elif _checker_equal(lhs_u, rhs_u):
+        marker = "🟢"
+    else:
+        marker = "🔴"
+    lhs_s = format_unit(lhs_u) if lhs_u is not None else "?"
+    rhs_s = format_unit(rhs_u) if rhs_u is not None else "?"
+    body = (
+        f"{_node_label(lhs, source)} : {lhs_s}"
+        f"   ◂   {_node_label(rhs, source)} : {rhs_s}"
+    )
+    text = f"**{marker} DimFort**\n\n```\n{body}\n```"
+    return text, _node_lsp_range(rel)
+
+
+def _render_subexpr_short(expr, ctx, source: bytes) -> tuple[str, lsp.Range] | None:
+    """One-line resolved-unit hover for a computed sub-expression or
+    a numeric literal."""
+    from dimfort.core.units import format_unit
+    u = ts_checker._resolve(expr, ctx, source)
+    if u is None:
+        marker = "🟡"
+        u_s = "?"
+    else:
+        marker = "🟢"
+        u_s = format_unit(u)
+    body = f"{_node_label(expr, source)} : {u_s}"
+    text = f"**{marker} DimFort**\n\n```\n{body}\n```"
+    return text, _node_lsp_range(expr)
+
+
+def _call_actual_args(call_node) -> list:
+    """Return the actual argument expression nodes of a call, in order."""
+    arglist = next(
+        (c for c in call_node.children if c.type == "argument_list"), None,
+    )
+    if arglist is None:
+        return []
+    out = []
+    for c in arglist.children:
+        if c.type in _SKIP_TOKEN_TYPES:
+            continue
+        if c.type == "keyword_argument":
+            continue
+        out.append(c)
+    return out
+
+
+def _render_call_pairing_a(
+    callee_name: str, call_node, sig, rctx, source: bytes,
+) -> str | None:
+    """Layout B: one row per argument, vertical pairing.
+
+    Each row shows ``marker  formal_name : formal_unit  ←  actual_text : actual_unit``.
+    Per-arg marker: ✓ match, ✗ mismatch, ? unknown (either side missing).
+    Header marker aggregates: 🟢 all match, 🟡 any unknown, 🔴 any mismatch.
+    """
+    from dimfort.core.units import format_unit
+    actuals = _call_actual_args(call_node)
+    formal_names = list(sig.arg_names)
+    formal_units = list(sig.arg_units)
+    n = max(len(formal_names), len(actuals))
+    if n == 0:
+        return None
+    rows: list[tuple[str, str, str, str]] = []  # (mark, formal_lhs, formal_unit, actual)
+    any_unknown = False
+    any_mismatch = False
+    for i in range(n):
+        if i < len(formal_names):
+            fname = formal_names[i]
+            funit = formal_units[i]
+            funit_s = format_unit(funit) if funit is not None else "?"
+        else:
+            fname, funit, funit_s = "—", None, "—"
+        if i < len(actuals):
+            an = actuals[i]
+            atext = _node_label(an, source)
+            aunit = ts_checker._resolve(an, rctx, source)
+            aunit_s = format_unit(aunit) if aunit is not None else "?"
+            actual = f"{atext} : {aunit_s}"
+        else:
+            an, aunit, actual = None, None, "—"
+        if funit is None or aunit is None:
+            mark = "🟡"
+            any_unknown = True
+        elif _checker_equal(funit, aunit):
+            mark = "🟢"
+        else:
+            mark = "🔴"
+            any_mismatch = True
+        rows.append((mark, fname, funit_s, actual))
+    fname_w = max(len(r[1]) for r in rows)
+    funit_w = max(len(r[2]) for r in rows)
+    if sig.is_subroutine:
+        header = f"{callee_name}:"
+    else:
+        ret_s = format_unit(sig.return_unit) if sig.return_unit is not None else "?"
+        header = f"{callee_name}: {ret_s}"
+    # Column labels — Unicode mathematical-italic glyphs render italic
+    # inside the monospace fence. Each glyph is one codepoint, so
+    # ``str.ljust`` width math stays correct.
+    sig_label = "Signature"
+    call_label = "Call"
+    sig_cell_w = max(fname_w + 3 + funit_w, len(sig_label))  # "name : unit"
+    col_header = (
+        "     "
+        + sig_label.ljust(sig_cell_w)
+        + "    "
+        + call_label
+    )
+    lines: list[str] = [header, col_header]
+    for mark, fname, funit_s, actual in rows:
+        lines.append(
+            f"  {mark}  {fname.ljust(fname_w)} : {funit_s.ljust(funit_w)}  ◂  {actual}"
+        )
+    body = "\n".join(lines)
+    if any_mismatch:
+        marker = "🔴"
+    elif any_unknown:
+        marker = "🟡"
+    else:
+        marker = "🟢"
+    return f"**{marker} DimFort**\n\n```\n{body}\n```"
+
+
+def _render_call_pairing_c(
+    callee_name: str, call_node, sig, rctx, source: bytes,
+) -> str | None:
+    """Layout C: B's row layout, plus sub-trees expanded under any
+    computed argument so the reader can see how each non-trivial actual
+    unit was derived.
+    """
+    from dimfort.core.units import format_unit
+    actuals = _call_actual_args(call_node)
+    formal_names = list(sig.arg_names)
+    formal_units = list(sig.arg_units)
+    n = max(len(formal_names), len(actuals))
+    if n == 0:
+        return None
+
+    # Pre-compute the row triples so we can width-align before emitting,
+    # then attach per-arg sub-trees underneath.
+    @dataclass
+    class _Row:
+        mark: str
+        fname: str
+        funit_s: str
+        actual_text: str
+        actual_unit_s: str
+        sub_lines: list[str]  # indented sub-tree lines (already prefixed)
+
+    rows: list[_Row] = []
+    any_unknown = False
+    any_mismatch = False
+    for i in range(n):
+        if i < len(formal_names):
+            fname = formal_names[i]
+            funit = formal_units[i]
+            funit_s = format_unit(funit) if funit is not None else "?"
+        else:
+            fname, funit, funit_s = "—", None, "—"
+        if i < len(actuals):
+            an = actuals[i]
+            atext = _node_label(an, source)
+            aunit = ts_checker._resolve(an, rctx, source)
+            aunit_s = format_unit(aunit) if aunit is not None else "?"
+        else:
+            an, aunit, atext, aunit_s = None, None, "—", "—"
+        if funit is None or aunit is None:
+            mark = "🟡"
+            any_unknown = True
+        elif _checker_equal(funit, aunit):
+            mark = "🟢"
+        else:
+            mark = "🔴"
+            any_mismatch = True
+        sub_lines: list[str] = []
+        # Expand sub-tree for computed args only — a bare identifier or
+        # literal would just repeat what the actual cell already says.
+        if an is not None and an.type not in ("identifier", "number_literal"):
+            sub_rows: list[tuple[str, str, str]] = []
+            _render_ast_tree(
+                an, rctx, source,
+                prefix="", is_last=True, is_root=True, rows=sub_rows,
+            )
+            # Drop the root row (== the actual cell we already render);
+            # keep only the descendants.
+            if len(sub_rows) > 1:
+                max_l = max(len(r[0]) for r in sub_rows[1:])
+                max_u = max(len(r[1]) for r in sub_rows[1:])
+                for label, unit, rule in sub_rows[1:]:
+                    if rule:
+                        sub_lines.append(
+                            f"      {label.ljust(max_l)}  :  {unit.ljust(max_u)}  {rule}"
+                        )
+                    else:
+                        sub_lines.append(
+                            f"      {label.ljust(max_l)}  :  {unit}".rstrip()
+                        )
+        rows.append(_Row(mark, fname, funit_s, atext, aunit_s, sub_lines))
+
+    fname_w = max(len(r.fname) for r in rows)
+    funit_w = max(len(r.funit_s) for r in rows)
+    if sig.is_subroutine:
+        header = f"{callee_name}:"
+    else:
+        ret_s = format_unit(sig.return_unit) if sig.return_unit is not None else "?"
+        header = f"{callee_name}: {ret_s}"
+    sig_label = "Signature"
+    call_label = "Call"
+    sig_cell_w = max(fname_w + 3 + funit_w, len(sig_label))
+    col_header = (
+        "     "
+        + sig_label.ljust(sig_cell_w)
+        + "    "
+        + call_label
+    )
+    lines: list[str] = [header, col_header]
+    for r in rows:
+        lines.append(
+            f"  {r.mark}  {r.fname.ljust(fname_w)} : {r.funit_s.ljust(funit_w)}  ◂  "
+            f"{r.actual_text} : {r.actual_unit_s}"
+        )
+        lines.extend(r.sub_lines)
+    body = "\n".join(lines)
+    if any_mismatch:
+        marker = "🔴"
+    elif any_unknown:
+        marker = "🟡"
+    else:
+        marker = "🟢"
+    return f"**{marker} DimFort**\n\n```\n{body}\n```"
 
 
 def _checker_equal(a, b) -> bool:
@@ -1507,6 +1907,8 @@ def _trace_section_for(uri: str, line_1based: int, col_1based: int) -> str | Non
     if rhs is None:
         return None
     ctx = _build_ts_ctx(result, source, str(resolved_path), path=resolved_path)
+    ctx.var_types.update(ts_checker.collect_var_types(tree, source))
+    ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
     rows: list[tuple[str, str, str]] = []  # (label, unit, rule)
     _render_ast_tree(rhs, ctx, source, prefix="", is_last=True, is_root=True, rows=rows)
     if not rows:
@@ -1518,9 +1920,9 @@ def _trace_section_for(uri: str, line_1based: int, col_1based: int) -> str | Non
     lines: list[str] = []
     for label, unit, rule in rows:
         if rule:
-            lines.append(f"{label.ljust(max_label)}  ▸  {unit.ljust(max_unit)}  {rule}")
+            lines.append(f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {rule}")
         else:
-            lines.append(f"{label.ljust(max_label)}  ▸  {unit}".rstrip())
+            lines.append(f"{label.ljust(max_label)}  :  {unit}".rstrip())
     body = "\n".join(lines)
     return "**Unit-algebra trace**\n\n```\n" + body + "\n```"
 
@@ -1533,16 +1935,104 @@ _SKIP_TOKEN_TYPES = frozenset({
 })
 
 
+# Beyond bare assignments, the trace hover also fires inside these
+# expression-bearing contexts. Header keywords ("if", "call", "do", ...)
+# get filtered out via _SKIP_TRACE_CHILD_TYPES so the cursor only
+# descends into the actual sub-expression.
+_TRACE_CONTEXT_TYPES = frozenset({
+    "call_expression", "subroutine_call",
+    "if_statement", "elseif_clause",
+    "where_statement",
+    "do_loop", "do_statement",
+    "select_case_statement",
+})
+
+
+# Wrapper nodes whose only purpose is grouping — peel through them when
+# locating the sub-expression at the cursor inside a context node.
+_TRACE_WRAPPER_TYPES = frozenset({
+    "parenthesized_expression",
+    "argument_list",
+    "loop_control_expression",
+    "selector",
+})
+
+
+# Statement-keyword / block children that exist alongside the
+# sub-expression in a context node. They contain the cursor too if the
+# user hovers the keyword itself, but they aren't worth tracing.
+_SKIP_TRACE_CHILD_TYPES = frozenset({
+    "if", "then", "else", "elseif", "end_if_statement",
+    "do", "end_do_loop_statement", "end_do_loop",
+    "where", "end_where_statement", "elsewhere_clause",
+    "call", "name",
+    "select", "case", "end_select_statement", "case_statement",
+    "block",
+})
+
+
+def _pick_trace_subexpr(ctx_node, line: int, col: int):
+    """Find the cursor-containing sub-expression inside a trace context.
+
+    Descends through wrapper nodes (parens, argument lists, loop
+    control, case selector) so the rendered tree starts at the
+    user-visible expression rather than the syntactic shell.
+    Returns ``None`` if the cursor sits on a keyword or in an
+    assignment_statement (which is handled by the primary trace path).
+    """
+    target = ctx_node
+    is_call = ctx_node.type in ("call_expression", "subroutine_call")
+    while True:
+        candidate = None
+        for c in target.children:
+            if c.type in _SKIP_TOKEN_TYPES:
+                continue
+            if c.type in _SKIP_TRACE_CHILD_TYPES:
+                continue
+            # Cursor on the callee identifier — root the trace at the
+            # whole call so each argument shows up as a branch. The
+            # callee itself is filtered out of the rendered children
+            # by _interesting_children.
+            if target is ctx_node and is_call and c.type == "identifier":
+                if _ts_h.node_contains(c, line, col):
+                    return ctx_node
+                continue
+            if not _ts_h.node_contains(c, line, col):
+                continue
+            candidate = c
+            break
+        if candidate is None:
+            return None
+        if candidate.type in _TRACE_WRAPPER_TYPES:
+            target = candidate
+            continue
+        # Don't double-trace: if the cursor is in a nested assignment
+        # (e.g. inside a WHERE body), let the assignment branch handle it.
+        if candidate.type == "assignment_statement":
+            return None
+        return candidate
+
+
 def _interesting_children(node) -> list:
     """Return the children worth rendering as sub-tree nodes.
 
-    Skips punctuation/operator tokens. For ``call_expression``, expands
-    the argument list inline so each argument shows up at the same
-    indent level as a binary operator's operands would.
+    Skips punctuation/operator tokens. For ``call_expression`` /
+    ``subroutine_call``, drops the callee identifier and expands the
+    argument list inline so each argument shows up at the same indent
+    level as a binary operator's operands would.
     """
+    is_call = node.type in ("call_expression", "subroutine_call")
     out = []
+    seen_callee = False
     for c in node.children:
         if c.type in _SKIP_TOKEN_TYPES:
+            continue
+        if is_call and c.type == "call":
+            # The leading ``call`` keyword on a subroutine_call —
+            # structural, not an expression.
+            continue
+        if is_call and not seen_callee and c.type == "identifier":
+            seen_callee = True
             continue
         if c.type == "argument_list":
             for ac in c.children:
