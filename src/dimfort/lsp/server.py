@@ -1466,6 +1466,25 @@ def _expression_hover_for(
         result = _last_result
     if result is None:
         return None
+    # Most-specific wins: a cursor directly on a ``+`` / ``-`` / ``*``
+    # / ``/`` / ``**`` token should report that operator's own check,
+    # not the enclosing assignment. ``+`` and ``-`` are homogeneity-
+    # checked (operands must be unit-equal); the rest just report the
+    # sub-expression's resolved unit.
+    op_hit = _math_op_at_cursor(tree, line_1based, col_1based)
+    if op_hit is not None:
+        op_node, parent = op_hit
+        ctx = _build_ts_ctx(result, source, str(resolved_path), path=resolved_path)
+        ctx.var_types.update(ts_checker.collect_var_types(tree, source))
+        ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
+        if _features.hover_expressions == "short":
+            if op_node.type in ("+", "-"):
+                return _render_mathop_short(parent, ctx, source)
+            return _render_subexpr_short(parent, ctx, source)
+        # Detailed: fall through to the tree path with parent as the root.
+        return _expression_hover_render_tree(
+            parent, ctx, source, range_node=parent,
+        )
     asn = _ts_h.smallest_enclosing(
         _ts_h.walk_assignments(tree), line_1based, col_1based
     )
@@ -1626,17 +1645,104 @@ def _expression_hover_for_context(
     return text, _node_lsp_range(expr)
 
 
+_MATH_OP_TYPES = frozenset({"+", "-", "*", "/", "**"})
+
+
+def _math_op_at_cursor(tree, line: int, col: int):
+    """Find a math-expression operator token at the cursor.
+
+    Returns ``(op_node, parent_math_expression)`` if the cursor sits
+    directly on a ``+``/``-``/``*``/``/``/``**`` token whose parent
+    is a ``math_expression``, else ``None``.
+    """
+    for n in _ts.walk(tree.root_node):
+        if n.type not in _MATH_OP_TYPES:
+            continue
+        if not _ts_h.node_contains(n, line, col):
+            continue
+        parent = n.parent
+        if parent is None or parent.type != "math_expression":
+            continue
+        return n, parent
+    return None
+
+
+def _render_mathop_short(math_expr, ctx, source: bytes) -> tuple[str, lsp.Range] | None:
+    """One-line homogeneity hover for a ``+`` / ``-`` math expression."""
+    from dimfort.core.units import format_unit
+    operands = [c for c in math_expr.children if c.type not in _SKIP_TOKEN_TYPES]
+    if len(operands) < 2:
+        return None
+    lhs, rhs = operands[0], operands[1]
+    marker, lu, ru = _homogeneity_short_marker(lhs, rhs, ctx, source)
+    lhs_s = format_unit(lu) if lu is not None else "?"
+    rhs_s = format_unit(ru) if ru is not None else "?"
+    body = (
+        f"{_node_label(lhs, source)} : {lhs_s}"
+        f"   ◂   {_node_label(rhs, source)} : {rhs_s}"
+    )
+    text = f"**{marker} DimFort**\n\n```\n{body}\n```"
+    return text, _node_lsp_range(math_expr)
+
+
+def _expression_hover_render_tree(
+    root, ctx, source: bytes, *, range_node,
+) -> tuple[str, lsp.Range] | None:
+    """Detailed-mode tree render rooted at ``root``. Shared by the
+    operator-specific path and the generic expression-context path."""
+    rows: list[tuple[str, str, str, str]] = []
+    _render_ast_tree(
+        root, ctx, source,
+        prefix="", is_last=True, is_root=True, rows=rows,
+    )
+    if not rows:
+        return None
+    max_label = max(len(r[0]) for r in rows)
+    max_unit = max(len(r[1]) for r in rows)
+    lines: list[str] = []
+    for label, unit, mark, rule in rows:
+        if rule:
+            lines.append(
+                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}  {rule}"
+            )
+        else:
+            lines.append(
+                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}".rstrip()
+            )
+    body = "\n".join(lines)
+    header_marker = _aggregate_marker(r[2] for r in rows)
+    text = f"**{header_marker} DimFort**\n\n```\n" + body + "\n```"
+    return text, _node_lsp_range(range_node)
+
+
+def _homogeneity_short_marker(lhs, rhs, ctx, source: bytes) -> tuple[str, Unit | None, Unit | None]:
+    """Worst-of marker for a two-side homogeneity hover (assignment,
+    relational, ``+``/``-`` math op). Returns ``(marker, lhs_unit,
+    rhs_unit)``.
+
+    🔴 fires for either a top-level mismatch between LHS/RHS units, or
+    a propagated 🔴 from anywhere inside either side (a nested
+    homogeneity violation makes its operand unresolvable, which
+    bubbles up). 🟢 only when both sides resolve cleanly to the same
+    unit. 🟡 otherwise.
+    """
+    lhs_u = ts_checker._resolve(lhs, ctx, source)
+    rhs_u = ts_checker._resolve(rhs, ctx, source)
+    lmark = _node_trace_mark(lhs, lhs_u, ctx, source)
+    rmark = _node_trace_mark(rhs, rhs_u, ctx, source)
+    if lmark == "🔴" or rmark == "🔴":
+        marker = "🔴"
+    elif lhs_u is not None and rhs_u is not None:
+        marker = "🟢" if _checker_equal(lhs_u, rhs_u) else "🔴"
+    else:
+        marker = "🟡"
+    return marker, lhs_u, rhs_u
+
+
 def _render_assignment_short(asn, lhs, rhs, ctx, source: bytes) -> tuple[str, lsp.Range] | None:
     """One-line homogeneity hover for an assignment cursor position."""
     from dimfort.core.units import format_unit
-    lhs_u = ts_checker._resolve(lhs, ctx, source)
-    rhs_u = ts_checker._resolve(rhs, ctx, source)
-    if lhs_u is None or rhs_u is None:
-        marker = "🟡"
-    elif _checker_equal(lhs_u, rhs_u):
-        marker = "🟢"
-    else:
-        marker = "🔴"
+    marker, lhs_u, rhs_u = _homogeneity_short_marker(lhs, rhs, ctx, source)
     lhs_s = format_unit(lhs_u) if lhs_u is not None else "?"
     rhs_s = format_unit(rhs_u) if rhs_u is not None else "?"
     body = (
@@ -1659,14 +1765,7 @@ def _render_relational_short(rel, ctx, source: bytes) -> tuple[str, lsp.Range] |
     if len(operands) < 2:
         return None
     lhs, rhs = operands[0], operands[1]
-    lhs_u = ts_checker._resolve(lhs, ctx, source)
-    rhs_u = ts_checker._resolve(rhs, ctx, source)
-    if lhs_u is None or rhs_u is None:
-        marker = "🟡"
-    elif _checker_equal(lhs_u, rhs_u):
-        marker = "🟢"
-    else:
-        marker = "🔴"
+    marker, lhs_u, rhs_u = _homogeneity_short_marker(lhs, rhs, ctx, source)
     lhs_s = format_unit(lhs_u) if lhs_u is not None else "?"
     rhs_s = format_unit(rhs_u) if rhs_u is not None else "?"
     body = (
@@ -1679,15 +1778,13 @@ def _render_relational_short(rel, ctx, source: bytes) -> tuple[str, lsp.Range] |
 
 def _render_subexpr_short(expr, ctx, source: bytes) -> tuple[str, lsp.Range] | None:
     """One-line resolved-unit hover for a computed sub-expression or
-    a numeric literal."""
+    a numeric literal. Marker uses propagated-mark logic so a nested
+    homogeneity violation surfaces as 🔴 even though the wrapping
+    operator has no unit either."""
     from dimfort.core.units import format_unit
     u = ts_checker._resolve(expr, ctx, source)
-    if u is None:
-        marker = "🟡"
-        u_s = "?"
-    else:
-        marker = "🟢"
-        u_s = format_unit(u)
+    marker = _node_trace_mark(expr, u, ctx, source)
+    u_s = format_unit(u) if u is not None else "?"
     body = f"{_node_label(expr, source)} : {u_s}"
     text = f"**{marker} DimFort**\n\n```\n{body}\n```"
     return text, _node_lsp_range(expr)

@@ -93,6 +93,17 @@ set is documented in
 - **Most-specific wins** dispatch: identifier, member, callee, and
   numeric-literal hovers run first; the expression-context hover
   fires only when nothing more specific matched.
+- **Per-row markers in the trace tree.** Each row in the unit-algebra
+  tree now carries a 🟢/🟡/🔴 marker in a right-aligned column. A
+  🔴 propagates upward through `*` / `/` / function calls — anywhere
+  a downstream homogeneity violation makes the parent unresolvable —
+  so the reader can spot the failing spine at a glance. Header
+  marker aggregates the worst row (incl. nested violations).
+- **Line-continuation parser fix.** Fortran's `&` continuation
+  appears as a sibling of `=` in the assignment AST; the previous
+  RHS splitter picked it as the RHS instead of the actual
+  expression on the next line. The hover now lands on the real
+  expression for any continued assignment.
 
 ### Other LSP / CLI changes
 
