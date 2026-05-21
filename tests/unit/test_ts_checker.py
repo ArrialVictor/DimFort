@@ -109,8 +109,8 @@ def test_h002_addition_mismatch():
 def test_h010_literal_plus_unitful_emits_warning():
     """``1. + speed`` fires H010 (warning), not H002 (error).
 
-    The ``1.+speed(i)`` regularization-constant pattern in LMDZ
-    (cdrag_mod / screenc_mod) is dimensionally smelly but not a real
+    The ``1.+speed(i)`` regularization-constant pattern (common in
+    drag / surface-flux routines) is dimensionally smelly but not a real
     bug — the literal has an implicit unit. H010 surfaces the smell
     at warning severity, allowing the expression to type.
     """
@@ -461,7 +461,7 @@ def test_log10_same_as_log():
 
 
 def test_hydrostatic_projection_types_cleanly():
-    """The cdrag_mod.f90:300 hydrostatic idiom should type to Pa.
+    """The hydrostatic-projection idiom should type to Pa.
 
     ``EXP(LOG(psol) - dgeop/RT)`` — the inner ``LOG(psol) - dim'less``
     types as ``LogWrap(Pa)`` (R5.3 absorbs the dim'less constant; in
@@ -538,6 +538,54 @@ def test_log_plus_pressure_emits_d13():
     )
     diags = _check(src, {"p": "Pa", "q": "Pa", "r": "1"})
     assert any("D1.3" in d.message for d in diags)
+
+
+def test_oq4_parameter_exponent_resolves_as_literal_rational():
+    """OQ4: ``p ** kappa`` where ``kappa`` is a PARAMETER with a literal
+    initialiser must resolve the exponent as a rational and *not* fire
+    D1.4. Matches the classical Exner ``p^kappa`` pattern."""
+    src = (
+        "subroutine s\n"
+        "  real, parameter :: kappa = 2./7.\n"
+        "  real :: p, pi\n"
+        "  pi = (p/1.e5) ** kappa\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"p": "Pa", "pi": "1"})
+    # D1.4 used to fire here pre-OQ4; with PARAMETER-aware exponent
+    # resolution, kappa is treated as the literal rational 2/7 and the
+    # power resolves to Pa^(2/7), which (combined with `1.e5` cancelling
+    # to dim'less ratio) matches ``pi : 1``.
+    codes_and_msgs = [(d.code, d.message) for d in diags]
+    assert not any("D1.4" in m for _c, m in codes_and_msgs), \
+        f"D1.4 unexpectedly fired: {codes_and_msgs}"
+
+
+def test_oq4_parameter_value_simple_literal():
+    """OQ4 also handles a plain literal PARAMETER whose value reduces to
+    a clean rational under the existing denominator cap."""
+    src = (
+        "subroutine s\n"
+        "  real, parameter :: half = 0.5\n"
+        "  real :: p, q\n"
+        "  q = p ** half\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"p": "Pa", "q": "Pa^(1/2)"})
+    assert not any("D1.4" in d.message for d in diags)
+
+
+def test_oq4_falls_back_to_d14_for_non_parameter_identifier():
+    """Sanity: a plain non-PARAMETER variable used as exponent still
+    triggers D1.4 (PARAMETER-aware lookup must not over-trigger)."""
+    src = (
+        "subroutine s\n"
+        "  real :: p, kappa, pi\n"
+        "  pi = p ** kappa\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"p": "Pa", "kappa": "1", "pi": "1"})
+    assert any("D1.4" in d.message for d in diags)
 
 
 def test_nonliteral_scalar_times_log_emits_d14():

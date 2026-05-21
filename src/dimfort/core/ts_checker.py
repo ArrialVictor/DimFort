@@ -109,6 +109,12 @@ class _Ctx:
     var_types: dict[str, str]                       # varname → derived-type name
     type_field_types: dict[tuple[str, str], str]    # (type, field) → field's struct type
     field_units: dict[tuple[str, str], Unit]        # (type, field) → unit
+    # OQ4: PARAMETER literal values, keyed by lowercased name. Populated
+    # from ``collect_parameter_values``. Used by ``_resolve_constant_value``
+    # so ``p ** kappa`` (where ``kappa`` is a PARAMETER with a literal
+    # initialiser) resolves the exponent as a rational rather than firing
+    # D1.4. Empty dict ⇒ behaves identically to "no PARAMETER awareness".
+    parameter_values: dict[str, Fraction | int] = field(default_factory=dict)
     # Scope-aware annotation table. ``var_units`` above remains the
     # flat first-seen view (compat). When ``var_units_by_scope`` is
     # populated, ``unit_for(name, byte_offset)`` honours the enclosing
@@ -327,6 +333,66 @@ def _is_real_literal(node: Node, source: bytes) -> bool:
     return "." in text or "e" in text.lower() or "d" in text.lower()
 
 
+def _resolve_constant_value(
+    node: Node | None, ctx: _Ctx | None, source: bytes,
+) -> int | Fraction | None:
+    """Resolve a node to a constant rational value.
+
+    Handles:
+    - A bare ``number_literal`` (possibly wrapped in unary ``-``/``+`` /
+      parens) — same as the legacy ``_constant_exponent``.
+    - A reference to a PARAMETER whose initialiser collapses to a rational
+      (via ``ctx.parameter_values``). Enables ``p ** kappa`` patterns
+      (Exner, etc.) to recover a literal-rational exponent.
+    - Simple constant-folded arithmetic over the above: ``2./7.``,
+      ``RD/RCPD`` (where both are PARAMETERs), ``-kappa`` etc.
+
+    Returns ``None`` when any sub-expression isn't known. Safe to call
+    with ``ctx=None``; PARAMETER lookup is then skipped.
+    """
+    if node is None:
+        return None
+    node = _unwrap_parens(node)
+    if node.type == "number_literal":
+        return _constant_exponent(node, source)
+    if node.type == "unary_expression":
+        sign = 1
+        for c in node.children:
+            if c.type == "-":
+                sign = -sign
+                break
+            if c.type == "+":
+                break
+        inner = _unary_operand(node)
+        inner_val = _resolve_constant_value(inner, ctx, source)
+        if inner_val is None:
+            return None
+        return sign * inner_val
+    if node.type == "identifier" and ctx is not None and ctx.parameter_values:
+        name = _text(node, source).lower()
+        return ctx.parameter_values.get(name)
+    if node.type == "math_expression":
+        op = _math_op(node)
+        if op not in ("+", "-", "*", "/"):
+            return None
+        left, right = _math_operands(node)
+        l_val = _resolve_constant_value(left, ctx, source)
+        r_val = _resolve_constant_value(right, ctx, source)
+        if l_val is None or r_val is None:
+            return None
+        if op == "+":
+            return l_val + r_val
+        if op == "-":
+            return l_val - r_val
+        if op == "*":
+            return l_val * r_val
+        # op == "/"
+        if r_val == 0:
+            return None
+        return Fraction(l_val) / Fraction(r_val)
+    return None
+
+
 def _constant_exponent(node: Node, source: bytes) -> int | Fraction | None:
     """Decode an expression used as a power exponent into ``int`` or ``Fraction``.
 
@@ -409,7 +475,7 @@ def _resolve(node: Node | None, ctx: _Ctx, source: bytes) -> Unit | None:
             base = _resolve(left, ctx, source)
             if base is None or right is None:
                 return None
-            exponent_value = _constant_exponent(right, source)
+            exponent_value = _resolve_constant_value(right, ctx, source)
             exponent_unit = _resolve(right, ctx, source)
             result, _ = power(base, exponent_unit, exponent_value)
             return result
@@ -419,8 +485,8 @@ def _resolve(node: Node | None, ctx: _Ctx, source: bytes) -> Unit | None:
             return None
         if op not in ("+", "-", "*", "/"):
             return None
-        left_lit = _constant_exponent(left, source) if left is not None else None
-        right_lit = _constant_exponent(right, source) if right is not None else None
+        left_lit = _resolve_constant_value(left, ctx, source) if left is not None else None
+        right_lit = _resolve_constant_value(right, ctx, source) if right is not None else None
         # Outer-unary-minus sign propagation. Tree-sitter parses
         # ``-1.0 * LOG(p)`` as ``-(1.0 * LOG(p))`` — the literal child
         # of the inner math_expression is positive, so R5.4 sees
@@ -600,7 +666,7 @@ def _emit_u005_for_unannotated(
     and (b) record every variable_declaration we see. After the walk,
     we cross-reference queried names against recorded declarations.
     Avoids the two-pass tree walk an earlier revision had — the
-    second pass alone was visible on profiles of LMDZ-scale worksets.
+    second pass alone was visible on profiles of large workspaces.
     """
     queried: set[str] = set()
     first_use: dict[str, tuple[int, int]] = {}
@@ -955,7 +1021,7 @@ def _walk_expressions(
             base = _resolve(left, ctx, source)
             if base is None or right is None:
                 return
-            exponent_value = _constant_exponent(right, source)
+            exponent_value = _resolve_constant_value(right, ctx, source)
             exponent_unit = _resolve(right, ctx, source)
             _, diag = power(base, exponent_unit, exponent_value)
             if diag == "D1.4":
@@ -977,8 +1043,8 @@ def _walk_expressions(
         ru = _resolve(right, ctx, source)
         if lu is None or ru is None:
             return
-        left_lit_val = _constant_exponent(left, source) if left is not None else None
-        right_lit_val = _constant_exponent(right, source) if right is not None else None
+        left_lit_val = _resolve_constant_value(left, ctx, source) if left is not None else None
+        right_lit_val = _resolve_constant_value(right, ctx, source) if right is not None else None
         _, diag = combine(
             op, lu, ru,
             a_literal=left_lit_val, b_literal=right_lit_val,
@@ -1111,6 +1177,61 @@ def _decl_type_name(decl: Node, source: bytes) -> str | None:
             # keep the fallback so a future grammar tweak doesn't break us.
             return _text(c, source)
     return None
+
+
+def collect_parameter_values(
+    tree: Tree, source: bytes,
+) -> dict[str, Fraction | int]:
+    """Return ``{name_lc: value}`` for every PARAMETER declaration whose
+    initialiser collapses to a rational.
+
+    A PARAMETER declaration is a ``variable_declaration`` with a
+    ``type_qualifier`` child reading "parameter". Each ``init_declarator``
+    pairs an identifier with a value expression; we evaluate the value
+    expression via ``_resolve_constant_value`` (without a ctx — so only
+    literals and simple arithmetic, no chained PARAMETER lookup here).
+    A two-pass version that resolves chained PARAMETERs is straightforward
+    to add when needed; for now the common ``kappa = 2./7.`` style is
+    literal-only and that's what this covers.
+    """
+    out: dict[str, Fraction | int] = {}
+    for n in _ts.walk(tree.root_node):
+        if n.type != "variable_declaration":
+            continue
+        # type_qualifier child whose text is "parameter" (case-insensitive)
+        is_parameter = False
+        for c in n.children:
+            if c.type == "type_qualifier" and _text(c, source).strip().lower() == "parameter":
+                is_parameter = True
+                break
+        if not is_parameter:
+            continue
+        for c in n.children:
+            if c.type != "init_declarator":
+                continue
+            name_node = next(
+                (cc for cc in c.children if cc.type == "identifier"), None,
+            )
+            if name_node is None:
+                continue
+            # The value sits after the ``=`` token; pick the first non-name
+            # / non-`=` child of init_declarator.
+            value_node = None
+            seen_eq = False
+            for cc in c.children:
+                if cc.type == "=":
+                    seen_eq = True
+                    continue
+                if seen_eq:
+                    value_node = cc
+                    break
+            if value_node is None:
+                continue
+            value = _resolve_constant_value(value_node, None, source)
+            if value is None:
+                continue
+            out[_text(name_node, source).lower()] = value
+    return out
 
 
 def collect_var_types(tree: Tree, source: bytes) -> dict[str, str]:
@@ -1365,7 +1486,7 @@ def collect_function_signatures_and_module_exports(
 
     Equivalent to running ``collect_function_signatures`` and
     ``collect_module_exports`` back-to-back, but visits the tree once
-    instead of twice. Profiling LMDZ workset showed those two walks
+    instead of twice. Profiling a large workspace showed those two walks
     accounted for ~6-7s in the index phase; consolidating saves about
     half. Public collectors are kept for back-compat (LSP hover etc.).
 
@@ -1652,6 +1773,7 @@ def check(
     var_types, type_field_types = collect_var_types_and_type_field_types(
         tree, source
     )
+    parameter_values = collect_parameter_values(tree, source)
     ctx = _Ctx(
         file=str(file),
         var_units=parsed_vars,
@@ -1663,6 +1785,7 @@ def check(
         var_units_by_scope=parsed_vars_by_scope,
         routine_scopes=tuple(routine_scopes),
         _scope_starts=tuple(r[0] for r in routine_scopes),
+        parameter_values=parameter_values,
     )
     out: list[Diagnostic] = []
     out.extend(_emit_u005_for_unannotated(tree, ctx, source))

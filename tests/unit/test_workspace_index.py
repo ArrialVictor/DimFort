@@ -132,8 +132,8 @@ def test_scan_workspace_walks_subdirs(tmp_path):
 
 
 def test_scan_handles_latin1_encoded_sources(tmp_path):
-    """Many legacy Fortran codebases (LMDZ included) ship files with
-    non-UTF-8 byte sequences in comments. The scanner must not crash."""
+    """Many legacy Fortran codebases ship files with non-UTF-8 byte
+    sequences in comments. The scanner must not crash."""
     p = tmp_path / "latin.f90"
     # `é` (0xe9) in Latin-1 — not valid UTF-8 as a standalone byte.
     p.write_bytes(b"module foo\n! commentaire en fran\xe9ais\nend module foo\n")
@@ -296,7 +296,7 @@ def test_workspace_index_records_top_level_procedure(tmp_path):
 
 def test_resolve_pulls_in_external_procedure_callee(tmp_path):
     # Caller in dyn3d/, callee (external SUBROUTINE) in dyn3d_common/.
-    # No USE statement between them — this is the LMDZ pattern.
+    # No USE statement between them — this is the F77-vintage pattern.
     callee = _write(
         tmp_path, "dyn3d_common/flumass.f90",
         "subroutine flumass(a, b)\nend subroutine flumass\n",

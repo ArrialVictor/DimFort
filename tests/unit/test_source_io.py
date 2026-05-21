@@ -1,7 +1,8 @@
 """Tests for the encoding-tolerant Fortran source reader.
 
-LMDZ ships files with Latin-1 byte sequences in French comments. Any
-helper that text-scans a source file must survive them without
+Real-world Fortran codebases routinely ship files with Latin-1 byte
+sequences in comments (French / German). Any helper that text-scans
+a source file must survive them without
 raising ``UnicodeDecodeError``; otherwise the pipeline crashes the
 moment it touches such a file.
 """

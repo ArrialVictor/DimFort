@@ -330,9 +330,9 @@ Regular(t) ^ k  ⇒  Regular(k · t)
 For non-literal `k`:
 
 - **Rd base** (`t = 0,...,0`): result is `Rd` — `0·k = 0` for every
-  `k`, literal or not. (Refinement of 2026-05-21 closing the LMDZ
-  noise from interpolation-weight and stride-doubling patterns like
-  `2 ** (ig2 - 1)`.)
+  `k`, literal or not. (Refinement of 2026-05-21 closing the noise
+  from interpolation-weight and stride-doubling patterns like
+  `2 ** (ig2 - 1)` observed in real-world Fortran corpora.)
 - **Rn base** (`t ≠ 0,...,0`): ERROR D1.4 (runtime-dependent unit;
   classic Exner `p^kappa` case).
 
@@ -1142,7 +1142,7 @@ Rule numbers in trace output link back to this spec.
 
 **Example output:**
 ```
-H001 at cdrag_mod.f90:300: Assignment unit mismatch: Pa ≠ 1
+H001 at my_module.f90:300: Assignment unit mismatch: Pa ≠ 1
 trace for RHS:
   EXP(LOG(psol) - zgeop1/(RD*t1*(1.+RETV*max(q1,0.))))
   → LOG(psol)                                  ⇒ LogWrap(Pa)        [R3.1]
@@ -1416,7 +1416,6 @@ by design.
 - `Homogeneity/notes/dimfort-fp-and-limitations.md` — original
   motivating FP classes (EXP(LOG) hydrostatic idiom, `1.+speed`
   regularization).
-- `Homogeneity/LMDZ_FINDINGS.md` — findings on LMDZ source that
-  surfaced these patterns (especially `cdrag_mod.f90:300` and
-  `screenc_mod.f90:115`).
+- An internal findings log of real-world Fortran corpus checks
+  surfaced these patterns.
 - Design conversation log: 2026-05-20 session.

@@ -47,8 +47,7 @@ class DimfortConfig:
     # pre-tree-sitter era: ``cpp_defines`` becomes ``cpp -DX``,
     # ``include_paths`` becomes ``cpp -IPATH``. Required to unblock
     # files whose ``module``/``use`` constructs sit inside
-    # ``#ifdef X`` regions (LMDZ's ``isotopes_routines_mod``,
-    # ``radiation_cloud_cover``, etc).
+    # ``#ifdef X`` regions (common in legacy Fortran codebases).
     cpp_defines: tuple[str, ...] = ()
     include_paths: tuple[Path, ...] = ()
 

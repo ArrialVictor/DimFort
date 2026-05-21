@@ -51,7 +51,7 @@ It speaks LSP over stdio, the wire format every common editor expects.
 - **In-memory edits to file A trigger a check of every file** in its
   workset. The pipeline is fast on small projects; large worksets are
   capped at `maxWorksetSize` files (default 40, configurable via
-  `initializationOptions`) so a deep LMDZ-scale entry point stays
+  `initializationOptions`) so a deep entry point in a large codebase stays
   responsive.
 - **`.F90` preprocessing** uses the system `cpp` (one subprocess per
   file). On a 2400-file workspace this dominates wall time — the

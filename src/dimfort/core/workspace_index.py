@@ -94,7 +94,7 @@ _PLAIN_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*$")
 # but tolerated). We deliberately don't try to match function-call
 # expressions here — they're harder to disambiguate from array
 # indexing without semantic context, and the dominant external-
-# procedure pattern in LMDZ-class codebases is ``CALL`` to a
+# procedure pattern in F77-vintage codebases is ``CALL`` to a
 # subroutine. Functions can be added later if needed.
 _CALL_RE = re.compile(
     r"^\s*(?:\d+\s+)?call\s+([A-Za-z_]\w*)",
@@ -130,7 +130,7 @@ class WorkspaceIndex:
     ``procedures`` maps the lower-cased name of every **top-level**
     ``SUBROUTINE`` / ``FUNCTION`` declaration (one that is not inside
     a ``MODULE`` block) to the file that declares it. This covers F77-
-    vintage external procedures that LMDZ-class codebases still call
+    vintage external procedures that F77-vintage codebases still call
     without a ``USE`` clause; without this index, the LSP's per-file
     workset can't reach those defining files via ``use``-chain
     resolution.
@@ -414,7 +414,7 @@ def _scan_into_index(
         # First-found wins. Conflict (the same name declared at top
         # level in two files) is rare but possible in old codebases
         # with build-time variant selection; first-seen mirrors the
-        # link-time symbol-resolution that LMDZ-class projects rely
+        # link-time symbol-resolution that F77-vintage projects rely
         # on, and avoids re-introducing ordering instability.
         index.procedures.setdefault(proc_name, path)
     index.uses_by_file[path] = extract_uses(text)
@@ -467,7 +467,7 @@ def resolve_workset(
         # External-procedure resolution. For every ``CALL name``
         # invocation that names a top-level procedure declared
         # somewhere in the workspace, pull its defining file into
-        # the workset too. This is the LMDZ-style F77-linkage path
+        # the workset too. This is the F77-style linkage path
         # that ``use``-chain expansion can't reach. Procedures
         # declared *inside* a module are not in ``index.procedures``,
         # so this path doesn't double-pull files already reached via

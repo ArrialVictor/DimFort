@@ -116,14 +116,14 @@ Identical to function call, with two differences:
 ### Short
 
 ```
-drag_noro_strato:
+update_winds:
 
      Signature      Call
   🟢  klon : 1   ◂  klon : 1
   🟢  klev : 1   ◂  klev : 1
-  🟡  t    : K   ◂  t_seri : ?
-  🟡  u    : m/s ◂  u_seri : ?
-  🟢  d_t  : K   ◂  d_t_oro : K
+  🟡  t    : K   ◂  t_local : ?
+  🟡  u    : m/s ◂  u_local : ?
+  🟢  d_t  : K   ◂  dt_out  : K
 ```
 
 ### Detailed
@@ -188,8 +188,8 @@ a * b : K×m
   <img width="640" src="img/hover-expression-short-assignment_light.png" alt="Short assignment hover">
 </picture>
 
-A homogeneity violation in the same shape — Pa²/s² vs m/s² (real LMDZ
-finding at `calfis.f90:671`):
+A homogeneity violation in the same shape — Pa²/s² vs m/s² (real finding
+from a reference workspace trial):
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="img/hover-expression-short-mismatch_dark.png">
@@ -327,13 +327,13 @@ These ground the rules above with concrete cursor placements.
 | `if`, `then`, `(`, `)` | (no hover) | — | — |
 
 
-### `call drag_noro_strato(p1, p2 + 1.0, t_seri)`
+### `call update_winds(p1, p2 + 1.0, t_local)`
 
 | Cursor on | Surface | Short body |
 |---|---|---|
-| `drag_noro_strato` | subroutine call | pairing layout (see above) |
+| `update_winds` | subroutine call | pairing layout (see above) |
 | `p1` | identifier | `p1 : Pa` |
 | `p2` | identifier | `p2 : Pa` |
 | `+` | binary operator | `p2 : Pa   ◂   1.0 : 1   🔴` (homogeneity violation — Pa vs dim'less literal) |
 | `1.0` | numeric literal | `1.0 : 1` |
-| `t_seri` | identifier | `t_seri : ?` (unannotated) |
+| `t_local` | identifier | `t_local : ?` (unannotated) |

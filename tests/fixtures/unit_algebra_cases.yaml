@@ -380,7 +380,7 @@
   expected: Pa
   rules: [R4.1, R4.2, R5.3, R3.1, R3.2, R2.2]
   notes: |
-    The full hydrostatic projection from cdrag_mod.f90:300.
+    The full hydrostatic-projection idiom (Pa from EXP(LOG p - dΦ/RT)).
     Inside-out:
       RETV * MAX(q1, 0.0)                  :: 1
       1. + RETV * MAX(...)                 :: 1
