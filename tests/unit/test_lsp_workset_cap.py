@@ -1,10 +1,11 @@
 """Unit test for the LSP workset-cap helper.
 
 Trimming the workset is what keeps the LSP process alive on
-LMDZ-scale workspaces: resolving the full `use` closure of a deep
-entry point (e.g. phylmd/physiq_mod.F90 -> 353 files) holds enough
-AST/ASR JSON in memory to get the Python process SIGKILLed by
-macOS jetsam. The cap trades cross-file coverage for stability.
+large workspaces: resolving the full `use` closure of a deep
+entry point (e.g. a top-level driver pulling ~350 dependent files)
+holds enough AST/ASR JSON in memory to get the Python process
+SIGKILLed by macOS jetsam. The cap trades cross-file coverage for
+stability.
 """
 from __future__ import annotations
 

@@ -1,7 +1,7 @@
 """Encoding-tolerant Fortran source reader.
 
-LMDZ and many other legacy Fortran codebases ship files containing
-Latin-1 byte sequences in comments (French / German). A naive
+Legacy Fortran codebases routinely ship files containing Latin-1
+byte sequences in comments (French / German). A naive
 ``Path.read_text()`` crashes with ``UnicodeDecodeError`` on those.
 
 This module's :func:`read_text` always tries UTF-8 first and falls

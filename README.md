@@ -141,7 +141,7 @@ to `Pa`. The full rule set is in
 Pass `--trace` to see the rule chain behind each diagnostic:
 
 ```bash
-dimfort check --trace src/cdrag_mod.f90
+dimfort check --trace src/my_module.f90
 ```
 
 Each error / warning prints the firing rule IDs (`R3.1`, `R5.6`, …)

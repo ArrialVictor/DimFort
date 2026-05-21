@@ -221,8 +221,8 @@ _DEFAULT_EXTERNAL_MODULES: frozenset[str] = frozenset({
 _external_modules: frozenset[str] = _DEFAULT_EXTERNAL_MODULES
 
 # Maximum number of files to feed into a single check. Resolving the
-# full transitive `use` closure of a deep LMDZ-scale entry point (e.g.
-# `phylmd/physiq_mod.F90` -> ~353 files) holds enough AST/ASR JSON in
+# full transitive `use` closure of a deep entry point in a large
+# Fortran codebase (e.g. ~353 dependent files) holds enough AST/ASR JSON in
 # memory to trigger macOS jetsam SIGKILL on the LSP process. The cap
 # trades cross-file coverage for stability: when the workset exceeds
 # this, we keep the last N entries in topo order — the active file
@@ -449,7 +449,7 @@ def _workset_for(ls: LanguageServer, active_uri: str) -> tuple[list[Path], Path 
     # check the active file alone. Cross-file deps will surface as
     # transient U007 errors until the index build finishes; that's
     # strictly better than feeding every file in the workspace to
-    # the checker — on LMDZ-scale (2435 files) the old behaviour
+    # the checker — at large scale (~2400 files) the old behaviour
     # SIGKILLed the LSP via macOS jetsam.
     return [resolved_active], active
 
@@ -724,7 +724,7 @@ def _hover_signature(name: str, sig: FuncSig) -> str:
 # Module hover caps. VSCode's hover popup is scrollable, so we
 # don't actually need to truncate to fit on screen — the cap is
 # only a safety belt against pathological re-export modules with
-# thousands of entries. Set well above realistic LMDZ-scale module
+# thousands of entries. Set well above realistic large-codebase module
 # sizes (≤ ~100 vars, ≤ ~50 procs); anything bigger gets the "more"
 # tail so the popup doesn't pretend to be authoritative.
 _MODULE_HOVER_VAR_LIMIT = 500
@@ -896,6 +896,7 @@ def _resolve_hover(
     if member_hit is not None:
         ctx = _build_ts_ctx(result, source, str(resolved_path), path=resolved_path)
         ctx.var_types.update(ts_checker.collect_var_types(tree, source))
+        ctx.parameter_values.update(ts_checker.collect_parameter_values(tree, source))
         ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
         unit = ts_checker._resolve_member_chain(member_hit, ctx, source)
         base, path = _ts_h.member_expr_chain(member_hit, source)
@@ -933,6 +934,7 @@ def _resolve_hover(
                         result, source, str(resolved_path), path=resolved_path,
                     )
                     rctx.var_types.update(ts_checker.collect_var_types(tree, source))
+                    rctx.parameter_values.update(ts_checker.collect_parameter_values(tree, source))
                     rctx.type_field_types.update(
                         ts_checker.collect_type_field_types(tree, source)
                     )
@@ -1102,7 +1104,7 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         _project_config = load_config(folders[0])
     config = _project_config
 
-    # Project-specific unit table (LMDZ ships ``lmdz_units.toml`` with
+    # Project-specific unit table (projects ship a ``*_units.toml`` with
     # ``degree``, ``hPa``, ``day``, etc.). Install before any check
     # fires so var_units parsing doesn't drop those annotations.
     if config.units_file is not None:
@@ -1476,6 +1478,7 @@ def _expression_hover_for(
         op_node, parent = op_hit
         ctx = _build_ts_ctx(result, source, str(resolved_path), path=resolved_path)
         ctx.var_types.update(ts_checker.collect_var_types(tree, source))
+        ctx.parameter_values.update(ts_checker.collect_parameter_values(tree, source))
         ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
         if _features.hover_expressions == "short":
             if op_node.type in ("+", "-"):
@@ -1514,6 +1517,7 @@ def _expression_hover_for(
         return None
     ctx = _build_ts_ctx(result, source, str(resolved_path), path=resolved_path)
     ctx.var_types.update(ts_checker.collect_var_types(tree, source))
+    ctx.parameter_values.update(ts_checker.collect_parameter_values(tree, source))
     ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
     if _features.hover_expressions == "short":
         return _render_assignment_short(asn, lhs, rhs, ctx, source)
@@ -1607,6 +1611,7 @@ def _expression_hover_for_context(
         return None
     rctx = _build_ts_ctx(result, source, str(resolved_path), path=resolved_path)
     rctx.var_types.update(ts_checker.collect_var_types(tree, source))
+    rctx.parameter_values.update(ts_checker.collect_parameter_values(tree, source))
     rctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
     # The callee-on-call case is handled by ``_resolve_hover`` (which
     # dispatches to layout B or C based on the per-surface setting).
@@ -2037,6 +2042,7 @@ def _trace_section_for(uri: str, line_1based: int, col_1based: int) -> str | Non
         return None
     ctx = _build_ts_ctx(result, source, str(resolved_path), path=resolved_path)
     ctx.var_types.update(ts_checker.collect_var_types(tree, source))
+    ctx.parameter_values.update(ts_checker.collect_parameter_values(tree, source))
     ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
     rows: list[tuple[str, str, str, str]] = []  # (label, unit, mark, rule)
     _render_ast_tree(rhs, ctx, source, prefix="", is_last=True, is_root=True, rows=rows)
@@ -2370,6 +2376,7 @@ def _inlay_hint_locked(
 
     ctx = _build_ts_ctx(result, source, str(resolved_path), path=resolved_path)
     ctx.var_types.update(ts_checker.collect_var_types(tree, source))
+    ctx.parameter_values.update(ts_checker.collect_parameter_values(tree, source))
     ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
 
     seen: set[tuple[int, int]] = set()

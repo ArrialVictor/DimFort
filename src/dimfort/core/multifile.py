@@ -162,7 +162,7 @@ def _load_one(
     # ``.F90`` file with no ``#`` directives produces output identical
     # to its input, so spawning a subprocess for ~10 ms each is pure
     # overhead. Cheap text scan first; bypass cpp when no directive
-    # line is present. (LMDZ: ~half the .F90 files have no directives.)
+    # line is present. (Real-world: ~half the .F90 files have no directives.)
     has_directives = text.startswith("#") or "\n#" in text
     use_cpp = (
         path.suffix == ".F90"
@@ -439,7 +439,7 @@ def check_files(
     # Phase C — index modules + signatures across the workset.
     # Single combined walk per file via
     # ``collect_function_signatures_and_module_exports``: profiling
-    # LMDZ showed two separate walks here cost ~6-7s; one walk halves it.
+    # a reference workspace showed two separate walks here cost ~6-7s; one walk halves it.
     t_phase_start = time.perf_counter()
     module_exports: dict[str, ModuleExports] = {}
     global_signatures: dict[str, FuncSig] = {}

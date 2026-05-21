@@ -5,8 +5,9 @@ Phase 0 of the tree-sitter migration. Mirrors the API surface of
 fortran`` instead of an LFortran subprocess.
 
 Why we're migrating to tree-sitter (in one paragraph): LFortran's AST
-positions drift on ``&``-continuations, ~16 LMDZ files trigger
-``Internal Compiler Errors`` we have to allowlist, parsing a 200 KB
+positions drift on ``&``-continuations, ~16 files in our reference
+trial trigger ``Internal Compiler Errors`` we have to allowlist,
+parsing a 200 KB
 file takes ~100 ms and a 700 KB file far longer. Tree-sitter parses
 the same corpus in seconds, recovers from syntax errors with localised
 ``ERROR`` nodes instead of fatal failures, gives byte-exact positions
@@ -23,7 +24,7 @@ should never read ``node.start_point`` directly.
 CPP-preprocessed ``.F90`` files: tree-sitter has no built-in CPP, but
 its grammar is error-tolerant — raw ``#ifdef`` blocks parse with a
 small ERROR node and the surrounding Fortran code is recovered.
-Empirically (over 2424 LMDZ files, see the spike notes) most ``.F90``
+Empirically (over ~2400 real-world files, see the spike notes) most ``.F90``
 files parse acceptably raw, but continuations interleaved with
 ``#ifdef`` lines lose argument-list structure. For those cases use
 :func:`parse_with_cpp`, which runs the system ``cpp`` first and parses
@@ -311,8 +312,8 @@ def walk(node: Node) -> Iterator[Node]:
     iteration order callers ported from the LFortran API expect.
 
     Implementation: drives tree-sitter's ``TreeCursor`` instead of
-    recursing through ``node.children``. Profiling on the LMDZ
-    workset (2400 files) showed the recursive ``yield from`` form
+    recursing through ``node.children``. Profiling on a reference
+    workset (~2400 files) showed the recursive ``yield from`` form
     accounted for ~65% of wall-clock during the check phase —
     each Python-level ``yield from`` frame plus the ``.children``
     list materialisation costs more than the actual tree traversal.
@@ -365,7 +366,7 @@ def node_text(node: Node, source: bytes) -> str:
 
     Tree-sitter nodes don't carry their own text; the caller must
     provide the original ``bytes``. UTF-8 decoded with ``replace`` so
-    LMDZ's French comments don't break the wrapper.
+    non-ASCII comments don't break the wrapper.
     """
     return source[node.start_byte:node.end_byte].decode("utf-8", "replace")
 

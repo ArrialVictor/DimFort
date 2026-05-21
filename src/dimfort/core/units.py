@@ -374,8 +374,8 @@ def power(
 
          - ``Rd`` (dim'less): result is always ``Rd``. ``0·k = 0``
            for any ``k`` — literal, non-literal, integer, irrational.
-           This is the LMDZ-noise-closing refinement to R4.3's
-           (Rd, non-literal-k) cell.
+           This refinement to R4.3's (Rd, non-literal-k) cell closes
+           a class of false positives observed in real-world corpora.
          - ``Rn``: result is ``Rn(k·t)`` if the exponent value is
            a known literal rational; ``D1.4`` if not (classic Exner
            ``p^kappa`` pattern needing OQ4 to resolve precisely).

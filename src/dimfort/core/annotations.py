@@ -78,7 +78,7 @@ def _comment_start(line: str) -> int | None:
     Fast path: the vast majority of Fortran lines contain no string
     literal, so a single ``str.find("!")`` is enough. Only when a quote
     is actually present do we fall back to the quote-aware character
-    scan. Profiling on LMDZ (1.75M calls) showed this function and its
+    scan. Profiling on a large workspace (1.75M calls) showed this function and its
     per-iteration ``len(line)`` accounted for ~9 seconds; the fast
     path drops it under 1.
     """
@@ -354,7 +354,7 @@ def _scan_declarations(
     The scanner is deliberately tolerant: a parse with ``ERROR`` nodes
     (e.g. a syntactically broken statement somewhere in the file) still
     yields declarations from the well-formed regions. This matters for
-    real-world LMDZ files that occasionally contain F77 idioms the
+    real-world Fortran files that occasionally contain F77 idioms the
     grammar doesn't fully model.
     """
     tree = _ts.parse_text(source)

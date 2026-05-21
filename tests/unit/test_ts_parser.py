@@ -178,8 +178,8 @@ def test_broken_section_does_not_abort_rest_of_file():
 
 
 def test_node_text_decodes_utf8():
-    # LMDZ source has French comments. The wrapper must decode them
-    # without raising on multi-byte characters.
+    # Real-world Fortran source often has non-ASCII comments. The
+    # wrapper must decode them without raising on multi-byte characters.
     src = "! French: éclair\nmodule m\nend module\n".encode()
     tree = ts.parse_text(src)
     comments = [n for n in ts.walk(tree.root_node) if n.type == "comment"]
@@ -237,7 +237,7 @@ class TestCppShim:
     def test_include_path_resolves_referenced_header(self, tmp_path: Path):
         # #include "stub.h" must pull in declarations from the stub
         # when its directory is on `include_paths`. This is the
-        # mechanism LMDZ uses for `.intfb.h` shims.
+        # mechanism legacy codebases use for `.intfb.h` interface shims.
         stubs = tmp_path / "stubs"
         stubs.mkdir()
         (stubs / "stub.h").write_text("integer :: from_stub\n")

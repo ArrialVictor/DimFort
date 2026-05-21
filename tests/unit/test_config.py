@@ -86,16 +86,16 @@ def test_units_file_resolved_relative_to_config(tmp_path):
     """``[units] file`` is resolved relative to the .dimfort.toml directory.
 
     Mirrors how src_paths / include_paths are handled — a relative
-    path like ``lmdz_units.toml`` should not depend on the current
+    path like ``user_units.toml`` should not depend on the current
     working directory of whatever invoked DimFort.
     """
-    (tmp_path / "lmdz_units.toml").write_text("[derived]\nday = { expr = \"s\" }\n")
+    (tmp_path / "user_units.toml").write_text("[derived]\nday = { expr = \"s\" }\n")
     (tmp_path / CONFIG_FILENAME).write_text("""
 [units]
-file = "lmdz_units.toml"
+file = "user_units.toml"
 """)
     cfg = load_config(tmp_path)
-    assert cfg.units_file == (tmp_path / "lmdz_units.toml").resolve()
+    assert cfg.units_file == (tmp_path / "user_units.toml").resolve()
 
 
 def test_units_file_missing_field_means_none(tmp_path):
@@ -146,13 +146,13 @@ anything = 42
 def test_install_default_picks_up_user_units(tmp_path):
     """``install_default`` re-builds ``DEFAULT_TABLE`` so user units parse.
 
-    Before this wiring, an LMDZ workspace whose annotations used
+    Before this wiring, a real-world workspace whose annotations used
     ``hPa`` / ``degrees`` / ``day`` saw U002 errors because the
     shipped table only knows base SI units.
     """
     from dimfort.core import unit_config
     from dimfort.core import units as _units_mod
-    user_file = tmp_path / "lmdz.toml"
+    user_file = tmp_path / "user.toml"
     user_file.write_text(
         '[derived]\n'
         'day = { expr = "s" }\n'

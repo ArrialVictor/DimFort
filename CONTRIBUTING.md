@@ -57,8 +57,9 @@ A patch that breaks tests or trips ruff will not be merged.
 - New diagnostic codes are registered in `core/symbols.py`'s
   `CODES` dict.
 - Performance work is welcome; please include before/after numbers
-  on the LMDZ trial workset (see `project_workspace_perf.md` for
-  the benchmark recipe) so we know we're moving the needle.
+  on a reference workset of similar scale (a few thousand `.F90`
+  files with cross-module USE chains) so we know we're moving the
+  needle.
 
 ## Commits and pull requests
 
