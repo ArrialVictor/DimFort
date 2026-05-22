@@ -1666,17 +1666,20 @@ def _expression_hover_for_context(
     if not rows:
         return None
     max_label = max(len(r[0]) for r in rows)
-    max_unit = max(len(r[1]) for r in rows)
+    # ``unit`` of ``""`` marks a row that should not display a unit at
+    # all (e.g. the assignment_statement row — a statement, not an
+    # expression). Compute column width only over rows that DO show
+    # a unit; unit-less rows skip the ``: unit`` block entirely.
+    units_present = [r[1] for r in rows if r[1] != ""]
+    max_unit = max((len(u) for u in units_present), default=0)
     lines: list[str] = []
     for label, unit, mark, rule in rows:
+        head = label.ljust(max_label)
+        mid = f"  :  {unit.ljust(max_unit)}" if unit != "" else ""
         if rule:
-            lines.append(
-                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}  {rule}"
-            )
+            lines.append(f"{head}{mid}  {mark}  {rule}")
         else:
-            lines.append(
-                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}".rstrip()
-            )
+            lines.append(f"{head}{mid}  {mark}".rstrip())
     body = "\n".join(lines)
     header_marker = _aggregate_marker(r[2] for r in rows)
     text = f"**{header_marker} DimFort**\n\n```\n" + body + "\n```"
@@ -1736,17 +1739,20 @@ def _expression_hover_render_tree(
     if not rows:
         return None
     max_label = max(len(r[0]) for r in rows)
-    max_unit = max(len(r[1]) for r in rows)
+    # ``unit`` of ``""`` marks a row that should not display a unit at
+    # all (e.g. the assignment_statement row — a statement, not an
+    # expression). Compute column width only over rows that DO show
+    # a unit; unit-less rows skip the ``: unit`` block entirely.
+    units_present = [r[1] for r in rows if r[1] != ""]
+    max_unit = max((len(u) for u in units_present), default=0)
     lines: list[str] = []
     for label, unit, mark, rule in rows:
+        head = label.ljust(max_label)
+        mid = f"  :  {unit.ljust(max_unit)}" if unit != "" else ""
         if rule:
-            lines.append(
-                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}  {rule}"
-            )
+            lines.append(f"{head}{mid}  {mark}  {rule}")
         else:
-            lines.append(
-                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}".rstrip()
-            )
+            lines.append(f"{head}{mid}  {mark}".rstrip())
     body = "\n".join(lines)
     header_marker = _aggregate_marker(r[2] for r in rows)
     text = f"**{header_marker} DimFort**\n\n```\n" + body + "\n```"
@@ -2098,17 +2104,20 @@ def _trace_section_for(uri: str, line_1based: int, col_1based: int) -> str | Non
     if not rows:
         return None
     max_label = max(len(r[0]) for r in rows)
-    max_unit = max(len(r[1]) for r in rows)
+    # ``unit`` of ``""`` marks a row that should not display a unit at
+    # all (e.g. the assignment_statement row — a statement, not an
+    # expression). Compute column width only over rows that DO show
+    # a unit; unit-less rows skip the ``: unit`` block entirely.
+    units_present = [r[1] for r in rows if r[1] != ""]
+    max_unit = max((len(u) for u in units_present), default=0)
     lines: list[str] = []
     for label, unit, mark, rule in rows:
+        head = label.ljust(max_label)
+        mid = f"  :  {unit.ljust(max_unit)}" if unit != "" else ""
         if rule:
-            lines.append(
-                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}  {rule}"
-            )
+            lines.append(f"{head}{mid}  {mark}  {rule}")
         else:
-            lines.append(
-                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}".rstrip()
-            )
+            lines.append(f"{head}{mid}  {mark}".rstrip())
     body = "\n".join(lines)
     return "**Unit-algebra trace**\n\n```\n" + body + "\n```"
 
@@ -2367,7 +2376,12 @@ def _render_ast_tree(
         next_prefix = prefix + ("    " if is_last else "│   ")
 
     label = _node_label(node, source)
-    if unit is None:
+    # Assignments are statements, not expressions — render no unit
+    # column for them (only the marker matters). Other unit-less
+    # nodes show ``?``.
+    if node.type == "assignment_statement":
+        unit_str = ""
+    elif unit is None:
         unit_str = "?"
     else:
         from dimfort.core.units import format_unit
@@ -2509,22 +2523,27 @@ def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
     # In "autocast", we also propagate the LHS unit to the RHS subtree
     # root so the panel shows the literal expression as carrying the
     # autocast unit, not "?".
-    if node.type == "assignment_statement" and len(child_nodes) >= 2:
-        kids = _interesting_children(node)
-        if len(kids) >= 2:
-            verdict, lhs_u, rhs_u_eff = ts_checker._assignment_homogeneity(
-                kids[0], kids[-1], ctx, source,
-            )
-            verdict_marker = _VERDICT_TO_MARKER.get(verdict)
-            if verdict_marker is not None and verdict != "unresolved":
-                payload["marker"] = _marker_token(verdict_marker)
-            if verdict == "autocast" and lhs_u is not None:
-                lhs_unit_str = format_unit(lhs_u)
-                payload["unit"] = lhs_unit_str
-                # Override the RHS subtree root only — its inner detail
-                # (e.g. inner literals of ``2.0 * 3.14``) stays as-is.
-                payload["children"][-1]["unit"] = lhs_unit_str
-                payload["children"][-1]["marker"] = "ok"
+    # Assignments are statements, not expressions — they don't carry a
+    # unit of their own. Clear ``unit`` so renderers can omit the ``: ?``
+    # column for the assignment row. The autocast unit (when applicable)
+    # belongs to the RHS child, where it's set below.
+    if node.type == "assignment_statement":
+        payload["unit"] = None
+        if len(child_nodes) >= 2:
+            kids = _interesting_children(node)
+            if len(kids) >= 2:
+                verdict, lhs_u, rhs_u_eff = ts_checker._assignment_homogeneity(
+                    kids[0], kids[-1], ctx, source,
+                )
+                verdict_marker = _VERDICT_TO_MARKER.get(verdict)
+                if verdict_marker is not None and verdict != "unresolved":
+                    payload["marker"] = _marker_token(verdict_marker)
+                if verdict == "autocast" and lhs_u is not None:
+                    # Override only the RHS subtree root — its inner
+                    # detail stays as-is.
+                    lhs_unit_str = format_unit(lhs_u)
+                    payload["children"][-1]["unit"] = lhs_unit_str
+                    payload["children"][-1]["marker"] = "ok"
 
     return payload
 
