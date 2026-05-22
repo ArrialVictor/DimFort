@@ -4,6 +4,44 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### Content-hash cache for workspace check
+
+- **Per-file content-hash cache.** Workspace checks can now cache the
+  per-file check phase keyed by `(source bytes, cpp closure hashes,
+  per-file config, DimFort version, OUTPUT_VERSION)`. On a warm cache
+  the per-file check is replayed from disk instead of recomputed.
+  LMDZ-scale measurement: cold 33 s → warm 20 s; the check phase alone
+  drops from 15 s to ~3 s. Cold-run floor is unaffected.
+- **Per-module dependency invalidation.** Every cached entry records the
+  set of workspace modules its file consumed via `use` clauses; when
+  any of those modules' exports change, the entry is flagged dirty and
+  re-checked. Self-edits invalidate only the edited file plus its
+  direct consumers.
+- **CLI surface.** `--cache {off|read-only|read-write}` (default off),
+  `--cache-dir DIR`, `--clear-cache`. `--timings` gains a Cache section
+  with hit / miss / dirty / write counts.
+- **LSP surface.** `initializationOptions.cacheMode` and
+  `initializationOptions.cacheDir`. Workspace-check completion toast
+  appends `[cache: N hit / N miss / N dirty]` when active. Restart the
+  server to change mode.
+- **Storage.** `{workspace}/.dimfort-cache/v{N}/{first2}/{rest}.json.gz`
+  by default. Atomic-rename writes, corrupt-entry recovery on read,
+  LRU sweep at 500 MB / 30 days at end of read-write runs.
+- **Correctness gate.** 30-iteration parametrised stress test
+  (`tests/unit/test_cache_stress.py`): cold-populate → random edit →
+  cached run vs fresh cold run must produce byte-identical diagnostics.
+  Documented in [`docs/design/content-hash-cache.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/design/content-hash-cache.md);
+  user guide in [`docs/usage.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/usage.md#content-hash-cache).
+
+### Workspace check perf
+
+- **Phase-C consolidation.** `collect_parameter_values` folded into the
+  existing combined `variable_declaration` walk (`collect_var_types_
+  type_fields_and_parameter_values`). Recovers the ~2 s LMDZ check-
+  phase regression introduced by the OQ4 PARAMETER-aware exponents
+  work. Same pattern as the 2026-05-17 var-types + type-field-types
+  merge.
+
 ### Unit-algebra for LOG / EXP-tagged quantities (Phase B)
 
 Three new diagnostic classes cover wrapper arithmetic. Each is
