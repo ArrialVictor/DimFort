@@ -249,6 +249,34 @@ class TestCppShim:
         assert any("from_stub" in ts.node_text(d, pre.expanded_text)
                    for d in decls)
 
+    def test_cpp_closure_captures_included_files(self, tmp_path: Path):
+        # The content-hash cache needs to know which headers a file
+        # pulled in via #include so it can invalidate the entry when
+        # any of them change. parse_with_cpp must surface that set.
+        stubs = tmp_path / "stubs"
+        stubs.mkdir()
+        (stubs / "a.h").write_text("integer :: from_a\n")
+        (stubs / "b.h").write_text("integer :: from_b\n")
+        f = tmp_path / "x.F90"
+        f.write_text(
+            "subroutine s\n"
+            "#include \"a.h\"\n"
+            "#include \"b.h\"\n"
+            "end subroutine\n"
+        )
+        pre = ts.parse_with_cpp(f, include_paths=[stubs])
+        closure_basenames = {Path(p).name for p in pre.cpp_closure}
+        assert "a.h" in closure_basenames
+        assert "b.h" in closure_basenames
+        # source file itself must not appear in its own closure
+        assert f.name not in closure_basenames
+
+    def test_cpp_closure_empty_when_no_includes(self, tmp_path: Path):
+        f = tmp_path / "x.F90"
+        f.write_text("subroutine s\ninteger :: a\nend subroutine\n")
+        pre = ts.parse_with_cpp(f)
+        assert pre.cpp_closure == frozenset()
+
     def test_missing_include_raises_cpp_failed(self, tmp_path: Path):
         # When an #include can't be resolved, the shim must surface
         # the cpp failure as a typed exception so the caller can
