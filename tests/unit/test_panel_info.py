@@ -1,6 +1,6 @@
 """Tests for the dimfort/panelInfo structured-data builders.
 
-Covers ``_build_expression_tree``, ``_build_routine_vars``, and
+Covers ``_build_expression_tree``, ``_build_scope_vars``, and
 ``_find_expression_root``. The full LSP request handler is tested
 implicitly via the Nvim client during the two-session usage trial
 (see ``docs/design/panel-info.md``).
@@ -173,13 +173,13 @@ def test_panel_marker_matches_assignment_homogeneity(tmp_path: Path):
     assert panel_payload["marker"] == expected_marker
 
 
-def test_build_routine_vars_lists_each_declared_name(tmp_path: Path):
-    """The routine-vars list must include every declared name in the
-    enclosing routine, with the right ``unit`` and ``kind`` per entry."""
+def test_build_scope_vars_lists_each_declared_name(tmp_path: Path):
+    """The scope-vars list must include every declared name in the
+    enclosing scope, with the right ``unit`` and ``kind`` per entry."""
     from dimfort.core import ts_parser as _ts
     from dimfort.core.annotations import scan_file
     from dimfort.core.multifile import check_files
-    from dimfort.lsp.server import _build_routine_vars, _smallest_enclosing_routine
+    from dimfort.lsp.server import _build_scope_vars, _smallest_enclosing_scope
 
     src = _materialise(tmp_path)
     result = check_files([src])
@@ -190,10 +190,11 @@ def test_build_routine_vars_lists_each_declared_name(tmp_path: Path):
     scan_decls = scan_file(src).declarations
 
     # Pick a position inside the subroutine body.
-    routine = _smallest_enclosing_routine(tree, 5, 5)
-    assert routine is not None
+    scope = _smallest_enclosing_scope(tree, 5, 5)
+    assert scope is not None
+    assert scope.type == "subroutine"
 
-    vars_list = _build_routine_vars(routine, scan_decls, attached, source)
+    vars_list = _build_scope_vars(scope, scan_decls, attached, source)
     by_name = {row["name"]: row for row in vars_list}
     assert set(by_name) == {"x", "y", "z"}
     assert by_name["x"]["unit"] == "m"
@@ -203,3 +204,77 @@ def test_build_routine_vars_lists_each_declared_name(tmp_path: Path):
     assert by_name["z"]["kind"] == "unannotated"
     # Lines must be 1-based source line numbers.
     assert by_name["x"]["line"] == 2
+
+
+def test_build_scope_vars_module_level(tmp_path: Path):
+    """Module-level declarations (scope = None) are listed when the
+    cursor is at module scope. Nested routine decls are excluded."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.annotations import scan_file
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.server import _build_scope_vars, _smallest_enclosing_scope
+
+    src = tmp_path / "mod.f90"
+    src.write_text(
+        "module m\n"
+        "  real :: alpha  !< @unit{m}\n"
+        "  real :: beta   !< @unit{s}\n"
+        "contains\n"
+        "  subroutine s\n"
+        "    real :: local_x  !< @unit{kg}\n"
+        "  end subroutine\n"
+        "end module\n"
+    )
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    attached = result.attachments[resolved]
+    scan_decls = scan_file(src).declarations
+
+    # Cursor on line 2 (alpha decl) → module scope, not the subroutine.
+    scope = _smallest_enclosing_scope(tree, 2, 5)
+    assert scope is not None
+    assert scope.type == "module"
+
+    vars_list = _build_scope_vars(scope, scan_decls, attached, source)
+    by_name = {row["name"]: row for row in vars_list}
+    # Module-level decls present; the subroutine's local_x excluded.
+    assert set(by_name) == {"alpha", "beta"}
+    assert "local_x" not in by_name
+
+
+def test_build_scope_vars_program_level(tmp_path: Path):
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.annotations import scan_file
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.server import (
+        _build_scope_vars,
+        _scope_header,
+        _smallest_enclosing_scope,
+    )
+
+    src = tmp_path / "prog.f90"
+    src.write_text(
+        "program main\n"
+        "  real :: t  !< @unit{s}\n"
+        "  t = 1.0\n"
+        "end program\n"
+    )
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    attached = result.attachments[resolved]
+    scan_decls = scan_file(src).declarations
+
+    scope = _smallest_enclosing_scope(tree, 2, 5)
+    assert scope is not None
+    assert scope.type == "program"
+    header = _scope_header(scope, source)
+    assert header == {"name": "main", "kind": "program"}
+
+    vars_list = _build_scope_vars(scope, scan_decls, attached, source)
+    by_name = {row["name"]: row for row in vars_list}
+    assert set(by_name) == {"t"}
+    assert by_name["t"]["unit"] == "s"
