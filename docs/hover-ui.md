@@ -205,6 +205,21 @@ x : K   ◂   a + b : K
 One-line homogeneity check. Marker: 🟢 equal, 🔴 mismatch, 🟡 either
 side unresolved.
 
+**Initialization autocast (R4.4).** When the entire RHS is a numeric
+literal (or unary-minus literal, or arithmetic of literals), it's an
+initialization — the literal takes on the LHS's unit and the hover
+shows 🟢, e.g. `t : s   ◂   2.0 : s`. No diagnostic fires. This differs
+from a literal *inside* a compound expression (`t = c + 2.0`), which
+still triggers the D1.5 implicit-cast warning. The assignment marker
+comes from `ts_checker._assignment_homogeneity` — the same source of
+truth the diagnostic checker and the side panel use, so the hover and
+the Problems panel never disagree.
+
+In the detailed-tree view and the side panel, the assignment row shows
+**no unit column** (`label  marker`, not `label : unit  marker`) — an
+assignment is a statement, not an expression, so it has no unit of its
+own; only the homogeneity marker is meaningful.
+
 **Relational expression** (cursor on `<`, `<=`, `==`, `/=`, `>`, `>=`)
 
 ```
