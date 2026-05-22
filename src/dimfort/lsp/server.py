@@ -650,16 +650,21 @@ def _unit_pretty(u: UnitExpr | None) -> str:
     pos: list[str] = []
     neg: list[str] = []
     for sym, exp in zip(names, u.dimension, strict=False):
-        if exp == 0:
+        if exp.is_zero():
             continue
-        mag = abs(exp)
-        if mag == 1:
-            term = sym
-        elif isinstance(mag, int):
-            term = sym + _to_superscript(str(mag))
+        q = exp.as_fraction()
+        if q is not None:
+            mag = abs(q)
+            if mag == 1:
+                term = sym
+            elif mag.denominator == 1:
+                term = sym + _to_superscript(str(int(mag)))
+            else:
+                term = f"{sym}^({mag})"
+            (pos if q > 0 else neg).append(term)
         else:
-            term = f"{sym}^({mag})"
-        (pos if exp > 0 else neg).append(term)
+            term = f"{sym}^({exp})"
+            pos.append(term)
     body = " × ".join(pos) if pos else "1"
     if neg:
         denom = " × ".join(neg)
