@@ -42,12 +42,14 @@ The DimFort version and OUTPUT version are global. We could shard cache director
 
 Path layout:
 ```
-{cache_dir}/v{CHECKER_OUTPUT_VERSION}/{first2}/{rest_of_hash}.msgpack.gz
+{cache_dir}/v{CHECKER_OUTPUT_VERSION}/{first2}/{rest_of_hash}.json.gz
 ```
 
 `{first2}` is the first 2 hex chars of the hash — limits per-dir file count to ~256 for LMDZ-scale workspaces.
 
-Payload (msgpack):
+Payload format: **JSON + gzip**. msgpack would be ~2× more compact and faster to load, but msgpack isn't a stdlib module — adding a binary dependency just for the cache isn't worth it for the MVP. Revisit if cache I/O becomes a measurable share of warm-run time.
+
+Payload:
 ```
 {
   "schema": 1,
@@ -234,9 +236,9 @@ Stress-test gate: step 7 doesn't merge to main until 100 consecutive random-edit
 
 ## Decision points still open
 
-1. **Cache location default.** Workspace-local (`.dimfort-cache/`) or user-local (`~/.cache/dimfort/{workspace_hash}/`)? Workspace-local is easier to reason about and `git clean -fdx` clears it; user-local survives workspace deletion and can be shared across worktrees of the same repo.
+1. ~~Cache location default.~~ **Decided 2026-05-22: workspace-local `.dimfort-cache/`.** `--cache-dir` override available for users who want a different layout.
 
-2. **Granularity of dep tracking.** `(module, symbol)` is the proposed grain. Coarser (`(module,)`) is simpler but invalidates more. Finer (`(module, symbol, signature_subset)`) is more precise but harder to serialize.
+2. ~~Granularity of dep tracking.~~ **Decided 2026-05-22: start per-`module`.** Simpler step 5; ship the full pipeline first, measure invalidation rate on the real annotation cycle, refine to per-`(module, symbol)` only if warm runs are dominated by spurious invalidation.
 
 3. **`USE module` without `only`.** Recorded as `(module, "*", "use_all")`. Any export-set change invalidates. Strict, but rare in modernized code. Acceptable.
 
