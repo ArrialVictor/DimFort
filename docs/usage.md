@@ -31,6 +31,10 @@ walked recursively for `.f90` / `.F90` / `.f95` / `.F95` / `.f03` /
 | `-q`, `--quiet`  | Suppress diagnostic output; only return an exit code. |
 | `--no-color`     | Disable ANSI colour (also auto-disabled outside a TTY, or when `NO_COLOR` is set). |
 | `--summary`      | After the diagnostic stream, print a per-file H-/U-count breakdown and total. |
+| `--timings`      | Print wall-clock seconds per pipeline phase. With a cache active, also prints hit/miss/dirty/write counts. |
+| `--cache MODE`   | Content-hash cache mode: `off` (default), `read-only`, or `read-write`. See [Content-hash cache](#content-hash-cache). |
+| `--cache-dir D`  | Override the cache directory (default: `.dimfort-cache/` under the first path argument). |
+| `--clear-cache`  | Wipe the cache directory before running. Combine with `--cache read-write` to repopulate. |
 
 Exit codes:
 
@@ -106,3 +110,63 @@ Pre-alpha. Working pipeline pieces:
   and reports diagnostics in `file:line: severity: code message` form
 
 Treat anything not listed above as unimplemented.
+
+## Content-hash cache
+
+On large worksets DimFort can cache per-file check results so that
+re-runs only re-check the files that actually changed (and their
+consumers). The cache is **off by default**; enable it with
+`--cache read-write`.
+
+```bash
+dimfort check src/ --cache read-write --timings
+```
+
+On the first run the cache directory is created and every file's
+check output is stored. Subsequent runs replay cached diagnostics
+for unchanged files; the check phase typically drops by 4–5× on a
+warm cache, with the rest of the pipeline (load / aggregate /
+index) running as usual.
+
+### What triggers invalidation
+
+A file's cache entry is invalidated when:
+
+- its **source bytes** change;
+- any header pulled in via `#include` changes (the cpp closure is
+  hashed alongside the source);
+- the relevant `.dimfort.toml` config keys change
+  (`external_modules`, `extra_defines`, `extra_include_paths`);
+- the **DimFort version** changes;
+- any **module the file uses** has its exports change (per-module
+  dependency tracking).
+
+If a cache entry's deps have moved but the file itself hasn't, the
+entry is flagged "dirty" and the file is re-checked. The
+`--timings` output shows hit / miss / dirty / write counts so you
+can sanity-check invalidation behaviour.
+
+### Cache location
+
+The cache lives at `.dimfort-cache/` under the first path argument
+by default. Override with `--cache-dir DIR`. Add the cache
+directory to your `.gitignore` (it's build output, not source).
+
+To wipe and rebuild the cache:
+
+```bash
+dimfort check src/ --cache read-write --clear-cache
+```
+
+The cache automatically prunes entries older than 30 days and
+trims to a 500 MB ceiling at the end of each run.
+
+### When to leave the cache off
+
+- One-off runs over a small workset — the cache write overhead
+  (~1 ms per file) is dead weight when the run is sub-second.
+- CI runs against a clean checkout — the workspace has no prior
+  cache to read from, so the cache directory just gets written
+  and discarded.
+- Debugging the checker itself — use `--cache off` (default) to
+  guarantee every diagnostic comes from a fresh check.
