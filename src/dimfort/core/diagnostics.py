@@ -99,3 +99,34 @@ class Diagnostic:
     # tracing was enabled — the checker fills it in by snapshotting
     # the active trace at the diagnostic's emission site.
     trace: tuple[Provenance, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class AutocastEvent:
+    """A literal RHS implicitly took on its assignment's LHS unit.
+
+    Emitted by :func:`ts_checker.check` (rule R4.4) for every assignment
+    where the leniency rule fires — currently any RHS that's a "pure
+    numeric constant" (literal, parenthesised literal, unary-minus
+    literal, or arithmetic of literals). The fact is recorded for any
+    consumer that wants to:
+
+    - audit / list every implicit-literal initialization in a workspace,
+    - render the autocast as 🟢 (LSP panel / hover do this),
+    - opt-in to a strict-mode that promotes R4.4 to an Information- or
+      Warning-severity diagnostic via the existing ``[diagnostics]``
+      config infrastructure.
+
+    The event is **not** a diagnostic — no severity, no message format
+    — so it doesn't leak into the standard diagnostic stream. Adopters
+    that want diagnostic-shaped output can synthesise one on the fly.
+    """
+
+    file: str
+    # 1-based source coordinates pointing at the literal value
+    # expression (not the whole assignment).
+    start: Position
+    end: Position
+    literal_text: str   # source slice of the RHS, e.g. "2.0" or "0.5 * Cp"
+    inferred_unit: str  # ``format_unit(lhs_unit)`` rendering
+    context: str        # "assignment_rhs" — extensible for future contexts
