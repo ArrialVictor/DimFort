@@ -200,9 +200,15 @@
   context: |
     REAL :: p    !< @unit{Pa}
     REAL :: k    !< @unit{1}
-  expression: "k * LOG(p)"
+  expression: "(k ** 2) * LOG(p)"
   expected: ERROR D1.4
   rules: [R5.5]
+  notes: |
+    After the symbolic-logwrap branch landed, a linear dim'less
+    multiplier (just k) resolves via R5.4 and does NOT fire D1.4 —
+    the result is LogWrap(Pa^k). The non-linear case ``k**2`` still
+    fires D1.4 because k² isn't expressible as a linear form in our
+    Exponent algebra.
 
 - name: r56_log_times_log_errors
   context: |

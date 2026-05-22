@@ -583,8 +583,21 @@ def _resolve(node: Node | None, ctx: _Ctx, source: bytes) -> Unit | None:
             return None
         if op not in ("+", "-", "*", "/"):
             return None
-        left_lit = _resolve_constant_value(left, ctx, source) if left is not None else None
-        right_lit = _resolve_constant_value(right, ctx, source) if right is not None else None
+        left_lit: int | Fraction | Exponent | None = (
+            _resolve_constant_value(left, ctx, source) if left is not None else None
+        )
+        right_lit: int | Fraction | Exponent | None = (
+            _resolve_constant_value(right, ctx, source) if right is not None else None
+        )
+        # Symbolic fallback: if the operand isn't a literal rational,
+        # try to express it as a linear Exponent over dim'less
+        # generators. This is what closes the Tetens-family D1.4s by
+        # letting `combine`'s R5.4 (log-power identity) accept symbolic
+        # multipliers.
+        if left_lit is None and left is not None:
+            left_lit = _resolve_symbolic_exponent(left, ctx, source)
+        if right_lit is None and right is not None:
+            right_lit = _resolve_symbolic_exponent(right, ctx, source)
         # Outer-unary-minus sign propagation. Tree-sitter parses
         # ``-1.0 * LOG(p)`` as ``-(1.0 * LOG(p))`` — the literal child
         # of the inner math_expression is positive, so R5.4 sees
@@ -1148,8 +1161,18 @@ def _walk_expressions(
         ru = _resolve(right, ctx, source)
         if lu is None or ru is None:
             return
-        left_lit_val = _resolve_constant_value(left, ctx, source) if left is not None else None
-        right_lit_val = _resolve_constant_value(right, ctx, source) if right is not None else None
+        left_lit_val: int | Fraction | Exponent | None = (
+            _resolve_constant_value(left, ctx, source) if left is not None else None
+        )
+        right_lit_val: int | Fraction | Exponent | None = (
+            _resolve_constant_value(right, ctx, source) if right is not None else None
+        )
+        # Symbolic fallback (same as in _resolve): lets R5.4 accept
+        # symbolic multipliers instead of firing D1.4 via R5.5.
+        if left_lit_val is None and left is not None:
+            left_lit_val = _resolve_symbolic_exponent(left, ctx, source)
+        if right_lit_val is None and right is not None:
+            right_lit_val = _resolve_symbolic_exponent(right, ctx, source)
         _, diag = combine(
             op, lu, ru,
             a_literal=left_lit_val, b_literal=right_lit_val,
