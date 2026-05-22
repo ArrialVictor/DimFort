@@ -46,6 +46,25 @@ It speaks LSP over stdio, the wire format every common editor expects.
   is toggleable through its respective `DimFort: Toggle …` palette
   command or VSCode setting.
 
+## Content-hash cache
+
+The server understands the same content-hash cache as the CLI (see
+[usage.md § Content-hash cache](usage.md#content-hash-cache)).
+Opt in via `initializationOptions`:
+
+```jsonc
+{
+  "cacheMode": "read-write",   // off | read-only | read-write
+  "cacheDir": "/abs/path"      // optional; defaults to .dimfort-cache/
+                               // under the first workspace folder
+}
+```
+
+When the cache is active, the workspace-check completion toast
+includes `[cache: N hit / N miss / N dirty]`. On a warm cache a
+full workspace re-check skips the per-file check phase, dropping
+total time substantially (LMDZ-scale: ~33 s cold → ~20 s warm).
+
 ## Limitations
 
 - **In-memory edits to file A trigger a check of every file** in its
