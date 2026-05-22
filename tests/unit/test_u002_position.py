@@ -12,11 +12,12 @@ def _u002s(result, path: Path):
 
 
 def test_u002_lands_on_declaration_line(tmp_path: Path):
+    line3 = "  real :: b  !< @unit{??}"
     src = tmp_path / "x.f90"
     src.write_text(
         "subroutine s\n"               # line 1
         "  real :: a  !< @unit{m}\n"    # line 2 (valid)
-        "  real :: b  !< @unit{??}\n"   # line 3 (invalid → U002 here)
+        f"{line3}\n"                    # line 3 (invalid → U002 here)
         "end subroutine\n"
     )
     result = check_files([src])
@@ -24,6 +25,11 @@ def test_u002_lands_on_declaration_line(tmp_path: Path):
     assert len(u002) == 1
     assert u002[0].start.line == 3
     assert "b" in u002[0].message
+    # The squiggle covers the ``@unit{??}`` token itself, not a
+    # zero-width point at column 0. Columns are 1-based.
+    at = line3.index("@unit{") + 1
+    assert u002[0].start.column == at
+    assert u002[0].end.column == at + len("@unit{??}")
 
 
 def test_u002_multiple_on_distinct_lines(tmp_path: Path):

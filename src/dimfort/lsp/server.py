@@ -2561,12 +2561,15 @@ _ROUTINE_SCOPE_TYPES = ("subroutine", "function")
 
 def _build_scope_vars(
     scope_node, scan_decls, attached, source: bytes,
+    unparseable: frozenset[str] = frozenset(),
 ) -> list[dict]:
     """Build the declarations table for the enclosing scope.
 
     Returns one row per declared variable visible in ``scope_node``,
     ordered by declaration line. Each row carries its annotated unit
-    text (or ``None``) and a kind tag (annotated / unannotated).
+    text (or ``None``) and a kind tag: ``annotated`` (valid unit),
+    ``error`` (has ``@unit{}`` but it failed to parse — names in
+    ``unparseable``), or ``unannotated`` (no annotation).
 
     Matching strategy:
     - For ``subroutine`` / ``function``: ``DeclarationSite.scope`` is
@@ -2628,11 +2631,17 @@ def _build_scope_vars(
             continue
         for vname in decl.names:
             unit_text = var_units.get(vname)
+            if not unit_text:
+                kind = "unannotated"
+            elif vname.lower() in unparseable:
+                kind = "error"
+            else:
+                kind = "annotated"
             out.append({
                 "name": vname,
                 "unit": unit_text if unit_text else None,
                 "line": decl.line_start,
-                "kind": "annotated" if unit_text else "unannotated",
+                "kind": kind,
             })
     return out
 
@@ -2782,6 +2791,7 @@ def _panel_info(ls: LanguageServer, params) -> dict | None:
     )
 
     scan_decls = _scan_declarations_for_uri(ls, uri, resolved)
+    unparseable = result.unparseable_units.get(resolved, frozenset())
 
     # One section per enclosing scope, outermost first. Each carries
     # the scope header fields (name, kind) plus its own ``vars`` list.
@@ -2792,7 +2802,9 @@ def _panel_info(ls: LanguageServer, params) -> dict | None:
             continue
         scopes.append({
             **header,
-            "vars": _build_scope_vars(sn, scan_decls, attached, source_bytes),
+            "vars": _build_scope_vars(
+                sn, scan_decls, attached, source_bytes, unparseable
+            ),
         })
 
     # Innermost scope, surfaced as the back-compat ``scope`` /
