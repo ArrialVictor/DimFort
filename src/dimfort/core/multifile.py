@@ -41,6 +41,7 @@ from dimfort.core.symbols import (
     FuncSig,
     ModuleExports,
     apply_use_clauses,
+    deps_consumed_from_uses,
 )
 from dimfort.core.units import Unit, UnitError, UnitTable
 
@@ -89,6 +90,11 @@ class WorksetResult:
     # ad-hoc profiling scripts. Keys: "load", "aggregate", "index",
     # "check", "total".
     phase_timings: dict[str, float] = field(default_factory=dict)
+    # Per-file ``deps_consumed``: the set of workspace modules whose
+    # exports this file's checked output depends on. Populated by the
+    # check phase; consumed by the content-hash cache writer to decide
+    # which other files' caches must invalidate when this file changes.
+    deps_consumed: dict[Path, frozenset[str]] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +540,9 @@ def check_files(
         per_file_var_units, per_file_sigs, unresolved = apply_use_clauses(
             uses, module_exports, file_var_units, global_signatures,
             external_modules=external_modules,
+        )
+        result.deps_consumed[entry.path] = deps_consumed_from_uses(
+            uses, unresolved, external_modules,
         )
         for missing in unresolved:
             diags.append(

@@ -148,6 +148,24 @@ class ModuleExports:
     all_var_names: tuple[str, ...] = ()
 
 
+def deps_consumed_from_uses(
+    uses: tuple,
+    unresolved: frozenset[str],
+    external_modules: frozenset[str],
+) -> frozenset[str]:
+    """Return the set of workspace modules a file actually consumed.
+
+    Per-module dep granularity for the content-hash cache: a file's
+    cached entry is dirty when any module in this set has its exports
+    changed. ``unresolved`` and ``external_modules`` are excluded — the
+    file never pulled symbols from them, so changes there can't alter
+    its diagnostics.
+    """
+    return frozenset(
+        use.module.lower() for use in uses
+    ) - unresolved - external_modules
+
+
 def apply_use_clauses(
     uses: tuple,
     module_exports: dict[str, ModuleExports],
@@ -232,4 +250,5 @@ __all__ = [
     "TRANSFORMING_INTRINSICS",
     "TRANSPARENT_INTRINSICS",
     "apply_use_clauses",
+    "deps_consumed_from_uses",
 ]
