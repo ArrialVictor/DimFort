@@ -237,6 +237,47 @@ def test_find_expression_root_promotes_callee_to_call(tmp_path: Path):
     assert arg_node.type == "identifier"
 
 
+def test_build_expression_tree_call_includes_argument(tmp_path: Path):
+    """A function call renders as a tree: the call as root (carrying the
+    return unit) with its argument(s) as children, not a childless leaf."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.server import (
+        _build_expression_tree,
+        _build_ts_ctx,
+        _find_expression_root,
+    )
+
+    line = "  b = f(a)"
+    src = tmp_path / "call.f90"
+    src.write_text(
+        "subroutine s\n"
+        "  real :: a   !< @unit{m}\n"
+        "  real :: b   !< @unit{m}\n"
+        f"{line}\n"                          # line 4: b = f(a)
+        "end subroutine\n"
+        "function f(x) result(y)\n"
+        "  real, intent(in) :: x   !< @unit{m}\n"
+        "  real             :: y   !< @unit{m}\n"
+        "  y = x\n"
+        "end function f\n"
+    )
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+
+    call = _find_expression_root(tree, 4, line.index("f(") + 1)
+    assert call is not None and call.type == "call_expression"
+
+    payload = _build_expression_tree(call, ctx, source)
+    assert payload is not None
+    # The argument 'a' appears as a child (it was being stripped before).
+    child_labels = [c["label"].strip() for c in payload["children"]]
+    assert "a" in child_labels
+
+
 def test_build_scope_vars_marks_unparseable_as_error(tmp_path: Path):
     """A declaration whose ``@unit{}`` fails to parse is kind ``error``
     (🔴) — distinct from ``unannotated`` (🟡) and ``annotated`` (🟢).

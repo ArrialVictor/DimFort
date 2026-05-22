@@ -2497,11 +2497,12 @@ def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
     if node.type in ("identifier", "number_literal", "string_literal", "complex_literal"):
         child_nodes = []
     else:
+        # ``_interesting_children`` already drops the callee identifier and
+        # expands the argument list for calls, so each argument becomes a
+        # child here (e.g. ``f(v)`` → child ``v``). Don't re-strip the
+        # first child: that used to remove the leading *argument* when it
+        # was a bare identifier, collapsing calls to a childless leaf.
         kids = _interesting_children(node)
-        # call_expression's first child is the callee identifier — the
-        # parent label already reads ``log(p)``; re-rendering ``log`` is noise.
-        if node.type == "call_expression" and kids and kids[0].type == "identifier":
-            kids = kids[1:]
         child_nodes = [_build_expression_tree(c, ctx, source) for c in kids]
         child_nodes = [c for c in child_nodes if c is not None]
 
