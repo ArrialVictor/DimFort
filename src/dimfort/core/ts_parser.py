@@ -122,6 +122,14 @@ class PreprocessedSource:
     tree: Tree
     expanded_text: bytes
     line_map: tuple[int | None, ...]  # index = expanded_line - 1
+    cpp_closure: frozenset[str] = frozenset()
+    """Absolute paths of every file cpp pulled in via ``#include``.
+
+    Excludes the source file itself and cpp's own ``<built-in>`` /
+    ``<command-line>`` pseudo-files. Empty when the source has no
+    ``#include`` directives. Used by the content-hash cache to
+    invalidate entries when a transitively-included header changes.
+    """
 
     def source_line(self, expanded_line_1based: int) -> int | None:
         """Map an expanded 1-based line number back to source."""
@@ -236,6 +244,7 @@ def parse_with_cpp(
     current_file: str | None = None
     current_line: int = 1
     saw_any_target_marker = False
+    cpp_closure: set[str] = set()
 
     def _is_target(marker_file: str) -> bool:
         """Is this marker pointing at the source file we asked cpp about?
@@ -275,6 +284,16 @@ def parse_with_cpp(
             except (ValueError, IndexError):
                 pass
         if is_marker:
+            # Record non-target, non-builtin files as cpp_closure members.
+            if (
+                current_file is not None
+                and not current_file.startswith("<")
+                and not _is_target(current_file)
+            ):
+                try:
+                    cpp_closure.add(str(Path(current_file).resolve()))
+                except (OSError, ValueError):
+                    cpp_closure.add(current_file)
             continue
         expanded_lines.append(line)
         if current_file is not None and _is_target(current_file):
@@ -299,6 +318,7 @@ def parse_with_cpp(
     tree = parse_text(expanded)
     return PreprocessedSource(
         tree=tree, expanded_text=expanded, line_map=tuple(line_map),
+        cpp_closure=frozenset(cpp_closure),
     )
 
 
