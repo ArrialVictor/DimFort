@@ -1307,6 +1307,42 @@ def _decl_type_name(decl: Node, source: bytes) -> str | None:
     return None
 
 
+def _extract_parameter_values_from_decl(
+    n: Node, source: bytes, out: dict[str, Fraction | int],
+) -> None:
+    """If ``n`` is a PARAMETER ``variable_declaration``, populate ``out``."""
+    is_parameter = False
+    for c in n.children:
+        if c.type == "type_qualifier" and _text(c, source).strip().lower() == "parameter":
+            is_parameter = True
+            break
+    if not is_parameter:
+        return
+    for c in n.children:
+        if c.type != "init_declarator":
+            continue
+        name_node = next(
+            (cc for cc in c.children if cc.type == "identifier"), None,
+        )
+        if name_node is None:
+            continue
+        value_node = None
+        seen_eq = False
+        for cc in c.children:
+            if cc.type == "=":
+                seen_eq = True
+                continue
+            if seen_eq:
+                value_node = cc
+                break
+        if value_node is None:
+            continue
+        value = _resolve_constant_value(value_node, None, source)
+        if value is None:
+            continue
+        out[_text(name_node, source).lower()] = value
+
+
 def collect_parameter_values(
     tree: Tree, source: bytes,
 ) -> dict[str, Fraction | int]:
@@ -1326,39 +1362,7 @@ def collect_parameter_values(
     for n in _ts.walk(tree.root_node):
         if n.type != "variable_declaration":
             continue
-        # type_qualifier child whose text is "parameter" (case-insensitive)
-        is_parameter = False
-        for c in n.children:
-            if c.type == "type_qualifier" and _text(c, source).strip().lower() == "parameter":
-                is_parameter = True
-                break
-        if not is_parameter:
-            continue
-        for c in n.children:
-            if c.type != "init_declarator":
-                continue
-            name_node = next(
-                (cc for cc in c.children if cc.type == "identifier"), None,
-            )
-            if name_node is None:
-                continue
-            # The value sits after the ``=`` token; pick the first non-name
-            # / non-`=` child of init_declarator.
-            value_node = None
-            seen_eq = False
-            for cc in c.children:
-                if cc.type == "=":
-                    seen_eq = True
-                    continue
-                if seen_eq:
-                    value_node = cc
-                    break
-            if value_node is None:
-                continue
-            value = _resolve_constant_value(value_node, None, source)
-            if value is None:
-                continue
-            out[_text(name_node, source).lower()] = value
+        _extract_parameter_values_from_decl(n, source, out)
     return out
 
 
@@ -1528,20 +1532,26 @@ def collect_module_exports(
     return out
 
 
-def collect_var_types_and_type_field_types(
+def collect_var_types_type_fields_and_parameter_values(
     tree: Tree, source: bytes,
-) -> tuple[dict[str, str], dict[tuple[str, str], str]]:
-    """Produce both var-type and type-field-type maps in one tree walk.
+) -> tuple[
+    dict[str, str],
+    dict[tuple[str, str], str],
+    dict[str, Fraction | int],
+]:
+    """Produce var-type, type-field-type, and parameter-value maps in one walk.
 
-    Equivalent to ``collect_var_types`` + ``collect_type_field_types``
-    back-to-back, halved. Used inside ``check`` so the per-file context
-    only walks the tree once for both maps.
+    Equivalent to ``collect_var_types`` + ``collect_type_field_types`` +
+    ``collect_parameter_values`` back-to-back, thirded. Used inside ``check``
+    so the per-file context only walks the tree once for all three maps.
     """
     var_types: dict[str, str] = {}
     type_field_types: dict[tuple[str, str], str] = {}
+    parameter_values: dict[str, Fraction | int] = {}
     for n in _ts.walk(tree.root_node):
         ntype = n.type
         if ntype == "variable_declaration":
+            _extract_parameter_values_from_decl(n, source, parameter_values)
             tn = _decl_type_name(n, source)
             if tn is None:
                 continue
@@ -1566,6 +1576,16 @@ def collect_var_types_and_type_field_types(
                     continue
                 for vn in _collect_decl_names(decl, source):
                     type_field_types[(struct_lc, vn.lower())] = field_type.lower()
+    return var_types, type_field_types, parameter_values
+
+
+def collect_var_types_and_type_field_types(
+    tree: Tree, source: bytes,
+) -> tuple[dict[str, str], dict[tuple[str, str], str]]:
+    """Back-compat shim — returns var-types + type-field-types only."""
+    var_types, type_field_types, _ = (
+        collect_var_types_type_fields_and_parameter_values(tree, source)
+    )
     return var_types, type_field_types
 
 
@@ -1898,10 +1918,9 @@ def check(
             var_units_by_scope=parsed_vars_by_scope or None,
         )
 
-    var_types, type_field_types = collect_var_types_and_type_field_types(
-        tree, source
+    var_types, type_field_types, parameter_values = (
+        collect_var_types_type_fields_and_parameter_values(tree, source)
     )
-    parameter_values = collect_parameter_values(tree, source)
     ctx = _Ctx(
         file=str(file),
         var_units=parsed_vars,
