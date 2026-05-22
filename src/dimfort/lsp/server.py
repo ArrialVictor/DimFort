@@ -1777,17 +1777,26 @@ def _homogeneity_short_marker(lhs, rhs, ctx, source: bytes) -> tuple[str, Unit |
     return marker, lhs_u, rhs_u
 
 
+_VERDICT_TO_MARKER = {
+    "homogeneous": "🟢",
+    "autocast": "🟢",
+    "wrapper_untag": "🟡",
+    "mismatch": "🔴",
+    "unresolved": "🟡",
+}
+
+
 def _render_assignment_short(asn, lhs, rhs, ctx, source: bytes) -> tuple[str, lsp.Range] | None:
     """One-line homogeneity hover for an assignment cursor position.
 
-    Applies the initialization-autocast rule: when the RHS is a bare
-    literal, it takes on the LHS's unit and the marker is 🟢 — matching
-    the checker's existing leniency (no H010 D1.5 fires on
-    bare-literal RHS assignments)."""
+    Delegates the assignment-specific logic (autocast detection,
+    unit comparison) to ``ts_checker._assignment_homogeneity`` — the
+    single source of truth shared with the panel and the checker."""
     from dimfort.core.units import format_unit
-    marker, lhs_u, rhs_u = _homogeneity_short_marker(lhs, rhs, ctx, source)
-    if _is_bare_literal_node(rhs) and lhs_u is not None:
-        marker, rhs_u = "🟢", lhs_u
+    verdict, lhs_u, rhs_u = ts_checker._assignment_homogeneity(
+        lhs, rhs, ctx, source,
+    )
+    marker = _VERDICT_TO_MARKER.get(verdict, "🟡")
     lhs_s = format_unit(lhs_u) if lhs_u is not None else "?"
     rhs_s = format_unit(rhs_u) if rhs_u is not None else "?"
     body = (
@@ -2337,12 +2346,15 @@ def _render_ast_tree(
     snap = trace.snapshot()
     rule_id = snap[-1].rule_id if snap else None
 
-    # Initialization autocast: a bare literal (or unary-minus literal)
-    # in a propagated target context takes on the target unit and is
-    # marked 🟢. Keeps the detailed tree aligned with the panel.
+    # Initialization autocast: a pure-numeric-constant subtree (literal,
+    # unary-minus literal, math of literals) in a propagated target
+    # context takes on the target unit and is marked 🟢. Uses the same
+    # predicate as the checker's R4.4 — :func:`_is_pure_numeric_constant`
+    # — so all three sites (checker, hover, panel) agree on the set of
+    # nodes that autocast.
     apply_autocast = (
         target_unit_for_literal is not None
-        and _is_bare_literal_node(node)
+        and ts_checker._is_pure_numeric_constant(node)
     )
     if apply_autocast:
         unit = target_unit_for_literal
@@ -2361,7 +2373,24 @@ def _render_ast_tree(
         from dimfort.core.units import format_unit
         unit_str = format_unit(unit)
     rule_str = f"({rule_id})" if rule_id else ""
-    mark = "🟢" if apply_autocast else _node_trace_mark(node, unit, ctx, source)
+    # Marker derivation, in order of priority:
+    #   1. R4.4 autocast in this leaf      → 🟢
+    #   2. Node IS an assignment_statement → use the verdict marker so
+    #      the detailed tree agrees with panel/hover-short
+    #   3. Generic fallback                → _node_trace_mark
+    if apply_autocast:
+        mark = "🟢"
+    elif node.type == "assignment_statement":
+        kids_for_marker = _interesting_children(node)
+        if len(kids_for_marker) >= 2:
+            verdict, _lu, _ru = ts_checker._assignment_homogeneity(
+                kids_for_marker[0], kids_for_marker[-1], ctx, source,
+            )
+            mark = _VERDICT_TO_MARKER.get(verdict, "🟡")
+        else:
+            mark = _node_trace_mark(node, unit, ctx, source)
+    else:
+        mark = _node_trace_mark(node, unit, ctx, source)
     # Mark is a separate column so the unit can be ljust-padded
     # independently; markers then align vertically on the right.
     rows.append((prefix + connector + label, unit_str, mark, rule_str))
@@ -2379,17 +2408,19 @@ def _render_ast_tree(
         if first.type == "identifier":
             children = children[1:]
     # Compute the autocast target to propagate into children.
-    # - Assignment with bare-literal RHS → pass LHS unit to the last
-    #   child only.
-    # - Unary-minus over a bare literal in an already-autocast context →
-    #   pass the same target through to the inner literal.
+    # - Assignment: ask ``_assignment_homogeneity`` for the effective
+    #   RHS unit; pass it to the last child (the RHS) when the verdict
+    #   says we're in autocast mode.
+    # - Unary-minus: if THIS node is already being autocast (i.e. it's
+    #   a unary-minus wrapping a literal in an autocast context), pass
+    #   the target through to the inner literal.
     child_target = None
     if node.type == "assignment_statement" and children:
-        rhs = children[-1]
-        if _is_bare_literal_node(rhs):
-            lhs_unit = ts_checker._resolve(children[0], ctx, source)
-            if lhs_unit is not None:
-                child_target = lhs_unit
+        verdict, lhs_u, _ = ts_checker._assignment_homogeneity(
+            children[0], children[-1], ctx, source,
+        )
+        if verdict == "autocast" and lhs_u is not None:
+            child_target = lhs_u
     elif apply_autocast and node.type == "unary_expression":
         child_target = target_unit_for_literal
     for i, c in enumerate(children):
@@ -2397,7 +2428,8 @@ def _render_ast_tree(
         # For assignments, only the last child (RHS) gets the target.
         # For the unary-minus passthrough, the single inner child gets it.
         per_child_target = None
-        if node.type == "assignment_statement" and is_last_child or node.type == "unary_expression":
+        is_asn_rhs = node.type == "assignment_statement" and is_last_child
+        if is_asn_rhs or node.type == "unary_expression":
             per_child_target = child_target
         _render_ast_tree(
             c, ctx, source,
@@ -2421,32 +2453,16 @@ def _marker_token(mark: str) -> str:
     return {"🟢": "ok", "🟡": "warn", "🔴": "error"}.get(mark, "warn")
 
 
-def _is_bare_literal_node(node) -> bool:
-    """``True`` if ``node`` is a numeric literal or a unary minus
-    wrapping one. Used by the assignment autocast logic — a literal
-    that's the sole RHS of an assignment is treated as initialization
-    (taking on the LHS unit), not an implicit cast that warrants a
-    diagnostic / 🟡 marker.
-    """
-    inner = node
-    if inner.type == "unary_expression":
-        kids = _interesting_children(inner)
-        if len(kids) == 1:
-            inner = kids[0]
-    return inner.type in ("number_literal", "complex_literal")
-
-
 def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
     """Build a structured ExpressionNode for the panel.
 
     Recursive: each node carries its resolved unit, the rule ID that
     produced it (if any), a marker token, and its children. Leaf
     nodes (identifiers, literals) have an empty ``children`` list.
-    Mirrors :func:`_render_ast_tree`'s resolution semantics, with one
-    additional rule: a bare-literal RHS of an assignment is treated as
-    *initialization* — it autocasts to the LHS's unit and the marker
-    is forced 🟢 (matching the checker's existing leniency, which
-    suppresses H010 D1.5 only for compound expressions).
+
+    Defers all assignment-specific logic (verdict, autocast detection)
+    to :func:`ts_checker._assignment_homogeneity` — the single source
+    of truth shared with the checker and the in-buffer hover.
     """
     if node is None:
         return None
@@ -2483,20 +2499,32 @@ def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
         "children": child_nodes,
     }
 
-    # Initialization autocast: when the cursor is on an assignment whose
-    # RHS is a bare literal, propagate the LHS unit to the literal node
-    # and stamp the assignment 🟢. The literal is just initialization —
-    # no implicit cast, no warning, no D1.5 quick-fix needed. Compound
-    # expressions (``t = c + 2.0``) still flow through R4.1 / D1.5.
+    # Assignment-level marker: derive from ts_checker._assignment_homogeneity
+    # so the panel agrees with the diagnostic stream and the hover view.
+    # Verdicts:
+    #   homogeneous / autocast → 🟢
+    #   wrapper_untag           → 🟡 (D1.6 implicit untag)
+    #   mismatch                → 🔴 (H001)
+    #   unresolved              → keep the recursive marker
+    # In "autocast", we also propagate the LHS unit to the RHS subtree
+    # root so the panel shows the literal expression as carrying the
+    # autocast unit, not "?".
     if node.type == "assignment_statement" and len(child_nodes) >= 2:
         kids = _interesting_children(node)
-        if len(kids) >= 2 and _is_bare_literal_node(kids[-1]):
-            lhs_unit = payload["children"][0].get("unit")
-            if lhs_unit:
-                payload["children"][-1]["unit"] = lhs_unit
+        if len(kids) >= 2:
+            verdict, lhs_u, rhs_u_eff = ts_checker._assignment_homogeneity(
+                kids[0], kids[-1], ctx, source,
+            )
+            verdict_marker = _VERDICT_TO_MARKER.get(verdict)
+            if verdict_marker is not None and verdict != "unresolved":
+                payload["marker"] = _marker_token(verdict_marker)
+            if verdict == "autocast" and lhs_u is not None:
+                lhs_unit_str = format_unit(lhs_u)
+                payload["unit"] = lhs_unit_str
+                # Override the RHS subtree root only — its inner detail
+                # (e.g. inner literals of ``2.0 * 3.14``) stays as-is.
+                payload["children"][-1]["unit"] = lhs_unit_str
                 payload["children"][-1]["marker"] = "ok"
-                payload["marker"] = "ok"
-                payload["unit"] = lhs_unit
 
     return payload
 

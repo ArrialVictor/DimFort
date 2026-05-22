@@ -99,6 +99,80 @@ def test_build_expression_tree_shape(tmp_path: Path):
     assert len(payload["children"]) >= 2
 
 
+def test_assignment_with_matching_units_marks_ok(tmp_path: Path):
+    """Regression: an assignment whose RHS is a function call returning
+    the LHS's unit should show 🟢, not 🟡. Previous panel logic used
+    ``_node_trace_mark`` on the assignment node which produced 🟡; the
+    fix routes through ``_assignment_homogeneity`` instead."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.server import _build_expression_tree, _build_ts_ctx
+
+    src = tmp_path / "match.f90"
+    src.write_text(
+        "function f(t) result(d)\n"
+        "  real, intent(in) :: t  !< @unit{s}\n"
+        "  real             :: d  !< @unit{m}\n"
+        "  d = 0.0\n"
+        "end function f\n"
+        "subroutine s\n"
+        "  real :: d  !< @unit{m}\n"
+        "  real :: t  !< @unit{s}\n"
+        "  d = f(t)\n"
+        "end subroutine\n"
+    )
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+
+    # Pick the d = f(t) assignment in the subroutine (the 2nd assignment).
+    asns = [n for n in _ts.walk(tree.root_node) if n.type == "assignment_statement"]
+    target_asn = asns[-1]  # last one is d = f(t)
+    payload = _build_expression_tree(target_asn, ctx, source)
+    assert payload is not None
+    assert payload["marker"] == "ok"
+
+
+def test_panel_marker_matches_assignment_homogeneity(tmp_path: Path):
+    """All three render sites must derive their marker from the verdict.
+    Touches the regression spotted during the walkthrough: panel was
+    showing 🟡 while hover showed 🟢."""
+    from dimfort.core import ts_checker
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.server import (
+        _VERDICT_TO_MARKER,
+        _build_expression_tree,
+        _build_ts_ctx,
+        _marker_token,
+    )
+
+    src = tmp_path / "vmatch.f90"
+    src.write_text(
+        "subroutine s\n"
+        "  real :: a  !< @unit{m}\n"
+        "  real :: b  !< @unit{m}\n"
+        "  a = b\n"
+        "end subroutine\n"
+    )
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+
+    asn = next(
+        n for n in _ts.walk(tree.root_node) if n.type == "assignment_statement"
+    )
+    lhs, rhs = ts_checker._assignment_sides(asn)
+    verdict, _, _ = ts_checker._assignment_homogeneity(lhs, rhs, ctx, source)
+    panel_payload = _build_expression_tree(asn, ctx, source)
+    expected_marker = _marker_token(_VERDICT_TO_MARKER[verdict])
+    assert panel_payload["marker"] == expected_marker
+
+
 def test_build_routine_vars_lists_each_declared_name(tmp_path: Path):
     """The routine-vars list must include every declared name in the
     enclosing routine, with the right ``unit`` and ``kind`` per entry."""
