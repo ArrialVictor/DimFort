@@ -2589,6 +2589,26 @@ def _build_scope_vars(
     scope_name_lc = scope_name.lower() if scope_name else None
     sp = _ts.position_for(scope_node).line
     ep = _ts.end_position_for(scope_node).line
+    source_lines = source.decode("utf-8", "replace").splitlines()
+
+    def _name_on_first_line(decl) -> bool:
+        """Robustness guard: tree-sitter error recovery on a half-typed
+        declaration (``real ::`` before a name is typed) scavenges an
+        identifier from the *following* statement into ``decl.names``,
+        with a span that runs into that next line. Such a decl has none
+        of its names on its own first physical line — drop it so the
+        panel doesn't flash a bogus row mid-typing. Valid multi-line
+        continuations always have at least the first name on the
+        type-spec line, so they survive this check."""
+        idx = decl.line_start - 1
+        if not (0 <= idx < len(source_lines)):
+            return True  # can't verify — keep
+        line_text = source_lines[idx]
+        return any(
+            re.search(rf"(?<![A-Za-z0-9_]){re.escape(n)}(?![A-Za-z0-9_])",
+                      line_text)
+            for n in decl.names
+        )
 
     out: list[dict] = []
     for decl in scan_decls:
@@ -2604,6 +2624,8 @@ def _build_scope_vars(
                 continue
             if not (sp <= decl.line_start <= ep):
                 continue
+        if decl.names and not _name_on_first_line(decl):
+            continue
         for vname in decl.names:
             unit_text = var_units.get(vname)
             out.append({
