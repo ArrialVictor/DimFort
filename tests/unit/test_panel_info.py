@@ -244,6 +244,51 @@ def test_build_scope_vars_module_level(tmp_path: Path):
     assert "local_x" not in by_name
 
 
+def test_build_scope_vars_drops_half_typed_declaration(tmp_path: Path):
+    """A half-typed ``real ::`` (no name yet) triggers tree-sitter error
+    recovery that scavenges an identifier from the next statement. The
+    scope table must not show that bogus row."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.annotations import scan_text
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.server import _build_scope_vars, _smallest_enclosing_scope
+
+    # Build a valid file first so the workset has attachments, then
+    # scan a half-typed variant directly.
+    src = tmp_path / "typing.f90"
+    src.write_text(
+        "subroutine s\n"
+        "  real :: t  !< @unit{s}\n"
+        "  real :: d  !< @unit{m}\n"
+        "  d = t\n"
+        "end subroutine\n"
+    )
+    result = check_files([src])
+    attached = result.attachments[src.resolve()]
+
+    half_typed = (
+        "subroutine s\n"
+        "  real :: t  !< @unit{s}\n"
+        "  real :: d  !< @unit{m}\n"
+        "  real ::\n"        # mid-typing, no name yet
+        "  d = t\n"
+        "end subroutine\n"
+    )
+    source = half_typed.encode("utf-8")
+    tree = _ts.parse_text(source)
+    scan_decls = scan_text(half_typed).declarations
+    scope = _smallest_enclosing_scope(tree, 2, 5)
+
+    vars_list = _build_scope_vars(scope, scan_decls, attached, source)
+    rows = [(v["line"], v["name"]) for v in vars_list]
+    # The legit decls survive; the bogus 'd' scavenged onto line 4 does
+    # NOT appear (d's only legit row is line 3).
+    assert (2, "t") in rows
+    assert (3, "d") in rows
+    assert (4, "d") not in rows
+    assert (4, "t") not in rows
+
+
 def test_enclosing_scopes_stacks_module_then_subroutine(tmp_path: Path):
     """A cursor inside a module-contained subroutine yields both scopes,
     outermost (module) first."""
