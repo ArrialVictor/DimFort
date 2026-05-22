@@ -651,11 +651,49 @@ def test_oq4_falls_back_to_d14_when_no_path_resolves():
     assert any("D1.4" in d.message for d in diags)
 
 
-def test_nonliteral_scalar_times_log_emits_d14():
+def test_nonlinear_scalar_times_log_emits_d14():
+    """A multiplier that's dim'less but *not representable as a
+    linear Exponent* (e.g. ``k**2`` or a non-linear sub-expression)
+    still fires D1.4 honestly. Symbolic-LogWrap closed the linear
+    case; the non-linear case stays as a tool refusal."""
+    src = (
+        "subroutine s\n"
+        "  real :: p, k, r\n"
+        "  r = (k ** 2) * log(p)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"p": "Pa", "k": "1", "r": "1"})
+    # The multiplier ``k**2`` is dim'less but not linear in k (would be
+    # k² as an Exponent term, which we explicitly reject). R5.5 fires
+    # D1.4.
+    assert any("D1.4" in d.message for d in diags)
+
+
+def test_symbolic_logwrap_dimless_multiplier():
+    """symbolic-logwrap: ``k * LOG(p)`` with k annotated dim'less now
+    resolves symbolically — no D1.4. Result types as LogWrap(Pa^k)."""
     src = (
         "subroutine s\n"
         "  real :: p, k, r\n"
         "  r = k * log(p)\n"
+        "end subroutine\n"
+    )
+    # k annotated dim'less.
+    # The RHS is LogWrap(Pa^k). The LHS r is annotated LOG(Pa^k) to
+    # match — if we annotated it as just LogWrap(1), there'd be an
+    # honest H001 because the symbolic Pa^k ≠ 1.
+    diags = _check(src, {"p": "Pa", "k": "1", "r": "LOG(Pa^k)"})
+    # No D1.4.
+    assert not any("D1.4" in d.message for d in diags)
+
+
+def test_symbolic_logwrap_divisor_refuses_d14():
+    """A symbolic divisor on a LogWrap is non-linear (1/kappa isn't a
+    linear form), so the algebra refuses with D1.4 honestly."""
+    src = (
+        "subroutine s\n"
+        "  real :: p, k, r\n"
+        "  r = log(p) / k\n"
         "end subroutine\n"
     )
     diags = _check(src, {"p": "Pa", "k": "1", "r": "1"})

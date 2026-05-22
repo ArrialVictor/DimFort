@@ -449,11 +449,21 @@ def _u(dim: Dim, factor: Number = 1) -> Unit:
 # ``(None, None)`` (unknown, no diagnostic).
 
 
-def _logwrap_inner_pow(inner: UnitExpr, k: Number) -> UnitExpr | None:
+def _logwrap_inner_pow(
+    inner: UnitExpr, k: Number | Exponent,
+) -> UnitExpr | None:
     """Compute ``inner ^ k`` for use under LogWrap (R5.4 inner side).
 
-    Only defined when ``inner`` is ``Unit``; nested-wrapper inners fall
-    through to the caller as ``None`` (sub-step 4 territory).
+    ``k`` may be a plain ``Number`` (literal rational) or a symbolic
+    ``Exponent`` (linear form over named dim'less generators). The
+    underlying ``Unit.pow`` accepts both since the
+    ``symbolic-exponents`` Step 2. If the multiplication would be
+    non-linear (e.g. symbolic ``k`` applied to a Unit that already has
+    symbolic dimensions), ``Unit.pow`` raises ``UnitError`` and we
+    return None — caller falls back to D1.4.
+
+    Only defined when ``inner`` is ``Unit``; nested-wrapper inners
+    fall through to the caller as ``None``.
     """
     if not isinstance(inner, Unit):
         return None
@@ -468,15 +478,16 @@ def combine(
     a: UnitExpr,
     b: UnitExpr,
     *,
-    a_literal: Number | None = None,
-    b_literal: Number | None = None,
+    a_literal: Number | Exponent | None = None,
+    b_literal: Number | Exponent | None = None,
 ) -> tuple[UnitExpr | None, str | None]:
     """Apply binary op ``a <op> b`` at the unit level.
 
     ``op`` is one of ``'+', '-', '*', '/'``. ``*_literal`` carries the
-    operand's literal-rational value when the corresponding source-AST
-    operand is a pure numeric literal (used by R5.4 to decide
-    literal-scalar × LogWrap vs R5.5 runtime-scalar × LogWrap).
+    operand's resolved literal value when the corresponding source-AST
+    operand is a pure numeric literal, a PARAMETER reference, or a
+    symbolic linear ``Exponent`` (used by R5.4 to apply the log-power
+    identity ``γ · LOG(u) = LOG(u^γ)``).
 
     Returns ``(result_unit_or_None, diag_code_or_None)``. A non-None
     diag_code with a None result means the op is undefined (rule error);
@@ -496,9 +507,17 @@ def combine(
         if op in ("+", "-"):
             if equal_dim(a, b):
                 return _ok("R4.1", a)
-            if a_literal is not None and is_dimensionless(a) and not is_dimensionless(b):
+            # H010 (implicit-cast demotion) fires only when the operand
+            # was a source-level numeric literal (or a PARAMETER ref
+            # that folded to a Number). A symbolic Exponent — e.g. a
+            # dim'less *variable* reference — is an explicit dim'less
+            # declaration, not a silent cast, so it should fire H002
+            # not H010.
+            a_is_numeric_literal = isinstance(a_literal, (int, Fraction))
+            b_is_numeric_literal = isinstance(b_literal, (int, Fraction))
+            if a_is_numeric_literal and is_dimensionless(a) and not is_dimensionless(b):
                 return b, "D1.5"
-            if b_literal is not None and is_dimensionless(b) and not is_dimensionless(a):
+            if b_is_numeric_literal and is_dimensionless(b) and not is_dimensionless(a):
                 return a, "D1.5"
             return _err("R4.1", "D1.1")
         if op == "*":
@@ -557,10 +576,24 @@ def combine(
                     return _err("R5.5", "D1.4")
                 if b_literal == 0:
                     return None, None
+                # Symbolic divisor: 1/κ isn't a linear form over Q with
+                # named generators (it's a rational function), so it
+                # doesn't fit our Exponent algebra. Refuse explicitly.
+                if isinstance(b_literal, Exponent) and not b_literal.is_constant():
+                    return _err("R5.5", "D1.4")
+                # Normalise constant Exponent → its rational value.
+                b_val: Number
+                if isinstance(b_literal, Exponent):
+                    bf = b_literal.as_fraction()
+                    if bf is None or bf == 0:
+                        return None, None
+                    b_val = bf
+                else:
+                    b_val = b_literal
                 inv = (
-                    Fraction(1, b_literal)
-                    if isinstance(b_literal, int)
-                    else Fraction(1) / b_literal
+                    Fraction(1, b_val)
+                    if isinstance(b_val, int)
+                    else Fraction(1) / b_val
                 )
                 new_inner = _logwrap_inner_pow(a.inner, inv)
                 if new_inner is None:
