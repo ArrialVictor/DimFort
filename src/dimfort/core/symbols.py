@@ -153,17 +153,30 @@ def deps_consumed_from_uses(
     unresolved: frozenset[str],
     external_modules: frozenset[str],
 ) -> frozenset[str]:
-    """Return the set of workspace modules a file actually consumed.
+    """Return the set of workspace modules a file depends on for caching.
 
     Per-module dep granularity for the content-hash cache: a file's
     cached entry is dirty when any module in this set has its exports
-    changed. ``unresolved`` and ``external_modules`` are excluded — the
-    file never pulled symbols from them, so changes there can't alter
-    its diagnostics.
+    *or its resolution state* changed.
+
+    **Unresolved modules ARE included.** A module that's unresolved
+    today (its file not yet added, or temporarily un-indexable) may
+    resolve tomorrow, and that transition can introduce or remove a
+    diagnostic in this file (e.g. a ``use`` import that suddenly gives
+    a previously-unknown variable a unit, turning ``y = x`` into an
+    H001). The module's export digest is the sentinel ``"absent"``
+    while unresolved; when it resolves the digest changes and the
+    dependent file's cache invalidates. Excluding unresolved modules
+    (the old behaviour) left a stale-cache hole — a newly-applicable
+    diagnostic was silently dropped on the next warm run.
+
+    Only ``external_modules`` are excluded: they live outside the
+    workspace by definition and never resolve into it, so their state
+    can't change a file's diagnostics.
     """
     return frozenset(
         use.module.lower() for use in uses
-    ) - unresolved - external_modules
+    ) - external_modules
 
 
 def apply_use_clauses(
