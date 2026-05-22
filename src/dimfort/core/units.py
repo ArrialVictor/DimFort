@@ -796,6 +796,7 @@ _TOKEN_RE = re.compile(
     \s+                          |  # whitespace
     (?P<ID>[A-Za-z][A-Za-z0-9]*) |
     (?P<INT>\d+)                 |
+    (?P<POW>\*\*)                |  # Fortran-style power, normalised to ^
     (?P<OP>[*/^()\-])            |
     (?P<BAD>.)
     """,
@@ -810,6 +811,12 @@ def _tokenize(expr: str) -> list[tuple[str, str]]:
             tokens.append(("ID", m.group("ID")))
         elif m.group("INT") is not None:
             tokens.append(("INT", m.group("INT")))
+        elif m.group("POW") is not None:
+            # ``**`` is Fortran's power operator. Normalise to ``^`` so
+            # the parser's single power path (parse_term) handles both
+            # ``m**2`` and ``m^2`` identically — including under ``/``
+            # (``kg/m**3`` now parses as ``kg/(m**3)``).
+            tokens.append(("OP", "^"))
         elif m.group("OP") is not None:
             tokens.append(("OP", m.group("OP")))
         elif m.group("BAD") is not None:
