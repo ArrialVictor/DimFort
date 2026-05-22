@@ -206,6 +206,55 @@ def test_build_scope_vars_lists_each_declared_name(tmp_path: Path):
     assert by_name["x"]["line"] == 2
 
 
+def test_build_scope_vars_marks_unparseable_as_error(tmp_path: Path):
+    """A declaration whose ``@unit{}`` fails to parse is kind ``error``
+    (🔴) — distinct from ``unannotated`` (🟡) and ``annotated`` (🟢).
+    The verdict is gated on the workset's unparseable set, not merely
+    on the presence of annotation text."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.annotations import scan_file
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.server import _build_scope_vars, _smallest_enclosing_scope
+
+    src = tmp_path / "e.f90"
+    src.write_text(
+        "subroutine s\n"
+        "  real :: a  !< @unit{m}\n"    # valid → annotated
+        "  real :: b  !< @unit{??}\n"   # unparseable → error
+        "  real :: c\n"                 # none → unannotated
+        "end subroutine\n"
+    )
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    attached = result.attachments[resolved]
+    scan_decls = scan_file(src).declarations
+
+    unparseable = result.unparseable_units.get(resolved, frozenset())
+    assert "b" in unparseable
+
+    scope = _smallest_enclosing_scope(tree, 3, 5)
+    assert scope is not None and scope.type == "subroutine"
+
+    by_name = {
+        row["name"]: row
+        for row in _build_scope_vars(scope, scan_decls, attached, source, unparseable)
+    }
+    assert by_name["a"]["kind"] == "annotated"
+    assert by_name["b"]["kind"] == "error"
+    assert by_name["b"]["unit"] == "??"  # raw text preserved for display
+    assert by_name["c"]["kind"] == "unannotated"
+
+    # Without the set, 'b' falls back to 'annotated' (it has text) —
+    # confirms 🔴 is gated on the parse verdict, not text presence.
+    no_set = {
+        row["name"]: row["kind"]
+        for row in _build_scope_vars(scope, scan_decls, attached, source)
+    }
+    assert no_set["b"] == "annotated"
+
+
 def test_build_scope_vars_module_level(tmp_path: Path):
     """Module-level declarations (scope = None) are listed when the
     cursor is at module scope. Nested routine decls are excluded."""

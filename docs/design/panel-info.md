@@ -115,11 +115,14 @@ interface ExpressionNode {
 
 interface ScopeVar {
   name: string;
-  // The annotated unit, or null for unannotated declarations.
+  // The annotated unit text, or null for unannotated declarations.
+  // For kind "error" this is the raw (unparseable) annotation text.
   unit: string | null;
   // 1-based line number of the declaration.
   line: number;
-  kind: "annotated" | "unannotated";
+  // 🟢 annotated (valid unit), 🟡 unannotated (no @unit{}),
+  // 🔴 error (has @unit{} but it failed to parse — the U002 set).
+  kind: "annotated" | "unannotated" | "error";
 }
 ```
 

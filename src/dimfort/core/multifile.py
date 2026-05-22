@@ -110,6 +110,11 @@ class WorksetResult:
     # decide marker / unit rendering for assignments. Empty for files
     # without any autocast fires.
     autocast_events: dict[Path, list[AutocastEvent]] = field(default_factory=dict)
+    # Per-file set of variable names whose ``@unit{...}`` annotation
+    # failed to parse (the U002 set), lower-cased. Single source of
+    # truth shared by the U002 diagnostic and the LSP panel's 🔴
+    # "unparseable" marker, so both stay in lock-step.
+    unparseable_units: dict[Path, frozenset[str]] = field(default_factory=dict)
     # Cache hit/miss/dirty/write counters. Populated only when the
     # workspace check ran with a CacheStore. Surfaced by --timings.
     cache_hits: int = 0
@@ -678,25 +683,38 @@ def check_files(
         for decl in getattr(entry.scan, "declarations", ()):  # type: ignore[attr-defined]
             for vn in decl.names:
                 decl_line_for.setdefault(vn.lower(), decl.line_start)
+        unparseable: set[str] = set()
         for name, text in entry.attachment.var_units.items():
             try:
                 _units_mod.parse(text, active_table)
             except UnitError as exc:
-                # Position.line is 1-based (same convention as the rest
-                # of the checker); DeclarationSite.line_start is 1-based
-                # too. Fall back to line 0 (file-top sentinel) only if
-                # the name can't be located.
-                line1 = decl_line_for.get(name.lower(), 0)
+                unparseable.add(name.lower())
+                # Prefer the exact ``@unit{...}`` token span so the
+                # squiggle lands on the annotation itself. Span columns
+                # are 1-based in the checker's convention. Fall back to
+                # the declaration line (col 0) when the span is missing
+                # (e.g. intrinsic-default entries, which always parse).
+                span = entry.attachment.var_units_span.get(name)
+                if span is not None:
+                    sline, scol, ecol = span
+                    start = Position(sline, scol)
+                    end = Position(sline, ecol)
+                else:
+                    line1 = decl_line_for.get(name.lower(), 0)
+                    start = Position(line1, 0)
+                    end = Position(line1, 0)
                 diags.append(
                     Diagnostic(
                         file=str(entry.path),
-                        start=Position(line1, 0),
-                        end=Position(line1, 0),
+                        start=start,
+                        end=end,
                         severity=Severity.ERROR,
                         code="U002",
                         message=f"Unit annotation for {name!r}: {exc}",
                     )
                 )
+        if unparseable:
+            result.unparseable_units[entry.path] = frozenset(unparseable)
 
         if entry.tree is None:
             diags.append(

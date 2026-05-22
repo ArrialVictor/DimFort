@@ -97,6 +97,13 @@ class AttachmentResult:
     var_units_by_scope: dict[tuple[str | None, str], str] = field(
         default_factory=dict
     )
+    # Source span of the ``@unit{...}`` token that set each flat
+    # ``var_units`` entry, first-seen-wins to match ``var_units``.
+    # Value: ``(line, start_col, end_col)``, all 1-based, in the
+    # checker's Position convention. Lets a U002 (unparseable
+    # annotation) squiggle land on the annotation token itself rather
+    # than a zero-width point at the declaration line.
+    var_units_span: dict[str, tuple[int, int, int]] = field(default_factory=dict)
     # Byte-range cover of every subroutine/function in the file, sorted
     # by start_byte. Carried through from the scan so the checker can
     # resolve a node's enclosing scope without re-walking the tree.
@@ -151,6 +158,7 @@ def _assign(
     name: str,
     unit_text: str,
     line: int,
+    column: int,
     *,
     enclosing_type: str | None,
     scope: str | None,
@@ -191,6 +199,13 @@ def _assign(
     # consult ``var_units`` accept that ambiguity; the authoritative
     # answer lives in ``var_units_by_scope``.
     result.var_units.setdefault(name, unit_text)
+    # Token span: ``@unit{`` (6) + inner text + ``}`` (1). ``column``
+    # is the 1-based column of the leading ``@``; ``end_col`` is the
+    # exclusive 1-based end (one past ``}``) in the checker's
+    # diagnostic convention.
+    result.var_units_span.setdefault(
+        name, (line, column, column + len(unit_text) + 7)
+    )
 
 
 def attach(scan: ScanResult) -> AttachmentResult:
@@ -253,6 +268,7 @@ def attach(scan: ScanResult) -> AttachmentResult:
                 name,
                 ann.unit_text,
                 ann.line,
+                ann.column,
                 enclosing_type=decl.enclosing_type,
                 scope=decl.scope,
             )
