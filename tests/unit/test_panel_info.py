@@ -244,6 +244,31 @@ def test_build_scope_vars_module_level(tmp_path: Path):
     assert "local_x" not in by_name
 
 
+def test_enclosing_scopes_stacks_module_then_subroutine(tmp_path: Path):
+    """A cursor inside a module-contained subroutine yields both scopes,
+    outermost (module) first."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.lsp.server import _enclosing_scopes
+
+    src = tmp_path / "nested.f90"
+    src.write_text(
+        "module m\n"
+        "  real :: alpha  !< @unit{m}\n"
+        "contains\n"
+        "  subroutine s\n"
+        "    real :: local_x  !< @unit{kg}\n"
+        "    local_x = 0.0\n"
+        "  end subroutine\n"
+        "end module\n"
+    )
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    # Cursor on line 6 (inside subroutine s, inside module m).
+    scopes = _enclosing_scopes(tree, 6, 5)
+    kinds = [s.type for s in scopes]
+    assert kinds == ["module", "subroutine"]  # outer → inner
+
+
 def test_build_scope_vars_program_level(tmp_path: Path):
     from dimfort.core import ts_parser as _ts
     from dimfort.core.annotations import scan_file
