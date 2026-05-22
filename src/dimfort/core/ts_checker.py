@@ -45,6 +45,7 @@ from dimfort.core.symbols import (
 )
 from dimfort.core.trace import current_trace, with_trace
 from dimfort.core.units import (
+    Exponent,
     ExpWrap,
     LogWrap,
     Unit,
@@ -393,6 +394,93 @@ def _resolve_constant_value(
     return None
 
 
+def _resolve_symbolic_exponent(
+    node: Node | None, ctx: _Ctx | None, source: bytes,
+) -> Exponent | None:
+    """Resolve a node to a symbolic Exponent (linear form over named
+    dim'less generators + a rational constant).
+
+    Used by the ``**`` resolver as a fallback when the exponent is
+    *not* a literal rational. Returns ``None`` if the expression isn't
+    representable as a linear Exponent — the caller then falls back to
+    the existing D1.4 path.
+
+    Allowed shapes (the linear-form fragment):
+
+    - Literal rational / PARAMETER reference (delegates to
+      ``_resolve_constant_value``, then promotes to a constant
+      Exponent).
+    - Bare identifier whose annotated unit is dim'less (becomes an
+      opaque symbol named after the identifier).
+    - Unary ``-``/``+``.
+    - ``+`` / ``-`` of two sub-Exponents (sum or difference).
+    - ``*`` of two sub-Exponents where at least one side is
+      pure-constant (scalar multiplication; symbol×symbol is
+      non-linear and surfaces ``None``).
+    - ``/`` of any sub-Exponent by a *constant* sub-Exponent
+      (scalar division). Symbol-in-denominator is non-linear.
+    """
+    if node is None:
+        return None
+    node = _unwrap_parens(node)
+    # 1. Pure constant (literal or PARAMETER) → promote.
+    c = _resolve_constant_value(node, ctx, source)
+    if c is not None:
+        return Exponent.from_value(c)
+    # 2. Bare identifier of dim'less type → opaque symbol.
+    if node.type == "identifier":
+        if ctx is None:
+            return None
+        name = _text(node, source)
+        u = ctx.unit_for(name, node.start_byte)
+        if u is not None and _is_dimensionless(u):
+            return Exponent.from_symbol(name)
+        return None
+    # 3. Unary +/-.
+    if node.type == "unary_expression":
+        sign = 1
+        for c2 in node.children:
+            if c2.type == "-":
+                sign = -sign
+                break
+            if c2.type == "+":
+                break
+        inner = _unary_operand(node)
+        if inner is None:
+            return None
+        inner_e = _resolve_symbolic_exponent(inner, ctx, source)
+        if inner_e is None:
+            return None
+        return inner_e * sign
+    # 4. Linear math.
+    if node.type == "math_expression":
+        op_ = _math_op(node)
+        if op_ not in ("+", "-", "*", "/"):
+            return None
+        left, right = _math_operands(node)
+        if left is None or right is None:
+            return None
+        l_e = _resolve_symbolic_exponent(left, ctx, source)
+        r_e = _resolve_symbolic_exponent(right, ctx, source)
+        if l_e is None or r_e is None:
+            return None
+        try:
+            if op_ == "+":
+                return l_e + r_e
+            if op_ == "-":
+                return l_e - r_e
+            if op_ == "*":
+                return l_e * r_e   # raises UnitError if non-linear
+            # op_ == "/"
+            r_const = r_e.as_fraction()
+            if r_const is None or r_const == 0:
+                return None
+            return l_e * (Fraction(1) / r_const)
+        except UnitError:
+            return None
+    return None
+
+
 def _constant_exponent(node: Node, source: bytes) -> int | Fraction | None:
     """Decode an expression used as a power exponent into ``int`` or ``Fraction``.
 
@@ -475,8 +563,18 @@ def _resolve(node: Node | None, ctx: _Ctx, source: bytes) -> Unit | None:
             base = _resolve(left, ctx, source)
             if base is None or right is None:
                 return None
-            exponent_value = _resolve_constant_value(right, ctx, source)
+            exponent_value: int | Fraction | Exponent | None = (
+                _resolve_constant_value(right, ctx, source)
+            )
             exponent_unit = _resolve(right, ctx, source)
+            # Symbolic fallback: when the exponent isn't a literal
+            # rational, try to express it as a linear Exponent over
+            # named dim'less generators. If successful, power() will
+            # produce a Unit with symbolic dimensions (Pa^kappa-style).
+            if exponent_value is None:
+                exponent_value = _resolve_symbolic_exponent(
+                    right, ctx, source,
+                )
             result, _ = power(base, exponent_unit, exponent_value)
             return result
         left_u = _resolve(left, ctx, source)
@@ -1021,8 +1119,15 @@ def _walk_expressions(
             base = _resolve(left, ctx, source)
             if base is None or right is None:
                 return
-            exponent_value = _resolve_constant_value(right, ctx, source)
+            exponent_value: int | Fraction | Exponent | None = (
+                _resolve_constant_value(right, ctx, source)
+            )
             exponent_unit = _resolve(right, ctx, source)
+            # Mirror _resolve: try symbolic exponent when literal-rational fails.
+            if exponent_value is None:
+                exponent_value = _resolve_symbolic_exponent(
+                    right, ctx, source,
+                )
             _, diag = power(base, exponent_unit, exponent_value)
             if diag == "D1.4":
                 yield _emit_d14(
