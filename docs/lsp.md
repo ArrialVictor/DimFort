@@ -73,9 +73,10 @@ total time substantially (LMDZ-scale: ~33 s cold → ~20 s warm).
   `initializationOptions`) so a deep entry point in a large codebase stays
   responsive.
 - **`.F90` preprocessing** uses the system `cpp` (one subprocess per
-  file). On a 2400-file workspace this dominates wall time — the
-  workspace check takes ~80s vs ~7s for pure parse. Tracked as a perf
-  task.
+  file). On a 2400-file workspace a cold workspace check runs ~33 s
+  (down from ~80 s after the 2026-05-17 profile pass). A warm
+  content-hash cache (`cacheMode: read-write`) drops re-runs to ~20 s
+  by skipping the check phase on unchanged files.
 
 ## Editor setup
 
