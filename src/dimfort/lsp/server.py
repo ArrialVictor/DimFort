@@ -2363,6 +2363,248 @@ def _render_ast_tree(
 
 
 # ---------------------------------------------------------------------------
+# Side-panel info — structured-tree builders for the dimfort/panelInfo
+# request. The two functions below mirror _render_ast_tree's resolution
+# logic but return data instead of rendered strings, so each editor's
+# side panel can lay it out in its own idiom (Nvim split, Emacs window,
+# VSCode webview). See docs/design/panel-info.md.
+# ---------------------------------------------------------------------------
+
+
+def _marker_token(mark: str) -> str:
+    """Map a 🟢/🟡/🔴 emoji to a wire-format-friendly token."""
+    return {"🟢": "ok", "🟡": "warn", "🔴": "error"}.get(mark, "warn")
+
+
+def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
+    """Build a structured ExpressionNode for the panel.
+
+    Recursive: each node carries its resolved unit, the rule ID that
+    produced it (if any), a marker token, and its children. Leaf
+    nodes (identifiers, literals) have an empty ``children`` list.
+    Mirrors :func:`_render_ast_tree`'s resolution semantics.
+    """
+    if node is None:
+        return None
+    if node.type == "parenthesized_expression":
+        inner = _interesting_children(node)
+        if len(inner) == 1:
+            return _build_expression_tree(inner[0], ctx, source)
+
+    from dimfort.core.trace import with_trace
+    from dimfort.core.units import format_unit
+
+    with with_trace() as trace:
+        unit = ts_checker._resolve(node, ctx, source)
+    snap = trace.snapshot()
+    rule_id = snap[-1].rule_id if snap else None
+    mark = _node_trace_mark(node, unit, ctx, source)
+
+    if node.type in ("identifier", "number_literal", "string_literal", "complex_literal"):
+        child_nodes = []
+    else:
+        kids = _interesting_children(node)
+        # call_expression's first child is the callee identifier — the
+        # parent label already reads ``log(p)``; re-rendering ``log`` is noise.
+        if node.type == "call_expression" and kids and kids[0].type == "identifier":
+            kids = kids[1:]
+        child_nodes = [_build_expression_tree(c, ctx, source) for c in kids]
+        child_nodes = [c for c in child_nodes if c is not None]
+
+    return {
+        "label": _node_label(node, source),
+        "unit": format_unit(unit) if unit is not None else None,
+        "marker": _marker_token(mark),
+        "ruleId": rule_id,
+        "children": child_nodes,
+    }
+
+
+def _build_routine_vars(
+    routine_node, scan_decls, attached, source: bytes,
+) -> list[dict]:
+    """Build the routine-variables table for the panel.
+
+    Returns one row per declared variable in the enclosing routine,
+    ordered by declaration line. Each row carries its annotated unit
+    text (or ``None``) and a kind tag distinguishing annotated /
+    unannotated / derived-type-field rows.
+
+    Type-field decls inside a ``type :: T`` block are filtered out —
+    they're already shown via field hover on the parent variable.
+    """
+    if routine_node is None or scan_decls is None:
+        return []
+    routine_name = _routine_name(routine_node, source)
+    if routine_name is None:
+        return []
+    routine_name = routine_name.lower()
+
+    out: list[dict] = []
+    var_units = attached.var_units if attached is not None else {}
+    for decl in scan_decls:
+        if decl.scope != routine_name:
+            continue
+        if decl.enclosing_type is not None:
+            continue
+        for vname in decl.names:
+            unit_text = var_units.get(vname)
+            out.append({
+                "name": vname,
+                "unit": unit_text if unit_text else None,
+                "line": decl.line_start,
+                "kind": "annotated" if unit_text else "unannotated",
+            })
+    return out
+
+
+def _routine_name(routine_node, source: bytes) -> str | None:
+    """Return the routine's identifier name. The ``name`` token sits
+    inside the ``subroutine_statement`` / ``function_statement`` child,
+    not directly on the ``subroutine`` / ``function`` block node."""
+    if routine_node is None:
+        return None
+    stmt_child = next(
+        (c for c in routine_node.children
+         if c.type in ("subroutine_statement", "function_statement")),
+        None,
+    )
+    if stmt_child is None:
+        return None
+    name_node = next(
+        (c for c in stmt_child.children if c.type == "name"), None,
+    )
+    if name_node is None:
+        return None
+    return _ts.node_text(name_node, source)
+
+
+def _routine_header(routine_node, source: bytes) -> dict | None:
+    """``{name, kind}`` header for the panel's routine section, or
+    ``None`` if the routine is unnamed (rare)."""
+    if routine_node is None:
+        return None
+    name = _routine_name(routine_node, source)
+    if name is None:
+        return None
+    return {
+        "name": name,
+        "kind": routine_node.type,  # "subroutine" or "function"
+    }
+
+
+@server.feature("dimfort/panelInfo")
+def _panel_info(ls: LanguageServer, params) -> dict | None:
+    """Return the side-panel payload for ``(uri, position)``.
+
+    See docs/design/panel-info.md for the data model. Stateless:
+    reads from the last cached WorksetResult, computes the response
+    on the fly.
+    """
+    # pygls passes custom-method params as a plain dict-like object.
+    # Accept either attribute access (TypedDict-style) or dict access
+    # so we don't depend on a specific wrapper class.
+    def _get(obj, key):
+        if hasattr(obj, key):
+            return getattr(obj, key)
+        if isinstance(obj, dict):
+            return obj.get(key)
+        return None
+
+    text_document = _get(params, "textDocument") or _get(params, "text_document")
+    position = _get(params, "position")
+    if text_document is None or position is None:
+        return None
+    uri = _get(text_document, "uri")
+    line = _get(position, "line")
+    character = _get(position, "character")
+    if uri is None or line is None or character is None:
+        return None
+
+    path = _uri_to_path(uri)
+    if path is None:
+        return None
+    resolved = path.resolve()
+
+    with _last_result_lock:
+        result = _last_result
+    if result is None:
+        return None
+    attached = result.attachments.get(resolved)
+    if attached is None:
+        return None
+
+    found = _trees_for(uri)
+    if found is None:
+        return None
+    _path, tree, source_bytes = found
+
+    line_1based = int(line) + 1
+    col_1based = int(character) + 1
+    routine = _smallest_enclosing_routine(tree, line_1based, col_1based)
+
+    # Reuse the shared ctx builder so identifier-to-unit lookup behaves
+    # exactly like every other hover / inlay path.
+    ctx = _build_ts_ctx(result, source_bytes, str(resolved), path=resolved)
+
+    # Find the smallest expression-bearing node at the cursor. If the
+    # cursor sits on a declaration or other non-expression node, we
+    # collapse to a single-node "tree" for the variable identifier
+    # under the cursor (per the design decision: show declarations as
+    # single-node trees rather than blanking the section).
+    expr_root = _find_expression_root(tree, line_1based, col_1based)
+    expression = (
+        _build_expression_tree(expr_root, ctx, source_bytes)
+        if expr_root is not None
+        else None
+    )
+
+    scan_decls = _last_scan_declarations(resolved)
+    routine_vars = _build_routine_vars(routine, scan_decls, attached, source_bytes)
+    routine_header = _routine_header(routine, source_bytes)
+
+    return {
+        "expression": expression,
+        "routineVars": routine_vars,
+        "routine": routine_header,
+    }
+
+
+def _find_expression_root(tree, line_1based: int, col_1based: int):
+    """Find the smallest expression-bearing node containing the cursor.
+
+    Walks the tree and picks the deepest node whose type indicates it
+    carries a unit (assignment, math op, call, identifier, literal,
+    etc.). Returns ``None`` if the cursor is in a region with no such
+    node (blank line, comment, structural keyword).
+    """
+    expression_types = {
+        "assignment_statement",
+        "math_expression",
+        "relational_expression",
+        "call_expression",
+        "identifier",
+        "number_literal",
+        "complex_literal",
+        "parenthesized_expression",
+        "unary_expression",
+        "derived_type_member_expression",
+    }
+    best = None
+    best_size = None
+    for n in _ts.walk(tree.root_node):
+        if n.type not in expression_types:
+            continue
+        sp = _ts.position_for(n)
+        ep = _ts.end_position_for(n)
+        if (sp.line, sp.column) <= (line_1based, col_1based) <= (ep.line, ep.column):
+            size = n.end_byte - n.start_byte
+            if best_size is None or size < best_size:
+                best, best_size = n, size
+    return best
+
+
+# ---------------------------------------------------------------------------
 # Inlay hints
 # ---------------------------------------------------------------------------
 
