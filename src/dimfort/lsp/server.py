@@ -1778,9 +1778,16 @@ def _homogeneity_short_marker(lhs, rhs, ctx, source: bytes) -> tuple[str, Unit |
 
 
 def _render_assignment_short(asn, lhs, rhs, ctx, source: bytes) -> tuple[str, lsp.Range] | None:
-    """One-line homogeneity hover for an assignment cursor position."""
+    """One-line homogeneity hover for an assignment cursor position.
+
+    Applies the initialization-autocast rule: when the RHS is a bare
+    literal, it takes on the LHS's unit and the marker is 🟢 — matching
+    the checker's existing leniency (no H010 D1.5 fires on
+    bare-literal RHS assignments)."""
     from dimfort.core.units import format_unit
     marker, lhs_u, rhs_u = _homogeneity_short_marker(lhs, rhs, ctx, source)
+    if _is_bare_literal_node(rhs) and lhs_u is not None:
+        marker, rhs_u = "🟢", lhs_u
     lhs_s = format_unit(lhs_u) if lhs_u is not None else "?"
     rhs_s = format_unit(rhs_u) if rhs_u is not None else "?"
     body = (
@@ -2299,11 +2306,17 @@ def _render_ast_tree(
     *,
     prefix: str, is_last: bool, is_root: bool,
     rows: list[tuple[str, str, str]],
+    target_unit_for_literal=None,
 ) -> None:
     """Recursively collect ``(label, unit, rule)`` rows for the tree.
 
     The caller pads each column to the global max so ``⇒`` and the
     rule tag align vertically across nodes.
+
+    ``target_unit_for_literal`` carries the initialization-autocast
+    target down the recursion: when we recurse into the RHS of an
+    assignment whose RHS is a bare literal, the literal node uses
+    this unit and a 🟢 marker (matching the checker's leniency rule).
     """
     # Skip wrapper-only nodes (parenthesised exprs) so the tree doesn't
     # explode with structural-only intermediate nodes — descend straight
@@ -2314,6 +2327,7 @@ def _render_ast_tree(
             _render_ast_tree(
                 inner[0], ctx, source,
                 prefix=prefix, is_last=is_last, is_root=is_root, rows=rows,
+                target_unit_for_literal=target_unit_for_literal,
             )
             return
 
@@ -2322,6 +2336,16 @@ def _render_ast_tree(
         unit = ts_checker._resolve(node, ctx, source)
     snap = trace.snapshot()
     rule_id = snap[-1].rule_id if snap else None
+
+    # Initialization autocast: a bare literal (or unary-minus literal)
+    # in a propagated target context takes on the target unit and is
+    # marked 🟢. Keeps the detailed tree aligned with the panel.
+    apply_autocast = (
+        target_unit_for_literal is not None
+        and _is_bare_literal_node(node)
+    )
+    if apply_autocast:
+        unit = target_unit_for_literal
 
     if is_root:
         connector = ""
@@ -2337,7 +2361,7 @@ def _render_ast_tree(
         from dimfort.core.units import format_unit
         unit_str = format_unit(unit)
     rule_str = f"({rule_id})" if rule_id else ""
-    mark = _node_trace_mark(node, unit, ctx, source)
+    mark = "🟢" if apply_autocast else _node_trace_mark(node, unit, ctx, source)
     # Mark is a separate column so the unit can be ljust-padded
     # independently; markers then align vertically on the right.
     rows.append((prefix + connector + label, unit_str, mark, rule_str))
@@ -2354,11 +2378,32 @@ def _render_ast_tree(
         first = children[0]
         if first.type == "identifier":
             children = children[1:]
+    # Compute the autocast target to propagate into children.
+    # - Assignment with bare-literal RHS → pass LHS unit to the last
+    #   child only.
+    # - Unary-minus over a bare literal in an already-autocast context →
+    #   pass the same target through to the inner literal.
+    child_target = None
+    if node.type == "assignment_statement" and children:
+        rhs = children[-1]
+        if _is_bare_literal_node(rhs):
+            lhs_unit = ts_checker._resolve(children[0], ctx, source)
+            if lhs_unit is not None:
+                child_target = lhs_unit
+    elif apply_autocast and node.type == "unary_expression":
+        child_target = target_unit_for_literal
     for i, c in enumerate(children):
+        is_last_child = (i == len(children) - 1)
+        # For assignments, only the last child (RHS) gets the target.
+        # For the unary-minus passthrough, the single inner child gets it.
+        per_child_target = None
+        if node.type == "assignment_statement" and is_last_child or node.type == "unary_expression":
+            per_child_target = child_target
         _render_ast_tree(
             c, ctx, source,
             prefix=next_prefix, is_last=(i == len(children) - 1),
             is_root=False, rows=rows,
+            target_unit_for_literal=per_child_target,
         )
 
 
