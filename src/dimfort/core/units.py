@@ -22,6 +22,217 @@ from fractions import Fraction
 Number = int | Fraction
 Dim = tuple[Number, Number, Number, Number, Number, Number, Number]
 
+
+# ---------------------------------------------------------------------------
+# Exponent — linear form over rationals with named opaque generators
+# ---------------------------------------------------------------------------
+#
+# An ``Exponent`` represents a value of the form
+#
+#     q_1 * x_1 + q_2 * x_2 + ... + q_n * x_n + c
+#
+# where ``q_i ∈ Q``, ``x_i`` are named opaque "symbols" (Fortran
+# identifiers used as power exponents — typically dim'less constants
+# whose runtime value isn't known statically, like the Exner ``kappa``),
+# and ``c ∈ Q`` is a constant term.
+#
+# The motivating use case is power-rule unit resolution where the
+# exponent is a statically-unknown but runtime-constant value:
+#
+#     p ** kappa            -> base unit ^ Exponent({"kappa": 1}, 0)
+#     p ** (1 - kappa)      -> base unit ^ Exponent({"kappa": -1}, 1)
+#     2./7.                 -> Exponent({}, 2/7)   (pure constant)
+#
+# Cancellation works through structural identity: same ``terms`` and
+# same ``constant`` ⇒ equal Exponents, regardless of how each was
+# constructed. ``Pa^kappa * Pa^(1 - kappa)`` reduces to ``Pa^1 = Pa``
+# because the resulting Exponent ``{"kappa": 0}, 1`` canonicalizes to
+# ``Exponent({}, 1)`` via the smart constructor (zero-coefficient terms
+# dropped).
+#
+# The algebra is deliberately **linear**: products of two
+# Exponents-with-symbols (e.g. ``kappa * lambda``) are not supported.
+# The Exner / Tetens patterns observed in real climate-model code
+# never produce such products; restricting to the linear case keeps
+# the algebra tractable (constant-coefficient linear forms are a
+# decidable, normalisable structure).
+
+
+@dataclass(frozen=True)
+class Exponent:
+    """Linear combination of opaque generators with rational coefficients
+    plus a rational constant. See module docstring for motivation."""
+    terms: tuple[tuple[str, Fraction], ...]
+    constant: Fraction
+
+    def __post_init__(self) -> None:
+        # Defensive: the smart constructor below should be the only path
+        # for non-trivial construction. Allow direct construction with
+        # already-canonical input (used in tests and after-arithmetic).
+        # Validate that terms are sorted by name and have no zero coeffs;
+        # otherwise the equality contract breaks.
+        for name, coeff in self.terms:
+            if coeff == 0:
+                raise ValueError(
+                    f"Exponent.terms contains a zero-coefficient entry "
+                    f"({name!r}); use Exponent.build(...) to canonicalize"
+                )
+        names = [n for n, _ in self.terms]
+        if names != sorted(names):
+            raise ValueError(
+                "Exponent.terms must be sorted by name; "
+                "use Exponent.build(...) to canonicalize"
+            )
+
+    @classmethod
+    def build(
+        cls,
+        terms: dict[str, Number] | tuple[tuple[str, Number], ...] = (),
+        constant: Number = 0,
+    ) -> Exponent:
+        """Smart constructor: canonicalize a raw term mapping.
+
+        Drops zero coefficients, promotes ``int`` to ``Fraction``,
+        and sorts entries by name. Always use this for new Exponents
+        unless you already have a canonical input.
+        """
+        items = list(terms.items()) if isinstance(terms, dict) else list(terms)
+        # Aggregate duplicate keys (defensive — callers may pass either
+        # a dict or a sequence of pairs; sequences can repeat).
+        agg: dict[str, Fraction] = {}
+        for name, coeff in items:
+            f = Fraction(coeff) if not isinstance(coeff, Fraction) else coeff
+            if name in agg:
+                agg[name] = agg[name] + f
+            else:
+                agg[name] = f
+        # Drop zero, sort, freeze.
+        cleaned = tuple(
+            (n, agg[n]) for n in sorted(agg) if agg[n] != 0
+        )
+        c = Fraction(constant) if not isinstance(constant, Fraction) else constant
+        return cls(terms=cleaned, constant=c)
+
+    @classmethod
+    def from_value(cls, value: Number) -> Exponent:
+        """Promote a literal rational to an Exponent (no symbol terms)."""
+        return cls.build(constant=value)
+
+    @classmethod
+    def from_symbol(cls, name: str, coefficient: Number = 1) -> Exponent:
+        """Build an Exponent representing ``coefficient * name``."""
+        return cls.build(terms={name: coefficient})
+
+    # ---- queries ---------------------------------------------------------
+
+    def is_constant(self) -> bool:
+        """``True`` iff this Exponent has no symbol terms."""
+        return len(self.terms) == 0
+
+    def is_zero(self) -> bool:
+        """``True`` iff this Exponent is the additive identity (0)."""
+        return len(self.terms) == 0 and self.constant == 0
+
+    def is_one(self) -> bool:
+        """``True`` iff this Exponent is the multiplicative identity (1)."""
+        return len(self.terms) == 0 and self.constant == 1
+
+    def as_fraction(self) -> Fraction | None:
+        """If pure-constant, return the rational value; else ``None``."""
+        return self.constant if self.is_constant() else None
+
+    # ---- arithmetic ------------------------------------------------------
+
+    def __add__(self, other: Exponent | Number) -> Exponent:
+        if isinstance(other, Exponent):
+            agg: dict[str, Fraction] = dict(self.terms)
+            for name, coeff in other.terms:
+                agg[name] = agg.get(name, Fraction(0)) + coeff
+            return Exponent.build(agg, self.constant + other.constant)
+        if isinstance(other, (int, Fraction)):
+            return Exponent.build(dict(self.terms), self.constant + other)
+        return NotImplemented
+
+    def __radd__(self, other: Number) -> Exponent:
+        return self.__add__(other)
+
+    def __sub__(self, other: Exponent | Number) -> Exponent:
+        if isinstance(other, Exponent):
+            return self + (-other)
+        if isinstance(other, (int, Fraction)):
+            return Exponent.build(dict(self.terms), self.constant - other)
+        return NotImplemented
+
+    def __rsub__(self, other: Number) -> Exponent:
+        return (-self) + other
+
+    def __neg__(self) -> Exponent:
+        return Exponent.build(
+            {name: -coeff for name, coeff in self.terms},
+            -self.constant,
+        )
+
+    def __mul__(self, other: Number | Exponent) -> Exponent:
+        """Scalar multiplication only.
+
+        ``Exponent * scalar`` and ``scalar * Exponent`` are linear and
+        always defined. ``Exponent * Exponent`` is defined *only* when
+        one side is pure-constant — otherwise the product would be
+        quadratic in the symbols, outside the linear algebra this type
+        represents. Raises ``UnitError`` in the non-linear case (the
+        resolver catches this and falls back to ``D1.4``).
+        """
+        if isinstance(other, (int, Fraction)):
+            return Exponent.build(
+                {name: coeff * other for name, coeff in self.terms},
+                self.constant * other,
+            )
+        if isinstance(other, Exponent):
+            if other.is_constant():
+                return self * other.constant
+            if self.is_constant():
+                return other * self.constant
+            raise UnitError(
+                f"Exponent×Exponent product is non-linear: "
+                f"({self}) × ({other}) — both sides carry symbols"
+            )
+        return NotImplemented
+
+    def __rmul__(self, other: Number) -> Exponent:
+        return self.__mul__(other)
+
+    # ---- presentation ----------------------------------------------------
+
+    def __str__(self) -> str:
+        if self.is_zero():
+            return "0"
+        # Build a list of (sign, magnitude_text) so we can join cleanly
+        # without leaving stray operators or empty cells. The first
+        # entry's "+" is dropped; subsequent ones use " + " / " - ".
+        pieces: list[tuple[str, str]] = []
+        for name, coeff in self.terms:
+            if coeff >= 0:
+                sign = "+"
+                mag = coeff
+            else:
+                sign = "-"
+                mag = -coeff
+            if mag == 1:
+                pieces.append((sign, name))
+            else:
+                pieces.append((sign, f"{mag}·{name}"))
+        if self.constant != 0:
+            if self.constant >= 0:
+                pieces.append(("+", str(self.constant)))
+            else:
+                pieces.append(("-", str(-self.constant)))
+        # First piece: render without a leading "+" but keep "-" if neg.
+        first_sign, first_text = pieces[0]
+        out = first_text if first_sign == "+" else f"-{first_text}"
+        for sign, text in pieces[1:]:
+            out += f" {sign} {text}"
+        return out
+
 DIM_LEN = 7
 ZERO_DIM: Dim = (0, 0, 0, 0, 0, 0, 0)
 
