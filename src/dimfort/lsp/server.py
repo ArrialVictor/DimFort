@@ -2654,18 +2654,29 @@ def _smallest_enclosing_scope(tree, line_1based: int, col_1based: int):
     """Return the innermost scope node (subroutine / function / module /
     program) enclosing the position, or ``None`` for bare file-level
     code outside any of them."""
-    best = None
-    best_size = None
+    scopes = _enclosing_scopes(tree, line_1based, col_1based)
+    return scopes[-1] if scopes else None
+
+
+def _enclosing_scopes(tree, line_1based: int, col_1based: int):
+    """Return *all* scope nodes enclosing the position, **outermost
+    first** (e.g. ``[module, subroutine]`` for a cursor inside a
+    module-contained subroutine). Empty for bare file-level code.
+
+    The panel stacks one section per scope so the user sees the whole
+    environment chain, not just the innermost frame.
+    """
+    matches = []
     for n in _ts.walk(tree.root_node):
         if n.type not in _SCOPE_NODE_TYPES:
             continue
         sp = _ts.position_for(n)
         ep = _ts.end_position_for(n)
         if (sp.line, sp.column) <= (line_1based, col_1based) <= (ep.line, ep.column):
-            size = n.end_byte - n.start_byte
-            if best_size is None or size < best_size:
-                best, best_size = n, size
-    return best
+            matches.append(n)
+    # Larger byte-span = more enclosing = outer. Sort outer → inner.
+    matches.sort(key=lambda n: n.end_byte - n.start_byte, reverse=True)
+    return matches
 
 
 @server.feature("dimfort/panelInfo")
@@ -2712,11 +2723,25 @@ def _panel_info(ls: LanguageServer, params) -> dict | None:
     found = _trees_for(uri)
     if found is None:
         return None
-    _path, tree, source_bytes = found
+    _path, cached_tree, cached_source = found
+
+    # Parse the LIVE buffer so scope detection + cursor→node mapping
+    # track unsaved edits (a just-typed declaration, an inserted line).
+    # The cross-file unit tables in ``ctx`` still come from the last
+    # workspace check — those are name-keyed and don't shift with local
+    # edits — but the *structure* we navigate must match what the user
+    # sees on screen. Fall back to the cached tree if the document
+    # isn't open.
+    try:
+        doc = ls.workspace.get_text_document(uri)
+        source_bytes = doc.source.encode("utf-8")
+        tree = _ts.parse_text(source_bytes)
+    except Exception:
+        tree, source_bytes = cached_tree, cached_source
 
     line_1based = int(line) + 1
     col_1based = int(character) + 1
-    scope = _smallest_enclosing_scope(tree, line_1based, col_1based)
+    scope_nodes = _enclosing_scopes(tree, line_1based, col_1based)
 
     # Reuse the shared ctx builder so identifier-to-unit lookup behaves
     # exactly like every other hover / inlay path.
@@ -2734,19 +2759,37 @@ def _panel_info(ls: LanguageServer, params) -> dict | None:
         else None
     )
 
-    scan_decls = _last_scan_declarations(resolved)
-    scope_vars = _build_scope_vars(scope, scan_decls, attached, source_bytes)
-    scope_header = _scope_header(scope, source_bytes)
+    scan_decls = _scan_declarations_for_uri(ls, uri, resolved)
 
-    # ``scope`` / ``scopeVars`` are the canonical field names; the
-    # ``routine`` / ``routineVars`` aliases are kept so older companion
-    # builds that haven't updated their reader still work.
+    # One section per enclosing scope, outermost first. Each carries
+    # the scope header fields (name, kind) plus its own ``vars`` list.
+    scopes: list[dict] = []
+    for sn in scope_nodes:
+        header = _scope_header(sn, source_bytes)
+        if header is None:
+            continue
+        scopes.append({
+            **header,
+            "vars": _build_scope_vars(sn, scan_decls, attached, source_bytes),
+        })
+
+    # Innermost scope, surfaced as the back-compat ``scope`` /
+    # ``scopeVars`` / ``routine`` / ``routineVars`` fields for any
+    # consumer that only renders a single scope section.
+    innermost = scopes[-1] if scopes else None
+    innermost_header = (
+        {"name": innermost["name"], "kind": innermost["kind"]}
+        if innermost else None
+    )
+    innermost_vars = innermost["vars"] if innermost else []
+
     return {
         "expression": expression,
-        "scope": scope_header,
-        "scopeVars": scope_vars,
-        "routine": scope_header,
-        "routineVars": scope_vars,
+        "scopes": scopes,
+        "scope": innermost_header,
+        "scopeVars": innermost_vars,
+        "routine": innermost_header,
+        "routineVars": innermost_vars,
     }
 
 
@@ -3300,9 +3343,10 @@ def _routine_decl_insertion_line(routine, source: bytes) -> int | None:
 def _last_scan_declarations(path: Path):
     """Re-scan the file on disk to recover the source-side declarations.
 
-    We don't currently cache DeclarationSites in WorksetResult, so this
-    is the simplest path. Reads off-disk (the buffer text path used by
-    didChange isn't accessible here).
+    Disk-only fallback. Prefer :func:`_scan_declarations_for_uri` when
+    a ``LanguageServer`` + ``uri`` are in hand — it reads the live
+    (possibly unsaved) buffer text so freshly-typed declarations show
+    up without a save.
     """
     from dimfort.core.annotations import scan_file
 
@@ -3310,6 +3354,21 @@ def _last_scan_declarations(path: Path):
         return scan_file(path).declarations
     except OSError:
         return None
+
+
+def _scan_declarations_for_uri(ls: LanguageServer, uri: str, resolved: Path):
+    """Scan declarations from the live document text when available.
+
+    Reads the open buffer's text (which includes unsaved edits) so the
+    panel reflects a just-typed declaration immediately. Falls back to
+    a disk read when the document isn't open in the workspace.
+    """
+    from dimfort.core.annotations import scan_text
+    try:
+        doc = ls.workspace.get_text_document(uri)
+        return scan_text(doc.source).declarations
+    except Exception:
+        return _last_scan_declarations(resolved)
 
 
 # ---------------------------------------------------------------------------

@@ -37,9 +37,11 @@ In:
 - Two stacked sections in a single side panel:
   1. **Expression** — the unit-algebra tree for the expression
      under the cursor (same content as Detailed hover).
-  2. **Scope variables** — every variable declared in the enclosing
-     scope (subroutine / function / module / program), with its unit
-     (or `unannotated` marker).
+  2. **Scope variables** — the declarations of every enclosing scope
+     (subroutine / function / module / program), stacked outermost
+     first, each with its unit (or `unannotated` marker). A cursor in
+     a module-contained subroutine shows the module's declarations
+     *and* the subroutine's locals as separate sections.
 - Nvim-first prototype. Emacs port second. VSCode last.
 - Settings to toggle visibility and layout (both / expression-only
   / routine-only).
@@ -74,20 +76,26 @@ interface PanelInfo {
   // inside an expression context (e.g. on a declaration line only).
   expression: ExpressionNode | null;
 
-  // Every variable declared in the enclosing SCOPE (subroutine /
-  // function / module / program), ordered by declaration line. Empty
-  // when the cursor is at bare file level outside any scope.
-  scopeVars: ScopeVar[];
+  // The full chain of enclosing scopes, OUTERMOST first
+  // (e.g. [module, subroutine] for a cursor inside a module-contained
+  // subroutine). Each carries its declarations. Empty when the cursor
+  // is at bare file level. The panel stacks one section per entry.
+  scopes: ScopeSection[];
 
-  // The enclosing scope, for the panel header. ``null`` for file-level
-  // code outside any scope.
+  // Innermost scope, surfaced for single-section consumers. Identical
+  // to scopes[scopes.length - 1] (or null when scopes is empty). The
+  // routine / routineVars fields are further back-compat aliases.
   scope: { name: string;
            kind: "subroutine" | "function" | "module" | "program" } | null;
-
-  // Back-compat aliases for companion builds predating the scope
-  // generalization. Identical values to ``scopeVars`` / ``scope``.
-  routineVars: ScopeVar[];
+  scopeVars: ScopeVar[];
   routine: { name: string; kind: string } | null;
+  routineVars: ScopeVar[];
+}
+
+interface ScopeSection {
+  name: string;
+  kind: "subroutine" | "function" | "module" | "program";
+  vars: ScopeVar[];
 }
 
 interface ExpressionNode {
