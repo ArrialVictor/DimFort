@@ -240,6 +240,13 @@ _max_workset_size: int = _DEFAULT_MAX_WORKSET
 # state vars before the initialize handler returns.
 _project_config: DimfortConfig = DimfortConfig()
 
+# Content-hash cache (see docs/design/content-hash-cache.md). Set during
+# ``_initialize`` from ``initializationOptions``. ``None`` means caching
+# is disabled — the workspace check runs as it did before the cache
+# landed.
+_cache: object = None  # CacheStore | None — typed lazily to avoid the import cost.
+_cache_mode: str = "off"
+
 
 def _cap_workset(
     paths: list[Path], active: Path, limit: int,
@@ -474,6 +481,8 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
             external_modules=_external_modules,
             cpp_defines=_project_config.cpp_defines,
             include_paths=_project_config.include_paths,
+            cache=_cache,
+            cache_mode=_cache_mode,
         )
     except Exception:
         log.exception("dimfort pipeline crashed on %s", active)
@@ -1158,6 +1167,25 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         cap = opts.get("maxWorksetSize")
         if isinstance(cap, int) and cap > 0:
             _max_workset_size = cap
+
+        # Content-hash cache: opt-in via initializationOptions. The
+        # cache directory defaults to ``.dimfort-cache/`` under the
+        # first workspace folder; clients can override with cacheDir.
+        global _cache, _cache_mode
+        requested = opts.get("cacheMode", "off")
+        if requested in ("off", "read-only", "read-write") and folders:
+            _cache_mode = requested
+            if requested != "off":
+                from dimfort.core.cache_store import (
+                    CacheStore,
+                    default_cache_dir,
+                )
+                cache_dir_opt = opts.get("cacheDir")
+                cache_root = (
+                    Path(cache_dir_opt) if isinstance(cache_dir_opt, str)
+                    else default_cache_dir(folders[0])
+                )
+                _cache = CacheStore(root=cache_root)
 
     config_note = (
         f" (config: {config.config_path.name})"
@@ -3026,6 +3054,8 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
                 cpp_defines=_project_config.cpp_defines,
                 include_paths=_project_config.include_paths,
                 progress_cb=on_load_progress,
+                cache=_cache,
+                cache_mode=_cache_mode,
             )
         except Exception:
             log.exception("workspace check failed")
@@ -3081,10 +3111,18 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
     )
     total_seconds = result.phase_timings.get("total")
     timing = f" in {total_seconds:.1f} s" if total_seconds is not None else ""
+    cache_note = ""
+    if _cache is not None and (
+        result.cache_hits or result.cache_misses or result.cache_dirty
+    ):
+        cache_note = (
+            f" [cache: {result.cache_hits} hit / "
+            f"{result.cache_misses} miss / {result.cache_dirty} dirty]"
+        )
     _notify(
         ls,
         f"DimFort workspace check complete: {len(files)} files, "
-        f"{h_count} H-diags, {u_count} U-diags{timing}",
+        f"{h_count} H-diags, {u_count} U-diags{timing}{cache_note}",
         toast=True,
     )
 
