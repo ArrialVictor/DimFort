@@ -2376,13 +2376,32 @@ def _marker_token(mark: str) -> str:
     return {"🟢": "ok", "🟡": "warn", "🔴": "error"}.get(mark, "warn")
 
 
+def _is_bare_literal_node(node) -> bool:
+    """``True`` if ``node`` is a numeric literal or a unary minus
+    wrapping one. Used by the assignment autocast logic — a literal
+    that's the sole RHS of an assignment is treated as initialization
+    (taking on the LHS unit), not an implicit cast that warrants a
+    diagnostic / 🟡 marker.
+    """
+    inner = node
+    if inner.type == "unary_expression":
+        kids = _interesting_children(inner)
+        if len(kids) == 1:
+            inner = kids[0]
+    return inner.type in ("number_literal", "complex_literal")
+
+
 def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
     """Build a structured ExpressionNode for the panel.
 
     Recursive: each node carries its resolved unit, the rule ID that
     produced it (if any), a marker token, and its children. Leaf
     nodes (identifiers, literals) have an empty ``children`` list.
-    Mirrors :func:`_render_ast_tree`'s resolution semantics.
+    Mirrors :func:`_render_ast_tree`'s resolution semantics, with one
+    additional rule: a bare-literal RHS of an assignment is treated as
+    *initialization* — it autocasts to the LHS's unit and the marker
+    is forced 🟢 (matching the checker's existing leniency, which
+    suppresses H010 D1.5 only for compound expressions).
     """
     if node is None:
         return None
@@ -2411,13 +2430,30 @@ def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
         child_nodes = [_build_expression_tree(c, ctx, source) for c in kids]
         child_nodes = [c for c in child_nodes if c is not None]
 
-    return {
+    payload = {
         "label": _node_label(node, source),
         "unit": format_unit(unit) if unit is not None else None,
         "marker": _marker_token(mark),
         "ruleId": rule_id,
         "children": child_nodes,
     }
+
+    # Initialization autocast: when the cursor is on an assignment whose
+    # RHS is a bare literal, propagate the LHS unit to the literal node
+    # and stamp the assignment 🟢. The literal is just initialization —
+    # no implicit cast, no warning, no D1.5 quick-fix needed. Compound
+    # expressions (``t = c + 2.0``) still flow through R4.1 / D1.5.
+    if node.type == "assignment_statement" and len(child_nodes) >= 2:
+        kids = _interesting_children(node)
+        if len(kids) >= 2 and _is_bare_literal_node(kids[-1]):
+            lhs_unit = payload["children"][0].get("unit")
+            if lhs_unit:
+                payload["children"][-1]["unit"] = lhs_unit
+                payload["children"][-1]["marker"] = "ok"
+                payload["marker"] = "ok"
+                payload["unit"] = lhs_unit
+
+    return payload
 
 
 def _build_routine_vars(
