@@ -8,7 +8,9 @@ from dimfort.core.symbols import deps_consumed_from_uses
 from dimfort.core.workspace_index import UseRef
 
 
-def test_helper_excludes_unresolved_and_external():
+def test_helper_excludes_only_external_keeps_unresolved():
+    # Unresolved modules are KEPT (so a later resolution invalidates the
+    # cache); only external modules are excluded.
     uses = (
         UseRef(module="a_mod", only=None, renames=()),
         UseRef(module="b_mod", only=None, renames=()),
@@ -20,7 +22,7 @@ def test_helper_excludes_unresolved_and_external():
         unresolved=frozenset({"missing_mod"}),
         external_modules=frozenset({"nc"}),
     )
-    assert deps == frozenset({"a_mod", "b_mod"})
+    assert deps == frozenset({"a_mod", "b_mod", "missing_mod"})
 
 
 def test_helper_normalises_module_name_case():
@@ -57,7 +59,7 @@ def test_check_files_populates_deps_consumed(tmp_path: Path):
     assert result.deps_consumed[consumer] == frozenset({"producer_mod"})
 
 
-def test_check_files_excludes_unresolved_use(tmp_path: Path):
+def test_check_files_keeps_unresolved_use(tmp_path: Path):
     consumer = tmp_path / "consumer.f90"
     consumer.write_text(
         "subroutine s\n"
@@ -66,8 +68,9 @@ def test_check_files_excludes_unresolved_use(tmp_path: Path):
         "end subroutine\n"
     )
     result = check_files([consumer])
-    # ghost_mod is unresolved → not in deps_consumed.
-    assert result.deps_consumed[consumer] == frozenset()
+    # ghost_mod is unresolved but KEPT in deps_consumed so the cache
+    # invalidates if it later resolves (its file gets added/fixed).
+    assert result.deps_consumed[consumer] == frozenset({"ghost_mod"})
 
 
 def test_check_files_excludes_external_modules(tmp_path: Path):

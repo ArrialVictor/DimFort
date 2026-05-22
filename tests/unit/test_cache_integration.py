@@ -171,3 +171,46 @@ def test_diagnostic_severity_change_invalidates_cache(tmp_path: Path):
     )
     assert warm.cache_misses == 2
     assert warm.cache_hits == 0
+
+
+def test_unresolved_to_resolved_module_invalidates_consumer(tmp_path: Path):
+    """Regression for the walkthrough cache bug: when a `use`d module
+    goes from unresolved (file absent / not indexable) to resolved, the
+    consumer's cache must invalidate — otherwise a newly-applicable
+    diagnostic is silently dropped on the warm run.
+    """
+    producer = tmp_path / "producer.f90"
+    consumer = tmp_path / "consumer.f90"
+    # run1: producer defines no module → producer_mod unresolved.
+    producer.write_text("! no module yet\n")
+    # consumer assigns x (kg LHS); once x resolves to m/s, that's H001.
+    consumer.write_text(
+        "subroutine s\n"
+        "  use producer_mod, only: x\n"
+        "  real :: y  !< @unit{kg}\n"
+        "  y = x\n"
+        "end subroutine\n"
+    )
+    cache = CacheStore(root=tmp_path / ".dimfort-cache")
+    check_files([producer, consumer], cache=cache, cache_mode="read-write")
+
+    # run2: producer now defines the module → x : m/s. y(kg)=x(m/s) → H001.
+    producer.write_text(
+        "module producer_mod\n"
+        "  real :: x  !< @unit{m/s}\n"
+        "end module\n"
+    )
+    warm = check_files([producer, consumer], cache=cache, cache_mode="read-write")
+
+    # Cold reference on the resolved state.
+    fresh = CacheStore(root=tmp_path / ".fresh")
+    cold = check_files([producer, consumer], cache=fresh, cache_mode="read-write")
+
+    def codes(result):
+        return sorted(d.code for d in result.diagnostics.get(consumer.resolve(), []))
+
+    # The consumer must be re-checked (dirty), and its warm diagnostics
+    # must match the cold run — H001 present, not silently dropped.
+    assert codes(warm) == codes(cold)
+    assert "H001" in codes(warm)
+    assert warm.cache_dirty >= 1
