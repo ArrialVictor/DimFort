@@ -88,64 +88,147 @@ H002 "the unknown exponent kappa is not provably 1."
 
 ## Data structure
 
-Today:
+Today (corrected from the original sketch in this doc — the real
+`Unit` is a 7-slot tuple, not a dict):
 
 ```python
 @dataclass(frozen=True)
 class Unit:
-    dimensions: dict[BaseSymbol, Fraction]
+    dimension: tuple[Number, Number, Number, Number, Number, Number, Number]
+    factor: Fraction
+# where Number = int | Fraction; tuple slots are M, L, T, Θ, I, N, J.
 ```
 
-Proposed:
-
-```python
-# An exponent is no longer just a Fraction. It's a small linear form
-# over the rationals with named opaque generators (the "symbols").
-#
-#     exponent = sum_i (q_i * x_i) + c
-#
-# where q_i ∈ Q, x_i are symbol names, c ∈ Q (the constant term).
-#
-# Examples:
-#   2/7                 -> Exponent({}, 2/7)
-#   kappa               -> Exponent({"kappa": 1}, 0)
-#   1 - kappa           -> Exponent({"kappa": -1}, 1)
-#   2*kappa + 3         -> Exponent({"kappa": 2}, 3)
-#   kappa + lambda      -> Exponent({"kappa": 1, "lambda": 1}, 0)
-#
-# Two Exponents are equal iff their (terms, constant) coincide.
-# Zero exponent is Exponent({}, 0); identity check is direct.
-
-@dataclass(frozen=True)
-class Exponent:
-    terms: dict[str, Fraction]      # symbol_name → coefficient
-    constant: Fraction
-
-    def __add__(self, other): ...
-    def __sub__(self, other): ...
-    def __mul__(self, other): ...   # only by Fraction; symbol*symbol = NotImplemented
-    def __neg__(self): ...
-    def is_constant(self) -> bool:  # all terms zero
-    def is_zero(self) -> bool:
-    def is_one(self) -> bool:
-```
-
-Then:
+Proposed change (Step 2):
 
 ```python
 @dataclass(frozen=True)
 class Unit:
-    dimensions: dict[BaseSymbol, Exponent]
+    dimension: tuple[Exponent, Exponent, Exponent, Exponent,
+                     Exponent, Exponent, Exponent]
+    factor: Fraction
 ```
 
-Backward compatibility: a literal-rational exponent is `Exponent({}, q)`.
-All existing code paths that build / compare units with `Fraction`
-exponents continue to work via implicit promotion at construction time.
+The `Exponent` type is the linear form described in the "Algebra rules"
+section above — committed in Step 1 (`41751aa`).
+
+Backward compatibility:
+- Existing call sites construct `Unit` with plain `Fraction`/`int`
+  exponents. Step 2 keeps that interface working via implicit
+  promotion at the constructor: anything not already an `Exponent`
+  gets wrapped via `Exponent.from_value(...)` at `__post_init__`.
+- `Unit.pow`, `Unit.__mul__`, `Unit.__truediv__` rewrite to use
+  Exponent arithmetic. The pure-literal-Fraction case still flows
+  through unchanged because Exponent({}, q) arithmetic agrees with
+  Fraction arithmetic.
 
 
-## Algebraic rules
+## Algebra rules (formal)
 
-### combine(op, a, b)
+The algebra is defined over three layers: scalars (`Q`), exponents
+(`E`, the linear forms above), and units (`U`, a 7-slot vector of
+exponents plus a rational factor).
+
+### Layer 1 — Exponent (E)
+
+Exponent is a finite-dimensional vector space over Q, plus a constant:
+
+  E = Q⟨X⟩ + Q   (linear forms in symbols X = {x₁, x₂, …} with a constant term)
+
+| Operation | Domain | Codomain | Definition | Always defined? |
+|---|---|---|---|---|
+| `e + e'`  | E × E | E | per-symbol sum + constants sum | ✓ |
+| `e - e'`  | E × E | E | per-symbol diff + constants diff | ✓ |
+| `−e`      | E     | E | negate all coefficients + constant | ✓ |
+| `q · e`   | Q × E | E | scale all coefficients + constant by q | ✓ |
+| `e · e'`  | E × E | E | scalar multiplication when one side is in Q | partial — defined iff at least one side is pure-constant |
+
+Canonical form: zero coefficients dropped, symbol names sorted. Two
+canonical Es are equal iff their internal tuples are identical
+(structural identity). Implemented Step 1; committed `41751aa`.
+
+### Layer 2 — Unit (U)
+
+A Unit is `(dim, factor)` where `dim ∈ E⁷` (one Exponent per SI base
+slot M, L, T, Θ, I, N, J) and `factor ∈ Q`.
+
+| Operation | Domain | Codomain | Definition | Always defined? |
+|---|---|---|---|---|
+| `u · u'`  | U × U | U | dim slots add component-wise (E + E); factors multiply | ✓ |
+| `u / u'`  | U × U | U | dim slots subtract component-wise; factors divide | ✓ |
+| `u^q`     | U × Q | U | dim slots multiply by q; factor stays (or `factor^q` if q is int) | ✓ |
+| `u^e`     | U × E | U | dim slots multiply by e; factor stays (factor with symbolic exponent is unsupported) | partial — defined iff every dim slot is pure-constant **or** e is pure-constant (linear restriction inherited from E) |
+
+Equality on U: equality on E⁷ componentwise, plus rational equality
+on factors.
+
+### Layer 3 — power(base, exponent_unit, exponent_value)
+
+Generalizes the existing power rule from "exponent_value is a literal
+rational" to "exponent_value is any Exponent."
+
+```
+power(base: U | LogWrap | ExpWrap,
+      exponent_unit: U | None,
+      exponent_value: E | None) -> (result | None, diagnostic | None)
+```
+
+Gates:
+
+1. **D1.7** — exponent_unit must be dim'less (unchanged from current
+   behaviour). Fires before the new symbolic path.
+2. **Base-specific dispatch** — unchanged dispatch table (Rd / Rn /
+   Ln / En), refined per cell:
+
+   | Base | exponent_value | Result |
+   |---|---|---|
+   | Rd (dim'less) | any         | Rd (R4.3, the "0·k = 0" cell) |
+   | Rn            | constant E  | Rn with dim slots × constant (existing path) |
+   | Rn            | symbolic E, linear-compatible (per Layer 2) | Rn with dim slots × E (NEW) |
+   | Rn            | symbolic E, would produce nonlinear | D1.4 |
+   | Rn            | None        | D1.4 |
+   | Ln            | E = 1       | Ln (R5.9) |
+   | Ln            | E ≠ 1 const | D1.2 |
+   | Ln            | symbolic E  | D1.2 (LogWrap algebra not extended in Step 2; stretch goal) |
+   | En            | constant E  | ExpWrap with k·U (R6.4) |
+   | En            | symbolic E  | D1.4 (same stretch consideration) |
+   | En            | None        | D1.4 |
+
+### Layer 4 — combine(op, a, b)
+
+Per-operator generalisation:
+
+| op | Rule on unit operands |
+|---|---|
+| `*` | result.dim = a.dim + b.dim (per slot E+E); result.factor = a×b factors |
+| `/` | result.dim = a.dim − b.dim; result.factor = a÷b factors |
+| `+`, `-` | requires `a.dim == b.dim` per E-equality on each slot AND factor equality. Diagnostic when not equal: H001/H002 with the operand-difference detail. |
+
+New diagnostic case: if both operands carry symbolic E in some slot
+but the symbols don't unify (e.g. `Pa^kappa + Pa^lambda`), this is
+still an H002, but the message should be tailored:
+
+> "operands carry distinct opaque exponents on `Pa` (`kappa` vs `lambda`); unverifiable without value lookup"
+
+If one operand has a symbolic E and the other a constant E in the
+same slot (e.g. `Pa^kappa + Pa`), the message:
+
+> "operand carries opaque exponent `kappa` on `Pa`; cannot prove kappa = 1 (required for homogeneity)"
+
+### Failure-mode summary
+
+The algebra never silently propagates wrong answers. Every operation
+either:
+- Produces a correct unit (possibly symbolic), or
+- Raises / returns None / emits a diagnostic.
+
+The "linear restriction" on `e · e'` and `u^e` is the only place where
+the algebra refuses to compute. In every observed case (Exner,
+Tetens) the input never violates linearity — the refusal exists as
+a guard against pathological inputs that would otherwise destroy
+the algebra's decidability.
+
+## combine(op, a, b)
 
 The existing rules generalize directly:
 
