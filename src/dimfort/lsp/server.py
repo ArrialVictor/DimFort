@@ -51,7 +51,6 @@ File map (top-to-bottom):
    8.5 `textDocument/completion` (inside `@unit{…}`).
    8.6 `textDocument/definition`.
    8.7 `textDocument/codeAction` (insert `@unit{}` skeleton).
-   8.8 `textDocument/codeLens`.
 9. **Commands and entry point** (`dimfort.checkWorkspace`,
    `run_stdio`, `_install_crash_trace_hook`).
 
@@ -142,7 +141,6 @@ class _FeatureToggles:
     completion: bool = True
     code_actions: bool = True
     goto_definition: bool = True
-    code_lens: bool = False    # opt-in; can clutter dense files
     # Phase D: append the unit-algebra rule-chain trace to hover
     # markdown when the hovered position sits inside an assignment.
     # Opt-in — most hovers don't need the chain and it makes hovers
@@ -1143,7 +1141,6 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         _features.completion = bool(opts.get("completionEnabled", True))
         _features.code_actions = bool(opts.get("codeActionsEnabled", True))
         _features.goto_definition = bool(opts.get("gotoDefinitionEnabled", True))
-        _features.code_lens = bool(opts.get("codeLensEnabled", False))
         _features.trace_hover = bool(opts.get("traceHoverEnabled", False))
         def _level(key: str, default: str) -> str:
             v = opts.get(key, default)
@@ -3415,57 +3412,6 @@ def _scan_declarations_for_uri(ls: LanguageServer, uri: str, resolved: Path):
         return scan_text(doc.source).declarations
     except Exception:
         return _last_scan_declarations(resolved)
-
-
-# ---------------------------------------------------------------------------
-# CodeLens — signature shown above function/subroutine definitions.
-# ---------------------------------------------------------------------------
-
-
-@server.feature(
-    lsp.TEXT_DOCUMENT_CODE_LENS,
-    lsp.CodeLensOptions(resolve_provider=False),
-)
-def _code_lens(
-    ls: LanguageServer, params: lsp.CodeLensParams
-) -> list[lsp.CodeLens] | None:
-    """A code lens above each function/subroutine header showing its signature."""
-    if not _features.code_lens:
-        return None
-    found = _trees_for(params.text_document.uri)
-    if found is None:
-        return None
-    _, tree, source = found
-    with _last_result_lock:
-        result = _last_result
-    if result is None:
-        return None
-
-    lenses: list[lsp.CodeLens] = []
-    seen_lines: set[int] = set()
-    for func in _ts_h.walk_function_definitions(tree):
-        nm = _ts_h.function_definition_name(func, source)
-        if nm is None:
-            continue
-        name, _ = nm
-        header_line_1based = _ts_h.function_definition_header_line(func)
-        if header_line_1based in seen_lines:
-            continue
-        seen_lines.add(header_line_1based)
-        sig = result.signatures.get(name.lower())
-        if sig is None:
-            continue
-        title = _sig_render_md(name, sig).replace("`", "")  # plain text only
-        lenses.append(
-            lsp.CodeLens(
-                range=lsp.Range(
-                    start=lsp.Position(line=header_line_1based - 1, character=0),
-                    end=lsp.Position(line=header_line_1based - 1, character=0),
-                ),
-                command=lsp.Command(title=title, command=""),
-            )
-        )
-    return lenses or None
 
 
 def _comment_column(line: str) -> int | None:
