@@ -669,15 +669,29 @@ def check_files(
                     message=err.reason,
                 )
             )
+        # Map each annotated name to its declaration line so a U002
+        # (unparseable annotation) lands on the offending declaration
+        # rather than at the top of the file. First-declared wins when
+        # a name appears in several scopes — good enough to put the
+        # squiggle on the right region.
+        decl_line_for: dict[str, int] = {}
+        for decl in getattr(entry.scan, "declarations", ()):  # type: ignore[attr-defined]
+            for vn in decl.names:
+                decl_line_for.setdefault(vn.lower(), decl.line_start)
         for name, text in entry.attachment.var_units.items():
             try:
                 _units_mod.parse(text, active_table)
             except UnitError as exc:
+                # Position.line is 1-based (same convention as the rest
+                # of the checker); DeclarationSite.line_start is 1-based
+                # too. Fall back to line 0 (file-top sentinel) only if
+                # the name can't be located.
+                line1 = decl_line_for.get(name.lower(), 0)
                 diags.append(
                     Diagnostic(
                         file=str(entry.path),
-                        start=Position(0, 0),
-                        end=Position(0, 0),
+                        start=Position(line1, 0),
+                        end=Position(line1, 0),
                         severity=Severity.ERROR,
                         code="U002",
                         message=f"Unit annotation for {name!r}: {exc}",
