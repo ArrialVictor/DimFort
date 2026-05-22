@@ -635,7 +635,7 @@ def combine(
 def power(
     base: UnitExpr,
     exponent_unit: UnitExpr | None = None,
-    exponent_value: Number | None = None,
+    exponent_value: Number | Exponent | None = None,
 ) -> tuple[UnitExpr | None, str | None]:
     """Apply ``base ^ exponent`` at the unit level (spec Table 14.4).
 

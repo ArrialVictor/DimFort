@@ -136,10 +136,16 @@
 - name: r43_power_nonliteral_errors
   context: |
     REAL :: x   !< @unit{m}
-    REAL :: k   !< @unit{1}
+    REAL :: k
   expression: "x ** k"
   expected: ERROR D1.4
   rules: [R4.3]
+  notes: |
+    k is unannotated, so symbolic resolution can't safely treat it as
+    a dim'less generator either. D1.4 fires honestly. (When k IS
+    annotated dim'less, symbolic resolution kicks in — see the
+    ts_checker symbolic-exponent tests; the result is a Unit with
+    symbolic dimensions, no D1.4.)
 
 - name: r43_sqrt_via_half_power
   context: |

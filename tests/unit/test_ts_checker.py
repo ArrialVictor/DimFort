@@ -575,16 +575,79 @@ def test_oq4_parameter_value_simple_literal():
     assert not any("D1.4" in d.message for d in diags)
 
 
-def test_oq4_falls_back_to_d14_for_non_parameter_identifier():
-    """Sanity: a plain non-PARAMETER variable used as exponent still
-    triggers D1.4 (PARAMETER-aware lookup must not over-trigger)."""
+def test_symbolic_exponent_dimless_identifier_resolves_no_d14():
+    """Step 3 of the symbolic-exponents work. A ``REAL :: kappa`` (not a
+    PARAMETER) annotated dim'less, used as the exponent of ``p ** kappa``,
+    should now resolve symbolically: no D1.4, result unit is Pa^kappa."""
+    src = (
+        "subroutine s\n"
+        "  real :: kappa\n"
+        "  real :: p\n"
+        "  real :: r\n"
+        "  r = p ** kappa\n"
+        "end subroutine\n"
+    )
+    # ``kappa`` is dim'less, ``p`` is Pa, ``r`` is annotated Pa^kappa
+    # (the symbolic unit). format_unit renders that as e.g. "kg^(kappa)
+    # / (m^(kappa) × s^(2·kappa))" so we check no D1.4 surfaces.
+    diags = _check(src, {"kappa": "1", "p": "Pa", "r": "Pa"})
+    # No D1.4: kappa resolves as a symbol.
+    assert not any("D1.4" in d.message for d in diags)
+    # H001 *does* fire (r is annotated Pa, not Pa^kappa), with an
+    # informative message about the symbolic exponent — not a D1.4.
+    h001 = [d for d in diags if d.code == "H001"]
+    assert h001, f"expected H001 for Pa^kappa ≠ Pa, got {diags}"
+
+
+def test_symbolic_exponent_cancellation_homogeneous():
+    """`Pa^kappa * Pa^(1-kappa) = Pa` should type-check cleanly with no
+    diagnostics."""
+    src = (
+        "subroutine s\n"
+        "  real :: kappa\n"
+        "  real :: p\n"
+        "  real :: r\n"
+        "  r = (p ** kappa) * (p ** (1 - kappa))\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"kappa": "1", "p": "Pa", "r": "Pa"})
+    # No diagnostics: the symbolic exponents cancel structurally.
+    h_diags = [d for d in diags if d.code in ("H001", "H002")]
+    assert not h_diags, f"unexpected H001/H002: {h_diags}"
+
+
+def test_symbolic_exponent_non_dimless_identifier_still_fires_d17():
+    """An identifier used as exponent must still be dim'less (D1.7).
+    Symbolic resolution doesn't bypass that check."""
+    src = (
+        "subroutine s\n"
+        "  real :: m\n"
+        "  real :: p, r\n"
+        "  r = p ** m\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"m": "kg", "p": "Pa", "r": "Pa"})
+    # D1.7 is the exponent-must-be-dim'less rule.
+    assert any("D1.7" in d.message for d in diags)
+
+
+def test_oq4_falls_back_to_d14_when_no_path_resolves():
+    """Sanity: when the exponent is a non-PARAMETER, *unannotated*
+    identifier, neither PARAMETER lookup (OQ4) nor symbolic exponent
+    resolution (Step 3) applies, and D1.4 still fires honestly.
+
+    With Step 3 in place, an exponent annotated dim'less is resolved
+    symbolically and *does not* fire D1.4 — see
+    test_symbolic_exponent_dimless_identifier_resolves_no_d14."""
     src = (
         "subroutine s\n"
         "  real :: p, kappa, pi\n"
         "  pi = p ** kappa\n"
         "end subroutine\n"
     )
-    diags = _check(src, {"p": "Pa", "kappa": "1", "pi": "1"})
+    # kappa is left unannotated (no @unit{} in var_units), so symbolic
+    # resolution can't safely treat it as a dim'less generator either.
+    diags = _check(src, {"p": "Pa", "pi": "1"})
     assert any("D1.4" in d.message for d in diags)
 
 
