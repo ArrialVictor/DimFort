@@ -20,7 +20,16 @@ from dataclasses import dataclass
 from fractions import Fraction
 
 Number = int | Fraction
-Dim = tuple[Number, Number, Number, Number, Number, Number, Number]
+# ``Dim`` historically meant ``tuple[Number, Number, ...]`` (7 plain
+# scalar exponents). Post symbolic-exponents Step 2, each slot is an
+# ``Exponent`` after construction; ``Dim`` keeps the legacy spelling
+# as a convenience so callers may still pass ``Number`` slots —
+# ``Unit.__post_init__`` promotes them.
+Dim = tuple[
+    "Number | Exponent", "Number | Exponent", "Number | Exponent",
+    "Number | Exponent", "Number | Exponent", "Number | Exponent",
+    "Number | Exponent",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -58,12 +67,28 @@ Dim = tuple[Number, Number, Number, Number, Number, Number, Number]
 # decidable, normalisable structure).
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Exponent:
     """Linear combination of opaque generators with rational coefficients
-    plus a rational constant. See module docstring for motivation."""
+    plus a rational constant. See module docstring for motivation.
+
+    Equality with a plain ``Number`` (``int``/``Fraction``) returns
+    True iff this Exponent is pure-constant and its constant equals the
+    Number. This keeps the migration ergonomic: legacy code that
+    compares a dimension slot against a literal still works.
+    """
     terms: tuple[tuple[str, Fraction], ...]
     constant: Fraction
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Exponent):
+            return self.terms == other.terms and self.constant == other.constant
+        if isinstance(other, (int, Fraction)):
+            return self.is_constant() and self.constant == other
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash((self.terms, self.constant))
 
     def __post_init__(self) -> None:
         # Defensive: the smart constructor below should be the only path
@@ -234,7 +259,11 @@ class Exponent:
         return out
 
 DIM_LEN = 7
-ZERO_DIM: Dim = (0, 0, 0, 0, 0, 0, 0)
+# ``ZERO_DIM`` is the dimensionless vector. Historically the slots were
+# plain ``Number`` (zero); they now carry ``Exponent`` (zero linear
+# form). The Unit constructor auto-promotes via __post_init__ either
+# way, so this constant works at every legacy / new call site.
+ZERO_DIM: Dim = (Exponent.from_value(0),) * 7
 
 
 class UnitError(ValueError):
@@ -251,8 +280,38 @@ class UnitAmbiguityWarning(UserWarning):
 
 @dataclass(frozen=True)
 class Unit:
-    dimension: Dim
+    """Dimension vector (one Exponent per SI base slot) plus a rational
+    prefactor.
+
+    The dimension slots historically held ``Number`` (``int | Fraction``).
+    As of the symbolic-exponents work, each slot is an ``Exponent``: a
+    linear form over Q with named opaque generators. Existing callers
+    that pass ``int``/``Fraction`` slots still work — ``__post_init__``
+    promotes scalar entries to ``Exponent.from_value`` automatically.
+    """
+    dimension: tuple[Exponent, ...]
     factor: Fraction
+
+    def __post_init__(self) -> None:
+        # Coerce legacy callers passing ``Number`` per slot. After this
+        # method runs, every entry in ``dimension`` is an Exponent.
+        if len(self.dimension) != DIM_LEN:
+            raise UnitError(
+                f"Unit.dimension must have {DIM_LEN} slots, "
+                f"got {len(self.dimension)}"
+            )
+        promoted = tuple(
+            d if isinstance(d, Exponent) else Exponent.from_value(d)
+            for d in self.dimension
+        )
+        # Always rebind: ``Exponent.__eq__`` returns True against
+        # equivalent Numbers, so a tuple-level ``!=`` check can't
+        # detect "needs promotion".
+        if any(not isinstance(d, Exponent) for d in self.dimension):
+            object.__setattr__(self, "dimension", promoted)
+        # Coerce factor too.
+        if not isinstance(self.factor, Fraction):
+            object.__setattr__(self, "factor", Fraction(self.factor))
 
     def __mul__(self, other: Unit) -> Unit:
         return Unit(
@@ -266,17 +325,31 @@ class Unit:
             self.factor / other.factor,
         )
 
-    def pow(self, exp: Number) -> Unit:
-        new_dim = tuple(a * exp for a in self.dimension)
+    def pow(self, exp: Number | Exponent) -> Unit:
+        """Raise the unit to a power.
+
+        ``exp`` may be a literal ``Number`` (the legacy path) or an
+        ``Exponent`` (symbolic). The result's dimension is the slot-wise
+        product of the current Exponent and ``exp``; ``Exponent.__mul__``
+        raises ``UnitError`` if the multiplication is non-linear (both
+        sides have symbol terms) — the caller (``power(...)`` below)
+        converts that into a D1.4 diagnostic.
+        """
+        scalar: Exponent | Number = (
+            exp if isinstance(exp, Exponent) else exp
+        )
+        new_dim = tuple(a * scalar for a in self.dimension)
         if self.factor == 1:
             new_factor = Fraction(1)
         elif isinstance(exp, int):
             new_factor = self.factor ** exp
         else:
-            # Rational exponent on a prefixed/scaled factor would generally
-            # not stay rational; v1 punts rather than lose precision.
+            # Rational or symbolic exponent on a prefixed/scaled factor
+            # would generally not stay rational; punt rather than lose
+            # precision. Symbolic-exp on a factor==1 unit takes the
+            # branch above and is fine.
             raise UnitError(
-                f"rational exponent on prefixed/scaled unit not supported "
+                f"non-integer exponent on prefixed/scaled unit not supported "
                 f"(factor={self.factor}, exp={exp})"
             )
         return Unit(new_dim, new_factor)
@@ -318,7 +391,7 @@ def is_dimensionless(u: UnitExpr) -> bool:
     Wrappers around dim'less never exist post-canonicalization (R2.3),
     so a wrapper is by definition non-dim'less.
     """
-    return isinstance(u, Unit) and all(d == 0 for d in u.dimension)
+    return isinstance(u, Unit) and all(d.is_zero() for d in u.dimension)
 
 
 def wrap_log(u: UnitExpr) -> UnitExpr:
@@ -824,7 +897,7 @@ def base_symbols(table: UnitTable | None = None) -> tuple[str, ...]:
     out: list[str | None] = [None] * DIM_LEN
     for name, u in table.base.items():
         for i, e in enumerate(u.dimension):
-            if e == 1 and out[i] is None:
+            if e.is_one() and out[i] is None:
                 out[i] = name
                 break
     fallback = ("M", "L", "T", "Theta", "I", "N", "J")
@@ -857,16 +930,29 @@ def format_unit(u: UnitExpr, *, show_factor: bool = False, table: UnitTable | No
     pos_terms: list[str] = []
     neg_terms: list[str] = []
     for sym, exp in zip(names, u.dimension, strict=False):
-        if exp == 0:
+        if exp.is_zero():
             continue
-        mag = abs(exp)
-        if mag == 1:
-            term = sym
-        elif isinstance(mag, int):
-            term = sym + _to_super(str(mag))
+        # Pure-constant exponents render through the legacy
+        # superscript / fraction path. Symbolic exponents render with
+        # the bracketed form ``sym^(2/7·kappa + 1)`` since superscripts
+        # can't express linear combinations.
+        q = exp.as_fraction()
+        if q is not None:
+            mag = abs(q)
+            sign_positive = q > 0
+            if mag == 1:
+                term = sym
+            elif mag.denominator == 1:
+                term = sym + _to_super(str(int(mag)))
+            else:
+                term = f"{sym}^({mag})"
+            (pos_terms if sign_positive else neg_terms).append(term)
         else:
-            term = f"{sym}^({mag})"
-        (pos_terms if exp > 0 else neg_terms).append(term)
+            # Symbolic: print as sym^(<linear form>). Never collapse to
+            # the denominator side — we don't know the sign of a symbolic
+            # exponent in general.
+            term = f"{sym}^({exp})"
+            pos_terms.append(term)
     body = "×".join(pos_terms) if pos_terms else "1"
     if neg_terms:
         denom = "×".join(neg_terms)

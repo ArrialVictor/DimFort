@@ -162,3 +162,80 @@ def test_str_renders_canonical_form():
 def test_hashability():
     s = {Exponent.from_value(1), Exponent.from_value(1), Exponent.from_symbol("kappa")}
     assert len(s) == 2
+
+
+# ---------------------------------------------------------------------------
+# Step 2 — Unit.dimension now carries Exponent per slot. The migration
+# preserves the legacy Number-based interface via __post_init__
+# promotion + Exponent equality with Number.
+# ---------------------------------------------------------------------------
+
+
+def test_unit_post_init_promotes_number_slots_to_exponents():
+    from dimfort.core.units import Unit
+    u = Unit((1, -1, 1, 0, 0, 0, 0), Fraction(1))
+    assert all(isinstance(d, Exponent) for d in u.dimension)
+    # Legacy comparison still works via Number ==.
+    assert u.dimension == (1, -1, 1, 0, 0, 0, 0)
+
+
+def test_unit_mul_uses_exponent_addition():
+    from dimfort.core.units import Unit
+    a = Unit((1, 0, 0, 0, 0, 0, 0), Fraction(1))   # M
+    b = Unit((0, 1, 0, 0, 0, 0, 0), Fraction(1))   # L
+    c = a * b
+    assert c.dimension == (1, 1, 0, 0, 0, 0, 0)
+
+
+def test_unit_pow_with_symbolic_exponent():
+    """Step 2 enabler: Unit.pow accepts an Exponent. ``Pa ** kappa``
+    yields a Unit whose dimension slots carry symbolic Exponents."""
+    from dimfort.core.units import Unit
+    # Pa = M·L⁻¹·T⁻²
+    pa = Unit((1, -1, -2, 0, 0, 0, 0), Fraction(1))
+    kappa = Exponent.from_symbol("kappa")
+    res = pa.pow(kappa)
+    # Each slot becomes coefficient * kappa.
+    assert res.dimension[0] == Exponent.from_symbol("kappa", 1)
+    assert res.dimension[1] == Exponent.from_symbol("kappa", -1)
+    assert res.dimension[2] == Exponent.from_symbol("kappa", -2)
+    assert res.dimension[3].is_zero()
+
+
+def test_unit_pow_symbolic_then_inverse_cancels_to_base():
+    """The motivating test: ``Pa^kappa * Pa^(1-kappa)`` cancels to Pa."""
+    from dimfort.core.units import Unit
+    pa = Unit((1, -1, -2, 0, 0, 0, 0), Fraction(1))
+    kappa = Exponent.from_symbol("kappa")
+    one_minus_kappa = Exponent.from_value(1) - kappa
+    a = pa.pow(kappa)
+    b = pa.pow(one_minus_kappa)
+    product = a * b
+    # Each slot's Exponent should be the original Pa coefficient.
+    assert product.dimension[0] == 1     # M
+    assert product.dimension[1] == -1    # L
+    assert product.dimension[2] == -2    # T
+    assert product == pa
+
+
+def test_unit_pow_symbolic_on_dimensionless_stays_dimensionless():
+    from dimfort.core.units import Unit
+    dimless = Unit((0, 0, 0, 0, 0, 0, 0), Fraction(1))
+    kappa = Exponent.from_symbol("kappa")
+    res = dimless.pow(kappa)
+    # 0 * kappa = 0 for every slot — still dim'less.
+    for slot in res.dimension:
+        assert slot.is_zero()
+
+
+def test_unit_pow_symbolic_squared_is_nonlinear_and_raises_via_pow():
+    """``(p**kappa)**lambda`` would produce kappa·lambda terms; the
+    Exponent algebra refuses (nonlinear). The Unit.pow raises UnitError
+    via Exponent.__mul__; the resolver will catch and emit D1.4."""
+    from dimfort.core.units import Unit, UnitError
+    pa = Unit((1, -1, -2, 0, 0, 0, 0), Fraction(1))
+    kappa = Exponent.from_symbol("kappa")
+    pa_kappa = pa.pow(kappa)
+    lambda_e = Exponent.from_symbol("lambda")
+    with pytest.raises(UnitError):
+        pa_kappa.pow(lambda_e)
