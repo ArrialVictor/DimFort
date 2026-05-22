@@ -45,7 +45,7 @@ from dimfort.core.cache_serde import (
     load_diagnostic,
 )
 from dimfort.core.cache_store import CacheStore
-from dimfort.core.diagnostics import Diagnostic, Position, Severity
+from dimfort.core.diagnostics import AutocastEvent, Diagnostic, Position, Severity
 from dimfort.core.symbols import (
     FuncSig,
     ModuleExports,
@@ -104,6 +104,12 @@ class WorksetResult:
     # check phase; consumed by the content-hash cache writer to decide
     # which other files' caches must invalidate when this file changes.
     deps_consumed: dict[Path, frozenset[str]] = field(default_factory=dict)
+    # Per-file autocast events (R4.4). Populated by the check phase
+    # whenever a pure-numeric-constant RHS takes on its assignment's
+    # LHS unit. Consumed by audit tooling and by the LSP renderers to
+    # decide marker / unit rendering for assignments. Empty for files
+    # without any autocast fires.
+    autocast_events: dict[Path, list[AutocastEvent]] = field(default_factory=dict)
     # Cache hit/miss/dirty/write counters. Populated only when the
     # workspace check ran with a CacheStore. Surfaced by --timings.
     cache_hits: int = 0
@@ -728,6 +734,7 @@ def check_files(
         if replayed is not None:
             diags.extend(replayed)
         else:
+            file_autocasts: list[AutocastEvent] = []
             check_diags = ts_checker.check(
                 entry.tree,
                 per_file_var_units,
@@ -738,7 +745,10 @@ def check_files(
                 field_units=merged_field_units_text,
                 var_units_by_scope=per_file_var_units_by_scope.get(entry.path),
                 routine_scopes=entry.attachment.routine_scopes,
+                out_autocast_events=file_autocasts,
             )
+            if file_autocasts:
+                result.autocast_events[entry.path] = file_autocasts
             # Remap to source coordinates when the file went through cpp.
             # No-op when ``line_map`` is None (file parsed raw).
             # Cache the *remapped* diagnostics so replay restores
