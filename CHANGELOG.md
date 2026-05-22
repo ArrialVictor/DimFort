@@ -169,6 +169,57 @@ set is documented in
   (defaults empty, so existing callers stay compatible). LSP hover
   / inlay / trace paths all populate it per-tree alongside `var_types`.
 
+### Symbolic exponents
+
+Extends the unit algebra so that dimension-slot exponents can carry
+**named symbolic terms** (constant-coefficient linear forms over Q),
+not just literal rationals. Closes the family of D1.4s where the
+exponent is a runtime `REAL` (the Exner-kappa pattern in atmospheric
+dycores) that OQ4 couldn't reach. Full spec in
+[`docs/design/symbolic-exponents.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/design/symbolic-exponents.md).
+
+- **New `Exponent` type** (`core/units.py`): linear combination
+  `q₁·x₁ + q₂·x₂ + … + c` with named opaque generators. Each
+  dimension slot of `Unit` now carries an `Exponent` instead of a
+  bare `int | Fraction`. `__post_init__` auto-promotes legacy
+  `Number` slots; `Exponent.__eq__(Number)` keeps existing tests
+  comparing slot vs. literal valid.
+- **`**` resolver fallback.** When the literal-rational path fails,
+  `_resolve_symbolic_exponent` maps the exponent identifier (or a
+  linear arithmetic of identifiers) to an `Exponent`, then dispatches
+  to `Unit.pow(Exponent)`. `Exponent × Exponent` is defined only when
+  one side is pure-constant — otherwise the resolver falls back to
+  D1.4 (kept linear by design).
+- **Closed 3 Exner D1.4s** on LMDZ:
+  `guide_mod.f90:772`, `exner_milieu_m.f90:105`,
+  `exner_milieu_loc_m.f90:126`.
+- **Rendering.** `format_unit` understands symbolic slots and prints
+  `Pa^(2/7·kappa)` rather than the previous fallback.
+
+### Symbolic LogWrap multipliers
+
+Same machinery applied to `combine`'s R5.4 path (LogWrap × scalar).
+The log-power identity `γ·LOG(p) = LOG(p^γ)` now accepts an
+`Exponent` multiplier so dimensionless-but-symbolic scale factors no
+longer fire D1.4. Spec:
+[`docs/design/symbolic-logwrap.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/design/symbolic-logwrap.md).
+
+- **R5.4 accepts Exponent multipliers.** `(2/7) * LOG(p)` →
+  `LOG(p^(2/7))` (already worked); `xalpw * LOG(p)` with `xalpw`
+  a symbolic linear form → `LOG(p^xalpw)`. Resolver fallback wired
+  at `_resolve` and `_walk_expressions` for the `*_literal` slots.
+- **Symbolic divisor on LogWrap is refused as D1.4.** `LOG(p) / κ`
+  (i.e. `1/κ * LOG(p)`) is not a linear form in `κ`; the algebra
+  honestly punts instead of guessing.
+- **H010 demotion narrowed.** The R4.1 implicit-cast demotion now
+  requires an actual `Number`, not a symbolic `Exponent`; previously
+  a dimensionless variable reference could mis-trigger.
+- **Closed 3 of 4 Tetens D1.4s.** `modd_csts.F90:263`, `:266`,
+  `qsat_seawater_mod.F90:102`. The remaining `qsat_seawater2_mod.F90:85`
+  is a #006 K-literal case (not algebra). Surfaced finding **#012**
+  (`XALPW` / `XALPI` / `ZFOES` annotated dimensionless but the algebra
+  computes `LOG(Pa × K^γ)` — annotation gap, not a tool bug).
+
 ### Other LSP / CLI changes
 
 - **`Extract literal to a named PARAMETER` code action** on every
