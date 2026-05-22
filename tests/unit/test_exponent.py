@@ -239,3 +239,44 @@ def test_unit_pow_symbolic_squared_is_nonlinear_and_raises_via_pow():
     lambda_e = Exponent.from_symbol("lambda")
     with pytest.raises(UnitError):
         pa_kappa.pow(lambda_e)
+
+
+# ---------------------------------------------------------------------------
+# Step 5 — format_unit renders symbolic units legibly.
+# ---------------------------------------------------------------------------
+
+
+def test_format_unit_renders_symbolic_exponents():
+    """Step 5: ``Pa^kappa`` and similar symbolic units render through
+    format_unit so the trace tree and hover surfaces display them.
+    Pure-constant slots keep the legacy superscript / fraction form;
+    symbolic slots render as ``base^(linear-form)``."""
+    from dimfort.core import unit_config  # noqa: F401
+    from dimfort.core.units import Unit, format_unit
+    pa = Unit((1, -1, -2, 0, 0, 0, 0), Fraction(1))
+    kappa = Exponent.from_symbol("kappa")
+    pa_kappa = pa.pow(kappa)
+    rendered = format_unit(pa_kappa)
+    # Each non-zero slot mentions kappa with the right coefficient.
+    assert "kappa" in rendered
+    assert "kg^(kappa)" in rendered
+    # The s-slot has coefficient -2 → coefficient 2 after going to the
+    # denominator side. But we treat symbolic slots as always numerator
+    # to avoid sign confusion — the linear form encodes the sign.
+    # So we expect s^(-2·kappa) in the numerator.
+    assert "s^(-2·kappa)" in rendered or "s^(-2 · kappa)" in rendered or "s^(-2·kappa)" in rendered
+
+
+def test_format_unit_dimensionless_after_cancellation_renders_as_one():
+    """``Pa^kappa * Pa^(1-kappa) = Pa`` — the kappa coefficient
+    cancels via Exponent.build dropping zero terms. format_unit
+    should render the result as plain ``Pa``-equivalent (no kappa)."""
+    from dimfort.core import unit_config  # noqa: F401
+    from dimfort.core.units import Unit, format_unit
+    pa = Unit((1, -1, -2, 0, 0, 0, 0), Fraction(1))
+    kappa = Exponent.from_symbol("kappa")
+    one_minus_kappa = Exponent.from_value(Fraction(1)) - kappa
+    result = pa.pow(kappa) * pa.pow(one_minus_kappa)
+    rendered = format_unit(result)
+    # kappa should be gone — fully cancelled.
+    assert "kappa" not in rendered
