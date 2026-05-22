@@ -4,6 +4,36 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### Side-panel info endpoint + R4.4 literal-init autocast
+
+- **`dimfort/panelInfo` LSP request.** Returns structured data for an
+  editor side panel: the unit-algebra tree for the expression under
+  the cursor, plus the declarations of every *enclosing scope*
+  (subroutine / function / module / program), stacked outermost-first.
+  Each editor renders it natively (Neovim split shipped; Emacs /
+  VSCode to follow). Spec: [`docs/design/panel-info.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/design/panel-info.md).
+- **R4.4 — literal initialization autocast.** When the sole RHS of an
+  assignment is a pure-numeric constant (literal, unary-minus literal,
+  or arithmetic of literals), it takes on the LHS's unit and no
+  diagnostic fires — `t = 2.0` where `t : s` is initialization, not an
+  implicit cast. The existing D1.5 H010 still fires for literals buried
+  in compound expressions (`t = c + 2.0`). Documented in
+  [`docs/unit-algebra.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/unit-algebra.md).
+- **`AutocastEvent` + `WorksetResult.autocast_events`.** Each R4.4 fire
+  is recorded as a structured event (file, span, literal text, inferred
+  unit) for audit tooling / a future strict-mode that promotes them to
+  Information-severity diagnostics. Not part of the diagnostic stream.
+- **`ts_checker._assignment_homogeneity`** is the single source of
+  truth for an assignment's verdict (homogeneous / autocast /
+  wrapper_untag / mismatch / unresolved) + its units. The checker and
+  every LSP render site (hover-short, hover-detailed tree, panel) call
+  it, so markers can no longer disagree with the diagnostic stream.
+  Fixes a panel bug where `d = fall_distance(t)` (matching units)
+  showed 🟡 instead of 🟢.
+- Assignment rows in hover trees and the panel no longer show a `: ?`
+  unit column — assignments are statements, not expressions, so only
+  the marker is shown.
+
 ### Content-hash cache for workspace check
 
 - **Per-file content-hash cache.** Workspace checks can now cache the
