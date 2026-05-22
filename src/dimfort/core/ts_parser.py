@@ -270,6 +270,7 @@ def parse_with_cpp(
         # the marker scan; the line itself stays as raw bytes when
         # we copy it into the parser input.
         is_marker = False
+        marker_flags: tuple[str, ...] = ()
         if line.startswith(b"# ") and b'"' in line:
             try:
                 head = line.decode("ascii", "ignore")
@@ -280,15 +281,26 @@ def parse_with_cpp(
                 second = rest.index('"', first)
                 current_file = rest[first:second]
                 current_line = lineno
+                # Trailing flags (per GCC docs):
+                #   1 = start of new file, 2 = returning to file,
+                #   3 = system header, 4 = treat as extern "C".
+                # We skip system headers (3) from the cpp closure —
+                # they're toolchain-provided (e.g. Linux's implicit
+                # ``/usr/include/stdc-predef.h``) and including them
+                # makes the cache key platform-dependent.
+                tail = rest[second + 1:].strip()
+                marker_flags = tuple(tail.split()) if tail else ()
                 is_marker = True
             except (ValueError, IndexError):
                 pass
         if is_marker:
-            # Record non-target, non-builtin files as cpp_closure members.
+            # Record non-target, non-builtin, non-system files as
+            # cpp_closure members.
             if (
                 current_file is not None
                 and not current_file.startswith("<")
                 and not _is_target(current_file)
+                and "3" not in marker_flags
             ):
                 try:
                     cpp_closure.add(str(Path(current_file).resolve()))
