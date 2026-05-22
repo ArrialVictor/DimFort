@@ -15,8 +15,9 @@ The test asserts byte-identical diagnostic sets across many random
 edits. A failure here means the cache is invalidating too coarsely
 (spurious diff) or — much worse — too aggressively (stale diff).
 
-The test runs 30 iterations by default. Bump ``STRESS_ITERATIONS``
-locally when investigating a flaky failure.
+Runs 100 iterations by default — matches the gate the design doc
+commits to before considering the cache trustworthy. Bump
+``STRESS_ITERATIONS`` locally if a flake needs more samples.
 """
 from __future__ import annotations
 
@@ -29,8 +30,7 @@ import pytest
 from dimfort.core.cache_store import CacheStore
 from dimfort.core.multifile import check_files
 
-
-STRESS_ITERATIONS = 30
+STRESS_ITERATIONS = 100
 
 
 # Three small fixtures. The variety here is what gives the stress test

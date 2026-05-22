@@ -8,7 +8,6 @@ from pathlib import Path
 
 from dimfort.core.cache_store import CacheStore
 
-
 KEY_A = "a" * 64
 KEY_B = "b" * 64
 PAYLOAD = {"hello": "world", "n": 42, "list": [1, 2, 3]}

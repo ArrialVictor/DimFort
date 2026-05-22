@@ -124,9 +124,10 @@ dimfort check src/ --cache read-write --timings
 
 On the first run the cache directory is created and every file's
 check output is stored. Subsequent runs replay cached diagnostics
-for unchanged files; the check phase typically drops by 4–5× on a
-warm cache, with the rest of the pipeline (load / aggregate /
-index) running as usual.
+for unchanged files. The check phase drops sharply on a warm cache
+(LMDZ-scale measurement: ~15 s → ~3 s); the rest of the pipeline
+(load / aggregate / index) runs as usual, so total wall time goes
+from ~33 s cold to ~20 s warm.
 
 ### What triggers invalidation
 
@@ -164,7 +165,8 @@ trims to a 500 MB ceiling at the end of each run.
 ### When to leave the cache off
 
 - One-off runs over a small workset — the cache write overhead
-  (~1 ms per file) is dead weight when the run is sub-second.
+  (roughly a millisecond per file) is dead weight when the whole
+  run is sub-second.
 - CI runs against a clean checkout — the workspace has no prior
   cache to read from, so the cache directory just gets written
   and discarded.

@@ -27,11 +27,16 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 - **Storage.** `{workspace}/.dimfort-cache/v{N}/{first2}/{rest}.json.gz`
   by default. Atomic-rename writes, corrupt-entry recovery on read,
   LRU sweep at 500 MB / 30 days at end of read-write runs.
-- **Correctness gate.** 30-iteration parametrised stress test
+- **Correctness gate.** 100-iteration parametrised stress test
   (`tests/unit/test_cache_stress.py`): cold-populate → random edit →
   cached run vs fresh cold run must produce byte-identical diagnostics.
   Documented in [`docs/design/content-hash-cache.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/design/content-hash-cache.md);
   user guide in [`docs/usage.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/usage.md#content-hash-cache).
+- **Key dimensions covered.** Source bytes, cpp include closure,
+  `external_modules`, `extra_defines`, `extra_include_paths`, the
+  project units-table file contents (`units_file_hash`), and
+  `[diagnostics]` severity overrides. Editing any of these
+  invalidates affected entries.
 
 ### Workspace check perf
 

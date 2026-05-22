@@ -132,3 +132,42 @@ def test_off_mode_bypasses_cache_entirely(tmp_path: Path):
     assert result.cache_hits == 0
     assert result.cache_misses == 0
     assert result.cache_writes == 0
+
+
+def test_units_file_change_invalidates_cache(tmp_path: Path):
+    """Editing the project units table must invalidate every entry —
+    diagnostics derive from the table, so a stale cache would lie."""
+    producer, consumer = _make_pair(tmp_path)
+    units_a = tmp_path / "units.toml"
+    units_a.write_text("# variant A\n")
+    cache = CacheStore(root=tmp_path / ".dimfort-cache")
+    check_files(
+        [producer, consumer], cache=cache, cache_mode="read-write",
+        units_file=units_a,
+    )
+    # Same path, different contents.
+    units_a.write_text("# variant B\n")
+    warm = check_files(
+        [producer, consumer], cache=cache, cache_mode="read-write",
+        units_file=units_a,
+    )
+    # Both files invalidated by the units-table change.
+    assert warm.cache_misses == 2
+    assert warm.cache_hits == 0
+
+
+def test_diagnostic_severity_change_invalidates_cache(tmp_path: Path):
+    """``[diagnostics]`` overrides bake into cached diagnostics at
+    write time; changing them must invalidate."""
+    producer, consumer = _make_pair(tmp_path)
+    cache = CacheStore(root=tmp_path / ".dimfort-cache")
+    check_files(
+        [producer, consumer], cache=cache, cache_mode="read-write",
+        diagnostic_severities={},
+    )
+    warm = check_files(
+        [producer, consumer], cache=cache, cache_mode="read-write",
+        diagnostic_severities={"H001": "warning"},
+    )
+    assert warm.cache_misses == 2
+    assert warm.cache_hits == 0

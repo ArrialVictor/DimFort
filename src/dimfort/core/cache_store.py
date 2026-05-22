@@ -27,6 +27,7 @@ reclamation, it doesn't break correctness.
 """
 from __future__ import annotations
 
+import contextlib
 import gzip
 import json
 import os
@@ -38,7 +39,6 @@ from pathlib import Path
 from typing import Any
 
 from dimfort.core.cache_key import CHECKER_OUTPUT_VERSION
-
 
 DEFAULT_CACHE_DIR_NAME = ".dimfort-cache"
 DEFAULT_SIZE_LIMIT_BYTES = 500 * 1024 * 1024  # 500 MB
@@ -92,10 +92,8 @@ class CacheStore:
             return payload
         except (OSError, ValueError, json.JSONDecodeError):
             # Best-effort cleanup; don't propagate.
-            try:
+            with contextlib.suppress(OSError):
                 path.unlink()
-            except OSError:
-                pass
             self.misses += 1
             return None
 
@@ -109,22 +107,23 @@ class CacheStore:
         path = self._entry_path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
         body = json.dumps(payload, separators=(",", ":")).encode()
-        # NamedTemporaryFile with delete=False so we can rename.
+        # mkstemp returns an open fd; we close it via os.fdopen
+        # below, then rename the file into place atomically.
         fd, tmp_path_str = tempfile.mkstemp(
             prefix=".tmp-", suffix=".json.gz", dir=str(path.parent),
         )
         try:
-            with os.fdopen(fd, "wb") as raw:
-                with gzip.GzipFile(fileobj=raw, mode="wb") as gz:
-                    gz.write(body)
+            with (
+                os.fdopen(fd, "wb") as raw,
+                gzip.GzipFile(fileobj=raw, mode="wb") as gz,
+            ):
+                gz.write(body)
             os.replace(tmp_path_str, path)
             self.writes += 1
         except Exception:
             # Clean up the temp file on any failure.
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp_path_str)
-            except OSError:
-                pass
             raise
 
     def clear(self) -> None:
