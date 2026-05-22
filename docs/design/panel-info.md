@@ -37,8 +37,9 @@ In:
 - Two stacked sections in a single side panel:
   1. **Expression** — the unit-algebra tree for the expression
      under the cursor (same content as Detailed hover).
-  2. **Routine variables** — every variable declared in the
-     enclosing routine, with its unit (or `unannotated` marker).
+  2. **Scope variables** — every variable declared in the enclosing
+     scope (subroutine / function / module / program), with its unit
+     (or `unannotated` marker).
 - Nvim-first prototype. Emacs port second. VSCode last.
 - Settings to toggle visibility and layout (both / expression-only
   / routine-only).
@@ -73,19 +74,28 @@ interface PanelInfo {
   // inside an expression context (e.g. on a declaration line only).
   expression: ExpressionNode | null;
 
-  // Every variable declared in the enclosing routine / module,
-  // ordered by declaration line. Empty list if the cursor isn't
-  // inside a routine.
-  routineVars: RoutineVar[];
+  // Every variable declared in the enclosing SCOPE (subroutine /
+  // function / module / program), ordered by declaration line. Empty
+  // when the cursor is at bare file level outside any scope.
+  scopeVars: ScopeVar[];
 
-  // Source of the enclosing routine, for the panel header.
-  routine: { name: string; kind: "subroutine" | "function" | "module" } | null;
+  // The enclosing scope, for the panel header. ``null`` for file-level
+  // code outside any scope.
+  scope: { name: string;
+           kind: "subroutine" | "function" | "module" | "program" } | null;
+
+  // Back-compat aliases for companion builds predating the scope
+  // generalization. Identical values to ``scopeVars`` / ``scope``.
+  routineVars: ScopeVar[];
+  routine: { name: string; kind: string } | null;
 }
 
 interface ExpressionNode {
   // Human-readable label (the source slice, lightly normalised).
   label: string;
-  // Resolved unit string, or null if unresolved.
+  // Resolved unit string, or null if unresolved / not applicable
+  // (e.g. an assignment statement, which has no unit of its own —
+  // renderers omit the unit column for such nodes).
   unit: string | null;
   // 🟢 ok, 🟡 warning/unresolved, 🔴 mismatch.
   marker: "ok" | "warn" | "error";
@@ -95,16 +105,21 @@ interface ExpressionNode {
   children: ExpressionNode[];
 }
 
-interface RoutineVar {
+interface ScopeVar {
   name: string;
   // The annotated unit, or null for unannotated declarations.
   unit: string | null;
   // 1-based line number of the declaration.
   line: number;
-  // "annotated" | "unannotated" | "derived-type-field".
-  kind: "annotated" | "unannotated" | "derived-type-field";
+  kind: "annotated" | "unannotated";
 }
 ```
+
+The enclosing scope is the innermost ``subroutine`` / ``function`` /
+``module`` / ``program`` node. For routine scopes the declarations are
+matched by ``DeclarationSite.scope`` (the routine name); for module /
+program scopes, top-level declarations (``scope is None``) are matched
+by line span so nested routines' locals are excluded.
 
 The `marker` field on `ExpressionNode` carries the worst-of-children
 aggregation already done by the Detailed-hover renderer. Clients

@@ -2548,33 +2548,62 @@ def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
     return payload
 
 
-def _build_routine_vars(
-    routine_node, scan_decls, attached, source: bytes,
-) -> list[dict]:
-    """Build the routine-variables table for the panel.
+# Tree-sitter node types that introduce a declaration scope (an
+# "environment"). The panel's bottom section shows the declarations of
+# the innermost one enclosing the cursor.
+_SCOPE_NODE_TYPES = ("subroutine", "function", "module", "program")
+# Scope kinds that have their own named local declarations keyed by
+# ``DeclarationSite.scope`` (the lower-cased routine name). Module /
+# program declarations carry ``scope = None`` and are matched by line
+# span instead.
+_ROUTINE_SCOPE_TYPES = ("subroutine", "function")
 
-    Returns one row per declared variable in the enclosing routine,
+
+def _build_scope_vars(
+    scope_node, scan_decls, attached, source: bytes,
+) -> list[dict]:
+    """Build the declarations table for the enclosing scope.
+
+    Returns one row per declared variable visible in ``scope_node``,
     ordered by declaration line. Each row carries its annotated unit
-    text (or ``None``) and a kind tag distinguishing annotated /
-    unannotated / derived-type-field rows.
+    text (or ``None``) and a kind tag (annotated / unannotated).
+
+    Matching strategy:
+    - For ``subroutine`` / ``function``: ``DeclarationSite.scope`` is
+      the routine name, so filter by name.
+    - For ``module`` / ``program``: module-level decls carry
+      ``scope = None``; filter by ``scope is None`` AND the decl
+      falling inside the scope node's line span (so nested routines'
+      decls — which have a non-None scope — are excluded).
 
     Type-field decls inside a ``type :: T`` block are filtered out —
-    they're already shown via field hover on the parent variable.
+    they're shown via field hover on the parent variable.
     """
-    if routine_node is None or scan_decls is None:
+    if scope_node is None or scan_decls is None:
         return []
-    routine_name = _routine_name(routine_node, source)
-    if routine_name is None:
+    var_units = attached.var_units if attached is not None else {}
+    is_routine = scope_node.type in _ROUTINE_SCOPE_TYPES
+    scope_name = _scope_name(scope_node, source)
+    if is_routine and scope_name is None:
         return []
-    routine_name = routine_name.lower()
+    scope_name_lc = scope_name.lower() if scope_name else None
+    sp = _ts.position_for(scope_node).line
+    ep = _ts.end_position_for(scope_node).line
 
     out: list[dict] = []
-    var_units = attached.var_units if attached is not None else {}
     for decl in scan_decls:
-        if decl.scope != routine_name:
-            continue
         if decl.enclosing_type is not None:
             continue
+        if is_routine:
+            if decl.scope != scope_name_lc:
+                continue
+        else:
+            # Module / program: top-level decls only (scope is None),
+            # inside this scope node's line span.
+            if decl.scope is not None:
+                continue
+            if not (sp <= decl.line_start <= ep):
+                continue
         for vname in decl.names:
             unit_text = var_units.get(vname)
             out.append({
@@ -2586,16 +2615,16 @@ def _build_routine_vars(
     return out
 
 
-def _routine_name(routine_node, source: bytes) -> str | None:
-    """Return the routine's identifier name. The ``name`` token sits
-    inside the ``subroutine_statement`` / ``function_statement`` child,
-    not directly on the ``subroutine`` / ``function`` block node."""
-    if routine_node is None:
+def _scope_name(scope_node, source: bytes) -> str | None:
+    """Return the scope's identifier name. The ``name`` token sits
+    inside the ``*_statement`` header child, not directly on the
+    scope block node — true for subroutine / function / module /
+    program alike."""
+    if scope_node is None:
         return None
+    stmt_types = tuple(f"{t}_statement" for t in _SCOPE_NODE_TYPES)
     stmt_child = next(
-        (c for c in routine_node.children
-         if c.type in ("subroutine_statement", "function_statement")),
-        None,
+        (c for c in scope_node.children if c.type in stmt_types), None,
     )
     if stmt_child is None:
         return None
@@ -2607,18 +2636,36 @@ def _routine_name(routine_node, source: bytes) -> str | None:
     return _ts.node_text(name_node, source)
 
 
-def _routine_header(routine_node, source: bytes) -> dict | None:
-    """``{name, kind}`` header for the panel's routine section, or
-    ``None`` if the routine is unnamed (rare)."""
-    if routine_node is None:
+def _scope_header(scope_node, source: bytes) -> dict | None:
+    """``{name, kind}`` header for the panel's scope section, or
+    ``None`` when there's no enclosing scope (bare file-level code)."""
+    if scope_node is None:
         return None
-    name = _routine_name(routine_node, source)
+    name = _scope_name(scope_node, source)
     if name is None:
         return None
     return {
         "name": name,
-        "kind": routine_node.type,  # "subroutine" or "function"
+        "kind": scope_node.type,  # subroutine / function / module / program
     }
+
+
+def _smallest_enclosing_scope(tree, line_1based: int, col_1based: int):
+    """Return the innermost scope node (subroutine / function / module /
+    program) enclosing the position, or ``None`` for bare file-level
+    code outside any of them."""
+    best = None
+    best_size = None
+    for n in _ts.walk(tree.root_node):
+        if n.type not in _SCOPE_NODE_TYPES:
+            continue
+        sp = _ts.position_for(n)
+        ep = _ts.end_position_for(n)
+        if (sp.line, sp.column) <= (line_1based, col_1based) <= (ep.line, ep.column):
+            size = n.end_byte - n.start_byte
+            if best_size is None or size < best_size:
+                best, best_size = n, size
+    return best
 
 
 @server.feature("dimfort/panelInfo")
@@ -2669,7 +2716,7 @@ def _panel_info(ls: LanguageServer, params) -> dict | None:
 
     line_1based = int(line) + 1
     col_1based = int(character) + 1
-    routine = _smallest_enclosing_routine(tree, line_1based, col_1based)
+    scope = _smallest_enclosing_scope(tree, line_1based, col_1based)
 
     # Reuse the shared ctx builder so identifier-to-unit lookup behaves
     # exactly like every other hover / inlay path.
@@ -2688,13 +2735,18 @@ def _panel_info(ls: LanguageServer, params) -> dict | None:
     )
 
     scan_decls = _last_scan_declarations(resolved)
-    routine_vars = _build_routine_vars(routine, scan_decls, attached, source_bytes)
-    routine_header = _routine_header(routine, source_bytes)
+    scope_vars = _build_scope_vars(scope, scan_decls, attached, source_bytes)
+    scope_header = _scope_header(scope, source_bytes)
 
+    # ``scope`` / ``scopeVars`` are the canonical field names; the
+    # ``routine`` / ``routineVars`` aliases are kept so older companion
+    # builds that haven't updated their reader still work.
     return {
         "expression": expression,
-        "routineVars": routine_vars,
-        "routine": routine_header,
+        "scope": scope_header,
+        "scopeVars": scope_vars,
+        "routine": scope_header,
+        "routineVars": scope_vars,
     }
 
 
