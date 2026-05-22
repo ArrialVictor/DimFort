@@ -20,6 +20,8 @@ Pipeline:
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import multiprocessing
 import threading
 import time
@@ -41,7 +43,6 @@ from dimfort.core.cache_serde import (
     dump_diagnostic,
     dump_module_exports,
     load_diagnostic,
-    load_module_exports,
 )
 from dimfort.core.cache_store import CacheStore
 from dimfort.core.diagnostics import Diagnostic, Position, Severity
@@ -355,14 +356,124 @@ def _digest_module_exports(exports: ModuleExports | None) -> str:
     ``None`` (module no longer in workspace) maps to a sentinel digest
     so disappearance is treated as "changed".
     """
-    import hashlib
-    import json
     if exports is None:
         return "absent"
     blob = json.dumps(
         dump_module_exports(exports), sort_keys=True, separators=(",", ":"),
     ).encode()
     return hashlib.sha256(blob).hexdigest()
+
+
+def _hash_file(path: Path) -> str:
+    """Hex SHA-256 of a file's contents, ``""`` if missing.
+
+    Used to feed ``units_file_hash`` into the per-file cache key so
+    a project-units-table edit invalidates cached diagnostics.
+    """
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _build_cache_config_view(
+    *,
+    external_modules: frozenset[str],
+    cpp_defines: tuple[str, ...],
+    include_paths: tuple[Path, ...],
+    units_file: Path | None,
+    diagnostic_severities: dict[str, str] | None,
+) -> dict[str, object]:
+    """Assemble the per-file-affecting config dict for the cache key.
+
+    Every dimension that can change a file's diagnostics for the same
+    source bytes must contribute here; see
+    :data:`dimfort.core.cache_key.PER_FILE_CONFIG_KEYS`.
+    """
+    return {
+        "external_modules": external_modules,
+        "extra_defines": list(cpp_defines),
+        "extra_include_paths": [str(p) for p in include_paths],
+        "units_file_hash": _hash_file(units_file) if units_file else "",
+        "diagnostic_severities": dict(diagnostic_severities or {}),
+    }
+
+
+def _try_replay_from_cache(
+    *,
+    cache: CacheStore,
+    include_hasher: IncludeHasher,
+    entry: _Loaded,
+    cache_config_view: dict[str, object],
+    module_exports: dict[str, ModuleExports],
+    result: WorksetResult,
+) -> tuple[str | None, list[Diagnostic] | None]:
+    """Attempt to serve an entry from cache. Returns ``(key, diags)``.
+
+    - ``(key, [..])``  — cache hit, validated; replay these diagnostics
+      and skip the fresh ``ts_checker.check`` pass.
+    - ``(key, None)``  — cache miss or dep-dirty; caller runs check
+      and may write back under ``key``.
+    - ``(None, None)`` — key could not be computed (e.g. include
+      hashing raised OSError); caller proceeds without caching.
+
+    Stats counters on ``result`` (``cache_hits``, ``cache_misses``,
+    ``cache_dirty``) are updated as a side effect.
+    """
+    try:
+        closure_hashes = include_hasher.hash_closure(entry.cpp_closure)
+    except OSError:
+        return None, None
+
+    key = compute_file_key(
+        source_bytes=entry.source,
+        cpp_closure_hashes=closure_hashes,
+        config=cache_config_view,
+    )
+    payload = cache.read(key)
+    if payload is None:
+        result.cache_misses += 1
+        return key, None
+
+    # Validate deps: every consumed module's current digest must
+    # match what we stored when the entry was written.
+    deps_snapshot = payload.get("deps_signature", {})
+    for mod_lc, stored_digest in deps_snapshot.items():
+        if _digest_module_exports(module_exports.get(mod_lc)) != stored_digest:
+            result.cache_dirty += 1
+            return key, None
+
+    result.cache_hits += 1
+    return key, [load_diagnostic(d) for d in payload.get("diagnostics", [])]
+
+
+def _write_cache_entry(
+    *,
+    cache: CacheStore,
+    key: str,
+    deps_consumed: frozenset[str],
+    module_exports: dict[str, ModuleExports],
+    remapped_diags: list[Diagnostic],
+    result: WorksetResult,
+) -> None:
+    """Persist a fresh check's output to the cache. Best-effort on I/O."""
+    deps_signature = {
+        mod_lc: _digest_module_exports(module_exports.get(mod_lc))
+        for mod_lc in deps_consumed
+    }
+    try:
+        cache.write(
+            key,
+            {
+                "schema": 1,
+                "deps_signature": deps_signature,
+                "diagnostics": [dump_diagnostic(d) for d in remapped_diags],
+            },
+        )
+        result.cache_writes += 1
+    except OSError:
+        pass
 
 
 def check_files(
@@ -377,6 +488,8 @@ def check_files(
     max_load_workers: int | None = None,
     cache: CacheStore | None = None,
     cache_mode: str = "off",
+    units_file: Path | None = None,
+    diagnostic_severities: dict[str, str] | None = None,
 ) -> WorksetResult:
     """Scan, attach, and check every file in ``sources`` together.
 
@@ -527,11 +640,13 @@ def check_files(
     cache_active = cache is not None and cache_mode in ("read-only", "read-write")
     cache_writes_enabled = cache_active and cache_mode == "read-write"
     include_hasher = IncludeHasher() if cache_active else None
-    cache_config_view: dict[str, object] = {
-        "external_modules": external_modules,
-        "extra_defines": list(cpp_defines),
-        "extra_include_paths": [str(p) for p in include_paths],
-    }
+    cache_config_view = _build_cache_config_view(
+        external_modules=external_modules,
+        cpp_defines=cpp_defines,
+        include_paths=include_paths,
+        units_file=units_file,
+        diagnostic_severities=diagnostic_severities,
+    )
 
     for di, entry in enumerate(loaded, start=1):
         diags: list[Diagnostic] = []
@@ -599,43 +714,20 @@ def check_files(
 
         # ---- cache lookup ------------------------------------------------
         cache_key: str | None = None
-        cache_hit_replayed = False
+        replayed: list[Diagnostic] | None = None
         if cache_active:
-            try:
-                closure_hashes = include_hasher.hash_closure(entry.cpp_closure)
-                cache_key = compute_file_key(
-                    source_bytes=entry.source,
-                    cpp_closure_hashes=closure_hashes,
-                    config=cache_config_view,
-                )
-                payload = cache.read(cache_key) if cache_key else None
-            except OSError:
-                payload = None
+            cache_key, replayed = _try_replay_from_cache(
+                cache=cache,
+                include_hasher=include_hasher,
+                entry=entry,
+                cache_config_view=cache_config_view,
+                module_exports=module_exports,
+                result=result,
+            )
 
-            if payload is not None:
-                # Validate deps: every consumed module's current digest
-                # must match what we stored when the entry was written.
-                deps_snapshot = payload.get("deps_signature", {})
-                stale = False
-                for mod_lc, stored_digest in deps_snapshot.items():
-                    if _digest_module_exports(
-                        module_exports.get(mod_lc)
-                    ) != stored_digest:
-                        stale = True
-                        break
-                if not stale:
-                    # Replay cached diagnostics; skip ts_checker.check.
-                    for d in payload.get("diagnostics", []):
-                        diags.append(load_diagnostic(d))
-                    result.cache_hits += 1
-                    cache_hit_replayed = True
-                else:
-                    result.cache_dirty += 1
-            else:
-                result.cache_misses += 1
-
-        # ---- fresh check (cold or cache-invalidated) ---------------------
-        if not cache_hit_replayed:
+        if replayed is not None:
+            diags.extend(replayed)
+        else:
             check_diags = ts_checker.check(
                 entry.tree,
                 per_file_var_units,
@@ -649,28 +741,20 @@ def check_files(
             )
             # Remap to source coordinates when the file went through cpp.
             # No-op when ``line_map`` is None (file parsed raw).
+            # Cache the *remapped* diagnostics so replay restores
+            # source-coordinate positions without a second remap.
             remapped = [_remap_diagnostic(d, entry.line_map) for d in check_diags]
             diags.extend(remapped)
 
             if cache_writes_enabled and cache_key is not None:
-                deps_signature = {
-                    mod_lc: _digest_module_exports(module_exports.get(mod_lc))
-                    for mod_lc in result.deps_consumed[entry.path]
-                }
-                # Cache the *remapped* diagnostics so replay restores
-                # source-coordinate positions without a second remap.
-                try:
-                    cache.write(
-                        cache_key,
-                        {
-                            "schema": 1,
-                            "deps_signature": deps_signature,
-                            "diagnostics": [dump_diagnostic(d) for d in remapped],
-                        },
-                    )
-                    result.cache_writes += 1
-                except OSError:
-                    pass
+                _write_cache_entry(
+                    cache=cache,
+                    key=cache_key,
+                    deps_consumed=result.deps_consumed[entry.path],
+                    module_exports=module_exports,
+                    remapped_diags=remapped,
+                    result=result,
+                )
 
         result.diagnostics[entry.path] = diags
         if progress_cb is not None:

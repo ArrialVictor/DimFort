@@ -8,6 +8,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import sys
 from collections.abc import Sequence
@@ -218,14 +219,14 @@ def _run_check(args: argparse.Namespace) -> int:
             external_modules=frozenset(config.external_modules),
             cache=cache_obj,
             cache_mode=cache_mode,
+            units_file=config.units_file,
+            diagnostic_severities=config.diagnostic_severities,
         )
 
     if cache_obj is not None and cache_mode == "read-write":
         # Best-effort lazy prune at the end of the run.
-        try:
+        with contextlib.suppress(OSError):
             cache_obj.prune()
-        except OSError:
-            pass
 
     per_file_counts: list[tuple[Path, int, int]] = []
     for p in paths:

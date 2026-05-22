@@ -90,6 +90,7 @@ from dimfort.core import (
 from dimfort.core import ts_parser as _ts
 from dimfort.core import units as _units_mod
 from dimfort.core._source_io import FORTRAN_EXTS as _FORTRAN_EXTS
+from dimfort.core.cache_store import CacheStore
 from dimfort.core.diagnostics import Diagnostic, Severity
 from dimfort.core.multifile import WorksetResult, check_files
 from dimfort.core.symbols import FuncSig, ModuleExports
@@ -244,7 +245,7 @@ _project_config: DimfortConfig = DimfortConfig()
 # ``_initialize`` from ``initializationOptions``. ``None`` means caching
 # is disabled — the workspace check runs as it did before the cache
 # landed.
-_cache: object = None  # CacheStore | None — typed lazily to avoid the import cost.
+_cache: CacheStore | None = None
 _cache_mode: str = "off"
 
 
@@ -483,6 +484,8 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
             include_paths=_project_config.include_paths,
             cache=_cache,
             cache_mode=_cache_mode,
+            units_file=_project_config.units_file,
+            diagnostic_severities=_project_config.diagnostic_severities,
         )
     except Exception:
         log.exception("dimfort pipeline crashed on %s", active)
@@ -1176,10 +1179,7 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         if requested in ("off", "read-only", "read-write") and folders:
             _cache_mode = requested
             if requested != "off":
-                from dimfort.core.cache_store import (
-                    CacheStore,
-                    default_cache_dir,
-                )
+                from dimfort.core.cache_store import default_cache_dir
                 cache_dir_opt = opts.get("cacheDir")
                 cache_root = (
                     Path(cache_dir_opt) if isinstance(cache_dir_opt, str)
@@ -3056,6 +3056,8 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
                 progress_cb=on_load_progress,
                 cache=_cache,
                 cache_mode=_cache_mode,
+                units_file=_project_config.units_file,
+                diagnostic_severities=_project_config.diagnostic_severities,
             )
         except Exception:
             log.exception("workspace check failed")

@@ -52,9 +52,15 @@ def test_order_independent_in_closure():
     assert a == b
 
 
-def test_changes_with_config_strict_mode():
-    a = _key(config={"strict_mode": False})
-    b = _key(config={"strict_mode": True})
+def test_changes_with_units_file_hash():
+    a = _key(config={"units_file_hash": "aaaa"})
+    b = _key(config={"units_file_hash": "bbbb"})
+    assert a != b
+
+
+def test_changes_with_diagnostic_severities():
+    a = _key(config={"diagnostic_severities": {}})
+    b = _key(config={"diagnostic_severities": {"H001": "warning"}})
     assert a != b
 
 
@@ -101,7 +107,8 @@ def test_include_hasher_memoises(tmp_path):
     d2 = h.hash_for(str(f))
     assert d1 == d2
     # Mutating the file (with a new mtime) must change the hash.
-    import os, time
+    import os
+    import time
     time.sleep(0.01)
     f.write_bytes(b"different")
     os.utime(f, None)  # bump mtime to current

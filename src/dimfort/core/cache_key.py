@@ -21,11 +21,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass, field
 
 from dimfort import __version__ as _dimfort_version
-
 
 # Bump on any change to:
 #   - the serialized payload shape in ``cache_serde``
@@ -36,16 +34,25 @@ from dimfort import __version__ as _dimfort_version
 CHECKER_OUTPUT_VERSION = 1
 
 
-# Keys from a workspace config that affect a *file's* output. Other
-# config keys (e.g. ``[server]``, ``[diagnostics]`` severity overrides
-# applied at output time) don't go in the per-file key — overrides
-# are applied to cached diagnostics on replay.
+# Keys from a workspace config that affect a *file's* output and
+# therefore must contribute to the cache key. Every dimension along
+# which the checker's diagnostics can change for the same source
+# bytes belongs here. If a config dimension is missing from this
+# tuple, edits to it will silently serve stale cached diagnostics.
+#
+# - ``external_modules``: changes which ``use foo`` clauses resolve.
+# - ``extra_defines`` / ``extra_include_paths``: change cpp expansion.
+# - ``units_file_hash``: content hash of the project's units table.
+#   Caller is responsible for hashing the file (it's typically small).
+# - ``diagnostic_severities``: ``[diagnostics]`` overrides are applied
+#   inside ``ts_checker.check`` via ``finalize_diagnostics`` *before*
+#   diagnostics are cached. A change to overrides must invalidate.
 PER_FILE_CONFIG_KEYS: tuple[str, ...] = (
     "external_modules",
-    "strict_mode",
-    "units_aliases",
     "extra_defines",
     "extra_include_paths",
+    "units_file_hash",
+    "diagnostic_severities",
 )
 
 
@@ -57,17 +64,27 @@ def _section(tag: bytes, body: bytes) -> bytes:
 def _config_bytes(config: dict[str, object]) -> bytes:
     """Canonical JSON bytes for the per-file-affecting config subset.
 
-    Missing keys are treated as the empty sentinel (``[]`` for list-y
-    keys, ``False`` for ``strict_mode``). The canonical form sorts keys
+    Missing keys normalise to a typed empty (``[]`` for list-y keys,
+    ``{}`` for dict-y keys, ``""`` for the units-file hash) so the
+    contributed bytes stay stable across runs where the user has
+    not configured that dimension. The canonical form sorts keys
     and uses compact separators so byte-equality is hash-stable.
     """
+    list_keys = {"external_modules", "extra_defines", "extra_include_paths"}
+    dict_keys = {"diagnostic_severities"}
+    str_keys = {"units_file_hash"}
     subset: dict[str, object] = {}
     for k in PER_FILE_CONFIG_KEYS:
         v = config.get(k)
         if v is None:
-            # Normalise unset to a typed empty so the key always
-            # contributes the same bytes.
-            v = False if k == "strict_mode" else []
+            if k in list_keys:
+                v = []
+            elif k in dict_keys:
+                v = {}
+            elif k in str_keys:
+                v = ""
+            else:
+                v = None
         # Frozenset / set are unordered; coerce to a sorted list.
         if isinstance(v, (set, frozenset)):
             v = sorted(v)
@@ -119,11 +136,7 @@ class IncludeHasher:
     later optimisation if needed.
     """
 
-    _cache: dict[str, tuple[int, str]] = None  # type: ignore[assignment]
-
-    def __post_init__(self) -> None:
-        if self._cache is None:
-            self._cache = {}
+    _cache: dict[str, tuple[int, str]] = field(default_factory=dict)
 
     def hash_for(self, abspath: str) -> str:
         """Return the hex SHA-256 of the include's contents.
@@ -149,8 +162,7 @@ class IncludeHasher:
         return digest
 
     def hash_closure(self, paths: frozenset[str]) -> dict[str, str]:
-        """Bulk-hash an entire cpp closure. Missing files are skipped
-        with a ``None`` entry so the caller can decide what to do.
+        """Bulk-hash an entire cpp closure.
 
         Returns a ``{path: digest}`` map suitable for feeding to
         :func:`compute_file_key`. A missing file produces the literal

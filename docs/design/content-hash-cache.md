@@ -30,9 +30,9 @@ SHA-256 over the concatenation of these byte sequences, each length-prefixed:
 
 1. raw source bytes
 2. `b"CPP\0"` + the sorted list of `(include_path, sha256(include_contents))` tuples for every file in the cpp closure (see "cpp closure tracking" below)
-3. `b"CONFIG\0"` + JSON of the per-file-affecting subset of config: `external_modules`, `strict_mode`, `units_aliases`, `extra_defines`, `extra_include_paths`
-4. `b"DIMFORT\0"` + `__version__`
-5. `b"OUTPUT\0"` + `CHECKER_OUTPUT_VERSION` (a hand-bumped integer in `ts_checker.py`; bump on any change to serialized diagnostic / signature / parameter-value shape)
+3. `b"CFG\0"` + canonical JSON of the per-file-affecting subset of config: `external_modules`, `extra_defines`, `extra_include_paths`, `units_file_hash` (SHA-256 of the project units table contents), `diagnostic_severities`. **Every dimension along which the checker's diagnostics can change for the same source bytes must be in this set** — `cache_key.PER_FILE_CONFIG_KEYS` is the authoritative list.
+4. `b"VER\0"` + `dimfort.__version__`
+5. `b"OUT\0"` + `CHECKER_OUTPUT_VERSION` (a hand-bumped integer in `core/cache_key.py`; bump on any change to serialized diagnostic / signature / parameter-value shape)
 
 Hash mismatch on any input → cache miss for that file.
 
@@ -113,7 +113,7 @@ In practice the iteration converges in 1–2 passes: edits are rare, and most co
 ### Storage
 
 - Default `{workspace_root}/.dimfort-cache/`; configurable via `dimfort.cache.dir` or `--cache-dir`.
-- msgpack + gzip. Estimated ~3–10 KB per file × 2,435 = 7–25 MB on LMDZ.
+- JSON + gzip. Estimated ~3–10 KB per file × 2,435 = 7–25 MB on LMDZ.
 - Add `.dimfort-cache/` to `.gitignore` automatically on first write — the cache is build-output, not source.
 - LRU pruning at 500 MB or 30 days, whichever first; pruning runs lazily at start of each workspace check.
 
@@ -216,7 +216,7 @@ Suggested commit sequence:
 
 3. **`cache: introduce CHECKER_OUTPUT_VERSION + key derivation`** — pure pure-function module `dimfort.core.cache_key`. Tests: deterministic key for fixed inputs; key changes on each input axis.
 
-4. **`cache: implement on-disk store with atomic writes`** — read/write/prune of msgpack.gz entries. Tests: round-trip, concurrent-write fuzz with multiprocess, prune at size limit.
+4. **`cache: implement on-disk store with atomic writes`** — read/write/prune of `.json.gz` entries. Tests: round-trip, concurrent-write fuzz with multiprocess, prune at size limit.
 
 5. **`cache: record cross-file symbol lookups (deps_consumed)`** — instrument `_resolve_call`, `apply_use_clauses`, `_resolve`. New `RecordingCtx` wrapper around `_Ctx` that captures lookups when active. Tests: known-input file with known USE clauses produces expected deps list.
 

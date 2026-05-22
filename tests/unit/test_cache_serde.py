@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from fractions import Fraction
 
+import pytest
+
 from dimfort.core.cache_serde import (
     dump_diagnostic,
     dump_exponent,
@@ -24,7 +26,7 @@ from dimfort.core.cache_serde import (
 )
 from dimfort.core.diagnostics import Diagnostic, Position, Severity
 from dimfort.core.symbols import FuncSig, ModuleExports
-from dimfort.core.units import Exponent, ExpWrap, LogWrap, Unit, ZERO_DIM
+from dimfort.core.units import ZERO_DIM, Exponent, ExpWrap, LogWrap, Unit
 
 
 def _roundtrip(dump, load, value):
@@ -144,3 +146,17 @@ def test_diagnostic_drops_trace():
     # Trace is empty on rehydrate (explicit guarantee — the cache
     # is for diagnostic delivery, not provenance replay).
     assert rt.trace == ()
+
+
+def test_dump_unit_expr_rejects_non_unit_expr():
+    """The dispatch should refuse to silently mis-serialize a
+    non-UnitExpr — better to crash at write time than load garbage."""
+    with pytest.raises(TypeError):
+        dump_unit_expr("not a unit")  # type: ignore[arg-type]
+
+
+def test_load_unit_expr_rejects_unknown_tag():
+    """An unknown tag in a payload is a forward-compat / corruption
+    signal; the loader must refuse rather than build a wrong object."""
+    with pytest.raises(ValueError):
+        load_unit_expr({"_t": "NotARealTag"})

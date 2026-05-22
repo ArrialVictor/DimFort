@@ -31,7 +31,6 @@ from dimfort.core.diagnostics import Diagnostic, Position, Severity
 from dimfort.core.symbols import FuncSig, ModuleExports
 from dimfort.core.units import Exponent, ExpWrap, LogWrap, Unit, UnitExpr
 
-
 # ---------------------------------------------------------------------------
 # Fraction
 
