@@ -1666,17 +1666,20 @@ def _expression_hover_for_context(
     if not rows:
         return None
     max_label = max(len(r[0]) for r in rows)
-    max_unit = max(len(r[1]) for r in rows)
+    # ``unit`` of ``""`` marks a row that should not display a unit at
+    # all (e.g. the assignment_statement row — a statement, not an
+    # expression). Compute column width only over rows that DO show
+    # a unit; unit-less rows skip the ``: unit`` block entirely.
+    units_present = [r[1] for r in rows if r[1] != ""]
+    max_unit = max((len(u) for u in units_present), default=0)
     lines: list[str] = []
     for label, unit, mark, rule in rows:
+        head = label.ljust(max_label)
+        mid = f"  :  {unit.ljust(max_unit)}" if unit != "" else ""
         if rule:
-            lines.append(
-                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}  {rule}"
-            )
+            lines.append(f"{head}{mid}  {mark}  {rule}")
         else:
-            lines.append(
-                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}".rstrip()
-            )
+            lines.append(f"{head}{mid}  {mark}".rstrip())
     body = "\n".join(lines)
     header_marker = _aggregate_marker(r[2] for r in rows)
     text = f"**{header_marker} DimFort**\n\n```\n" + body + "\n```"
@@ -1736,17 +1739,20 @@ def _expression_hover_render_tree(
     if not rows:
         return None
     max_label = max(len(r[0]) for r in rows)
-    max_unit = max(len(r[1]) for r in rows)
+    # ``unit`` of ``""`` marks a row that should not display a unit at
+    # all (e.g. the assignment_statement row — a statement, not an
+    # expression). Compute column width only over rows that DO show
+    # a unit; unit-less rows skip the ``: unit`` block entirely.
+    units_present = [r[1] for r in rows if r[1] != ""]
+    max_unit = max((len(u) for u in units_present), default=0)
     lines: list[str] = []
     for label, unit, mark, rule in rows:
+        head = label.ljust(max_label)
+        mid = f"  :  {unit.ljust(max_unit)}" if unit != "" else ""
         if rule:
-            lines.append(
-                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}  {rule}"
-            )
+            lines.append(f"{head}{mid}  {mark}  {rule}")
         else:
-            lines.append(
-                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}".rstrip()
-            )
+            lines.append(f"{head}{mid}  {mark}".rstrip())
     body = "\n".join(lines)
     header_marker = _aggregate_marker(r[2] for r in rows)
     text = f"**{header_marker} DimFort**\n\n```\n" + body + "\n```"
@@ -1777,10 +1783,26 @@ def _homogeneity_short_marker(lhs, rhs, ctx, source: bytes) -> tuple[str, Unit |
     return marker, lhs_u, rhs_u
 
 
+_VERDICT_TO_MARKER = {
+    "homogeneous": "🟢",
+    "autocast": "🟢",
+    "wrapper_untag": "🟡",
+    "mismatch": "🔴",
+    "unresolved": "🟡",
+}
+
+
 def _render_assignment_short(asn, lhs, rhs, ctx, source: bytes) -> tuple[str, lsp.Range] | None:
-    """One-line homogeneity hover for an assignment cursor position."""
+    """One-line homogeneity hover for an assignment cursor position.
+
+    Delegates the assignment-specific logic (autocast detection,
+    unit comparison) to ``ts_checker._assignment_homogeneity`` — the
+    single source of truth shared with the panel and the checker."""
     from dimfort.core.units import format_unit
-    marker, lhs_u, rhs_u = _homogeneity_short_marker(lhs, rhs, ctx, source)
+    verdict, lhs_u, rhs_u = ts_checker._assignment_homogeneity(
+        lhs, rhs, ctx, source,
+    )
+    marker = _VERDICT_TO_MARKER.get(verdict, "🟡")
     lhs_s = format_unit(lhs_u) if lhs_u is not None else "?"
     rhs_s = format_unit(rhs_u) if rhs_u is not None else "?"
     body = (
@@ -2082,17 +2104,20 @@ def _trace_section_for(uri: str, line_1based: int, col_1based: int) -> str | Non
     if not rows:
         return None
     max_label = max(len(r[0]) for r in rows)
-    max_unit = max(len(r[1]) for r in rows)
+    # ``unit`` of ``""`` marks a row that should not display a unit at
+    # all (e.g. the assignment_statement row — a statement, not an
+    # expression). Compute column width only over rows that DO show
+    # a unit; unit-less rows skip the ``: unit`` block entirely.
+    units_present = [r[1] for r in rows if r[1] != ""]
+    max_unit = max((len(u) for u in units_present), default=0)
     lines: list[str] = []
     for label, unit, mark, rule in rows:
+        head = label.ljust(max_label)
+        mid = f"  :  {unit.ljust(max_unit)}" if unit != "" else ""
         if rule:
-            lines.append(
-                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}  {rule}"
-            )
+            lines.append(f"{head}{mid}  {mark}  {rule}")
         else:
-            lines.append(
-                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}".rstrip()
-            )
+            lines.append(f"{head}{mid}  {mark}".rstrip())
     body = "\n".join(lines)
     return "**Unit-algebra trace**\n\n```\n" + body + "\n```"
 
@@ -2299,11 +2324,17 @@ def _render_ast_tree(
     *,
     prefix: str, is_last: bool, is_root: bool,
     rows: list[tuple[str, str, str]],
+    target_unit_for_literal=None,
 ) -> None:
     """Recursively collect ``(label, unit, rule)`` rows for the tree.
 
     The caller pads each column to the global max so ``⇒`` and the
     rule tag align vertically across nodes.
+
+    ``target_unit_for_literal`` carries the initialization-autocast
+    target down the recursion: when we recurse into the RHS of an
+    assignment whose RHS is a bare literal, the literal node uses
+    this unit and a 🟢 marker (matching the checker's leniency rule).
     """
     # Skip wrapper-only nodes (parenthesised exprs) so the tree doesn't
     # explode with structural-only intermediate nodes — descend straight
@@ -2314,6 +2345,7 @@ def _render_ast_tree(
             _render_ast_tree(
                 inner[0], ctx, source,
                 prefix=prefix, is_last=is_last, is_root=is_root, rows=rows,
+                target_unit_for_literal=target_unit_for_literal,
             )
             return
 
@@ -2323,6 +2355,19 @@ def _render_ast_tree(
     snap = trace.snapshot()
     rule_id = snap[-1].rule_id if snap else None
 
+    # Initialization autocast: a pure-numeric-constant subtree (literal,
+    # unary-minus literal, math of literals) in a propagated target
+    # context takes on the target unit and is marked 🟢. Uses the same
+    # predicate as the checker's R4.4 — :func:`_is_pure_numeric_constant`
+    # — so all three sites (checker, hover, panel) agree on the set of
+    # nodes that autocast.
+    apply_autocast = (
+        target_unit_for_literal is not None
+        and ts_checker._is_pure_numeric_constant(node)
+    )
+    if apply_autocast:
+        unit = target_unit_for_literal
+
     if is_root:
         connector = ""
         next_prefix = prefix
@@ -2331,13 +2376,35 @@ def _render_ast_tree(
         next_prefix = prefix + ("    " if is_last else "│   ")
 
     label = _node_label(node, source)
-    if unit is None:
+    # Assignments are statements, not expressions — render no unit
+    # column for them (only the marker matters). Other unit-less
+    # nodes show ``?``.
+    if node.type == "assignment_statement":
+        unit_str = ""
+    elif unit is None:
         unit_str = "?"
     else:
         from dimfort.core.units import format_unit
         unit_str = format_unit(unit)
     rule_str = f"({rule_id})" if rule_id else ""
-    mark = _node_trace_mark(node, unit, ctx, source)
+    # Marker derivation, in order of priority:
+    #   1. R4.4 autocast in this leaf      → 🟢
+    #   2. Node IS an assignment_statement → use the verdict marker so
+    #      the detailed tree agrees with panel/hover-short
+    #   3. Generic fallback                → _node_trace_mark
+    if apply_autocast:
+        mark = "🟢"
+    elif node.type == "assignment_statement":
+        kids_for_marker = _interesting_children(node)
+        if len(kids_for_marker) >= 2:
+            verdict, _lu, _ru = ts_checker._assignment_homogeneity(
+                kids_for_marker[0], kids_for_marker[-1], ctx, source,
+            )
+            mark = _VERDICT_TO_MARKER.get(verdict, "🟡")
+        else:
+            mark = _node_trace_mark(node, unit, ctx, source)
+    else:
+        mark = _node_trace_mark(node, unit, ctx, source)
     # Mark is a separate column so the unit can be ljust-padded
     # independently; markers then align vertically on the right.
     rows.append((prefix + connector + label, unit_str, mark, rule_str))
@@ -2354,12 +2421,432 @@ def _render_ast_tree(
         first = children[0]
         if first.type == "identifier":
             children = children[1:]
+    # Compute the autocast target to propagate into children.
+    # - Assignment: ask ``_assignment_homogeneity`` for the effective
+    #   RHS unit; pass it to the last child (the RHS) when the verdict
+    #   says we're in autocast mode.
+    # - Unary-minus: if THIS node is already being autocast (i.e. it's
+    #   a unary-minus wrapping a literal in an autocast context), pass
+    #   the target through to the inner literal.
+    child_target = None
+    if node.type == "assignment_statement" and children:
+        verdict, lhs_u, _ = ts_checker._assignment_homogeneity(
+            children[0], children[-1], ctx, source,
+        )
+        if verdict == "autocast" and lhs_u is not None:
+            child_target = lhs_u
+    elif apply_autocast and node.type == "unary_expression":
+        child_target = target_unit_for_literal
     for i, c in enumerate(children):
+        is_last_child = (i == len(children) - 1)
+        # For assignments, only the last child (RHS) gets the target.
+        # For the unary-minus passthrough, the single inner child gets it.
+        per_child_target = None
+        is_asn_rhs = node.type == "assignment_statement" and is_last_child
+        if is_asn_rhs or node.type == "unary_expression":
+            per_child_target = child_target
         _render_ast_tree(
             c, ctx, source,
             prefix=next_prefix, is_last=(i == len(children) - 1),
             is_root=False, rows=rows,
+            target_unit_for_literal=per_child_target,
         )
+
+
+# ---------------------------------------------------------------------------
+# Side-panel info — structured-tree builders for the dimfort/panelInfo
+# request. The two functions below mirror _render_ast_tree's resolution
+# logic but return data instead of rendered strings, so each editor's
+# side panel can lay it out in its own idiom (Nvim split, Emacs window,
+# VSCode webview). See docs/design/panel-info.md.
+# ---------------------------------------------------------------------------
+
+
+def _marker_token(mark: str) -> str:
+    """Map a 🟢/🟡/🔴 emoji to a wire-format-friendly token."""
+    return {"🟢": "ok", "🟡": "warn", "🔴": "error"}.get(mark, "warn")
+
+
+def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
+    """Build a structured ExpressionNode for the panel.
+
+    Recursive: each node carries its resolved unit, the rule ID that
+    produced it (if any), a marker token, and its children. Leaf
+    nodes (identifiers, literals) have an empty ``children`` list.
+
+    Defers all assignment-specific logic (verdict, autocast detection)
+    to :func:`ts_checker._assignment_homogeneity` — the single source
+    of truth shared with the checker and the in-buffer hover.
+    """
+    if node is None:
+        return None
+    if node.type == "parenthesized_expression":
+        inner = _interesting_children(node)
+        if len(inner) == 1:
+            return _build_expression_tree(inner[0], ctx, source)
+
+    from dimfort.core.trace import with_trace
+    from dimfort.core.units import format_unit
+
+    with with_trace() as trace:
+        unit = ts_checker._resolve(node, ctx, source)
+    snap = trace.snapshot()
+    rule_id = snap[-1].rule_id if snap else None
+    mark = _node_trace_mark(node, unit, ctx, source)
+
+    if node.type in ("identifier", "number_literal", "string_literal", "complex_literal"):
+        child_nodes = []
+    else:
+        kids = _interesting_children(node)
+        # call_expression's first child is the callee identifier — the
+        # parent label already reads ``log(p)``; re-rendering ``log`` is noise.
+        if node.type == "call_expression" and kids and kids[0].type == "identifier":
+            kids = kids[1:]
+        child_nodes = [_build_expression_tree(c, ctx, source) for c in kids]
+        child_nodes = [c for c in child_nodes if c is not None]
+
+    payload = {
+        "label": _node_label(node, source),
+        "unit": format_unit(unit) if unit is not None else None,
+        "marker": _marker_token(mark),
+        "ruleId": rule_id,
+        "children": child_nodes,
+    }
+
+    # Assignment-level marker: derive from ts_checker._assignment_homogeneity
+    # so the panel agrees with the diagnostic stream and the hover view.
+    # Verdicts:
+    #   homogeneous / autocast → 🟢
+    #   wrapper_untag           → 🟡 (D1.6 implicit untag)
+    #   mismatch                → 🔴 (H001)
+    #   unresolved              → keep the recursive marker
+    # In "autocast", we also propagate the LHS unit to the RHS subtree
+    # root so the panel shows the literal expression as carrying the
+    # autocast unit, not "?".
+    # Assignments are statements, not expressions — they don't carry a
+    # unit of their own. Clear ``unit`` so renderers can omit the ``: ?``
+    # column for the assignment row. The autocast unit (when applicable)
+    # belongs to the RHS child, where it's set below.
+    if node.type == "assignment_statement":
+        payload["unit"] = None
+        if len(child_nodes) >= 2:
+            kids = _interesting_children(node)
+            if len(kids) >= 2:
+                verdict, lhs_u, rhs_u_eff = ts_checker._assignment_homogeneity(
+                    kids[0], kids[-1], ctx, source,
+                )
+                verdict_marker = _VERDICT_TO_MARKER.get(verdict)
+                if verdict_marker is not None and verdict != "unresolved":
+                    payload["marker"] = _marker_token(verdict_marker)
+                if verdict == "autocast" and lhs_u is not None:
+                    # Override only the RHS subtree root — its inner
+                    # detail stays as-is.
+                    lhs_unit_str = format_unit(lhs_u)
+                    payload["children"][-1]["unit"] = lhs_unit_str
+                    payload["children"][-1]["marker"] = "ok"
+
+    return payload
+
+
+# Tree-sitter node types that introduce a declaration scope (an
+# "environment"). The panel's bottom section shows the declarations of
+# the innermost one enclosing the cursor.
+_SCOPE_NODE_TYPES = ("subroutine", "function", "module", "program")
+# Scope kinds that have their own named local declarations keyed by
+# ``DeclarationSite.scope`` (the lower-cased routine name). Module /
+# program declarations carry ``scope = None`` and are matched by line
+# span instead.
+_ROUTINE_SCOPE_TYPES = ("subroutine", "function")
+
+
+def _build_scope_vars(
+    scope_node, scan_decls, attached, source: bytes,
+) -> list[dict]:
+    """Build the declarations table for the enclosing scope.
+
+    Returns one row per declared variable visible in ``scope_node``,
+    ordered by declaration line. Each row carries its annotated unit
+    text (or ``None``) and a kind tag (annotated / unannotated).
+
+    Matching strategy:
+    - For ``subroutine`` / ``function``: ``DeclarationSite.scope`` is
+      the routine name, so filter by name.
+    - For ``module`` / ``program``: module-level decls carry
+      ``scope = None``; filter by ``scope is None`` AND the decl
+      falling inside the scope node's line span (so nested routines'
+      decls — which have a non-None scope — are excluded).
+
+    Type-field decls inside a ``type :: T`` block are filtered out —
+    they're shown via field hover on the parent variable.
+    """
+    if scope_node is None or scan_decls is None:
+        return []
+    var_units = attached.var_units if attached is not None else {}
+    is_routine = scope_node.type in _ROUTINE_SCOPE_TYPES
+    scope_name = _scope_name(scope_node, source)
+    if is_routine and scope_name is None:
+        return []
+    scope_name_lc = scope_name.lower() if scope_name else None
+    sp = _ts.position_for(scope_node).line
+    ep = _ts.end_position_for(scope_node).line
+    source_lines = source.decode("utf-8", "replace").splitlines()
+
+    def _name_on_first_line(decl) -> bool:
+        """Robustness guard: tree-sitter error recovery on a half-typed
+        declaration (``real ::`` before a name is typed) scavenges an
+        identifier from the *following* statement into ``decl.names``,
+        with a span that runs into that next line. Such a decl has none
+        of its names on its own first physical line — drop it so the
+        panel doesn't flash a bogus row mid-typing. Valid multi-line
+        continuations always have at least the first name on the
+        type-spec line, so they survive this check."""
+        idx = decl.line_start - 1
+        if not (0 <= idx < len(source_lines)):
+            return True  # can't verify — keep
+        line_text = source_lines[idx]
+        return any(
+            re.search(rf"(?<![A-Za-z0-9_]){re.escape(n)}(?![A-Za-z0-9_])",
+                      line_text)
+            for n in decl.names
+        )
+
+    out: list[dict] = []
+    for decl in scan_decls:
+        if decl.enclosing_type is not None:
+            continue
+        if is_routine:
+            if decl.scope != scope_name_lc:
+                continue
+        else:
+            # Module / program: top-level decls only (scope is None),
+            # inside this scope node's line span.
+            if decl.scope is not None:
+                continue
+            if not (sp <= decl.line_start <= ep):
+                continue
+        if decl.names and not _name_on_first_line(decl):
+            continue
+        for vname in decl.names:
+            unit_text = var_units.get(vname)
+            out.append({
+                "name": vname,
+                "unit": unit_text if unit_text else None,
+                "line": decl.line_start,
+                "kind": "annotated" if unit_text else "unannotated",
+            })
+    return out
+
+
+def _scope_name(scope_node, source: bytes) -> str | None:
+    """Return the scope's identifier name. The ``name`` token sits
+    inside the ``*_statement`` header child, not directly on the
+    scope block node — true for subroutine / function / module /
+    program alike."""
+    if scope_node is None:
+        return None
+    stmt_types = tuple(f"{t}_statement" for t in _SCOPE_NODE_TYPES)
+    stmt_child = next(
+        (c for c in scope_node.children if c.type in stmt_types), None,
+    )
+    if stmt_child is None:
+        return None
+    name_node = next(
+        (c for c in stmt_child.children if c.type == "name"), None,
+    )
+    if name_node is None:
+        return None
+    return _ts.node_text(name_node, source)
+
+
+def _scope_header(scope_node, source: bytes) -> dict | None:
+    """``{name, kind}`` header for the panel's scope section, or
+    ``None`` when there's no enclosing scope (bare file-level code)."""
+    if scope_node is None:
+        return None
+    name = _scope_name(scope_node, source)
+    if name is None:
+        return None
+    return {
+        "name": name,
+        "kind": scope_node.type,  # subroutine / function / module / program
+    }
+
+
+def _smallest_enclosing_scope(tree, line_1based: int, col_1based: int):
+    """Return the innermost scope node (subroutine / function / module /
+    program) enclosing the position, or ``None`` for bare file-level
+    code outside any of them."""
+    scopes = _enclosing_scopes(tree, line_1based, col_1based)
+    return scopes[-1] if scopes else None
+
+
+def _enclosing_scopes(tree, line_1based: int, col_1based: int):
+    """Return *all* scope nodes enclosing the position, **outermost
+    first** (e.g. ``[module, subroutine]`` for a cursor inside a
+    module-contained subroutine). Empty for bare file-level code.
+
+    The panel stacks one section per scope so the user sees the whole
+    environment chain, not just the innermost frame.
+    """
+    matches = []
+    for n in _ts.walk(tree.root_node):
+        if n.type not in _SCOPE_NODE_TYPES:
+            continue
+        sp = _ts.position_for(n)
+        ep = _ts.end_position_for(n)
+        if (sp.line, sp.column) <= (line_1based, col_1based) <= (ep.line, ep.column):
+            matches.append(n)
+    # Larger byte-span = more enclosing = outer. Sort outer → inner.
+    matches.sort(key=lambda n: n.end_byte - n.start_byte, reverse=True)
+    return matches
+
+
+@server.feature("dimfort/panelInfo")
+def _panel_info(ls: LanguageServer, params) -> dict | None:
+    """Return the side-panel payload for ``(uri, position)``.
+
+    See docs/design/panel-info.md for the data model. Stateless:
+    reads from the last cached WorksetResult, computes the response
+    on the fly.
+    """
+    # pygls passes custom-method params as a plain dict-like object.
+    # Accept either attribute access (TypedDict-style) or dict access
+    # so we don't depend on a specific wrapper class.
+    def _get(obj, key):
+        if hasattr(obj, key):
+            return getattr(obj, key)
+        if isinstance(obj, dict):
+            return obj.get(key)
+        return None
+
+    text_document = _get(params, "textDocument") or _get(params, "text_document")
+    position = _get(params, "position")
+    if text_document is None or position is None:
+        return None
+    uri = _get(text_document, "uri")
+    line = _get(position, "line")
+    character = _get(position, "character")
+    if uri is None or line is None or character is None:
+        return None
+
+    path = _uri_to_path(uri)
+    if path is None:
+        return None
+    resolved = path.resolve()
+
+    with _last_result_lock:
+        result = _last_result
+    if result is None:
+        return None
+    attached = result.attachments.get(resolved)
+    if attached is None:
+        return None
+
+    found = _trees_for(uri)
+    if found is None:
+        return None
+    _path, cached_tree, cached_source = found
+
+    # Parse the LIVE buffer so scope detection + cursor→node mapping
+    # track unsaved edits (a just-typed declaration, an inserted line).
+    # The cross-file unit tables in ``ctx`` still come from the last
+    # workspace check — those are name-keyed and don't shift with local
+    # edits — but the *structure* we navigate must match what the user
+    # sees on screen. Fall back to the cached tree if the document
+    # isn't open.
+    try:
+        doc = ls.workspace.get_text_document(uri)
+        source_bytes = doc.source.encode("utf-8")
+        tree = _ts.parse_text(source_bytes)
+    except Exception:
+        tree, source_bytes = cached_tree, cached_source
+
+    line_1based = int(line) + 1
+    col_1based = int(character) + 1
+    scope_nodes = _enclosing_scopes(tree, line_1based, col_1based)
+
+    # Reuse the shared ctx builder so identifier-to-unit lookup behaves
+    # exactly like every other hover / inlay path.
+    ctx = _build_ts_ctx(result, source_bytes, str(resolved), path=resolved)
+
+    # Find the smallest expression-bearing node at the cursor. If the
+    # cursor sits on a declaration or other non-expression node, we
+    # collapse to a single-node "tree" for the variable identifier
+    # under the cursor (per the design decision: show declarations as
+    # single-node trees rather than blanking the section).
+    expr_root = _find_expression_root(tree, line_1based, col_1based)
+    expression = (
+        _build_expression_tree(expr_root, ctx, source_bytes)
+        if expr_root is not None
+        else None
+    )
+
+    scan_decls = _scan_declarations_for_uri(ls, uri, resolved)
+
+    # One section per enclosing scope, outermost first. Each carries
+    # the scope header fields (name, kind) plus its own ``vars`` list.
+    scopes: list[dict] = []
+    for sn in scope_nodes:
+        header = _scope_header(sn, source_bytes)
+        if header is None:
+            continue
+        scopes.append({
+            **header,
+            "vars": _build_scope_vars(sn, scan_decls, attached, source_bytes),
+        })
+
+    # Innermost scope, surfaced as the back-compat ``scope`` /
+    # ``scopeVars`` / ``routine`` / ``routineVars`` fields for any
+    # consumer that only renders a single scope section.
+    innermost = scopes[-1] if scopes else None
+    innermost_header = (
+        {"name": innermost["name"], "kind": innermost["kind"]}
+        if innermost else None
+    )
+    innermost_vars = innermost["vars"] if innermost else []
+
+    return {
+        "expression": expression,
+        "scopes": scopes,
+        "scope": innermost_header,
+        "scopeVars": innermost_vars,
+        "routine": innermost_header,
+        "routineVars": innermost_vars,
+    }
+
+
+def _find_expression_root(tree, line_1based: int, col_1based: int):
+    """Find the smallest expression-bearing node containing the cursor.
+
+    Walks the tree and picks the deepest node whose type indicates it
+    carries a unit (assignment, math op, call, identifier, literal,
+    etc.). Returns ``None`` if the cursor is in a region with no such
+    node (blank line, comment, structural keyword).
+    """
+    expression_types = {
+        "assignment_statement",
+        "math_expression",
+        "relational_expression",
+        "call_expression",
+        "identifier",
+        "number_literal",
+        "complex_literal",
+        "parenthesized_expression",
+        "unary_expression",
+        "derived_type_member_expression",
+    }
+    best = None
+    best_size = None
+    for n in _ts.walk(tree.root_node):
+        if n.type not in expression_types:
+            continue
+        sp = _ts.position_for(n)
+        ep = _ts.end_position_for(n)
+        if (sp.line, sp.column) <= (line_1based, col_1based) <= (ep.line, ep.column):
+            size = n.end_byte - n.start_byte
+            if best_size is None or size < best_size:
+                best, best_size = n, size
+    return best
 
 
 # ---------------------------------------------------------------------------
@@ -2878,9 +3365,10 @@ def _routine_decl_insertion_line(routine, source: bytes) -> int | None:
 def _last_scan_declarations(path: Path):
     """Re-scan the file on disk to recover the source-side declarations.
 
-    We don't currently cache DeclarationSites in WorksetResult, so this
-    is the simplest path. Reads off-disk (the buffer text path used by
-    didChange isn't accessible here).
+    Disk-only fallback. Prefer :func:`_scan_declarations_for_uri` when
+    a ``LanguageServer`` + ``uri`` are in hand — it reads the live
+    (possibly unsaved) buffer text so freshly-typed declarations show
+    up without a save.
     """
     from dimfort.core.annotations import scan_file
 
@@ -2888,6 +3376,21 @@ def _last_scan_declarations(path: Path):
         return scan_file(path).declarations
     except OSError:
         return None
+
+
+def _scan_declarations_for_uri(ls: LanguageServer, uri: str, resolved: Path):
+    """Scan declarations from the live document text when available.
+
+    Reads the open buffer's text (which includes unsaved edits) so the
+    panel reflects a just-typed declaration immediately. Falls back to
+    a disk read when the document isn't open in the workspace.
+    """
+    from dimfort.core.annotations import scan_text
+    try:
+        doc = ls.workspace.get_text_document(uri)
+        return scan_text(doc.source).declarations
+    except Exception:
+        return _last_scan_declarations(resolved)
 
 
 # ---------------------------------------------------------------------------

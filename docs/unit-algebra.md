@@ -28,8 +28,8 @@
 > R2.1, R2.2, **R2.3**, R3.1, R3.2, R4.1, R4.2, R4.3, R5.1, R5.3, R5.4,
 > R5.6, R5.7, R5.9, R5.10, R6.1, R6.3, R6.4, R6.5, R6.6, R6.7, R7.1.
 >
-> **Derived rules** (6 rules, follow from axioms):
-> R3.3, R5.2, R5.5, R5.8, R6.2, R7.2.
+> **Derived rules** (7 rules, follow from axioms or leniency):
+> R3.3, R4.4, R5.2, R5.5, R5.8, R6.2, R7.2.
 >
 > **Removed rules**: R7.3 (superseded by R2.3 eager collapse).
 >
@@ -347,6 +347,43 @@ m^0.5        → Regular(0.5, 0, ...)          = m^(1/2)  (allowed; from SQRT)
 2 ** (ig2-1) → Regular(0,...,0)              = 1        (Rd base + non-literal k)
 Pa^kappa     → ERROR D1.4 if kappa is non-literal
              → Regular(-kappa, -2·kappa, kappa, ...) if kappa is a literal PARAMETER
+```
+
+### R4.4 — Literal initialization autocast [DERIVED from leniency]
+
+When the **sole RHS** of an assignment is a pure-numeric constant —
+a numeric literal, a unary-minus literal, a parenthesized literal, or
+an arithmetic expression composed entirely of literals — the literal
+takes on the LHS's unit and no diagnostic fires.
+
+```
+Regular(t)  ←  Regular(0,...,0)_literal   ⇒  no diagnostic, autocast
+```
+
+Distinct from R4.1's D1.5 H010 warning, which fires when a literal is
+mixed with a unitful operand *inside a compound expression*: `t = c + 2.0`
+still fires H010 D1.5 on the `2.0` (the literal there isn't standalone
+initialization, it's a magic number buried in math).
+
+**Why no warning here:** the literal RHS *is* the initialization. The
+variable on the LHS is already annotated; forcing a `@unit{}` on the
+literal too, or extracting it to a PARAMETER, is busywork — the LHS
+annotation has already documented the unit.
+
+**Events:** every R4.4 fire emits a structured ``AutocastEvent`` (see
+``dimfort.core.diagnostics.AutocastEvent``) so consumers — audit tools,
+strict-mode configurations, future quick-fixes — can enumerate them.
+The event is *not* a diagnostic; it has no severity and doesn't surface
+in the standard diagnostic stream. The LSP renderers consume it (and
+the matching homogeneity verdict) to mark assignments 🟢 instead of 🟡.
+
+**Example:**
+```
+t = 2.0           # t : s              → autocast (no diagnostic)
+t = -5.0          # t : s              → autocast (unary minus literal)
+t = 2.0 * 3.14    # t : s              → autocast (arithmetic of literals)
+t = c + 2.0       # c : s              → R4.1 D1.5 H010 on the 2.0
+                  #                       (not R4.4 — literal not standalone)
 ```
 
 ---

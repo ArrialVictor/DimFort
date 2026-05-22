@@ -29,7 +29,7 @@ from tree_sitter import Node, Tree
 
 from dimfort.core import ts_parser as _ts
 from dimfort.core import units as _units_mod
-from dimfort.core.diagnostics import Diagnostic, Position, Severity
+from dimfort.core.diagnostics import AutocastEvent, Diagnostic, Position, Severity
 from dimfort.core.symbols import (
     DIMENSIONLESS_INTRINSICS,
     EXP_INTRINSICS,
@@ -249,6 +249,90 @@ def _assignment_sides(node: Node) -> tuple[Node | None, Node | None]:
     if len(parts) >= 2:
         return parts[0], parts[1]
     return None, None
+
+
+# Verdict tokens returned by :func:`_assignment_homogeneity`. Every
+# consumer (checker / LSP renderer / future audit tooling) reads the
+# verdict and decides on its own action:
+#
+# - ``"homogeneous"``    — LHS and RHS units match. No diagnostic; 🟢.
+# - ``"autocast"``       — pure-numeric-constant RHS took on LHS unit
+#                          (R4.4). No diagnostic, but emits an
+#                          :class:`AutocastEvent` for audit. 🟢.
+# - ``"wrapper_untag"``  — implicit ``LogWrap`` / ``ExpWrap`` untag
+#                          (D1.6). Emits H010. 🟡.
+# - ``"mismatch"``       — LHS and RHS resolved to different dims.
+#                          Emits H001. 🔴.
+# - ``"unresolved"``     — at least one side unresolved (no LHS
+#                          annotation, RHS resolution failed, …). No
+#                          diagnostic from this rule; 🟡.
+AssignmentVerdict = str  # one of the literals above
+
+
+def _assignment_homogeneity(
+    target: Node | None,
+    value: Node | None,
+    ctx: _Ctx,
+    source: bytes,
+) -> tuple[AssignmentVerdict, Unit | None, Unit | None]:
+    """Decide what an assignment's homogeneity status is — and what
+    units it has after applying the initialization-autocast rule R4.4.
+
+    Returns ``(verdict, lhs_unit, effective_rhs_unit)``. ``effective_
+    rhs_unit`` equals ``lhs_unit`` when the verdict is ``"autocast"``
+    or ``"homogeneous"``; otherwise it's whatever ``_resolve`` returned
+    for the RHS.
+
+    This function is the *single source of truth* for what an
+    assignment looks like to any consumer:
+
+    - The checker calls it to drive diagnostic emission and to record
+      :class:`AutocastEvent`s.
+    - The LSP renderers (panel, hover) call it to decide the marker
+      and the units they display.
+
+    Keep the autocast detection here only. Renderers must never
+    detect autocast locally — that's how the marker disagreed with
+    the diagnostic stream before this refactor.
+    """
+    if target is None or value is None:
+        return "unresolved", None, None
+    tu = _resolve(target, ctx, source)
+    ru = _resolve(value, ctx, source)
+    if tu is None or ru is None:
+        return "unresolved", tu, ru
+    if equal_dim(tu, ru):
+        return "homogeneous", tu, ru
+    # Dims differ — three sub-cases.
+    if _is_pure_numeric_constant(value):
+        # R4.4: literal initialization. The RHS effectively takes on
+        # the LHS unit; no diagnostic.
+        from dimfort.core.trace import trace_step
+        trace_step("R4.4", (tu, ru), tu)
+        return "autocast", tu, tu
+    if (
+        isinstance(tu, Unit)
+        and _is_wrapper(ru)
+        and isinstance(ru.inner, Unit)
+        and equal_dim(tu, ru.inner)
+    ):
+        return "wrapper_untag", tu, ru
+    return "mismatch", tu, ru
+
+
+def _build_autocast_event(
+    value_node: Node, lhs_unit: UnitExpr, file: str, source: bytes,
+) -> AutocastEvent:
+    """Construct an :class:`AutocastEvent` for an R4.4 fire at ``value_node``."""
+    start, end = _node_span(value_node)
+    return AutocastEvent(
+        file=file,
+        start=start,
+        end=end,
+        literal_text=_text(value_node, source),
+        inferred_unit=format_unit(lhs_unit),
+        context="assignment_rhs",
+    )
 
 
 def _call_callee_name(node: Node, source: bytes) -> str | None:
@@ -1862,6 +1946,7 @@ def check(
     field_units: dict[tuple[str, str], str | Unit] | None = None,
     var_units_by_scope: dict[tuple[str | None, str], str | Unit] | None = None,
     routine_scopes: tuple[tuple[int, int, str], ...] = (),
+    out_autocast_events: list[AutocastEvent] | None = None,
 ) -> list[Diagnostic]:
     """Run the checker over a tree-sitter-parsed file.
 
@@ -1965,33 +2050,30 @@ def check(
             with _stmt_trace_ctx() as stmt_trace:
                 target, value = _assignment_sides(node)
                 out.extend(_walk_expressions(value, ctx, source))
-                tu = _resolve(target, ctx, source)
-                ru = _resolve(value, ctx, source)
-                emit_h001 = False
-                if tu is not None and ru is not None and not equal_dim(tu, ru):
-                    if _is_pure_numeric_constant(value):
-                        pass
-                    elif (
-                        isinstance(tu, Unit)
-                        and _is_wrapper(ru)
-                        and isinstance(ru.inner, Unit)
-                        and equal_dim(tu, ru.inner)
-                    ):
-                        # Phase C D1.6 — implicit wrapper untag.
-                        out.append(
-                            _emit_d16_untag(
-                                target if target is not None else node,
-                                tu, ru, ctx,
-                            )
+                verdict, tu, ru = _assignment_homogeneity(
+                    target, value, ctx, source,
+                )
+                if verdict == "wrapper_untag":
+                    out.append(
+                        _emit_d16_untag(
+                            target if target is not None else node,
+                            tu, ru, ctx,
                         )
-                    else:
-                        emit_h001 = True
-                if emit_h001:
+                    )
+                elif verdict == "mismatch":
                     # Span the squiggle over the whole assignment so the
                     # editor highlights both sides of `=`; lets the user
                     # see the offending statement at a glance instead of
                     # squinting at the LHS identifier.
                     out.append(_emit_h001(node, tu, ru, ctx))
+                elif verdict == "autocast" and out_autocast_events is not None:
+                    # R4.4 — record the event for any audit consumer.
+                    # The literal_text is the source slice of the RHS,
+                    # which may be a compound numeric expression like
+                    # ``2.0 * 3.14`` per _is_pure_numeric_constant.
+                    out_autocast_events.append(
+                        _build_autocast_event(value, tu, str(ctx.file), source)
+                    )
             _attach_traces_since(before_len, stmt_trace)
             continue
 
