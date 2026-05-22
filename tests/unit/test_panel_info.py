@@ -206,6 +206,37 @@ def test_build_scope_vars_lists_each_declared_name(tmp_path: Path):
     assert by_name["x"]["line"] == 2
 
 
+def test_find_expression_root_promotes_callee_to_call(tmp_path: Path):
+    """A cursor on a call's callee name resolves to the whole
+    call_expression (which carries the return unit), not the bare
+    callee identifier (which has no unit and renders as a lone leaf).
+    An argument identifier under the same call is left as-is."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.lsp.server import _find_expression_root
+
+    line = "  a = f(a)"
+    src = (
+        "subroutine s\n"
+        "  real :: a  !< @unit{m}\n"
+        f"{line}\n"                    # line 3: a = f(a)
+        "end subroutine\n"
+    )
+    tree = _ts.parse_text(src.encode())
+
+    # 1-based column of the callee 'f' and of the argument 'a'.
+    callee_col = line.index("f(") + 1
+    arg_col = line.index("(a)") + 2  # the 'a' inside the parens
+
+    callee_node = _find_expression_root(tree, 3, callee_col)
+    assert callee_node is not None
+    assert callee_node.type == "call_expression"
+
+    # Cursor on the argument identifier stays an identifier (not bumped).
+    arg_node = _find_expression_root(tree, 3, arg_col)
+    assert arg_node is not None
+    assert arg_node.type == "identifier"
+
+
 def test_build_scope_vars_marks_unparseable_as_error(tmp_path: Path):
     """A declaration whose ``@unit{}`` fails to parse is kind ``error``
     (🔴) — distinct from ``unannotated`` (🟡) and ``annotated`` (🟢).
