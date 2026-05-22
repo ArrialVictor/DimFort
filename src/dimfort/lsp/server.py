@@ -2858,6 +2858,17 @@ def _find_expression_root(tree, line_1based: int, col_1based: int):
             size = n.end_byte - n.start_byte
             if best_size is None or size < best_size:
                 best, best_size = n, size
+    # If the cursor landed on the callee *name* of a call, show the whole
+    # call — which resolves to the function's return unit and a proper
+    # argument tree — rather than the bare callee identifier, which has no
+    # unit of its own and renders as a lone 🟡 leaf. The callee is the
+    # child whose start coincides with the call's start; arguments begin
+    # later, so a cursor on an argument identifier is left untouched.
+    if best is not None and best.type == "identifier":
+        parent = best.parent
+        if (parent is not None and parent.type == "call_expression"
+                and best.start_byte == parent.start_byte):
+            best = parent
     return best
 
 
