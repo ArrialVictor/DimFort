@@ -68,6 +68,35 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     check.add_argument(
+        "--cache",
+        choices=("off", "read-only", "read-write"),
+        default="off",
+        help=(
+            "Content-hash cache mode. 'off' (default): no caching. "
+            "'read-only': consult cache but never write. "
+            "'read-write': consult and update the cache. The cache "
+            "directory defaults to '.dimfort-cache/' under the first "
+            "path argument; override with --cache-dir."
+        ),
+    )
+    check.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Override the cache directory location. Defaults to "
+            "'.dimfort-cache/' under the first path argument."
+        ),
+    )
+    check.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help=(
+            "Remove all entries in the cache directory before checking. "
+            "Combine with --cache read-write to repopulate from scratch."
+        ),
+    )
+    check.add_argument(
         "--trace",
         action="store_true",
         help=(
@@ -163,6 +192,23 @@ def _run_check(args: argparse.Namespace) -> int:
 
     from dimfort.core.trace import format_trace, with_trace
 
+    # Cache setup. ``--cache off`` (default) keeps the previous
+    # behaviour exactly. Other modes construct a CacheStore rooted at
+    # ``--cache-dir`` (or .dimfort-cache/ under the first input path).
+    cache_obj = None
+    cache_mode = getattr(args, "cache", "off")
+    clear_cache = getattr(args, "clear_cache", False)
+    if cache_mode != "off" or clear_cache:
+        from dimfort.core.cache_store import CacheStore, default_cache_dir
+
+        cache_root = (
+            args.cache_dir if getattr(args, "cache_dir", None) is not None
+            else default_cache_dir(roots[0])
+        )
+        cache_obj = CacheStore(root=cache_root)
+        if clear_cache:
+            cache_obj.clear()
+
     trace_ctx = with_trace() if getattr(args, "trace", False) else nullcontext()
     with trace_ctx:
         result = check_files(
@@ -170,7 +216,16 @@ def _run_check(args: argparse.Namespace) -> int:
             cpp_defines=config.cpp_defines,
             include_paths=config.include_paths,
             external_modules=frozenset(config.external_modules),
+            cache=cache_obj,
+            cache_mode=cache_mode,
         )
+
+    if cache_obj is not None and cache_mode == "read-write":
+        # Best-effort lazy prune at the end of the run.
+        try:
+            cache_obj.prune()
+        except OSError:
+            pass
 
     per_file_counts: list[tuple[Path, int, int]] = []
     for p in paths:
@@ -223,6 +278,16 @@ def _run_check(args: argparse.Namespace) -> int:
             if seconds is None:
                 continue
             print(f"  {phase:<10}  {seconds:7.2f} s")
+        if cache_obj is not None:
+            cache_header = (
+                f"{_BOLD}Cache{_RESET}" if color else "Cache"
+            )
+            print()
+            print(cache_header)
+            print(f"  hits      {result.cache_hits:>6}")
+            print(f"  misses    {result.cache_misses:>6}")
+            print(f"  dirty     {result.cache_dirty:>6}")
+            print(f"  writes    {result.cache_writes:>6}")
 
     return 1 if error_count else 0
 
