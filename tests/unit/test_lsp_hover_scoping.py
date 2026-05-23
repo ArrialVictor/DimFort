@@ -80,7 +80,7 @@ def test_hover_trace_section_when_enabled(tmp_path: Path):
     )
     f = tmp_path / "trace.f90"
     f.write_text(src)
-    _server._features.hover_expressions = "detailed"
+    _server._features.hover = "detailed"
     try:
         # Hover on `r` (column 3 of line 5) — inside the assignment.
         hit = _drive_hover(f, 5, 3)
@@ -103,7 +103,7 @@ def test_hover_trace_section_when_enabled(tmp_path: Path):
         # ASCII tree connectors signal the new tree layout
         assert "├──" in extra or "└──" in extra
     finally:
-        _server._features.hover_expressions = "short"
+        _server._features.hover = "short"
 
 
 def test_hover_no_trace_section_when_disabled(tmp_path: Path):
@@ -117,7 +117,7 @@ def test_hover_no_trace_section_when_disabled(tmp_path: Path):
     )
     f = tmp_path / "no_trace.f90"
     f.write_text(src)
-    assert _server._features.trace_hover is False
+    assert _server._features.hover == "short"
     hit = _drive_hover(f, 4, 3)
     assert hit is not None
     text, _ = hit
@@ -242,7 +242,7 @@ def test_trace_hover_inside_call_argument(tmp_path: Path):
     )
     f = tmp_path / "call_arg.f90"
     f.write_text(src)
-    _server._features.hover_expressions = "detailed"
+    _server._features.hover = "detailed"
     try:
         # Column 14 sits inside `p1 + p2` (the argument).
         hit = _drive_trace_hover(f, 4, 14)
@@ -253,7 +253,7 @@ def test_trace_hover_inside_call_argument(tmp_path: Path):
         assert "p1 + p2" in text
         assert "R4.1" in text  # addition homogeneity rule fired
     finally:
-        _server._features.hover_expressions = "short"
+        _server._features.hover = "short"
 
 
 def test_trace_hover_inside_if_condition(tmp_path: Path):
@@ -268,7 +268,7 @@ def test_trace_hover_inside_if_condition(tmp_path: Path):
     )
     f = tmp_path / "if_cond.f90"
     f.write_text(src)
-    _server._features.hover_expressions = "detailed"
+    _server._features.hover = "detailed"
     try:
         # Column 9 sits inside `p1 + p2 > 0.0`. The relational compares
         # Pa to a dim'less literal → 🔴 homogeneity violation.
@@ -278,7 +278,7 @@ def test_trace_hover_inside_if_condition(tmp_path: Path):
         assert "🔴 DimFort" in text
         assert "p1" in text and "p2" in text
     finally:
-        _server._features.hover_expressions = "short"
+        _server._features.hover = "short"
 
 
 def test_trace_hover_inside_do_bound(tmp_path: Path):
@@ -293,7 +293,7 @@ def test_trace_hover_inside_do_bound(tmp_path: Path):
     )
     f = tmp_path / "do_bound.f90"
     f.write_text(src)
-    _server._features.hover_expressions = "detailed"
+    _server._features.hover = "detailed"
     try:
         # Column 15 sits inside `n + 1`. Both operands are integer
         # default dim'less → 🟢.
@@ -302,7 +302,7 @@ def test_trace_hover_inside_do_bound(tmp_path: Path):
         text, _ = hit
         assert "🟢 DimFort" in text
     finally:
-        _server._features.hover_expressions = "short"
+        _server._features.hover = "short"
 
 
 def test_call_hover_short_renders_pairing_b(tmp_path: Path):
@@ -324,7 +324,7 @@ def test_call_hover_short_renders_pairing_b(tmp_path: Path):
     )
     f = tmp_path / "call_short.f90"
     f.write_text(src)
-    _server._features.hover_subroutine_calls = "short"
+    _server._features.hover = "short"
     try:
         # Column 10 sits on `foo` (the callee) on line 10.
         hit = _drive_hover(f, 10, 10)
@@ -335,7 +335,7 @@ def test_call_hover_short_renders_pairing_b(tmp_path: Path):
         # All args resolve to Pa → 🟢.
         assert "🟢 DimFort" in text
     finally:
-        _server._features.hover_subroutine_calls = "short"
+        _server._features.hover = "short"
 
 
 def test_call_hover_detailed_expands_computed_args(tmp_path: Path):
@@ -357,7 +357,7 @@ def test_call_hover_detailed_expands_computed_args(tmp_path: Path):
     )
     f = tmp_path / "call_detailed.f90"
     f.write_text(src)
-    _server._features.hover_subroutine_calls = "detailed"
+    _server._features.hover = "detailed"
     try:
         hit = _drive_hover(f, 10, 10)
         assert hit is not None
@@ -366,7 +366,7 @@ def test_call_hover_detailed_expands_computed_args(tmp_path: Path):
         assert "p2 + p1" in text
         assert "├──" in text or "└──" in text
     finally:
-        _server._features.hover_subroutine_calls = "short"
+        _server._features.hover = "short"
 
 
 def test_expression_short_assignment(tmp_path: Path):
@@ -382,7 +382,7 @@ def test_expression_short_assignment(tmp_path: Path):
     )
     f = tmp_path / "asn_short.f90"
     f.write_text(src)
-    _server._features.hover_expressions = "short"
+    _server._features.hover = "short"
     # Cursor on `=` (col 5 of line 5).
     hit = _drive_hover(f, 5, 5)
     assert hit is not None
@@ -403,7 +403,7 @@ def test_expression_short_assignment_mismatch_marker(tmp_path: Path):
     )
     f = tmp_path / "asn_mismatch.f90"
     f.write_text(src)
-    _server._features.hover_expressions = "short"
+    _server._features.hover = "short"
     hit = _drive_hover(f, 4, 5)  # on `=`
     assert hit is not None
     text, _ = hit
@@ -423,7 +423,7 @@ def test_expression_short_relational(tmp_path: Path):
     )
     f = tmp_path / "rel_short.f90"
     f.write_text(src)
-    _server._features.hover_expressions = "short"
+    _server._features.hover = "short"
     # Cursor on `>` (col 9 of line 3).
     hit = _drive_hover(f, 3, 9)
     assert hit is not None
@@ -446,7 +446,7 @@ def test_expression_short_subexpr_in_call_arg(tmp_path: Path):
     )
     f = tmp_path / "subexpr.f90"
     f.write_text(src)
-    _server._features.hover_expressions = "short"
+    _server._features.hover = "short"
     # Cursor on `+` inside `a + b` (col 14 of line 4). The operator
     # is more specific than the enclosing call arg, so the hover
     # renders the homogeneity check on the two operands.
@@ -474,7 +474,7 @@ def test_expression_short_assignment_skips_line_continuation(tmp_path: Path):
     )
     f = tmp_path / "cont.f90"
     f.write_text(src)
-    _server._features.hover_expressions = "short"
+    _server._features.hover = "short"
     # Cursor on `=` (col 5 of line 5).
     hit = _drive_hover(f, 5, 5)
     assert hit is not None
@@ -495,7 +495,7 @@ def test_expression_short_numeric_literal(tmp_path: Path):
     )
     f = tmp_path / "lit_short.f90"
     f.write_text(src)
-    _server._features.hover_expressions = "short"
+    _server._features.hover = "short"
     # Cursor on `3.14` (col 8 of line 3).
     hit = _drive_hover(f, 3, 8)
     assert hit is not None
@@ -515,39 +515,43 @@ def test_trace_hover_outside_any_context_returns_none(tmp_path: Path):
     )
     f = tmp_path / "decl.f90"
     f.write_text(src)
-    _server._features.hover_expressions = "detailed"
+    _server._features.hover = "detailed"
     try:
         # Line 2 is the declaration — no enclosing assignment or context.
         hit = _drive_trace_hover(f, 2, 11)
         assert hit is None
     finally:
-        _server._features.hover_expressions = "short"
+        _server._features.hover = "short"
 
 
-def test_trace_master_switch_upgrades_short_surfaces():
-    """traceHoverEnabled must upgrade surfaces left at 'short' to
-    'detailed' even though companions always send the per-surface keys.
-    The bug gated the upgrade on key *absence*, so it never fired."""
+def test_hover_setting_parsed_from_init_options():
+    """The single ``hover`` enum is read from initializationOptions, and
+    legacy clients (traceHoverEnabled / per-surface 'detailed') still map
+    onto it."""
     from types import SimpleNamespace
 
     from dimfort.lsp import server as _srv
 
-    base = dict(hoverExpressions="short", hoverFunctionCalls="short",
-                hoverSubroutineCalls="short")
-    try:
+    def init(opts):
         _srv._initialize(None, SimpleNamespace(
             workspace_folders=None, root_uri=None,
-            initialization_options=dict(traceHoverEnabled=True, **base)))
-        assert _srv._features.hover_expressions == "detailed"
-        assert _srv._features.hover_function_calls == "detailed"
-        assert _srv._features.hover_subroutine_calls == "detailed"
+            initialization_options=opts))
 
-        _srv._initialize(None, SimpleNamespace(
-            workspace_folders=None, root_uri=None,
-            initialization_options=dict(traceHoverEnabled=False, **base)))
-        assert _srv._features.hover_expressions == "short"
+    try:
+        init({"hover": "disabled"})
+        assert _srv._features.hover == "disabled"
+        init({"hover": "detailed"})
+        assert _srv._features.hover == "detailed"
+        init({"hover": "short"})
+        assert _srv._features.hover == "short"
+        # Legacy back-compat: traceHoverEnabled=true -> detailed.
+        init({"traceHoverEnabled": True, "hoverExpressions": "short"})
+        assert _srv._features.hover == "detailed"
+        # Legacy per-surface detailed -> detailed.
+        init({"hoverFunctionCalls": "detailed"})
+        assert _srv._features.hover == "detailed"
+        # Nothing -> short.
+        init({})
+        assert _srv._features.hover == "short"
     finally:
-        _srv._features.trace_hover = False
-        _srv._features.hover_expressions = "short"
-        _srv._features.hover_function_calls = "short"
-        _srv._features.hover_subroutine_calls = "short"
+        _srv._features.hover = "short"

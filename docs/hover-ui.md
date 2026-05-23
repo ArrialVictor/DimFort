@@ -30,20 +30,35 @@ is `?` because of that violation is also tagged 🔴 (a 🟡 leaf is just
 unknown, but a 🔴 leaf forces every operator above it to fail too).
 
 
-## Surfaces and settings
+## Settings and surfaces
 
-| Setting key | Default | Triggers when |
-|---|---|---|
-| `dimfort.hover.functionCalls` | `Short` | cursor is on the callee identifier of a function call |
-| `dimfort.hover.subroutineCalls` | `Short` | cursor is on the callee identifier of a `call` |
-| `dimfort.hover.expressions` | `Short` | cursor is inside an assignment, call argument, IF/ELSEIF/WHERE condition, DO loop bound, SELECT CASE selector, or on a bare identifier |
+A single tri-state setting, **`hover`** (wire key `hover` in
+`initializationOptions`), governs every hover:
 
-`dimfort.trace.enabled` is the master switch: when on (the default),
-every hover surface left at `Short` is shown as `Detailed`. Turn it off
-to use the per-surface `dimfort.hover.*` levels (which default to
-`Short`, raised to `Detailed` individually). Because the clients always
-send the per-surface keys, the upgrade keys off the *value*
-(`Short` → `Detailed`), not whether the key was provided.
+| Value | Effect |
+|---|---|
+| `disabled` | No hover at all — the side panel is the unit surface. |
+| `short` | One-line summary. |
+| `detailed` | Full pairing / unit-algebra tree. |
+
+The verbosity is uniform across all hover surfaces; the *surface* only
+determines which layout fires:
+
+| Surface | Triggers when |
+|---|---|
+| function call | cursor is on the callee identifier of a function call |
+| subroutine call | cursor is on the callee identifier of a `call` |
+| expression | cursor is inside an assignment, call argument, IF/ELSEIF/WHERE condition, DO loop bound, SELECT CASE selector, or on a bare identifier |
+
+The **side panel is independent**: it always renders detailed and is
+governed only by its own open/closed state. The recommended default is
+"one cursor-following surface": where the panel is on by default
+(Neovim, Emacs) `hover` defaults to `disabled`; where it is off
+(VSCode) `hover` defaults to `short`.
+
+Legacy clients that still send `traceHoverEnabled` / the old
+per-surface `hover*` keys are mapped onto this enum (any `detailed` or
+trace-on → `detailed`, else `short`).
 
 
 ## Conflict resolution

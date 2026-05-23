@@ -141,18 +141,14 @@ class _FeatureToggles:
     completion: bool = True
     code_actions: bool = True
     goto_definition: bool = True
-    # Phase D: append the unit-algebra rule-chain trace to hover
-    # markdown when the hovered position sits inside an assignment.
-    # Opt-in — most hovers don't need the chain and it makes hovers
-    # taller. Toggled via the ``dimfort.toggleTrace`` VSCode command.
-    trace_hover: bool = False
-    # Per-surface hover verbosity: "short" (one-line summary) or
-    # "detailed" (full pairing / tree). When ``trace_hover`` is on, any
-    # surface still set to "short" gets upgraded to "detailed" so the
-    # legacy single toggle keeps working as a master switch.
-    hover_function_calls: str = "short"   # "short" | "detailed"
-    hover_subroutine_calls: str = "short"
-    hover_expressions: str = "short"
+    # Hover verbosity, a single tri-state applied to every hover surface
+    # (call pairing, expression, variable):
+    #   "disabled" — no hover at all (the panel is the unit surface)
+    #   "short"    — one-line summary
+    #   "detailed" — full pairing / unit-algebra tree
+    # The side panel is unaffected: it is always detailed, governed only
+    # by its own open/closed state.
+    hover: str = "short"   # "disabled" | "short" | "detailed"
 
 
 _features = _FeatureToggles()
@@ -940,11 +936,7 @@ def _resolve_hover(
                 # arg expression should fall through to that arg's
                 # own hover (or the trace path).
                 if _ts_h.node_contains(callee, line_1based, col_1based):
-                    level = (
-                        _features.hover_subroutine_calls
-                        if sig.is_subroutine
-                        else _features.hover_function_calls
-                    )
+                    level = _features.hover
                     rctx = _build_ts_ctx(
                         result, source, str(resolved_path), path=resolved_path,
                     )
@@ -1141,27 +1133,21 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         _features.completion = bool(opts.get("completionEnabled", True))
         _features.code_actions = bool(opts.get("codeActionsEnabled", True))
         _features.goto_definition = bool(opts.get("gotoDefinitionEnabled", True))
-        _features.trace_hover = bool(opts.get("traceHoverEnabled", False))
-        def _level(key: str, default: str) -> str:
-            v = opts.get(key, default)
-            return v if v in ("short", "detailed") else default
-        _features.hover_function_calls = _level("hoverFunctionCalls", "short")
-        _features.hover_subroutine_calls = _level("hoverSubroutineCalls", "short")
-        _features.hover_expressions = _level("hoverExpressions", "short")
-        # Master switch: traceHoverEnabled = true upgrades any surface
-        # left at the ``short`` default to ``detailed``. We key off the
-        # *value*, not key presence: every companion always sends the
-        # per-surface keys (set to "short"), so the old
-        # ``"hoverExpressions" not in opts`` guard made the switch a
-        # permanent no-op. To pin a surface short, turn the master
-        # switch off and raise the others individually.
-        if _features.trace_hover:
-            if _features.hover_function_calls == "short":
-                _features.hover_function_calls = "detailed"
-            if _features.hover_subroutine_calls == "short":
-                _features.hover_subroutine_calls = "detailed"
-            if _features.hover_expressions == "short":
-                _features.hover_expressions = "detailed"
+        # Single tri-state hover verbosity. Accept the legacy
+        # ``traceHoverEnabled`` / per-surface keys defensively in case an
+        # older client connects, but the modern key is ``hover``.
+        hv = opts.get("hover")
+        if hv in ("disabled", "short", "detailed"):
+            _features.hover = hv
+        else:
+            # Back-compat with pre-1.x clients: traceHoverEnabled=true or
+            # any per-surface "detailed" means detailed; else short.
+            legacy_detailed = bool(opts.get("traceHoverEnabled", False)) or any(
+                opts.get(k) == "detailed"
+                for k in ("hoverFunctionCalls", "hoverSubroutineCalls",
+                          "hoverExpressions")
+            )
+            _features.hover = "detailed" if legacy_detailed else "short"
         # Init options extend whatever config already contributed.
         extra = opts.get("externalModules")
         if isinstance(extra, list):
@@ -1449,6 +1435,10 @@ def _did_change(ls: LanguageServer, params: lsp.DidChangeTextDocumentParams) -> 
 
 @server.feature(lsp.TEXT_DOCUMENT_HOVER)
 def _hover(ls: LanguageServer, params: lsp.HoverParams) -> Any:
+    # Hover disabled entirely (the panel is the unit surface). Bail
+    # before doing any work.
+    if _features.hover == "disabled":
+        return None
     # Tab switches to a different open document don't fire any LSP
     # event, but their workset may not include the now-active file.
     # Trigger a fresh publish before reading trees.
@@ -1485,7 +1475,7 @@ def _expression_hover_for(
 ) -> tuple[str, lsp.Range] | None:
     """Expression hover. Fires when no more-specific hover matched
     (i.e. cursor isn't on an identifier or callee). Renders Short or
-    Detailed depending on ``_features.hover_expressions``.
+    Detailed depending on ``_features.hover``.
 
     Surfaces handled:
 
@@ -1514,7 +1504,7 @@ def _expression_hover_for(
         ctx.var_types.update(ts_checker.collect_var_types(tree, source))
         ctx.parameter_values.update(ts_checker.collect_parameter_values(tree, source))
         ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
-        if _features.hover_expressions == "short":
+        if _features.hover == "short":
             if op_node.type in ("+", "-"):
                 return _render_mathop_short(parent, ctx, source)
             return _render_subexpr_short(parent, ctx, source)
@@ -1553,7 +1543,7 @@ def _expression_hover_for(
     ctx.var_types.update(ts_checker.collect_var_types(tree, source))
     ctx.parameter_values.update(ts_checker.collect_parameter_values(tree, source))
     ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
-    if _features.hover_expressions == "short":
+    if _features.hover == "short":
         return _render_assignment_short(asn, lhs, rhs, ctx, source)
     rows: list[tuple[str, str | None, str, str]] = []
     # Root: the whole assignment. No rule fires "for" an assignment
@@ -1653,7 +1643,7 @@ def _expression_hover_for_context(
     # expressions, conditions, loop bounds, selectors).
     if expr is ctx and ctx.type in ("call_expression", "subroutine_call"):
         return None
-    if _features.hover_expressions == "short":
+    if _features.hover == "short":
         # Relational expressions are a homogeneity check on their
         # operands — the relation itself has no unit.
         if expr.type == "relational_expression":
