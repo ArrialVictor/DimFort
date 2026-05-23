@@ -141,6 +141,11 @@ class _Ctx:
     _by_scope_lc: dict[tuple[str | None, str], Unit] = field(
         default_factory=dict
     )
+    # Case-insensitive mirror of ``field_units`` (derived-type ``%`` fields).
+    # ``_resolve_member_chain`` lowercases the type + field at lookup, but
+    # ``field_units`` is keyed in declaration case, so without this mirror
+    # any type/field with an uppercase letter would never resolve.
+    _field_units_lc: dict[tuple[str, str], Unit] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.var_units and not self._var_units_lc:
@@ -151,6 +156,9 @@ class _Ctx:
                 self._by_scope_lc.setdefault(
                     (s.lower() if s is not None else None, n.lower()), v
                 )
+        if self.field_units and not self._field_units_lc:
+            for (t, fld), v in self.field_units.items():
+                self._field_units_lc.setdefault((t.lower(), fld.lower()), v)
 
     def scope_at(self, byte_offset: int) -> str | None:
         """Innermost enclosing routine scope name (lower-cased) for ``byte_offset``.
@@ -753,7 +761,7 @@ def _resolve_member_chain(
         if current_type is None:
             return None
     final = path[-1]
-    return ctx.field_units.get((current_type, final.lower()))
+    return ctx._field_units_lc.get((current_type, final.lower()))
 
 
 def _resolve_call(node: Node, ctx: _Ctx, source: bytes) -> Unit | None:
@@ -1527,6 +1535,11 @@ def collect_function_signatures(
 ) -> dict[str, FuncSig]:
     """Return ``{name_lc: FuncSig}`` for every ``function`` and ``subroutine``."""
     out: dict[str, FuncSig] = {}
+    # Case-insensitive view: a header arg may differ in case from its
+    # declaration (Fortran identifiers are case-insensitive).
+    vu_lc: dict[str, Unit] = {}
+    for _k, _v in var_units.items():
+        vu_lc.setdefault(_k.lower(), _v)
     for n in _ts.walk(tree.root_node):
         if n.type not in ("function", "subroutine"):
             continue
@@ -1547,7 +1560,7 @@ def collect_function_signatures(
             for c in params.children:
                 if c.type == "identifier":
                     arg_names.append(_text(c, source))
-        arg_units = tuple(var_units.get(a) for a in arg_names)
+        arg_units = tuple(vu_lc.get(a.lower()) for a in arg_names)
 
         return_unit: Unit | None = None
         if not is_subroutine:
@@ -1561,9 +1574,9 @@ def collect_function_signatures(
                     (c for c in result.children if c.type == "identifier"), None
                 )
                 if ret_id is not None:
-                    return_unit = var_units.get(_text(ret_id, source))
+                    return_unit = vu_lc.get(_text(ret_id, source).lower())
             if return_unit is None:
-                return_unit = var_units.get(func_name)
+                return_unit = vu_lc.get(func_name.lower())
 
         out[func_name.lower()] = FuncSig(
             arg_names=tuple(arg_names),
@@ -1603,19 +1616,21 @@ def collect_module_exports(
         # function/subroutine or a derived-type block).
         export_var_units: dict[str, Unit] = {}
         all_var_names: list[str] = []
+        # ``lookup`` resolves case-insensitively (Fortran identifiers are).
+        lookup = _make_scoped_lookup(var_units, None)
         for decl in n.children:
             if decl.type != "variable_declaration":
                 continue
             for vn in _collect_decl_names(decl, source):
                 all_var_names.append(vn)
-                if vn in var_units:
-                    export_var_units[vn] = var_units[vn]
+                u = lookup(vn, None)
+                if u is not None:
+                    export_var_units[vn] = u
 
         # Contained procedures: walk only the children to scope
         # correctly. ``_signatures_for_subtree`` takes a ``(name,
         # scope)`` lookup callable; the flat-dict back-compat shape
         # of this function is wrapped to match.
-        lookup = _make_scoped_lookup(var_units, None)
         signatures: dict[str, FuncSig] = {}
         for child in n.children:
             if child.type in ("function", "subroutine"):
@@ -1715,15 +1730,29 @@ def _make_scoped_lookup(
       same-named variable elsewhere in the workset (e.g. a wind
       ``v: m/s``), producing spurious H004 diagnostics.
     """
+    # Fortran identifiers are case-insensitive. Build lowercased views so a
+    # header arg / use-import / field reference resolves its declaration
+    # regardless of case (e.g. a ``function f(PTE)`` whose body declares
+    # ``real :: pte``, or a consumer using a UPPERCASE module constant).
     if var_units_by_scope is None:
-        return lambda name, scope: var_units.get(name)
+        flat_lc: dict[str, Unit] = {}
+        for k, v in var_units.items():
+            flat_lc.setdefault(k.lower(), v)
+        return lambda name, scope: flat_lc.get(name.lower())
+
+    by_scope_lc: dict[tuple[str | None, str], Unit] = {}
+    for (s, n), v in var_units_by_scope.items():
+        by_scope_lc.setdefault(
+            (s.lower() if s is not None else None, n.lower()), v
+        )
 
     def lookup(name: str, scope: str | None) -> Unit | None:
+        name_lc = name.lower()
         if scope is not None:
-            u = var_units_by_scope.get((scope, name))
+            u = by_scope_lc.get((scope.lower(), name_lc))
             if u is not None:
                 return u
-        return var_units_by_scope.get((None, name))
+        return by_scope_lc.get((None, name_lc))
 
     return lookup
 
