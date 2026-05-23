@@ -2853,14 +2853,27 @@ def _find_expression_root(tree, line_1based: int, col_1based: int):
     # If the cursor landed on the callee *name* of a call, show the whole
     # call — which resolves to the function's return unit and a proper
     # argument tree — rather than the bare callee identifier, which has no
-    # unit of its own and renders as a lone 🟡 leaf. The callee is the
-    # child whose start coincides with the call's start; arguments begin
-    # later, so a cursor on an argument identifier is left untouched.
+    # unit of its own and renders as a lone 🟡 leaf. A cursor on an
+    # argument identifier is left untouched.
     if best is not None and best.type == "identifier":
         parent = best.parent
-        if (parent is not None and parent.type == "call_expression"
-                and best.start_byte == parent.start_byte):
-            best = parent
+        if parent is not None:
+            if (parent.type == "call_expression"
+                    and best.start_byte == parent.start_byte):
+                # Function call: the callee is the call's first token.
+                best = parent
+            elif parent.type == "subroutine_call":
+                # ``call foo(...)``: the callee is the first identifier
+                # child (the leading ``call`` keyword precedes it, so its
+                # start does not coincide with the statement's). Compare
+                # by byte offset — py-tree-sitter hands back fresh node
+                # wrappers, so identity (``is``) never holds.
+                first_id = next(
+                    (c for c in parent.children if c.type == "identifier"),
+                    None,
+                )
+                if first_id is not None and first_id.start_byte == best.start_byte:
+                    best = parent
     return best
 
 

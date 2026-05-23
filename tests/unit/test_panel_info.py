@@ -237,6 +237,33 @@ def test_find_expression_root_promotes_callee_to_call(tmp_path: Path):
     assert arg_node.type == "identifier"
 
 
+def test_find_expression_root_promotes_subroutine_callee_to_call(tmp_path: Path):
+    """Same as the function case, for a ``call sub(...)`` statement: the
+    callee promotes to the subroutine_call (which expands the argument
+    tree). The leading ``call`` keyword means the callee does not start
+    where the statement does, so the byte-offset check must handle it."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.lsp.server import _find_expression_root
+
+    line = "  call s2(a)"
+    src = (
+        "subroutine s\n"
+        "  real :: a  !< @unit{m}\n"
+        f"{line}\n"                    # line 3: call s2(a)
+        "end subroutine\n"
+    )
+    tree = _ts.parse_text(src.encode())
+
+    callee = _find_expression_root(tree, 3, line.index("s2(") + 1)
+    assert callee is not None
+    assert callee.type == "subroutine_call"
+
+    # The argument identifier is left alone.
+    arg = _find_expression_root(tree, 3, line.index("(a)") + 2)
+    assert arg is not None
+    assert arg.type == "identifier"
+
+
 def test_build_expression_tree_call_includes_argument(tmp_path: Path):
     """A function call renders as a tree: the call as root (carrying the
     return unit) with its argument(s) as children, not a childless leaf."""
