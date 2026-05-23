@@ -1148,15 +1148,19 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         _features.hover_function_calls = _level("hoverFunctionCalls", "short")
         _features.hover_subroutine_calls = _level("hoverSubroutineCalls", "short")
         _features.hover_expressions = _level("hoverExpressions", "short")
-        # Legacy toggle: traceHoverEnabled = true acts as a master
-        # upgrade from short to detailed for any surface still on the
-        # default. Explicit per-surface settings still win.
+        # Master switch: traceHoverEnabled = true upgrades any surface
+        # left at the ``short`` default to ``detailed``. We key off the
+        # *value*, not key presence: every companion always sends the
+        # per-surface keys (set to "short"), so the old
+        # ``"hoverExpressions" not in opts`` guard made the switch a
+        # permanent no-op. To pin a surface short, turn the master
+        # switch off and raise the others individually.
         if _features.trace_hover:
-            if "hoverFunctionCalls" not in opts:
+            if _features.hover_function_calls == "short":
                 _features.hover_function_calls = "detailed"
-            if "hoverSubroutineCalls" not in opts:
+            if _features.hover_subroutine_calls == "short":
                 _features.hover_subroutine_calls = "detailed"
-            if "hoverExpressions" not in opts:
+            if _features.hover_expressions == "short":
                 _features.hover_expressions = "detailed"
         # Init options extend whatever config already contributed.
         extra = opts.get("externalModules")

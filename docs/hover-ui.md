@@ -38,9 +38,12 @@ unknown, but a 🔴 leaf forces every operator above it to fail too).
 | `dimfort.hover.subroutineCalls` | `Short` | cursor is on the callee identifier of a `call` |
 | `dimfort.hover.expressions` | `Short` | cursor is inside an assignment, call argument, IF/ELSEIF/WHERE condition, DO loop bound, SELECT CASE selector, or on a bare identifier |
 
-`dimfort.trace.enabled` is a legacy master switch: when on, any surface
-still at `Short` is upgraded to `Detailed`. Per-surface settings always
-win when explicit.
+`dimfort.trace.enabled` is the master switch: when on (the default),
+every hover surface left at `Short` is shown as `Detailed`. Turn it off
+to use the per-surface `dimfort.hover.*` levels (which default to
+`Short`, raised to `Detailed` individually). Because the clients always
+send the per-surface keys, the upgrade keys off the *value*
+(`Short` → `Detailed`), not whether the key was provided.
 
 
 ## Conflict resolution

@@ -522,3 +522,32 @@ def test_trace_hover_outside_any_context_returns_none(tmp_path: Path):
         assert hit is None
     finally:
         _server._features.hover_expressions = "short"
+
+
+def test_trace_master_switch_upgrades_short_surfaces():
+    """traceHoverEnabled must upgrade surfaces left at 'short' to
+    'detailed' even though companions always send the per-surface keys.
+    The bug gated the upgrade on key *absence*, so it never fired."""
+    from types import SimpleNamespace
+
+    from dimfort.lsp import server as _srv
+
+    base = dict(hoverExpressions="short", hoverFunctionCalls="short",
+                hoverSubroutineCalls="short")
+    try:
+        _srv._initialize(None, SimpleNamespace(
+            workspace_folders=None, root_uri=None,
+            initialization_options=dict(traceHoverEnabled=True, **base)))
+        assert _srv._features.hover_expressions == "detailed"
+        assert _srv._features.hover_function_calls == "detailed"
+        assert _srv._features.hover_subroutine_calls == "detailed"
+
+        _srv._initialize(None, SimpleNamespace(
+            workspace_folders=None, root_uri=None,
+            initialization_options=dict(traceHoverEnabled=False, **base)))
+        assert _srv._features.hover_expressions == "short"
+    finally:
+        _srv._features.trace_hover = False
+        _srv._features.hover_expressions = "short"
+        _srv._features.hover_function_calls = "short"
+        _srv._features.hover_subroutine_calls = "short"
