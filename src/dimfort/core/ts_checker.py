@@ -130,6 +130,27 @@ class _Ctx:
     routine_scopes: tuple[tuple[int, int, str], ...] = ()
     # Cached parallel arrays for bisect: starts[i] == routine_scopes[i][0].
     _scope_starts: tuple[int, ...] = ()
+    # Case-insensitive mirrors of the two unit tables. Fortran identifiers
+    # are case-insensitive, but ``var_units`` / ``var_units_by_scope`` are
+    # keyed in *declaration* case. Cross-file ``use`` imports key entries in
+    # the module's declaration case (e.g. ``RHOH2O``); a consumer that
+    # references the symbol in another case (e.g. ``rhoh2o = ratm/100.``)
+    # would miss a case-sensitive lookup and silently lose its unit. Built
+    # once per file in ``__post_init__``; ``unit_for`` queries these.
+    _var_units_lc: dict[str, Unit] = field(default_factory=dict)
+    _by_scope_lc: dict[tuple[str | None, str], Unit] = field(
+        default_factory=dict
+    )
+
+    def __post_init__(self) -> None:
+        if self.var_units and not self._var_units_lc:
+            for k, v in self.var_units.items():
+                self._var_units_lc.setdefault(k.lower(), v)
+        if self.var_units_by_scope and not self._by_scope_lc:
+            for (s, n), v in self.var_units_by_scope.items():
+                self._by_scope_lc.setdefault(
+                    (s.lower() if s is not None else None, n.lower()), v
+                )
 
     def scope_at(self, byte_offset: int) -> str | None:
         """Innermost enclosing routine scope name (lower-cased) for ``byte_offset``.
@@ -162,16 +183,17 @@ class _Ctx:
         flat fallback (so callers that didn't populate the scoped
         table keep working).
         """
-        if self.var_units_by_scope:
+        name_lc = name.lower()
+        if self._by_scope_lc:
             scope = self.scope_at(byte_offset)
             if scope is not None:
-                u = self.var_units_by_scope.get((scope, name))
+                u = self._by_scope_lc.get((scope, name_lc))
                 if u is not None:
                     return u
-            u = self.var_units_by_scope.get((None, name))
+            u = self._by_scope_lc.get((None, name_lc))
             if u is not None:
                 return u
-        return self.var_units.get(name)
+        return self._var_units_lc.get(name_lc)
 
 
 # ---------------------------------------------------------------------------
