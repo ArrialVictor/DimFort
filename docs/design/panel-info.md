@@ -201,6 +201,26 @@ Sizing:
 - Configurable via setting; user can `:vertical resize N` to override
   in Nvim.
 
+### Rendered example
+
+The real panel (Neovim, the reference renderer) on the `qa.f90` scene
+from the companion `MANUAL_QA.md`. Cursor on the `=` in
+`q = 0.5 * rho * v * v` — a deep, all-🟢 multiplication tree over the
+stacked `Module` / `Function` scope:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../img/panel-nvim-hero_dark.png">
+  <img width="640" src="../img/panel-nvim-hero_light.png" alt="DimFort side panel — unit-algebra tree for q = 0.5 * rho * v * v with the stacked module/function scope">
+</picture>
+
+Cursor on the `=` in `bogus = c_sound * t` — a `kg ≠ m` mismatch, the
+assignment root marked 🔴:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../img/panel-nvim-mismatch_dark.png">
+  <img width="640" src="../img/panel-nvim-mismatch_light.png" alt="DimFort side panel — a kg ≠ m homogeneity violation, the assignment root marked red">
+</picture>
+
 
 ## Settings (per editor)
 
