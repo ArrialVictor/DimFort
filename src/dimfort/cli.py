@@ -235,7 +235,7 @@ def _run_check(args: argparse.Namespace) -> int:
         u = sum(1 for d in diags if d.code.startswith("U"))
         per_file_counts.append((p, h, u))
         for d in diags:
-            severity = "error" if d.severity is Severity.ERROR else "warning"
+            severity = d.severity.value
             emit(d.file, d.start.line, severity, d.code, d.message)
             if getattr(args, "trace", False) and d.trace and not args.quiet:
                 for line in format_trace(d.trace).splitlines():

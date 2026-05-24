@@ -48,6 +48,10 @@ CODES: dict[str, CodeSpec] = {
         "U005", Severity.WARNING,
         "variable used in a unit-checked expression has no annotation",
     ),
+    "U020": CodeSpec(
+        "U020", Severity.INFO,
+        "RHS unit assumed via @unit_assume (derivation suppressed)",
+    ),
 }
 
 

@@ -116,6 +116,12 @@ class _Ctx:
     # initialiser) resolves the exponent as a rational rather than firing
     # D1.4. Empty dict ⇒ behaves identically to "no PARAMETER awareness".
     parameter_values: dict[str, Fraction | int] = field(default_factory=dict)
+    # ``@unit_assume`` escape hatch, keyed by 1-based source line. Value is
+    # ``(assumed_unit, reason, column)``. When an assignment statement's
+    # line span covers one of these, the checker skips deriving the RHS
+    # (suppressing D1.4 + interior fires), treats the result as
+    # ``assumed_unit`` for the LHS consistency check, and emits a U020 INFO.
+    assumes: dict[int, tuple[UnitExpr, str, int]] = field(default_factory=dict)
     # Scope-aware annotation table. ``var_units`` above remains the
     # flat first-seen view (compat). When ``var_units_by_scope`` is
     # populated, ``unit_for(name, byte_offset)`` honours the enclosing
@@ -348,6 +354,29 @@ def _assignment_homogeneity(
     ):
         return "wrapper_untag", tu, ru
     return "mismatch", tu, ru
+
+
+def _assume_for_node(
+    node: Node, ctx: _Ctx
+) -> tuple[UnitExpr, str, int, int] | None:
+    """Return the ``@unit_assume`` covering ``node``, or ``None``.
+
+    The directive is written as a trailing ``!< @unit_assume{...}`` on
+    the statement (single-line: same line; continued: the last physical
+    line). We scan only the node's own line span so a trailing assume on
+    statement N never bleeds onto statement N+1. Returns
+    ``(unit, reason, line, column)``.
+    """
+    if not ctx.assumes:
+        return None
+    start_line = node.start_point[0] + 1
+    end_line = node.end_point[0] + 1
+    for ln in range(start_line, end_line + 1):
+        hit = ctx.assumes.get(ln)
+        if hit is not None:
+            unit, reason, col = hit
+            return unit, reason, ln, col
+    return None
 
 
 def _build_autocast_event(
@@ -1998,6 +2027,7 @@ def check(
     var_units_by_scope: dict[tuple[str | None, str], str | Unit] | None = None,
     routine_scopes: tuple[tuple[int, int, str], ...] = (),
     out_autocast_events: list[AutocastEvent] | None = None,
+    assumes: dict[int, tuple[str, str, int]] | None = None,
 ) -> list[Diagnostic]:
     """Run the checker over a tree-sitter-parsed file.
 
@@ -2048,6 +2078,26 @@ def check(
             except UnitError:
                 continue
 
+    # Parse the @unit_assume directives (line → (unit_text, reason, col)).
+    # A unit that fails to parse surfaces as U002 at its column, mirroring
+    # the @unit{} parse-error path; the assume is then dropped.
+    parsed_assumes: dict[int, tuple[UnitExpr, str, int]] = {}
+    assume_diags: list[Diagnostic] = []
+    for line_no, (unit_text, reason, col) in (assumes or {}).items():
+        try:
+            parsed_assumes[line_no] = (
+                _units_mod.parse(unit_text, active_table), reason, col,
+            )
+        except UnitError as exc:
+            assume_diags.append(Diagnostic(
+                file=str(file),
+                start=Position(line_no, col),
+                end=Position(line_no, col),
+                severity=Severity.ERROR,
+                code="U002",
+                message=f"@unit_assume unit {unit_text!r}: {exc}",
+            ))
+
     if signatures is None:
         signatures, _ = collect_function_signatures_and_module_exports(
             tree, parsed_vars, source,
@@ -2069,8 +2119,10 @@ def check(
         routine_scopes=tuple(routine_scopes),
         _scope_starts=tuple(r[0] for r in routine_scopes),
         parameter_values=parameter_values,
+        assumes=parsed_assumes,
     )
     out: list[Diagnostic] = []
+    out.extend(assume_diags)
     out.extend(_emit_u005_for_unannotated(tree, ctx, source))
 
     # Phase D: if tracing was activated by the caller, open a fresh
@@ -2100,31 +2152,50 @@ def check(
             before_len = len(out)
             with _stmt_trace_ctx() as stmt_trace:
                 target, value = _assignment_sides(node)
-                out.extend(_walk_expressions(value, ctx, source))
-                verdict, tu, ru = _assignment_homogeneity(
-                    target, value, ctx, source,
-                )
-                if verdict == "wrapper_untag":
-                    out.append(
-                        _emit_d16_untag(
-                            target if target is not None else node,
-                            tu, ru, ctx,
+                assume = _assume_for_node(node, ctx)
+                if assume is not None:
+                    au, reason, aline, acol = assume
+                    # Escape hatch: do NOT walk the RHS — that suppresses
+                    # D1.4 and any interior fire. Record an audit note, then
+                    # still check the assumption against a declared LHS unit
+                    # (so an assume can't mask a declared-unit conflict).
+                    out.append(Diagnostic(
+                        file=str(ctx.file),
+                        start=Position(aline, acol),
+                        end=Position(aline, acol),
+                        severity=Severity.INFO,
+                        code="U020",
+                        message=f"RHS unit assumed {format_unit(au)} ({reason})",
+                    ))
+                    tu = _resolve(target, ctx, source) if target is not None else None
+                    if tu is not None and not equal_dim(tu, au):
+                        out.append(_emit_h001(node, tu, au, ctx))
+                else:
+                    out.extend(_walk_expressions(value, ctx, source))
+                    verdict, tu, ru = _assignment_homogeneity(
+                        target, value, ctx, source,
+                    )
+                    if verdict == "wrapper_untag":
+                        out.append(
+                            _emit_d16_untag(
+                                target if target is not None else node,
+                                tu, ru, ctx,
+                            )
                         )
-                    )
-                elif verdict == "mismatch":
-                    # Span the squiggle over the whole assignment so the
-                    # editor highlights both sides of `=`; lets the user
-                    # see the offending statement at a glance instead of
-                    # squinting at the LHS identifier.
-                    out.append(_emit_h001(node, tu, ru, ctx))
-                elif verdict == "autocast" and out_autocast_events is not None:
-                    # R4.4 — record the event for any audit consumer.
-                    # The literal_text is the source slice of the RHS,
-                    # which may be a compound numeric expression like
-                    # ``2.0 * 3.14`` per _is_pure_numeric_constant.
-                    out_autocast_events.append(
-                        _build_autocast_event(value, tu, str(ctx.file), source)
-                    )
+                    elif verdict == "mismatch":
+                        # Span the squiggle over the whole assignment so the
+                        # editor highlights both sides of `=`; lets the user
+                        # see the offending statement at a glance instead of
+                        # squinting at the LHS identifier.
+                        out.append(_emit_h001(node, tu, ru, ctx))
+                    elif verdict == "autocast" and out_autocast_events is not None:
+                        # R4.4 — record the event for any audit consumer.
+                        # The literal_text is the source slice of the RHS,
+                        # which may be a compound numeric expression like
+                        # ``2.0 * 3.14`` per _is_pure_numeric_constant.
+                        out_autocast_events.append(
+                            _build_autocast_event(value, tu, str(ctx.file), source)
+                        )
             _attach_traces_since(before_len, stmt_trace)
             continue
 

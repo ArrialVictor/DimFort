@@ -4,6 +4,28 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### `@unit_assume` escape hatch for un-derivable expressions
+
+- **`@unit_assume{ <unit> : <reason> }`** — a statement-level directive
+  that tells the checker to stop *deriving* an assignment's RHS unit
+  (suppressing D1.4 and any interior fire) and instead treat the result
+  as the asserted `<unit>`. Intended for expressions DimFort cannot
+  analyse dimensionally — chiefly empirical power-law fits that raise a
+  dimensioned base to a non-rational exponent (e.g. the Brandes-2007
+  snow-density law `rho = 1.e3*0.178*(r*2.*1000.)**(-0.922)`), which no
+  amount of PARAMETER-aware exponent work (OQ4) can close.
+- **Suppresses derivation, not consistency.** The asserted unit is still
+  checked against a declared LHS, so an assume that contradicts the
+  variable's `@unit{}` still fires H001 — it can't mask a real conflict.
+- **`reason` is mandatory** (a category + free text) so every assumption
+  is auditable. Each use emits a **`U020` INFO** note at its site, and
+  the directives are greppable (`grep @unit_assume`).
+- Written as a trailing `!< @unit_assume{...}` on the assignment. v1
+  keys by source line, so it is correct for raw-parsed files; a
+  cpp-expanded `.F90` whose lines shift under preprocessing is a known
+  limitation. CLI now renders INFO/HINT severities with their own label
+  (previously everything non-error printed as `warning`).
+
 ### Side-panel info endpoint + R4.4 literal-init autocast
 
 - **`dimfort/panelInfo` LSP request.** Returns structured data for an

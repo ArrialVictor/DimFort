@@ -151,14 +151,53 @@ After this, Doxygen renders `@unit{m/s}` as a "Unit:" line in the
 variable's generated docs. DimFort and Doxygen now share the exact
 same source — no duplication.
 
+## Escape hatch: `@unit_assume`
+
+Some expressions can't be analysed dimensionally at all — most commonly
+**empirical power-law fits** that raise a dimensioned quantity to a
+non-rational exponent. The Brandes-2007 snow-density law is the canonical
+case:
+
+```fortran
+real :: r_snow    !< @unit{m}
+real :: rho_snow  !< @unit{kg/m^3}
+! r_snow^(-0.922) has no representable dimension → D1.4
+rho_snow = 1.e3*0.178*(r_snow*2.*1000.)**(-0.922)   !< @unit_assume{kg/m^3 : empirical-fit Brandes 2007}
+```
+
+`@unit_assume{ <unit> : <reason> }` is a **statement-level** directive
+(write it as a trailing `!<` on the assignment). It tells the checker to
+**stop deriving** that assignment's RHS — suppressing the D1.4 and any
+interior fire — and instead treat the result as the asserted `<unit>`.
+
+- **It suppresses derivation, not consistency.** The asserted unit is
+  still checked against a *declared* LHS unit, so an assume that
+  contradicts the variable's `@unit{}` still fires **H001** — it can
+  never mask a real conflict. To propagate the unit downstream, annotate
+  the variable's declaration as usual; the assume only governs *this*
+  statement.
+- **`reason` is mandatory** — a short category (`empirical-fit`,
+  `scale-pun`, `legacy-const`, …) plus free text. Every assumption is
+  therefore both greppable (`grep -rn @unit_assume`) and visible in the
+  check output as a **`U020`** INFO note. INFO never affects the exit code.
+- This is *not* a way to silence genuine mismatches — reach for it only
+  when DimFort fundamentally cannot represent the unit (non-rational
+  exponents, empirical fits). Prefer a typed PARAMETER or a real fix
+  everywhere else.
+
+> v1 keys assumes by source line, which is exact for raw-parsed files.
+> A `.F90` file whose lines shift under `cpp` preprocessing is a known
+> limitation (the assume may not align with the expanded statement).
+
 ## Diagnostics produced at annotation time
 
 | Code        | Severity | Meaning |
 |-------------|----------|---------|
-| (malformed) | error    | `@unit{` with no closing `}`, empty `@unit{}`, or more than one `@unit{…}` on one comment line. |
+| (malformed) | error    | `@unit{` with no closing `}`, empty `@unit{}`, or more than one `@unit{…}` on one comment line. A malformed `@unit_assume` (missing `:` reason, empty unit/reason) surfaces here too (U001). |
 | (orphan)    | warning  | An annotation that doesn't sit on or before a known declaration. |
 | (conflict)  | error    | The same variable received two different unit annotations (e.g. `!>` block disagrees with `!<` trailing). |
 | **U010**    | error    | `!<` on an intermediate line of an `&`-continued declaration; annotation is rejected. |
+| **U020**    | info     | An `@unit_assume{…}` was applied here — the RHS unit was asserted, not derived. Audit note; never affects the exit code. |
 
 The semantic checker layers add the **H-series** on top:
 
