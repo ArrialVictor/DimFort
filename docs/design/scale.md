@@ -236,15 +236,33 @@ literal values into the factor* (treat `1000` as `factor 1000`) — is the
 one that genuinely false-positives on arithmetic (`×2` → "scale
 mismatch") and inverts confusingly; **do not do that.**
 
-**The one real dial (open):** S001 on an *untyped* conversion
-(`= play/100`) is true but potentially **noisy** on LMDZ (many bare-
-literal conversions). Options: (a) fire on both missing and untyped
-conversions (maximal surfacing, nudges typing — consistent with H010);
-(b) fire only on the **literal-free** boundary (`= play`, a flat missing
-conversion / a cross-scale variable flow / a call-arg-vs-parameter
-mismatch) and stay silent when any literal is present (lowest noise,
-narrower). This is a severity/scope choice, **not** a correctness wall.
-Resolve before finalising the S001 emit sites.
+**Design principle (stated outright):** *a conversion is only checkable
+when its factor is carried by a typed name (a PARAMETER or a scaled
+unit). Bare-literal conversions are opaque — the **missing**-conversion
+bug is caught regardless, but **blessing** a correct conversion requires
+typing it.* This puts DimFort in the strongly-typed-UoM family (F#,
+Frink, pint, uom: conversions are explicit typed operations), but as a
+*linter on annotated unitless Fortran* — it cannot force typed
+conversions, so it warns toward them. (The alternative, CamFort-style
+*unit inference* on literals, silently accepts present-literal
+conversions and only catches missing ones; we choose the opinionated
+end, consistent with the #006 / irreducible-only PARAMETER discipline.)
+No system can validate the *magnitude* of a bare literal (`/10` vs
+`/100` both pass) — they track units, not whether a number equals its
+unit's factor.
+
+**The noise/nudge dial — RESOLVED (2026-05-25): option (a).** S001 fires
+whenever `scale_mode` is on and a boundary has a factor mismatch — both
+*missing* (`= play`) and *untyped* (`= play/100`) conversions — at
+**warning** severity, opt-in. Rationale: it is the nudge-toward-typing
+the discipline wants (consistent with H010); it is the simpler emit (no
+literal-detection guard); and it is **near-silent on the current LMDZ
+annotations** (everything is base-SI ⇒ factors are 1 ⇒ nothing to
+mismatch — noise only appears once scaled units are annotated). Option
+(b) — *fire only on literal-free boundaries, silent when a literal is
+present* — remains documented as a **fallback config narrowing**
+(`[scale] untyped_conversions = warn|off`) if (a) proves noisy in
+practice. This is a severity/scope choice, not a correctness wall.
 
 
 ## 4. Comparison semantics — the structured verdict
