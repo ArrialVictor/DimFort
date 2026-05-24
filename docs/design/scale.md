@@ -109,6 +109,53 @@ offset-bearing unit defs; today it lists `hPa`/`degree` — verify they
 carry a factor.)
 
 
+### 3.3 How `factor` and `offset` transform under each operation
+
+The scale notion is only fully specified once every operation states
+what it does to `factor` (and, Phase 2, `offset`) — *including the ones
+already implemented for `factor`* (`*`, `/`, `**`). Two distinct roles:
+operations either **propagate** scale (compose it into the result) or
+**check** it (require operands to agree). Dimension behavior is shown
+for context; it is unchanged by this feature.
+
+| operation | dimension | `factor` | `offset` (Phase 2) | role |
+|-----------|-----------|----------|--------------------|------|
+| `a * b` | add | multiply `f_a·f_b` *(implemented)* | both must be 0; result 0 | propagate |
+| `a / b` | subtract | divide `f_a/f_b` *(implemented)* | both must be 0; result 0 | propagate |
+| `a ** n` | ×`n` | `f_a ** n` *(implemented; non-int on a scaled factor already restricted, `units.py:352`)* | must be 0; result 0 | propagate |
+| `a + b`, `a - b` | must be equal | **must be equal** → else `S001(ratio)`; result = common factor | see temperature rules below | **check** |
+| `max/min(a,b,…)`, `a<b`, `a==b` | must be equal | **must be equal** → else `S001` | see temperature rules | **check** |
+| `LOG(a)` / `EXP(a)` (wrappers) | recurse `inner` | recurse `inner` (see log-domain note) | recurse | check inner |
+
+**Key consequences (state them, don't assume the reader infers them):**
+- **Propagating ops never emit `S001`.** Multiplying `hPa` by anything
+  is legal; the result simply *carries* `factor 100`. Scale errors are
+  only *detected* where operands must agree (`+ - max min` / relational),
+  exactly mirroring how dimension mismatches are only detected there.
+  This is why `*`/`/` "already work" — they propagate; they were never a
+  check site. The spec states it so the boundary is explicit.
+- **Dimensionless is not factor-free.** `*`/`/` must keep composing
+  `factor` even when the resulting `dimension` is `{1}` (e.g. `g/kg`),
+  so that a later `+`/comparison can catch a `g/kg` vs `kg/kg` mismatch.
+- **`LOG` turns a factor into a log-domain offset.** `LOG(f·u) =
+  LOG(f) + LOG(u)`: a factor *inside* a `LogWrap` is an additive shift,
+  not a ratio. So `compare(LOG(hPa), LOG(Pa))` is a scale mismatch that
+  manifests additively. Phase 1: `compare` recurses into the wrapper and
+  reports `S001(ratio)` on the inner factor (the ratio is still the
+  actionable quantity); **audit the Tetens/FCTTRE `LogWrap` algebra
+  (R5.x) for factor handling** before relying on this.
+
+**Temperature / offset rules (Phase 2, affine).** Stated here for
+completeness; not built in Phase 1 (units have `offset = 0` until then):
+- `a - b` with **equal** offsets → result `offset 0` (a *difference* /
+  `ΔT`; the offsets cancel). Legal.
+- `a + b`: if exactly one operand has `offset ≠ 0` (absolute + delta) →
+  result keeps that offset (a shifted absolute). Legal. If **both** have
+  `offset ≠ 0` (two absolute °C) → ill-defined → `S002`.
+- `*`, `/`, `**` on any `offset ≠ 0` operand → ill-defined (cannot
+  multiply an absolute °C) → require `offset 0`, else `S002`.
+
+
 ## 4. Comparison semantics — the structured verdict
 
 The central refactor. Introduce:
