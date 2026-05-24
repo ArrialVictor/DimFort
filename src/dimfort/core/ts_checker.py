@@ -449,6 +449,23 @@ def _unwrap_parens(node: Node) -> Node:
     return node
 
 
+def _is_number_literal_node(node: Node) -> bool:
+    """True if ``node`` is a bare numeric literal (parens/unary +/- ok).
+
+    Detects literal-ness structurally rather than via
+    ``_resolve_constant_value`` — the latter returns ``None`` for values
+    it can't rationalise (e.g. E-notation like ``2.546E-5``), which must
+    still be treated as a numeric literal for implicit-cast purposes.
+    """
+    n = _unwrap_parens(node)
+    if n.type == "number_literal":
+        return True
+    if n.type == "unary_expression":
+        inner = _unary_operand(n)
+        return inner is not None and _unwrap_parens(inner).type == "number_literal"
+    return False
+
+
 def _flatten_member_chain(
     node: Node, source: bytes
 ) -> tuple[str | None, list[str]]:
@@ -857,7 +874,19 @@ def _resolve_call(node: Node, ctx: _Ctx, source: bytes) -> Unit | None:
     if name_lc in SAME_UNIT_ARG_INTRINSICS:
         if not arg_exprs:
             return None
-        return _resolve(arg_exprs[0], ctx, source)
+        # MAX/MIN require all args to share a unit. Return the first
+        # "carrying" operand's unit — i.e. skip over dimensionless numeric
+        # literals (e.g. the 0. in ``max(0., qq)``), which adopt the
+        # dimensioned sibling's unit rather than forcing the result to {1}.
+        fallback = _resolve(arg_exprs[0], ctx, source)
+        for a in arg_exprs:
+            u = _resolve(a, ctx, source)
+            if u is None:
+                continue
+            if isinstance(u, Unit) and _is_dimensionless(u) and _is_number_literal_node(a):
+                continue
+            return u
+        return fallback
 
     if name_lc in PRODUCT_INTRINSICS:
         if len(arg_exprs) < 2:
@@ -1398,12 +1427,56 @@ def _check_call(
             yield _emit_h003(node, name_lc, u, ctx)
         return
 
+    if name_lc in SAME_UNIT_ARG_INTRINSICS:
+        yield from _check_same_unit_args(arg_exprs, ctx, source)
+        return
+
     sig = ctx.signatures.get(name_lc)
     if sig is None or sig.is_subroutine:
         return
     yield from _check_call_args_against_sig(
         sig, name_lc, arg_exprs, node, ctx, source
     )
+
+
+def _check_same_unit_args(
+    arg_exprs: list[Node], ctx: _Ctx, source: bytes
+) -> Iterable[Diagnostic]:
+    """Validate MAX/MIN-style intrinsics whose args must share a unit.
+
+    Mirrors the ``+``/``-`` operand rules: a dimensionless numeric literal
+    is auto-cast to the carrying (dimensioned) unit and warns via H010
+    (unless its value is 0, which is dimension-agnostic and silent); a
+    genuinely dimensioned operand that disagrees with the carrying unit
+    fires H002.
+    """
+    if len(arg_exprs) < 2:
+        return
+    resolved = [
+        (a, _resolve(a, ctx, source), _resolve_constant_value(a, ctx, source))
+        for a in arg_exprs
+    ]
+    carry: UnitExpr | None = None
+    for _a, u, _lit in resolved:
+        if isinstance(u, Unit) and not _is_dimensionless(u):
+            carry = u
+            break
+    if carry is None:
+        return  # all dimensionless / unresolved: nothing to enforce
+    for a, u, lit in resolved:
+        if u is None:
+            continue
+        if isinstance(u, Unit) and not _is_dimensionless(u):
+            if not equal_dim(u, carry):
+                yield _emit_h002(a, u, carry, ctx)
+        elif _is_number_literal_node(a):
+            if lit == 0:
+                continue  # literal 0 is dimension-agnostic
+            yield _emit_h010(a, _text(a, source), carry, ctx)
+        else:
+            # a genuinely dimensionless non-literal operand vs a
+            # dimensioned carrying unit is a real mismatch
+            yield _emit_h002(a, u, carry, ctx)
 
 
 def _check_call_args_against_sig(

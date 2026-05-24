@@ -515,6 +515,18 @@ def combine(
             # not H010.
             a_is_numeric_literal = isinstance(a_literal, (int, Fraction))
             b_is_numeric_literal = isinstance(b_literal, (int, Fraction))
+            # A literal 0 is the additive identity in *every* dimension
+            # (0 m = 0 s = 0): it adopts the dimensioned operand's unit
+            # silently — no implicit-cast warning, since there is nothing
+            # to promote to a PARAMETER. Only value 0 earns this; a
+            # non-zero literal (e.g. 273.15) still fires D1.5 because its
+            # hidden unit is a real smell (the #006 K-literal family).
+            a_is_zero = a_is_numeric_literal and a_literal == 0
+            b_is_zero = b_is_numeric_literal and b_literal == 0
+            if a_is_zero and is_dimensionless(a) and not is_dimensionless(b):
+                return _ok("R4.1", b)
+            if b_is_zero and is_dimensionless(b) and not is_dimensionless(a):
+                return _ok("R4.1", a)
             if a_is_numeric_literal and is_dimensionless(a) and not is_dimensionless(b):
                 return b, "D1.5"
             if b_is_numeric_literal and is_dimensionless(b) and not is_dimensionless(a):
