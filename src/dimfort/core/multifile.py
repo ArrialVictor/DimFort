@@ -501,6 +501,7 @@ def check_files(
     cache_mode: str = "off",
     units_file: Path | None = None,
     diagnostic_severities: dict[str, str] | None = None,
+    scale_mode: bool = False,
 ) -> WorksetResult:
     """Scan, attach, and check every file in ``sources`` together.
 
@@ -798,6 +799,7 @@ def check_files(
                     a.line: (a.unit_text, a.reason, a.column)
                     for a in getattr(entry.scan, "assumes", ())
                 },
+                scale_mode=scale_mode,
             )
             if file_autocasts:
                 result.autocast_events[entry.path] = file_autocasts

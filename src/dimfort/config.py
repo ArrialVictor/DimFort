@@ -69,6 +69,15 @@ class DimfortConfig:
     #   "D1.6" = "off"        # silence implicit wrapper untag warnings
     diagnostic_severities: dict[str, str] = field(default_factory=dict)
 
+    # [scale] — opt-in multiplicative-scale checking (Phase 1). Off by
+    # default: dimension-only checking stays first-class. When on, two
+    # operands of the same dimension but different ``factor`` (e.g.
+    # ``hPa`` vs ``Pa``, ``g/kg`` vs ``kg/kg``) fire S001. See
+    # docs/design/scale.md.
+    #   [scale]
+    #   enabled = true
+    scale_mode: bool = False
+
 
 def find_config(start: Path) -> Path | None:
     """Walk upward from ``start`` looking for a ``.dimfort.toml``.
@@ -177,6 +186,9 @@ def _from_raw(raw: dict, path: Path) -> DimfortConfig:
             continue
         diagnostic_severities[key] = value
 
+    scale_section = raw.get("scale", {}) or {}
+    scale_mode = bool(scale_section.get("enabled", False))
+
     return DimfortConfig(
         config_path=path,
         src_paths=src_paths,
@@ -186,4 +198,5 @@ def _from_raw(raw: dict, path: Path) -> DimfortConfig:
         include_paths=include_paths,
         units_file=units_file,
         diagnostic_severities=diagnostic_severities,
+        scale_mode=scale_mode,
     )
