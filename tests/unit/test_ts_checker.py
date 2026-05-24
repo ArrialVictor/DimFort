@@ -14,11 +14,11 @@ from dimfort.core import (
 from dimfort.core import ts_parser as ts
 
 
-def _check(src: str, var_units: dict[str, str]) -> list:
+def _check(src: str, var_units: dict[str, str], *, scale_mode: bool = False) -> list:
     src_b = src.encode()
     tree = ts.parse_text(src_b)
     return ts_checker.check(
-        tree, var_units, source=src_b, file="test.f90",
+        tree, var_units, source=src_b, file="test.f90", scale_mode=scale_mode,
     )
 
 
@@ -964,3 +964,66 @@ def test_max_with_mismatched_units_fires_h002():
     diags = _check(src, {"mass": "kg", "speed": "m/s", "result": "kg"})
     codes = [d.code for d in diags]
     assert "H002" in codes
+
+
+# ---------------------------------------------------------------------------
+# S001 — opt-in multiplicative-scale checking (scale_mode)
+# ---------------------------------------------------------------------------
+
+
+def test_scale_assignment_fires_s001_when_enabled():
+    """``a[m] = b[km]`` — same dimension, factor 1 vs 1000 → S001 when
+    scale_mode is on (a missing/untyped conversion)."""
+    src = (
+        "subroutine s\n"
+        "  real :: a, b\n"
+        "  a = b\n"
+        "end subroutine\n"
+    )
+    codes = [d.code for d in _check(src, {"a": "m", "b": "km"}, scale_mode=True)]
+    assert "S001" in codes
+    assert "H001" not in codes  # dims agree, so it's scale not dimension
+
+
+def test_scale_off_by_default_is_silent():
+    """Same code with scale_mode off (the default) → no S001; dimension-only
+    behaviour is byte-for-byte unchanged."""
+    codes = [d.code for d in _check(
+        "subroutine s\n  real :: a, b\n  a = b\nend subroutine\n",
+        {"a": "m", "b": "km"},
+    )]
+    assert "S001" not in codes
+    assert codes == []  # a[m] = b[km] is dim-homogeneous → silent today
+
+
+def test_scale_operand_fires_s001():
+    """``c = a + b`` with a[m] + b[km] → S001 on the + operand."""
+    src = (
+        "subroutine s\n"
+        "  real :: a, b, c\n"
+        "  c = a + b\n"
+        "end subroutine\n"
+    )
+    codes = [d.code for d in _check(
+        src, {"a": "m", "b": "km", "c": "m"}, scale_mode=True,
+    )]
+    assert "S001" in codes
+
+
+def test_scale_matching_factor_no_s001():
+    """``a[m] = b[m]`` — identical factor → no S001 even with scale on."""
+    codes = [d.code for d in _check(
+        "subroutine s\n  real :: a, b\n  a = b\nend subroutine\n",
+        {"a": "m", "b": "m"}, scale_mode=True,
+    )]
+    assert "S001" not in codes
+
+
+def test_scale_dim_mismatch_is_h001_not_s001():
+    """``a[m] = b[s]`` — different dimension → H001 (dimension), never S001."""
+    codes = [d.code for d in _check(
+        "subroutine s\n  real :: a, b\n  a = b\nend subroutine\n",
+        {"a": "m", "b": "s"}, scale_mode=True,
+    )]
+    assert "H001" in codes
+    assert "S001" not in codes
