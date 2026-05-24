@@ -53,6 +53,7 @@ from dimfort.core.units import (
     UnitExpr,
     UnitTable,
     combine,
+    compare,
     equal_dim,
     format_unit,
     power,
@@ -1169,6 +1170,48 @@ def _emit_h010(
     )
 
 
+def _emit_s001(
+    loc: Node,
+    left: UnitExpr,
+    right: UnitExpr,
+    ratio: Fraction | None,
+    ctx: _Ctx,
+) -> Diagnostic:
+    """Scale mismatch (S001): same dimension, different magnitude factor.
+
+    Opt-in — emitted only when ``ctx.scale_mode`` is on. Warning severity,
+    overridable via ``[diagnostics] S001``. A *missing* conversion is a
+    real bug; a *correct-but-untyped* conversion is fixed by carrying the
+    factor on a typed PARAMETER (e.g. ``100. !< @unit{Pa/hPa}``). See
+    docs/design/scale.md.
+    """
+    start, end = _node_span(loc)
+    # Both sides share a dimension, so format_unit renders them identically
+    # (it normalises prefixes: km → m). Lead with the magnitude ratio — that
+    # is the actual discrepancy — rather than a confusing "m vs m".
+    ratio_txt = f"×{ratio}" if ratio is not None else "an unknown factor"
+    return Diagnostic(
+        file=ctx.file,
+        start=start,
+        end=end,
+        severity=Severity.WARNING,
+        code="S001",
+        message=(
+            f"Scale mismatch: same dimension ({format_unit(left)}) but the "
+            f"magnitudes differ by {ratio_txt}. If this is a unit conversion, "
+            f"carry the factor on a typed PARAMETER; otherwise the units "
+            f"disagree in scale."
+        ),
+    )
+
+
+def _scale_mismatch_ratio(a: UnitExpr, b: UnitExpr) -> Fraction | None:
+    """Return the factor ratio if ``a``/``b`` are dim-equal but scale-differ,
+    else ``None``. Thin wrapper over :func:`compare` for the emit sites."""
+    v = compare(a, b)
+    return v.ratio if v.kind == "scale_mismatch" else None
+
+
 def _is_dimensionless(u: Unit) -> bool:
     """Return True if ``u`` is the dim'less unit (all base exponents zero)."""
     return all(d == 0 for d in u.dimension)
@@ -1352,6 +1395,14 @@ def _walk_expressions(
         ru = _resolve(right, ctx, source)
         if lu is None or ru is None:
             return
+        # Scale layer (opt-in): +/- operands of the same dimension but
+        # different magnitude factor → S001. Mutually exclusive with the
+        # H002 dim-mismatch below (compare() gives scale_mismatch only when
+        # dims agree). */ propagate scale, so only +/- are check sites.
+        if ctx.scale_mode and op in ("+", "-"):
+            ratio = _scale_mismatch_ratio(lu, ru)
+            if ratio is not None:
+                yield _emit_s001(node, lu, ru, ratio, ctx)
         left_lit_val: int | Fraction | Exponent | None = (
             _resolve_constant_value(left, ctx, source) if left is not None else None
         )
@@ -2291,6 +2342,13 @@ def check(
                         out_autocast_events.append(
                             _build_autocast_event(value, tu, str(ctx.file), source)
                         )
+                    # Scale layer (opt-in): dims agree (homogeneous) but the
+                    # magnitude factors differ → S001. Dimension-only mode
+                    # leaves this untouched (scale_mode default False).
+                    if ctx.scale_mode and verdict == "homogeneous":
+                        ratio = _scale_mismatch_ratio(tu, ru)
+                        if ratio is not None:
+                            out.append(_emit_s001(node, tu, ru, ratio, ctx))
             _attach_traces_since(before_len, stmt_trace)
             continue
 
