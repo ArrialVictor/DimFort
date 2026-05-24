@@ -198,6 +198,55 @@ completeness; not built in Phase 1 (units have `offset = 0` until then):
   multiply an absolute °C) → require `offset 0`, else `S002`.
 
 
+### 3.4 Numeric literals — the conversion-vs-arithmetic question
+
+A literal multiplier in source is ambiguous: `×1000` might be a **unit
+conversion** (kg/m³→g/m³) or **genuine arithmetic** (`×2` doubling,
+`π`). DimFort cannot tell which from the literal alone. This looked
+(during the Phase-1 build, 2026-05-25) like a fatal false-positive
+source; on analysis it is not, **because of how literals are modelled**:
+
+- A bare numeric literal resolves to **dimensionless `factor 1`** (a
+  *value*, not a unit-factor — `ts_checker.py`: "numeric literals are
+  dimensionless"). So a literal in `*`/`/` does **not** change the
+  expression's unit-factor.
+
+**Consequence 1 — genuine arithmetic never false-positives.**
+`y[m] = x[m]*2` → `x*2` is `{m, factor 1}` → `compare` = equal → no
+S001. `area[m²] = π·r²` → `{m², factor 1}` → equal. A `×2`/`π`/`0.5`
+multiplier leaves the unit-factor untouched, so scale never fires on it.
+
+**Consequence 2 — S001 fires on real scale boundaries only.** Two cases,
+both legitimate:
+- **Missing conversion (bug):** `phpa[hPa] = play[Pa]` — factor 100 vs 1
+  → S001. A genuine off-by-100.
+- **Untyped conversion (style):** `phpa[hPa] = play[Pa]/100` — the bare
+  `/100` is factor-1-inert, so factors still differ → S001. This is a
+  *true* finding: the conversion is not typed. The **fix is the existing
+  discipline** — extract the literal to a typed PARAMETER carrying the
+  conversion unit (`100. !< @unit{Pa/hPa}`, factor 100); then `compare`
+  reconciles (`play / 100[Pa/hPa]` resolves to `{hPa, factor 100}`) and
+  it validates. Identical in spirit to the #006 K-literal → PARAMETER
+  moves and the irreducible-only policy.
+
+So **scale-checking and the PARAMETER-extraction discipline reinforce
+each other**: scale surfaces untyped conversions; typing them makes the
+conversion explicit and checkable. The rejected alternative — *fold
+literal values into the factor* (treat `1000` as `factor 1000`) — is the
+one that genuinely false-positives on arithmetic (`×2` → "scale
+mismatch") and inverts confusingly; **do not do that.**
+
+**The one real dial (open):** S001 on an *untyped* conversion
+(`= play/100`) is true but potentially **noisy** on LMDZ (many bare-
+literal conversions). Options: (a) fire on both missing and untyped
+conversions (maximal surfacing, nudges typing — consistent with H010);
+(b) fire only on the **literal-free** boundary (`= play`, a flat missing
+conversion / a cross-scale variable flow / a call-arg-vs-parameter
+mismatch) and stay silent when any literal is present (lowest noise,
+narrower). This is a severity/scope choice, **not** a correctness wall.
+Resolve before finalising the S001 emit sites.
+
+
 ## 4. Comparison semantics — the structured verdict
 
 The central refactor. Introduce:
