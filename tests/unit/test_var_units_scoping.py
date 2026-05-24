@@ -168,3 +168,57 @@ def test_checker_h004_fires_when_call_actually_mismatches(tmp_path: Path):
     result = check_files([f])
     codes = [d.code for d in result.diagnostics[f]]
     assert "H004" in codes, codes
+
+
+def test_sibling_routine_unannotated_param_no_bleed(tmp_path: Path):
+    """An annotated param must not leak its unit to a same-named
+    *unannotated* param in a sibling routine of the SAME file.
+
+    Finding #018: annotating ``temp @unit{K}`` in subroutine ``a`` made
+    the unannotated ``temp`` in sibling ``b`` resolve to K via the flat
+    first-seen var_units fallback, firing a spurious mismatch on
+    ``temp + 1.0``. Scope-aware resolution must return *unknown* for b's
+    temp (no flat fallback).
+    """
+    src = (
+        "module m\n"
+        "contains\n"
+        "  subroutine a(temp, out)\n"
+        "    real, intent(in) :: temp   !< @unit{K}\n"
+        "    real, intent(out):: out    !< @unit{K}\n"
+        "    out = temp\n"
+        "  end subroutine\n"
+        "  subroutine b(temp, r)\n"
+        "    real, intent(in) :: temp   ! NOT annotated\n"
+        "    real, intent(out):: r      !< @unit{1}\n"
+        "    r = temp + 1.0\n"          # would fire K vs 1 if temp bled to {K}
+        "  end subroutine\n"
+        "end module\n"
+    )
+    f = tmp_path / "sibling_bleed.f90"
+    f.write_text(src)
+    result = check_files([f])
+    codes = [d.code for d in result.diagnostics[f]]
+    assert "H001" not in codes and "H010" not in codes and "H002" not in codes, [
+        (d.code, d.start.line, d.message) for d in result.diagnostics[f]
+    ]
+
+
+def test_scope_aware_still_fires_within_annotated_routine(tmp_path: Path):
+    """Guard: removing the flat fallback must not silence a real
+    in-scope mismatch — b's own annotated temp still drives a fire."""
+    src = (
+        "module m\n"
+        "contains\n"
+        "  subroutine a(temp)\n"
+        "    real, intent(in) :: temp   !< @unit{K}\n"
+        "    real :: x                  !< @unit{1}\n"
+        "    x = temp + 1.0\n"          # K + 1 in-scope → must still fire
+        "  end subroutine\n"
+        "end module\n"
+    )
+    f = tmp_path / "in_scope_fire.f90"
+    f.write_text(src)
+    result = check_files([f])
+    codes = [d.code for d in result.diagnostics[f]]
+    assert "H010" in codes or "H001" in codes or "H002" in codes, codes

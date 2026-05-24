@@ -617,6 +617,11 @@ def _build_ts_ctx(
         var_units_by_scope=var_units_by_scope,
         routine_scopes=routine_scopes,
         _scope_starts=tuple(r[0] for r in routine_scopes),
+        # With a path we have the per-file scoped table (incl. use-imports
+        # under the (None, name) layer): resolve scope-aware so a name
+        # resolves to its OWN routine's unit, never a same-named symbol
+        # from elsewhere (finding #018). Without a path, degrade to flat.
+        scope_aware=path is not None,
     )
 
 

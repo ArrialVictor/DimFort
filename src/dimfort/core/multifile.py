@@ -750,6 +750,22 @@ def check_files(
                 _u007(entry.path, f"Module '{missing}' not found in workset")
             )
 
+        # Make ``use``-imports resolvable in scope-aware mode without the
+        # flat fallback (finding #018): merge the import delta — names not
+        # declared in THIS file — into the by-scope table under the
+        # ``(None, name)`` module layer. The file's own per-scope
+        # annotations are untouched (setdefault), so a sibling routine's
+        # unannotated param can no longer absorb a same-named unit from
+        # elsewhere. Stored back on the result so the LSP's scope-aware
+        # ``_Ctx`` resolves imports the same way (no second source of truth).
+        own_scoped = per_file_var_units_by_scope.get(entry.path) or {}
+        own_names_lc = {n.lower() for n in file_var_units}
+        scoped_with_imports: dict[tuple[str | None, str], Unit] = dict(own_scoped)
+        for n, u in per_file_var_units.items():
+            if n.lower() not in own_names_lc:
+                scoped_with_imports.setdefault((None, n), u)
+        result.var_units_by_scope[entry.path] = scoped_with_imports
+
         # ---- cache lookup ------------------------------------------------
         cache_key: str | None = None
         replayed: list[Diagnostic] | None = None
@@ -775,7 +791,7 @@ def check_files(
                 table=active_table,
                 signatures=per_file_sigs,
                 field_units=merged_field_units_text,
-                var_units_by_scope=per_file_var_units_by_scope.get(entry.path),
+                var_units_by_scope=scoped_with_imports,
                 routine_scopes=entry.attachment.routine_scopes,
                 out_autocast_events=file_autocasts,
                 assumes={

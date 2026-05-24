@@ -122,6 +122,13 @@ class _Ctx:
     # (suppressing D1.4 + interior fires), treats the result as
     # ``assumed_unit`` for the LHS consistency check, and emits a U020 INFO.
     assumes: dict[int, tuple[UnitExpr, str, int]] = field(default_factory=dict)
+    # True when the caller supplied a by-scope table (even an empty one),
+    # i.e. scope-aware mode is active. In that mode ``unit_for`` resolves
+    # ONLY through the scoped table (incl. the ``(None, name)`` module /
+    # use-import layer) and never falls back to the flat first-seen
+    # ``var_units`` map — that flat fallback let an unannotated parameter
+    # absorb a same-named symbol from an unrelated routine (finding #018).
+    scope_aware: bool = False
     # Scope-aware annotation table. ``var_units`` above remains the
     # flat first-seen view (compat). When ``var_units_by_scope`` is
     # populated, ``unit_for(name, byte_offset)`` honours the enclosing
@@ -198,15 +205,18 @@ class _Ctx:
         table keep working).
         """
         name_lc = name.lower()
-        if self._by_scope_lc:
+        if self.scope_aware:
+            # Scope-aware: (scope, name) then the (None, name) layer
+            # (module-level decls + use-imports). NO flat fallback — a
+            # name absent here is genuinely unannotated in this scope, and
+            # falling back to the flat first-seen map would let it absorb
+            # a same-named symbol from an unrelated routine (finding #018).
             scope = self.scope_at(byte_offset)
             if scope is not None:
                 u = self._by_scope_lc.get((scope, name_lc))
                 if u is not None:
                     return u
-            u = self._by_scope_lc.get((None, name_lc))
-            if u is not None:
-                return u
+            return self._by_scope_lc.get((None, name_lc))
         return self._var_units_lc.get(name_lc)
 
 
@@ -877,9 +887,13 @@ def _resolve_call(node: Node, ctx: _Ctx, source: bytes) -> Unit | None:
     u = ctx.unit_for(name, node.start_byte)
     if u is not None:
         return u
-    for k, v in ctx.var_units.items():
-        if k.lower() == name_lc:
-            return v
+    if not ctx.scope_aware:
+        # Legacy flat fallback only outside scope-aware mode; in
+        # scope-aware mode ``unit_for`` is authoritative (no cross-scope
+        # bleed — finding #018).
+        for k, v in ctx.var_units.items():
+            if k.lower() == name_lc:
+                return v
     return None
 
 
@@ -2120,6 +2134,7 @@ def check(
         _scope_starts=tuple(r[0] for r in routine_scopes),
         parameter_values=parameter_values,
         assumes=parsed_assumes,
+        scope_aware=var_units_by_scope is not None,
     )
     out: list[Diagnostic] = []
     out.extend(assume_diags)
