@@ -4,6 +4,22 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### Fix: scope bleed — unannotated param inheriting a sibling routine's unit
+
+- An annotated formal parameter leaked its unit to a same-named
+  **unannotated** parameter in a sibling routine of the *same file*,
+  via the flat first-seen `var_units` fallback in `_Ctx.unit_for` (and
+  the call/array resolver's flat scan). `_make_scoped_lookup` already
+  avoided this, but `unit_for`'s `if self._by_scope_lc:` guard treated an
+  *empty* scoped dict as "not scope-aware" and re-enabled the fallback.
+- Added an explicit `_Ctx.scope_aware` flag (set whenever a by-scope
+  table is supplied, even empty). In scope-aware mode resolution goes
+  `(scope, name)` → `(None, name)` only — never the flat map. `use`-imports
+  (which previously resolved through the flat map) are now merged into the
+  by-scope table under the `(None, name)` layer in `multifile` and stored
+  on the result, so the LSP resolves them identically. Regression tests in
+  `test_var_units_scoping.py`.
+
 ### `@unit_assume` escape hatch for un-derivable expressions
 
 - **`@unit_assume{ <unit> : <reason> }`** — a statement-level directive
