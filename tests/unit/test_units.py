@@ -5,8 +5,10 @@ import pytest
 
 from dimfort.core import units  # noqa: F401 — ensure DEFAULT_TABLE is populated
 from dimfort.core.units import (
+    Unit,
     UnitAmbiguityWarning,
     UnitError,
+    compare,
     equal_dim,
     equal_strict,
     parse,
@@ -58,6 +60,56 @@ def test_equal_dim_ignores_factor():
 def test_equal_strict_distinguishes_factor():
     assert not equal_strict(parse("km"), parse("m"))
     assert equal_strict(parse("m"), parse("m"))
+
+
+# ---------------------------------------------------------------------------
+# compare() — the structured scale-layer verdict
+# ---------------------------------------------------------------------------
+
+
+def test_compare_equal():
+    v = compare(parse("m"), parse("m"))
+    assert v.kind == "equal"
+    assert v.ratio is None
+
+
+def test_compare_dim_mismatch():
+    assert compare(parse("m"), parse("s")).kind == "dim_mismatch"
+    assert compare(parse("m/s"), parse("kg")).kind == "dim_mismatch"
+
+
+def test_compare_scale_mismatch_reports_ratio():
+    v = compare(parse("km"), parse("m"))
+    assert v.kind == "scale_mismatch"
+    assert v.ratio == Fraction(1000)
+    # ratio is direction-sensitive (a.factor / b.factor)
+    assert compare(parse("m"), parse("km")).ratio == Fraction(1, 1000)
+
+
+def test_compare_scale_mismatch_on_dimensionless():
+    """Factor is checked even when the dimension is {1} — the g/kg vs
+    kg/kg case that makes scale useful on dimensionless quantities."""
+    kgkg = Unit((0, 0, 0, 0, 0, 0, 0), Fraction(1))
+    gkg = Unit((0, 0, 0, 0, 0, 0, 0), Fraction(1, 1000))
+    v = compare(gkg, kgkg)
+    assert v.kind == "scale_mismatch"
+    assert v.ratio == Fraction(1, 1000)
+
+
+@pytest.mark.parametrize(
+    "a, b",
+    [
+        ("m", "m"), ("km", "m"), ("m", "s"), ("m/s", "kg"),
+        ("Pa", "Pa"), ("ms", "s"), ("J", "N"),
+    ],
+)
+def test_compare_agrees_with_equal_dim_and_strict(a, b):
+    """compare() is the single source of truth: equal_dim ⟺ not
+    dim_mismatch; equal_strict ⟺ equal."""
+    ua, ub = parse(a), parse(b)
+    v = compare(ua, ub)
+    assert equal_dim(ua, ub) == (v.kind != "dim_mismatch")
+    assert equal_strict(ua, ub) == (v.kind == "equal")
 
 
 def test_unknown_identifier_raises():
