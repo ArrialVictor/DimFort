@@ -147,7 +147,6 @@ def _run_check(args: argparse.Namespace) -> int:
     from dimfort.config import load_config
     from dimfort.core import unit_config  # populate DEFAULT_TABLE
     from dimfort.core._source_io import FORTRAN_EXTS, discover_fortran_files
-    from dimfort.core.diagnostics import Severity
     from dimfort.core.multifile import check_files
 
     roots: list[Path] = []

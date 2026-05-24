@@ -71,7 +71,7 @@ def test_assume_conflicts_with_declared_lhs_fires_h001(tmp_path):
         "module m\n contains\n  subroutine s()\n"
         "   real :: r    !< @unit{m}\n"
         "   real :: e    !< @unit{J}\n"
-        f"   e = 1.e3*(r*2.)**(-0.922)   !< @unit_assume{{kg/m^3 : conflict}}\n"
+        "   e = 1.e3*(r*2.)**(-0.922)   !< @unit_assume{kg/m^3 : conflict}\n"
         "  end subroutine\n end module\n",
     )
     res = check_files([f])
@@ -117,7 +117,7 @@ def test_assume_does_not_bleed_to_next_statement(tmp_path):
         "   real :: r    !< @unit{m}\n"
         "   real :: rho  !< @unit{kg/m^3}\n"
         "   real :: g    !< @unit{m}\n"
-        f"   rho = 1.e3*(r*2.)**(-0.922)   !< @unit_assume{{kg/m^3 : fit}}\n"
+        "   rho = 1.e3*(r*2.)**(-0.922)   !< @unit_assume{kg/m^3 : fit}\n"
         "   g = r * 2.0\n"  # plain, no assume — must stay clean
         "  end subroutine\n end module\n",
     )
