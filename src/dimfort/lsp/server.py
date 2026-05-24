@@ -242,6 +242,11 @@ _project_config: DimfortConfig = DimfortConfig()
 _cache: CacheStore | None = None
 _cache_mode: str = "off"
 
+# Opt-in multiplicative-scale checking (Phase 1; see docs/design/scale.md).
+# Defaults from ``.dimfort.toml`` ([scale] enabled) and may be overridden
+# per-client via the ``scaleMode`` initializationOption. Off ⇒ dimension-only.
+_scale_mode: bool = False
+
 
 def _cap_workset(
     paths: list[Path], active: Path, limit: int,
@@ -480,6 +485,7 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
             cache_mode=_cache_mode,
             units_file=_project_config.units_file,
             diagnostic_severities=_project_config.diagnostic_severities,
+            scale_mode=_scale_mode,
         )
     except Exception:
         log.exception("dimfort pipeline crashed on %s", active)
@@ -622,6 +628,10 @@ def _build_ts_ctx(
         # resolves to its OWN routine's unit, never a same-named symbol
         # from elsewhere (finding #018). Without a path, degrade to flat.
         scope_aware=path is not None,
+        # Honour the project's opt-in scale mode so on-demand features
+        # (hover / panel / re-check) reason consistently with the
+        # diagnostic pipeline. Default off ⇒ dimension-only.
+        scale_mode=_scale_mode,
     )
 
 
@@ -1128,10 +1138,12 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         config.external_modules
     )
     opts = params.initialization_options or {}
-    global _external_modules, _max_workset_size
+    global _external_modules, _max_workset_size, _scale_mode
     _external_modules = _external_modules_from_config
     if config.max_workset_size is not None:
         _max_workset_size = config.max_workset_size
+    # Scale mode: config default, optionally overridden per-client.
+    _scale_mode = config.scale_mode
 
     if isinstance(opts, dict):
         _features.inlay_hints = bool(opts.get("inlayHintsEnabled", True))
@@ -1162,6 +1174,11 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         cap = opts.get("maxWorksetSize")
         if isinstance(cap, int) and cap > 0:
             _max_workset_size = cap
+
+        # Opt-in scale checking: initializationOption overrides config.
+        scale_opt = opts.get("scaleMode")
+        if isinstance(scale_opt, bool):
+            _scale_mode = scale_opt
 
         # Content-hash cache: opt-in via initializationOptions. The
         # cache directory defaults to ``.dimfort-cache/`` under the
@@ -3543,6 +3560,7 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
                 cache_mode=_cache_mode,
                 units_file=_project_config.units_file,
                 diagnostic_severities=_project_config.diagnostic_severities,
+                scale_mode=_scale_mode,
             )
         except Exception:
             log.exception("workspace check failed")
