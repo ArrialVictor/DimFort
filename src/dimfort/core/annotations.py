@@ -55,6 +55,23 @@ class RawAnnotation:
 
 
 @dataclass(frozen=True)
+class RawAssume:
+    """One ``@unit_assume{ <unit> : <reason> }`` occurrence.
+
+    The escape hatch: on an assignment line it tells the checker to stop
+    deriving the RHS unit (suppressing D1.4 and any interior fire) and
+    instead treat the result as ``unit_text``, still consistency-checked
+    against the LHS. ``reason`` is mandatory (a category + free text, e.g.
+    ``empirical-fit: Brandes 2007``) so every assumption is auditable.
+    """
+
+    line: int        # 1-based physical line of the comment
+    column: int      # 1-based column where `@unit_assume{` begins
+    unit_text: str   # the asserted unit, e.g. "kg/m^3"
+    reason: str      # mandatory justification (category + text)
+
+
+@dataclass(frozen=True)
 class MalformedAnnotation:
     """A ``@unit`` invocation that the scanner could not parse."""
 
@@ -116,7 +133,12 @@ def _comment_start(line: str) -> int | None:
 _DOX_MARKER = {">": AnnotationKind.PRE, "!": AnnotationKind.PRE, "<": AnnotationKind.POST}
 
 # Match `@unit` followed by `{`. The opening brace is required.
+# NB: `@unit_assume{` does NOT match this (a `_` sits between `@unit`
+# and `{`), so the two scanners never collide.
 _UNIT_RE = re.compile(r"@unit\s*\{")
+
+# Match `@unit_assume` followed by `{` — the escape-hatch directive.
+_ASSUME_RE = re.compile(r"@unit_assume\s*\{")
 
 
 def _doxygen_kind(comment_text: str) -> AnnotationKind | None:
@@ -171,6 +193,65 @@ def _find_unit_invocations(
     return found, errors, kind
 
 
+def _find_assume_invocations(
+    comment_text: str, line_no: int, base_column: int
+) -> tuple[list[RawAssume], list[MalformedAnnotation]]:
+    """Pull every ``@unit_assume{ <unit> : <reason> }`` out of one comment.
+
+    Like :func:`_find_unit_invocations`, requires a Doxygen marker (so the
+    directive anchors to a statement via a trailing ``!<`` or a preceding
+    ``!>``/``!!``). The inner text is split on the first ``:`` into the
+    asserted unit and a mandatory reason; either part missing is malformed.
+    """
+    kind = _doxygen_kind(comment_text)
+    if kind is None:
+        return [], []
+    body = comment_text[1:]  # strip the Doxygen marker char
+    body_col_offset = base_column + 1
+    found: list[RawAssume] = []
+    errors: list[MalformedAnnotation] = []
+    for m in _ASSUME_RE.finditer(body):
+        start = m.start()
+        close = body.find("}", m.end())
+        col = body_col_offset + start
+        if close == -1:
+            errors.append(
+                MalformedAnnotation(line_no, col, "unclosed '{' in @unit_assume")
+            )
+            continue
+        inner = body[m.end():close]
+        if ":" not in inner:
+            errors.append(MalformedAnnotation(
+                line_no, col,
+                "@unit_assume requires '{ <unit> : <reason> }' "
+                "(missing ':' separating unit from reason)",
+            ))
+            continue
+        unit_part, reason_part = inner.split(":", 1)
+        unit_text = unit_part.strip()
+        reason = reason_part.strip()
+        if not unit_text:
+            errors.append(
+                MalformedAnnotation(line_no, col, "empty unit in @unit_assume")
+            )
+            continue
+        if not reason:
+            errors.append(MalformedAnnotation(
+                line_no, col, "empty reason in @unit_assume (a justification is required)",
+            ))
+            continue
+        found.append(
+            RawAssume(line=line_no, column=col, unit_text=unit_text, reason=reason)
+        )
+    if len(found) > 1:
+        errors.extend(
+            MalformedAnnotation(a.line, a.column, "more than one @unit_assume on one line")
+            for a in found[1:]
+        )
+        found = found[:1]
+    return found, errors
+
+
 # ---------------------------------------------------------------------------
 # Public entry points
 # ---------------------------------------------------------------------------
@@ -214,6 +295,8 @@ class ScanResult:
     # ``start_byte`` so the checker can bisect a node's byte offset to
     # find its enclosing routine scope.
     routine_scopes: tuple[tuple[int, int, str], ...] = ()
+    # Every ``@unit_assume{...}`` occurrence (escape-hatch directive).
+    assumes: tuple[RawAssume, ...] = ()
 
 
 def scan_text(source: str) -> ScanResult:
@@ -221,6 +304,7 @@ def scan_text(source: str) -> ScanResult:
     lines = source.splitlines()
     annotations: list[RawAnnotation] = []
     errors: list[MalformedAnnotation] = []
+    assumes: list[RawAssume] = []
     pre_block_lines: set[int] = set()
     for line_no, line in enumerate(lines, start=1):
         col = _comment_start(line)
@@ -234,6 +318,11 @@ def scan_text(source: str) -> ScanResult:
         )
         annotations.extend(anns)
         errors.extend(errs)
+        asms, asm_errs = _find_assume_invocations(
+            comment, line_no=line_no, base_column=col + 2
+        )
+        assumes.extend(asms)
+        errors.extend(asm_errs)
         if kind is AnnotationKind.PRE:
             pre_block_lines.add(line_no)
     declarations, routine_scopes = _scan_declarations(source)
@@ -243,6 +332,7 @@ def scan_text(source: str) -> ScanResult:
         pre_block_lines=frozenset(pre_block_lines),
         declarations=tuple(declarations),
         routine_scopes=tuple(routine_scopes),
+        assumes=tuple(assumes),
     )
 
 

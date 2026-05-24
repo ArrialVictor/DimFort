@@ -778,6 +778,10 @@ def check_files(
                 var_units_by_scope=per_file_var_units_by_scope.get(entry.path),
                 routine_scopes=entry.attachment.routine_scopes,
                 out_autocast_events=file_autocasts,
+                assumes={
+                    a.line: (a.unit_text, a.reason, a.column)
+                    for a in getattr(entry.scan, "assumes", ())
+                },
             )
             if file_autocasts:
                 result.autocast_events[entry.path] = file_autocasts
