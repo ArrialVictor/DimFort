@@ -889,3 +889,78 @@ def test_d16_matching_wrapper_lhs_no_diag():
     )
     diags = _check(src, {"p": "Pa", "lp": "LOG(Pa)"})
     assert [d.code for d in diags] == []
+
+
+# ---------------------------------------------------------------------------
+# Literal 0 is dimension-agnostic; MAX/MIN autocast + warn like +/-
+# ---------------------------------------------------------------------------
+
+
+def test_literal_zero_plus_unitful_is_silent():
+    """``0. + speed`` emits nothing — 0 is the additive identity in every
+    dimension, so it adopts the sibling unit silently (no H010 smell)."""
+    src = (
+        "subroutine s\n"
+        "  real :: speed, result\n"
+        "  result = 0. + speed\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"speed": "m/s", "result": "m/s"})
+    assert [d.code for d in diags] == []
+
+
+def test_max_with_literal_zero_is_silent():
+    """``max(0., qq)`` emits nothing (the canonical clamp idiom)."""
+    src = (
+        "subroutine s\n"
+        "  real :: qq, result\n"
+        "  result = max(0., qq)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"qq": "m/s", "result": "m/s"})
+    assert [d.code for d in diags] == []
+
+
+def test_max_with_nonzero_literal_warns_h010():
+    """``max(0.5, qq)`` autocasts the literal to the sibling unit and warns
+    (H010), rather than hard-erroring — mirrors the ``+`` behavior."""
+    src = (
+        "subroutine s\n"
+        "  real :: qq, result\n"
+        "  result = max(0.5, qq)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"qq": "m/s", "result": "m/s"})
+    codes = [d.code for d in diags]
+    assert "H010" in codes
+    assert "H002" not in codes
+    assert "H001" not in codes
+
+
+def test_max_with_enotation_literal_warns_h010():
+    """An E-notation literal (``2.546E-5``) is still a numeric literal —
+    detect it structurally, so it warns H010 (not H002)."""
+    src = (
+        "subroutine s\n"
+        "  real :: coriol, result\n"
+        "  result = max(coriol, 2.546E-5)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"coriol": "1/s", "result": "1/s"})
+    codes = [d.code for d in diags]
+    assert "H010" in codes
+    assert "H002" not in codes
+
+
+def test_max_with_mismatched_units_fires_h002():
+    """``max(mass, speed)`` (two genuinely dimensioned, disagreeing args)
+    fires H002 — MAX/MIN now validate operands."""
+    src = (
+        "subroutine s\n"
+        "  real :: mass, speed, result\n"
+        "  result = max(mass, speed)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"mass": "kg", "speed": "m/s", "result": "kg"})
+    codes = [d.code for d in diags]
+    assert "H002" in codes
