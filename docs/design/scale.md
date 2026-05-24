@@ -13,6 +13,16 @@ soft-units, the test corpus, and the open questions.
 
 ## 1. Problem statement
 
+**In one line:** scale is a static safety net for the *conversion-mistake*
+class — bugs that are **dimensionally clean** (so dimension-checking is
+blind to them) but **magnitude- or zero-point-wrong**. Division of labor:
+*dimension* catches a **wrong kind of quantity** (`Pa + m/s`); *scale*
+catches the **right kind, wrong magnitude/origin** (`hPa` vs `Pa`, `°C`
+vs `K`) — same dimension, different `factor` or `offset`, which sail
+through dimension-checking because `Pa/Pa = 1` and `K/K = 1`. The
+concrete targets are the classic off-by-100/1000 and forgot-°C→K errors:
+missing conversion, wrong factor, wrong direction, missing/wrong offset.
+
 DimFort today checks **dimension** only. A unit is a 7-tuple of base
 exponents plus a `factor` (a `Fraction` prefactor). `equal_dim` compares
 the 7-tuples and **ignores the factor**. So these all pass silently
@@ -61,6 +71,38 @@ most common real-world numerical bug (unit-prefix mismatch).
   `factor` and `.dimfort.toml` unit definitions.
 - NOT soft-units (name-hints, families). Scale must be *built so
   soft-units slots in later*, but soft-units is out of scope here.
+
+### 2.1 Expected yield (be honest)
+
+Scale fires only where two quantities of the **same dimension but
+different declared scale** meet at a *check* site (`+ - max min` /
+relational / assignment). That has sharp consequences for how much it
+actually finds — state them so the feature is not oversold:
+
+- **On LMDZ specifically, Phase 1 (multiplicative) will be mostly
+  silent.** LMDZ is internally rigorous SI (`Pa`, `K`, `kg/kg`, `m/s`,
+  all `factor = 1`), so nearly every check site is `factor 1` vs
+  `factor 1`. Expect *clean negatives* (conversion-site validation,
+  confidence), not a bug goldmine like dimension-checking gave.
+- **It only bites if quantities are annotated at their *natural* scale**
+  (`phpa` as `{hPa}`, not `{Pa}`). Annotate everything as base SI and
+  scale mode is inert. So scale changes the annotation discipline.
+- **It is structural, not runtime.** It catches a missing/wrong/
+  wrong-direction conversion *in the code at a boundary*; it cannot
+  catch an arbitrary value that is merely 100× off at runtime.
+- **The high-value targets are interfaces and the affine #006 class.**
+  Cross-scale bugs concentrate at module/external *boundaries* (e.g.
+  `q_sat` `r2es` [Pa] / `pres` documented "mb") — rare inside uniform-SI
+  LMDZ, common in codebases that mix unit systems. And Phase 2's payoff
+  is **triage, not discovery**: it splits the ~30 undifferentiated #006
+  K-literal H010s into *validated correct °C↔K conversions* (silent) vs
+  *wrong-sign / wrong-direction / °C-mixed-with-K* (fires) — turning
+  noise-to-eyeball into a short worth-looking-at list.
+- **Net:** build Phase 1 first because it is the foundation (the
+  `compare` verdict, `scale_mode`, S-codes) that the harder affine
+  Phase 2 sits on — but expect Phase 1's LMDZ value to be validation,
+  with the discovery value concentrated in Phase 2 and at interfaces.
+  Scale is also a general capability worth having beyond LMDZ.
 
 
 ## 3. Data model
