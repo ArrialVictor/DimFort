@@ -1054,3 +1054,51 @@ def equal_strict(a: UnitExpr, b: UnitExpr) -> bool:
     if isinstance(a, ExpWrap) and isinstance(b, ExpWrap):
         return equal_strict(a.inner, b.inner)
     return False
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """Structured result of comparing two unit expressions (scale layer).
+
+    ``kind`` is one of:
+
+    - ``"equal"`` — same dimension and ``factor`` (and, Phase 2, ``offset``).
+    - ``"dim_mismatch"`` — base dimensions differ (today's H001/H002 case).
+    - ``"scale_mismatch"`` — same dimension, different ``factor``;
+      ``ratio = a.factor / b.factor`` is the magnitude discrepancy (S001).
+    - ``"offset_mismatch"`` — reserved for Phase 2 (affine ``offset``);
+      never produced until ``Unit`` carries an offset.
+
+    Representation-only: it reports *what* differs, never *how severe*.
+    The ``scale_mode`` gate and per-code severity live at the call sites,
+    not here — so soft-units can later remap severity without touching
+    this function. See ``docs/design/scale.md``.
+    """
+
+    kind: str
+    ratio: Fraction | None = None
+
+
+def compare(a: UnitExpr, b: UnitExpr) -> Verdict:
+    """Compare two unit expressions, returning a structured verdict.
+
+    Dimension first, then multiplicative scale (``factor``). Wrappers
+    recurse into ``inner`` exactly as :func:`equal_dim`; a wrapper is
+    never comparable to a leaf (→ ``dim_mismatch``).
+
+    Note ``factor`` is checked **even when the dimension is** ``{1}`` —
+    that is what lets ``g/kg`` (factor 1/1000) vs ``kg/kg`` (factor 1) be
+    caught. ``equal_dim`` / ``equal_strict`` are left as-is; this is added
+    alongside them as the scale layer's single source of truth.
+    """
+    if isinstance(a, Unit) and isinstance(b, Unit):
+        if tuple(a.dimension) != tuple(b.dimension):
+            return Verdict("dim_mismatch")
+        if a.factor != b.factor:
+            return Verdict("scale_mismatch", ratio=a.factor / b.factor)
+        return Verdict("equal")
+    if isinstance(a, LogWrap) and isinstance(b, LogWrap):
+        return compare(a.inner, b.inner)
+    if isinstance(a, ExpWrap) and isinstance(b, ExpWrap):
+        return compare(a.inner, b.inner)
+    return Verdict("dim_mismatch")
