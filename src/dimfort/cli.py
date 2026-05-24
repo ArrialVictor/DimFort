@@ -106,6 +106,16 @@ def build_parser() -> argparse.ArgumentParser:
             "wrapper-arithmetic diagnostics (D1.2 / D1.3 / D1.6)."
         ),
     )
+    check.add_argument(
+        "--scale",
+        action="store_true",
+        help=(
+            "Opt-in multiplicative-scale checking (Phase 1): flag operands "
+            "of the same dimension but different magnitude (e.g. hPa vs Pa, "
+            "g/kg vs kg/kg) as S001. Dimension-only is the default. Can also "
+            "be enabled via [scale] enabled=true in .dimfort.toml."
+        ),
+    )
 
     lsp = sub.add_parser("lsp", help="Start the DimFort language server (stdio).")
     # Some LSP clients (vscode-languageclient with TransportKind.stdio) tack
@@ -220,6 +230,7 @@ def _run_check(args: argparse.Namespace) -> int:
             cache_mode=cache_mode,
             units_file=config.units_file,
             diagnostic_severities=config.diagnostic_severities,
+            scale_mode=getattr(args, "scale", False) or config.scale_mode,
         )
 
     if cache_obj is not None and cache_mode == "read-write":

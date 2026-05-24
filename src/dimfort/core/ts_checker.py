@@ -159,6 +159,11 @@ class _Ctx:
     # ``field_units`` is keyed in declaration case, so without this mirror
     # any type/field with an uppercase letter would never resolve.
     _field_units_lc: dict[tuple[str, str], Unit] = field(default_factory=dict)
+    # Opt-in scale checking (Phase 1: multiplicative). When False (default)
+    # the checker is dimension-only — ``factor`` differences are ignored,
+    # exactly as before. When True, dim-equal-but-factor-differing operands
+    # fire S001. Dimension-only must stay first-class; see docs/design/scale.md.
+    scale_mode: bool = False
 
     def __post_init__(self) -> None:
         if self.var_units and not self._var_units_lc:
@@ -2115,6 +2120,7 @@ def check(
     routine_scopes: tuple[tuple[int, int, str], ...] = (),
     out_autocast_events: list[AutocastEvent] | None = None,
     assumes: dict[int, tuple[str, str, int]] | None = None,
+    scale_mode: bool = False,
 ) -> list[Diagnostic]:
     """Run the checker over a tree-sitter-parsed file.
 
@@ -2208,6 +2214,7 @@ def check(
         parameter_values=parameter_values,
         assumes=parsed_assumes,
         scope_aware=var_units_by_scope is not None,
+        scale_mode=scale_mode,
     )
     out: list[Diagnostic] = []
     out.extend(assume_diags)
