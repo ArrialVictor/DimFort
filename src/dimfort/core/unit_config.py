@@ -95,8 +95,21 @@ def _build_derived(
             # 101325 Pa, etc.). Without this the only way to introduce
             # a scale was via the prefix table.
             factor_spec = spec.get("factor")
-            if factor_spec is not None:
-                u = Unit(u.dimension, u.factor * _coerce_factor(factor_spec))
+            # Optional affine ``offset`` (Phase 2 / scale). Relative to the
+            # base unit; ``x_base = factor*x + offset``. Marks an absolute
+            # affine unit (e.g. degC offset 273.15). Specify as a STRING
+            # ("273.15") so the Fraction is exact, not the inexact float.
+            offset_spec = spec.get("offset")
+            if factor_spec is not None or offset_spec is not None:
+                new_factor = (
+                    u.factor * _coerce_factor(factor_spec)
+                    if factor_spec is not None else u.factor
+                )
+                new_offset = (
+                    u.offset + _coerce_factor(offset_spec)
+                    if offset_spec is not None else u.offset
+                )
+                u = Unit(u.dimension, new_factor, new_offset)
             derived[name] = u
             if spec.get("prefixable", False):
                 prefixable.add(name)

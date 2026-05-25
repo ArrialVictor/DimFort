@@ -8,6 +8,7 @@ from dimfort.core.units import (
     Unit,
     UnitAmbiguityWarning,
     UnitError,
+    combine,
     compare,
     equal_dim,
     equal_strict,
@@ -94,6 +95,51 @@ def test_compare_scale_mismatch_on_dimensionless():
     v = compare(gkg, kgkg)
     assert v.kind == "scale_mismatch"
     assert v.ratio == Fraction(1, 1000)
+
+
+# --- affine offset (Phase 2) ---
+
+_C273 = Fraction(5463, 20)  # 273.15 exact
+_THETA = (0, 0, 0, 1, 0, 0, 0)
+
+
+def test_compare_offset_mismatch_reports_delta():
+    v = compare(parse("degC"), parse("K"))
+    assert v.kind == "offset_mismatch"
+    assert v.delta == _C273
+    # direction-sensitive (a.offset - b.offset)
+    assert compare(parse("K"), parse("degC")).delta == -_C273
+
+
+def test_compare_equal_offset_is_equal():
+    assert compare(parse("degC"), parse("degC")).kind == "equal"
+
+
+def test_compare_factor_takes_precedence_over_offset():
+    # Resolution order is dim -> factor -> offset, so a unit differing in
+    # BOTH factor and offset is reported as scale_mismatch, not offset.
+    a = Unit(_THETA, Fraction(2), Fraction(5))
+    b = Unit(_THETA, Fraction(1), Fraction(0))
+    assert compare(a, b).kind == "scale_mismatch"
+
+
+def test_combine_point_minus_point_is_a_difference():
+    # degC - degC -> offset 0 (a ΔT), the one place an absolute yields ordinary.
+    r, diag = combine("-", parse("degC"), parse("degC"))
+    assert diag is None
+    assert r.offset == 0
+
+
+def test_combine_point_plus_vector_keeps_offset():
+    # absolute + difference -> absolute (offset preserved), commutative.
+    assert combine("+", parse("degC"), parse("K"))[0].offset == _C273
+    assert combine("+", parse("K"), parse("degC"))[0].offset == _C273
+
+
+def test_combine_multiplicative_strips_offset():
+    # A multiplicative result is always ordinary (offset 0).
+    assert combine("*", parse("degC"), parse("K"))[0].offset == 0
+    assert parse("degC").pow(2).offset == 0
 
 
 @pytest.mark.parametrize(
@@ -299,7 +345,7 @@ def test_equal_dim_recurses_into_wrappers():
 # Phase B sub-step 3: combine() dispatch for Regular + LogWrap (R4 / R5)
 # ---------------------------------------------------------------------------
 
-from dimfort.core.units import combine, power  # noqa: E402
+from dimfort.core.units import power  # noqa: E402
 
 
 def _u(expr):

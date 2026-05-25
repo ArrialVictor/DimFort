@@ -36,6 +36,11 @@ Pa  = { expr = "N/m^2" }
 bar = { expr = "Pa", factor = 100000 }
 mbar = { expr = "Pa", factor = 100 }
 hPa = { expr = "Pa", factor = 100 }
+# Absolute Celsius — same dimension and factor as K, shifted zero point.
+# Offset is a string so the Fraction is exact (273.15 = 5463/20), not the
+# inexact binary float. A temperature *difference* in Celsius is offset-0
+# and so identical to K; named delta units (Cdeg) are a Phase-2b addition.
+degC = { expr = "K", offset = "273.15" }
 Hz  = { expr = "1/s" }
 C   = { expr = "A*s" }
 V   = { expr = "W/A" }

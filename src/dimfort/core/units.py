@@ -291,6 +291,14 @@ class Unit:
     """
     dimension: tuple[Exponent, ...]
     factor: Fraction
+    # Affine zero-point shift vs the base unit (Phase 2 / scale offset).
+    # ``offset != 0`` marks an *absolute* affine quantity (e.g. degC,
+    # offset 273.15); ``offset == 0`` is *ordinary* (every other unit,
+    # absolute K, and every temperature *difference*). Conversion to
+    # base: ``x_base = factor*x + offset``. Defaults to 0, so all existing
+    # callers and the multiplicative algebra are unaffected. See
+    # docs/design/scale.md §3.2–§3.3.
+    offset: Fraction = Fraction(0)
 
     def __post_init__(self) -> None:
         # Coerce legacy callers passing ``Number`` per slot. After this
@@ -309,9 +317,11 @@ class Unit:
         # detect "needs promotion".
         if any(not isinstance(d, Exponent) for d in self.dimension):
             object.__setattr__(self, "dimension", promoted)
-        # Coerce factor too.
+        # Coerce factor and offset too.
         if not isinstance(self.factor, Fraction):
             object.__setattr__(self, "factor", Fraction(self.factor))
+        if not isinstance(self.offset, Fraction):
+            object.__setattr__(self, "offset", Fraction(self.offset))
 
     def __mul__(self, other: Unit) -> Unit:
         return Unit(
@@ -473,6 +483,31 @@ def _logwrap_inner_pow(
         return None
 
 
+def _result_offset(op: str, oa: Fraction, ob: Fraction) -> Fraction:
+    """Offset of ``a <op> b`` per the affine algebra (docs/design/scale.md
+    §3.3). Pure propagation — *validity* (e.g. point+point) is flagged
+    separately at the emission site, so the value returned for an
+    ill-defined combination is a harmless placeholder.
+
+    - ``+``: point+vector → the point's offset; ordinary → 0.
+    - ``-``: point−vector → the point's offset; point−point (equal) →
+      0 (a difference); else 0.
+    - ``*``/``/``/``**``: handled by the operators (result offset 0).
+    """
+    if op == "+":
+        if ob == 0:
+            return oa
+        if oa == 0:
+            return ob
+        # point + point — ill-defined (flagged at the site). Keep ``oa`` so
+        # the result stays absolute and doesn't *cascade* a second
+        # (spurious) offset_mismatch at the enclosing assignment.
+        return oa
+    if op == "-":
+        return oa if ob == 0 else Fraction(0)
+    return Fraction(0)
+
+
 def combine(
     op: str,
     a: UnitExpr,
@@ -506,7 +541,16 @@ def combine(
     if isinstance(a, Unit) and isinstance(b, Unit):
         if op in ("+", "-"):
             if equal_dim(a, b):
-                return _ok("R4.1", a)
+                # Offset-0 (the overwhelming majority, and every Phase-1
+                # case) returns ``a`` unchanged — byte-identical. Only an
+                # affine operand (offset != 0) triggers offset propagation.
+                if a.offset == 0 and b.offset == 0:
+                    return _ok("R4.1", a)
+                return _ok(
+                    "R4.1",
+                    Unit(a.dimension, a.factor,
+                         _result_offset(op, a.offset, b.offset)),
+                )
             # H010 (implicit-cast demotion) fires only when the operand
             # was a source-level numeric literal (or a PARAMETER ref
             # that folded to a Number). A symbolic Exponent — e.g. a
@@ -1066,8 +1110,12 @@ class Verdict:
     - ``"dim_mismatch"`` — base dimensions differ (today's H001/H002 case).
     - ``"scale_mismatch"`` — same dimension, different ``factor``;
       ``ratio = a.factor / b.factor`` is the magnitude discrepancy (S001).
-    - ``"offset_mismatch"`` — reserved for Phase 2 (affine ``offset``);
-      never produced until ``Unit`` carries an offset.
+    - ``"offset_mismatch"`` — same dimension and ``factor``, different
+      ``offset`` (e.g. ``K`` vs ``degC``); ``delta = a.offset - b.offset``
+      (S002, path 1). NOTE: ``compare`` only sees offset *mismatches*; the
+      affine *operation-validity* failures (``degC + degC`` etc., where
+      offsets are equal) are flagged in ``combine``/``power``, not here —
+      see docs/design/scale.md §4–§5.
 
     Representation-only: it reports *what* differs, never *how severe*.
     The ``scale_mode`` gate and per-code severity live at the call sites,
@@ -1077,6 +1125,7 @@ class Verdict:
 
     kind: str
     ratio: Fraction | None = None
+    delta: Fraction | None = None
 
 
 def compare(a: UnitExpr, b: UnitExpr) -> Verdict:
@@ -1096,6 +1145,8 @@ def compare(a: UnitExpr, b: UnitExpr) -> Verdict:
             return Verdict("dim_mismatch")
         if a.factor != b.factor:
             return Verdict("scale_mismatch", ratio=a.factor / b.factor)
+        if a.offset != b.offset:
+            return Verdict("offset_mismatch", delta=a.offset - b.offset)
         return Verdict("equal")
     if isinstance(a, LogWrap) and isinstance(b, LogWrap):
         return compare(a.inner, b.inner)
