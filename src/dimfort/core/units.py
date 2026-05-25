@@ -1010,18 +1010,41 @@ def _to_super(s: str) -> str:
     return "".join(_SUPERSCRIPTS.get(c, c) for c in s)
 
 
-def format_unit(u: UnitExpr, *, show_factor: bool = False, table: UnitTable | None = None) -> str:
+def format_unit(
+    u: UnitExpr,
+    *,
+    show_factor: bool = False,
+    show_offset: bool = True,
+    table: UnitTable | None = None,
+) -> str:
     """Render ``u`` as a human-readable expression.
 
     Uses Unicode superscripts (``²``, ``³``, …) for integer exponents
     and ``×`` for multiplication. Rational exponents fall back to
     ``^(p/q)`` since superscript fractions look messy. ``LogWrap`` /
     ``ExpWrap`` print as ``LOG(...)`` / ``EXP(...)`` per spec §9.
+
+    An **affine** unit (``offset != 0``, e.g. ``degC``) appends its
+    zero-point shift — ``degC`` → ``K + 273.15`` — so it is distinguishable
+    from its base (``K``). This is shown whenever the offset is non-zero,
+    *independent* of ``show_factor``: the offset is the only thing that
+    tells ``degC`` from ``K``, so a message like "cast … to K" would
+    otherwise hide the very distinction it is reporting. Offset-0 units
+    (everything non-affine) are byte-identical to before. ``show_offset``
+    can be turned off where the rendering must be valid ``@unit{}`` syntax
+    (e.g. a copy-pasteable PARAMETER suggestion), since ``K + 273.15`` is a
+    description, not a parseable unit.
     """
     if isinstance(u, LogWrap):
-        return f"LOG({format_unit(u.inner, show_factor=show_factor, table=table)})"
+        inner = format_unit(
+            u.inner, show_factor=show_factor, show_offset=show_offset, table=table
+        )
+        return f"LOG({inner})"
     if isinstance(u, ExpWrap):
-        return f"EXP({format_unit(u.inner, show_factor=show_factor, table=table)})"
+        inner = format_unit(
+            u.inner, show_factor=show_factor, show_offset=show_offset, table=table
+        )
+        return f"EXP({inner})"
     names = base_symbols(table)
     pos_terms: list[str] = []
     neg_terms: list[str] = []
@@ -1056,8 +1079,17 @@ def format_unit(u: UnitExpr, *, show_factor: bool = False, table: UnitTable | No
             denom = f"({denom})"
         body = f"{body}/{denom}"
     if show_factor and u.factor != 1:
-        return f"{u.factor}×{body}" if body != "1" else f"{u.factor}"
-    return body
+        rendered = f"{u.factor}×{body}" if body != "1" else f"{u.factor}"
+    else:
+        rendered = body
+    # Affine offset: append the zero-point shift for absolute units so
+    # ``degC`` reads ``K + 273.15`` rather than an indistinguishable ``K``.
+    # Rendered as a decimal (273.15), not the raw Fraction (5463/20).
+    if show_offset and u.offset != 0:
+        off = float(u.offset)
+        sign = "+" if off >= 0 else "-"
+        rendered = f"{rendered} {sign} {abs(off):g}"
+    return rendered
 
 
 def parse(expr: str, table: UnitTable | None = None) -> UnitExpr:

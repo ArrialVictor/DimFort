@@ -1190,6 +1190,11 @@ def _emit_h010(
     """
     start, end = _node_span(loc)
     target = format_unit(target_unit)
+    # The PARAMETER example must be valid @unit{} syntax, so drop the affine
+    # offset there ("K + 273.15" is a description, not a parseable unit). For
+    # an absolute target this also gives the better hint — a literal added to
+    # an absolute temperature is a difference, so @unit{K} is the right type.
+    target_annot = format_unit(target_unit, show_offset=False)
     return Diagnostic(
         file=ctx.file, start=start, end=end,
         severity=Severity.WARNING, code="H010",
@@ -1197,7 +1202,7 @@ def _emit_h010(
             f"Implicit cast: literal {literal_text!r} to {target} "
             f"(prefer a named PARAMETER, e.g. "
             f"`REAL, PARAMETER :: <name> = {literal_text}   "
-            f"!< @unit{{{target}}}`)"
+            f"!< @unit{{{target_annot}}}`)"
         ),
     )
 
@@ -1578,7 +1583,8 @@ def _emit_d16_untag(
         message=(
             f"Implicit wrapper untag: {format_unit(rhs)} assigned to "
             f"{format_unit(lhs)} — if intentional, annotate the LHS "
-            f"as @unit{{{format_unit(rhs)}}} to silence this warning (D1.6)"
+            f"as @unit{{{format_unit(rhs, show_offset=False)}}} "
+            f"to silence this warning (D1.6)"
         ),
     )
 
