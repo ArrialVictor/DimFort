@@ -187,6 +187,18 @@ The rendered rows, and how the model applies to each:
 tokens, `then`/`do`/`call` — render no row and carry no marker (matches
 `hover-ui.md`'s "no hover" cells).
 
+**One deliberate exemption — the call-arg pairing rows.** The function/
+subroutine call hover pairs each *formal* against its *actual* and marks
+each row. These stay a **local per-arg `equal_dim` comparison**, not the
+diagnostic-driven model, because `H004` is emitted on the *whole call*
+(not per argument) and the checker emits *no* scale/offset diagnostic at
+call-arg sites. So there is no per-arg diagnostic to read; a local
+dimension check matches exactly what `H004` checks, while routing per-arg
+markers through `compare()` would paint scale/offset rows with no backing
+squiggle — the orphan-marker anti-pattern this design exists to kill. If
+the checker ever emits per-arg (or scale/offset-at-call) diagnostics, this
+surface folds into the model then.
+
 
 ## 4. Caveats (the non-obvious parts)
 
