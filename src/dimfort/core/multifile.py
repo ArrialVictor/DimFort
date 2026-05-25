@@ -802,6 +802,10 @@ def check_files(
                     a.line: (a.unit_text, a.reason, a.column)
                     for a in getattr(entry.scan, "assumes", ())
                 },
+                affine_conversions={
+                    a.line: (a.src, a.tgt, a.column)
+                    for a in getattr(entry.scan, "affine_conversions", ())
+                },
                 scale_mode=scale_mode,
             )
             if file_autocasts:

@@ -158,3 +158,42 @@ def test_pre_and_post_in_same_file():
     assert [a.kind for a in anns] == [AnnotationKind.PRE, AnnotationKind.POST]
     assert anns[0].line == 1
     assert anns[1].line == 3
+
+
+# ---------------------------------------------------------------------------
+# @unit_affine_conversion scanner (Phase 2c)
+# ---------------------------------------------------------------------------
+
+
+def test_affine_arrow_form():
+    """``!< @unit_affine_conversion{degC -> K}`` yields one record with the
+    src/tgt split on the arrow."""
+    res = scan_text("tk = tc + r  !< @unit_affine_conversion{degC -> K}\n")
+    assert len(res.affine_conversions) == 1
+    a = res.affine_conversions[0]
+    assert (a.src, a.tgt) == ("degC", "K")
+    assert a.line == 1
+
+
+def test_affine_comma_synonym():
+    """The comma form is an accepted synonym for the arrow."""
+    res = scan_text("tk = tc + r  !< @unit_affine_conversion{degC, K}\n")
+    assert (res.affine_conversions[0].src, res.affine_conversions[0].tgt) == (
+        "degC", "K",
+    )
+
+
+def test_affine_missing_separator_is_error():
+    """No ``->`` or ``,`` ⇒ a malformed-scan error, no record."""
+    res = scan_text("tk = tc + r  !< @unit_affine_conversion{degC K}\n")
+    assert res.affine_conversions == ()
+    assert len(res.errors) == 1
+
+
+def test_affine_does_not_collide_with_unit_or_assume():
+    """``@unit_affine_conversion`` must not be picked up by the ``@unit`` or
+    ``@unit_assume`` scanners (distinct directives)."""
+    res = scan_text("tk = tc + r  !< @unit_affine_conversion{degC -> K}\n")
+    assert res.annotations == ()
+    assert res.assumes == ()
+    assert len(res.affine_conversions) == 1

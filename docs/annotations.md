@@ -189,6 +189,45 @@ interior fire — and instead treat the result as the asserted `<unit>`.
 > A `.F90` file whose lines shift under `cpp` preprocessing is a known
 > limitation (the assume may not align with the expanded statement).
 
+## Verified conversion: `@unit_affine_conversion`
+
+A multiplicative conversion can ride on a typed PARAMETER
+(`play[Pa] / PA_PER_HPA[Pa/hPa]` resolves to `hPa`). An **affine** (offset)
+conversion — `°C ↔ K` — cannot: addition preserves the frame, and there is
+no unit you can add that turns a `degC` into a `K`. So a correct
+`t_k = t_c + 273.15` would fire `S002` (offset mismatch) with no way to
+bless it. `@unit_affine_conversion` is that blessing — and, because DimFort
+*knows* both offsets, it is **verified**, not trusted:
+
+```fortran
+real :: t_c   !< @unit{degC}
+real :: t_k   !< @unit{K}
+real, parameter :: RTT = 273.15  !< @unit{K}
+t_k = t_c + RTT   !< @unit_affine_conversion{degC -> K}
+```
+
+`@unit_affine_conversion{ <src> -> <tgt> }` is a **statement-level**
+directive (trailing `!<` on the assignment; `{src, tgt}` with a comma is an
+accepted synonym). DimFort checks the assignment actually performs the
+`src → tgt` conversion (target frame on the LHS, RHS affine-linear in one
+`src` operand with the *exact* offset/factor arithmetic):
+
+- **Valid ⇒ silent.** The `S002` the statement would raise is suppressed,
+  and the result is cleanly the target frame.
+- **Invalid ⇒ `S003` (error).** Wrong direction, wrong constant, wrong
+  target, a non-affine (multiplicative) pair like `{Pa -> hPa}`, or a
+  non-affine-linear RHS — each reports *how* the arithmetic is off.
+- **Not an `@unit_assume`.** That directive is *trusted* and for the
+  irreducible (and lives in `UNIT_ASSUME_REGISTRY.md`); this one is
+  *verified* and needs **no registry entry** — the check is its
+  justification. Use `@unit_assume` only when DimFort fundamentally can't
+  represent the unit; use `@unit_affine_conversion` for °C↔K conversions.
+- **Opt-in.** Like the rest of the scale family it only fires under
+  `scale_mode` (`.dimfort.toml [scale] enabled = true` or `--scale`).
+
+The cleanest idiom is a small conversion **function** whose one body line
+carries the directive — callers then get a clean typed `degC → K` signature.
+
 ## Diagnostics produced at annotation time
 
 | Code        | Severity | Meaning |
@@ -207,6 +246,14 @@ The semantic checker layers add the **H-series** on top:
 | H002  | error    | `+` / `-` operands, or same-unit intrinsic args (`min`, `max`, `mod`, …) have different dimensions. |
 | H003  | error    | Intrinsic that requires a dimensionless argument (`exp`, `log`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `log10`) given something else. |
 | H004  | error    | User-defined function or subroutine-call argument unit mismatch. |
+
+The opt-in **scale family** (`scale_mode`) adds:
+
+| Code  | Severity | Meaning |
+|-------|----------|---------|
+| S001  | warning  | Same dimension, different magnitude factor (e.g. `hPa` vs `Pa`, `g/kg` vs `kg/kg`). |
+| S002  | warning  | Same dimension and factor, different zero-point (e.g. `degC` vs `K`). |
+| S003  | error    | An `@unit_affine_conversion{src -> tgt}` directive whose arithmetic doesn't perform the stated conversion. |
 
 Intrinsics handled:
 

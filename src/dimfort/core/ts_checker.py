@@ -123,6 +123,17 @@ class _Ctx:
     # (suppressing D1.4 + interior fires), treats the result as
     # ``assumed_unit`` for the LHS consistency check, and emits a U020 INFO.
     assumes: dict[int, tuple[UnitExpr, str, int]] = field(default_factory=dict)
+    # ``@unit_affine_conversion`` directives (Phase 2c), keyed by 1-based
+    # source line. Value is ``(src_text, tgt_text, column)`` — the raw unit
+    # names are resolved at verify time (a bad name surfaces as S003 with
+    # the statement, not a scan error). When an assignment's line span
+    # covers one of these, the checker *verifies* the conversion arithmetic
+    # against the known offsets: a valid conversion suppresses the S002 the
+    # statement would otherwise raise; an invalid one emits S003. See
+    # docs/design/scale.md §11.
+    affine_conversions: dict[int, tuple[str, str, int]] = field(
+        default_factory=dict
+    )
     # True when the caller supplied a by-scope table (even an empty one),
     # i.e. scope-aware mode is active. In that mode ``unit_for`` resolves
     # ONLY through the scoped table (incl. the ``(None, name)`` module /
@@ -392,6 +403,27 @@ def _assume_for_node(
         if hit is not None:
             unit, reason, col = hit
             return unit, reason, ln, col
+    return None
+
+
+def _affine_conv_for_node(
+    node: Node, ctx: _Ctx
+) -> tuple[str, str, int, int] | None:
+    """Return the ``@unit_affine_conversion`` directive covering ``node``,
+    or ``None``. Returns ``(src_text, tgt_text, line, column)``.
+
+    Same line-span scan as :func:`_assume_for_node` so a trailing directive
+    on statement N never bleeds onto N+1.
+    """
+    if not ctx.affine_conversions:
+        return None
+    start_line = node.start_point[0] + 1
+    end_line = node.end_point[0] + 1
+    for ln in range(start_line, end_line + 1):
+        hit = ctx.affine_conversions.get(ln)
+        if hit is not None:
+            src, tgt, col = hit
+            return src, tgt, ln, col
     return None
 
 
@@ -1267,6 +1299,192 @@ def _affine_violation(op: str, lu: UnitExpr, ru: UnitExpr) -> str | None:
                     "zero-points")
         return None  # point - vector, or point - point (equal) -> difference
     return None
+
+
+def _emit_s003(loc: Node, reason: str, ctx: _Ctx) -> Diagnostic:
+    """Invalid ``@unit_affine_conversion`` directive (S003, Phase 2c).
+
+    Unlike S001/S002 (warnings, style nudges) this defaults to **error**: a
+    *claimed* conversion that the arithmetic doesn't actually perform is a
+    bug, not a smell. Overridable via ``[diagnostics] S003``. A *valid*
+    directive emits nothing (and suppresses the S002 the statement would
+    otherwise raise). See docs/design/scale.md §11.5.
+    """
+    start, end = _node_span(loc)
+    return Diagnostic(
+        file=ctx.file,
+        start=start,
+        end=end,
+        severity=Severity.ERROR,
+        code="S003",
+        message=f"Affine-conversion directive does not verify: {reason}",
+    )
+
+
+def _lin_reduce(
+    node: Node | None, src: Unit, ctx: _Ctx, source: bytes,
+) -> tuple[Fraction, Fraction, int] | None:
+    """Reduce an expression to its affine-linear form ``a*s + b`` in the
+    single source operand ``s`` (a quantity of unit ``src``).
+
+    Returns ``(a, b, n_src)`` where ``a``/``b`` are exact ``Fraction``
+    coefficients and ``n_src`` is the number of ``src``-typed operands seen
+    (the caller requires exactly one). Returns ``None`` when the expression
+    is not affine-linear in ``s`` with constant coefficients (a non-source
+    variable with no resolvable value, a non-linear product, division by a
+    non-constant, an unhandled node shape). See scale.md §11.4(c).
+
+    Resolution order at a leaf matters: a ``src``-typed operand is the
+    source (``a=1``) even though it may also be a PARAMETER with a value;
+    only a *non*-source node is folded to a constant ``b``.
+    """
+    if node is None:
+        return None
+    node = _unwrap_parens(node)
+    # Structural nodes recurse FIRST — only a *leaf* operand can be the
+    # source `s` or a constant. (A compound RHS like ``t_c + RTT`` resolves
+    # to ``degC``, which would spuriously match the source-leaf check; the
+    # source is a single variable, never a whole sub-expression.)
+    if node.type == "unary_expression":
+        sign = 1
+        for c in node.children:
+            if c.type == "-":
+                sign = -sign
+                break
+            if c.type == "+":
+                break
+        inner = _lin_reduce(_unary_operand(node), src, ctx, source)
+        if inner is None:
+            return None
+        a, b, n = inner
+        return (sign * a, sign * b, n)
+    if node.type == "math_expression":
+        op = _math_op(node)
+        if op not in ("+", "-", "*", "/"):
+            return None
+        left, right = _math_operands(node)
+        lr = _lin_reduce(left, src, ctx, source)
+        rr = _lin_reduce(right, src, ctx, source)
+        if lr is None or rr is None:
+            return None
+        la, lb, ln = lr
+        ra, rb, rn = rr
+        if op == "+":
+            return (la + ra, lb + rb, ln + rn)
+        if op == "-":
+            return (la - ra, lb - rb, ln + rn)
+        if op == "*":
+            if la == 0:               # const(lb) * linear
+                return (ra * lb, rb * lb, rn)
+            if ra == 0:               # linear * const(rb)
+                return (la * rb, lb * rb, ln)
+            return None               # s * s → non-linear
+        # op == "/"
+        if ra == 0 and rb != 0:       # linear / const(rb)
+            return (la / rb, lb / rb, ln)
+        return None                   # division by the source / by zero
+    # Leaf. A constant term comes first: a literal or PARAMETER with a
+    # foldable value is the offset/factor constant — even when it is typed
+    # like the source frame (``RTT`` is ``K`` in a ``K -> degC`` conversion,
+    # yet it is the 273.15 *constant*, not a second source operand). Its
+    # unit is irrelevant; only the numeric value matters (§11.4(c)).
+    val = _resolve_constant_value(node, ctx, source)
+    if val is not None:
+        return (Fraction(0), Fraction(val), 0)
+    # Otherwise: the source operand is the runtime quantity typed ``src``.
+    u = _resolve(node, ctx, source)
+    if isinstance(u, Unit) and compare(u, src).kind == "equal":
+        return (Fraction(1), Fraction(0), 1)
+    return None
+
+
+def _verify_affine_conversion(
+    node: Node,
+    target: Node | None,
+    value: Node | None,
+    src_text: str,
+    tgt_text: str,
+    ctx: _Ctx,
+    source: bytes,
+) -> Diagnostic | None:
+    """Verify an ``@unit_affine_conversion{src -> tgt}`` directive on an
+    assignment. Returns an ``S003`` diagnostic if invalid, else ``None``
+    (valid → the caller suppresses the statement's S002). See scale.md §11.
+    """
+    # (a) Resolve the directive's units; both must exist and share dimension.
+    try:
+        s_unit = _units_mod.parse(src_text, ctx.table)
+        t_unit = _units_mod.parse(tgt_text, ctx.table)
+    except UnitError as exc:
+        return _emit_s003(node, f"unknown unit in directive ({exc})", ctx)
+    if not isinstance(s_unit, Unit) or not isinstance(t_unit, Unit):
+        return _emit_s003(
+            node, "affine conversion units must be simple (no LOG/EXP)", ctx
+        )
+    if tuple(s_unit.dimension) != tuple(t_unit.dimension):
+        return _emit_s003(
+            node,
+            f"{src_text} and {tgt_text} are not affine-compatible "
+            f"(different dimensions)",
+            ctx,
+        )
+    # An affine conversion needs a real zero-point shift; a pure-factor pair
+    # (both offset 0, e.g. Pa -> hPa) is multiplicative — reject it.
+    if s_unit.offset == 0 and t_unit.offset == 0:
+        return _emit_s003(
+            node,
+            f"{src_text} -> {tgt_text} is a multiplicative (offset-0) "
+            f"conversion — carry the factor on a typed PARAMETER instead",
+            ctx,
+        )
+    # The unique affine conversion src→tgt: x_t = a*·x_s + b*.
+    a_star = s_unit.factor / t_unit.factor
+    b_star = (s_unit.offset - t_unit.offset) / t_unit.factor
+    # (1) The LHS unit, when declared, must be the target frame.
+    tu = _resolve(target, ctx, source) if target is not None else None
+    if isinstance(tu, Unit) and compare(tu, t_unit).kind != "equal":
+        return _emit_s003(
+            node,
+            f"target mismatch: the assignment target is {format_unit(tu)} "
+            f"but the directive declares target {tgt_text}",
+            ctx,
+        )
+    # (b)+(c) Reduce the RHS to a*s + b with exactly one src operand.
+    reduced = _lin_reduce(value, s_unit, ctx, source)
+    if reduced is None:
+        return _emit_s003(
+            node,
+            f"the right-hand side is not affine-linear in a single "
+            f"{src_text} operand with constant coefficients",
+            ctx,
+        )
+    a, b, n_src = reduced
+    if n_src != 1:
+        return _emit_s003(
+            node,
+            f"need exactly one {src_text} operand on the right-hand side "
+            f"(found {n_src})",
+            ctx,
+        )
+    # (d) The arithmetic must match the unique conversion law exactly.
+    if a != a_star or b != b_star:
+        return _emit_s003(
+            node,
+            f"the {src_text} -> {tgt_text} arithmetic is wrong: the RHS "
+            f"computes a*s+b with a={_fmt_frac(a)}, b={_fmt_frac(b)}, but "
+            f"the conversion requires a={_fmt_frac(a_star)}, "
+            f"b={_fmt_frac(b_star)}",
+            ctx,
+        )
+    return None
+
+
+def _fmt_frac(x: Fraction) -> str:
+    """Render a Fraction as a compact decimal when exact, else as a ratio."""
+    if x.denominator == 1:
+        return str(x.numerator)
+    dec = float(x)
+    return f"{dec:g}" if Fraction(dec).limit_denominator(10**6) == x else str(x)
 
 
 def _is_dimensionless(u: Unit) -> bool:
@@ -2246,6 +2464,7 @@ def check(
     routine_scopes: tuple[tuple[int, int, str], ...] = (),
     out_autocast_events: list[AutocastEvent] | None = None,
     assumes: dict[int, tuple[str, str, int]] | None = None,
+    affine_conversions: dict[int, tuple[str, str, int]] | None = None,
     scale_mode: bool = False,
 ) -> list[Diagnostic]:
     """Run the checker over a tree-sitter-parsed file.
@@ -2339,6 +2558,7 @@ def check(
         _scope_starts=tuple(r[0] for r in routine_scopes),
         parameter_values=parameter_values,
         assumes=parsed_assumes,
+        affine_conversions=dict(affine_conversions or {}),
         scope_aware=var_units_by_scope is not None,
         scale_mode=scale_mode,
     )
@@ -2374,6 +2594,9 @@ def check(
             with _stmt_trace_ctx() as stmt_trace:
                 target, value = _assignment_sides(node)
                 assume = _assume_for_node(node, ctx)
+                affine = (
+                    _affine_conv_for_node(node, ctx) if ctx.scale_mode else None
+                )
                 if assume is not None:
                     au, reason, aline, acol = assume
                     # Escape hatch: do NOT walk the RHS — that suppresses
@@ -2391,6 +2614,24 @@ def check(
                     tu = _resolve(target, ctx, source) if target is not None else None
                     if tu is not None and not equal_dim(tu, au):
                         out.append(_emit_h001(node, tu, au, ctx))
+                elif affine is not None:
+                    src_text, tgt_text, aline, acol = affine
+                    # The directive owns scale-checking for this statement.
+                    # Walk the RHS for genuine dimension/structure errors but
+                    # drop scale codes (S001/S002) — the verification below is
+                    # the sole scale authority here (scale.md §11.4 step 3).
+                    for d in _walk_expressions(value, ctx, source):
+                        if d.code not in ("S001", "S002"):
+                            out.append(d)
+                    s003 = _verify_affine_conversion(
+                        node, target, value, src_text, tgt_text, ctx, source,
+                    )
+                    if s003 is not None:
+                        out.append(s003)
+                    # Valid ⇒ nothing emitted, and the S002 the assignment
+                    # would raise is suppressed (the scale block below is not
+                    # run on this path) — the statement is the blessed
+                    # conversion and its result is cleanly the target frame.
                 else:
                     out.extend(_walk_expressions(value, ctx, source))
                     verdict, tu, ru = _assignment_homogeneity(

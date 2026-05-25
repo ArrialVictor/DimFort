@@ -37,7 +37,13 @@ from dimfort import __version__ as _dimfort_version
 #     buggy server are keyed *with* the severity config but baked the
 #     un-overridden severity in — poisoned hits that replay the wrong
 #     severity. Bumping orphans them so the fix actually surfaces.
-CHECKER_OUTPUT_VERSION = 2
+# v3: Phase 2c added the @unit_affine_conversion directive, which changes
+#     diagnostic emission for *identical* source bytes — a valid directive
+#     now suppresses the S002 the statement used to raise, and an invalid
+#     one emits S003. The package version string did not change (still
+#     0.1.x), so v2 entries written by a pre-2c server would otherwise
+#     replay stale S002s (no suppression, no S003) on conversion lines.
+CHECKER_OUTPUT_VERSION = 3
 
 
 # Keys from a workspace config that affect a *file's* output and

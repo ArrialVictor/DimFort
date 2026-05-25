@@ -72,6 +72,25 @@ class RawAssume:
 
 
 @dataclass(frozen=True)
+class RawAffineConv:
+    """One ``@unit_affine_conversion{ <src> -> <tgt> }`` occurrence.
+
+    A *verified* affine-conversion directive (Phase 2c, scale.md §11): on
+    an assignment line it asserts the statement converts a ``src``-typed
+    quantity into the ``tgt`` frame (e.g. ``degC -> K``). Unlike
+    ``@unit_assume`` it carries no reason and needs no registry — the
+    checker *verifies* the arithmetic against the known offsets and errors
+    (S003) if it doesn't fit. ``->`` is primary; ``,`` is accepted as a
+    synonym separator.
+    """
+
+    line: int        # 1-based physical line of the comment
+    column: int      # 1-based column where `@unit_affine_conversion{` begins
+    src: str         # source unit name, e.g. "degC"
+    tgt: str         # target unit name, e.g. "K"
+
+
+@dataclass(frozen=True)
 class MalformedAnnotation:
     """A ``@unit`` invocation that the scanner could not parse."""
 
@@ -139,6 +158,12 @@ _UNIT_RE = re.compile(r"@unit\s*\{")
 
 # Match `@unit_assume` followed by `{` — the escape-hatch directive.
 _ASSUME_RE = re.compile(r"@unit_assume\s*\{")
+
+# Match `@unit_affine_conversion` followed by `{` — the verified
+# affine-conversion directive (Phase 2c). Like the two above, the `_`
+# after `@unit` keeps it from colliding with ``_UNIT_RE``; the longer
+# ``_affine_conversion`` keeps it distinct from ``_ASSUME_RE``.
+_AFFINE_RE = re.compile(r"@unit_affine_conversion\s*\{")
 
 
 def _doxygen_kind(comment_text: str) -> AnnotationKind | None:
@@ -252,6 +277,67 @@ def _find_assume_invocations(
     return found, errors
 
 
+def _find_affine_invocations(
+    comment_text: str, line_no: int, base_column: int
+) -> tuple[list[RawAffineConv], list[MalformedAnnotation]]:
+    """Pull every ``@unit_affine_conversion{ <src> -> <tgt> }`` out of one
+    comment.
+
+    Like the other directive scanners, requires a Doxygen marker. The inner
+    text is split on the first ``->`` (primary) or ``,`` (synonym) into the
+    source and target unit names; either part missing is malformed. The unit
+    names are *not* resolved here — the checker does that at verify time so a
+    bad name surfaces as S003 with the statement, not a scan error.
+    """
+    kind = _doxygen_kind(comment_text)
+    if kind is None:
+        return [], []
+    body = comment_text[1:]  # strip the Doxygen marker char
+    body_col_offset = base_column + 1
+    found: list[RawAffineConv] = []
+    errors: list[MalformedAnnotation] = []
+    for m in _AFFINE_RE.finditer(body):
+        start = m.start()
+        close = body.find("}", m.end())
+        col = body_col_offset + start
+        if close == -1:
+            errors.append(MalformedAnnotation(
+                line_no, col, "unclosed '{' in @unit_affine_conversion"
+            ))
+            continue
+        inner = body[m.end():close]
+        if "->" in inner:
+            src_part, tgt_part = inner.split("->", 1)
+        elif "," in inner:
+            src_part, tgt_part = inner.split(",", 1)
+        else:
+            errors.append(MalformedAnnotation(
+                line_no, col,
+                "@unit_affine_conversion requires '{ <src> -> <tgt> }' "
+                "(missing '->' or ',' separating source from target)",
+            ))
+            continue
+        src = src_part.strip()
+        tgt = tgt_part.strip()
+        if not src or not tgt:
+            errors.append(MalformedAnnotation(
+                line_no, col,
+                "empty source or target unit in @unit_affine_conversion",
+            ))
+            continue
+        found.append(RawAffineConv(line=line_no, column=col, src=src, tgt=tgt))
+    if len(found) > 1:
+        errors.extend(
+            MalformedAnnotation(
+                a.line, a.column,
+                "more than one @unit_affine_conversion on one line",
+            )
+            for a in found[1:]
+        )
+        found = found[:1]
+    return found, errors
+
+
 # ---------------------------------------------------------------------------
 # Public entry points
 # ---------------------------------------------------------------------------
@@ -297,6 +383,8 @@ class ScanResult:
     routine_scopes: tuple[tuple[int, int, str], ...] = ()
     # Every ``@unit_assume{...}`` occurrence (escape-hatch directive).
     assumes: tuple[RawAssume, ...] = ()
+    # Every ``@unit_affine_conversion{...}`` occurrence (Phase 2c).
+    affine_conversions: tuple[RawAffineConv, ...] = ()
 
 
 def scan_text(source: str) -> ScanResult:
@@ -305,6 +393,7 @@ def scan_text(source: str) -> ScanResult:
     annotations: list[RawAnnotation] = []
     errors: list[MalformedAnnotation] = []
     assumes: list[RawAssume] = []
+    affine_conversions: list[RawAffineConv] = []
     pre_block_lines: set[int] = set()
     for line_no, line in enumerate(lines, start=1):
         col = _comment_start(line)
@@ -323,6 +412,11 @@ def scan_text(source: str) -> ScanResult:
         )
         assumes.extend(asms)
         errors.extend(asm_errs)
+        afcs, afc_errs = _find_affine_invocations(
+            comment, line_no=line_no, base_column=col + 2
+        )
+        affine_conversions.extend(afcs)
+        errors.extend(afc_errs)
         if kind is AnnotationKind.PRE:
             pre_block_lines.add(line_no)
     declarations, routine_scopes = _scan_declarations(source)
@@ -333,6 +427,7 @@ def scan_text(source: str) -> ScanResult:
         declarations=tuple(declarations),
         routine_scopes=tuple(routine_scopes),
         assumes=tuple(assumes),
+        affine_conversions=tuple(affine_conversions),
     )
 
 
