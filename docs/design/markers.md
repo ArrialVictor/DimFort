@@ -82,14 +82,35 @@ A node's marker combines **two axes**, then aggregates over children:
 base(node)      = 🟡 if the node's unit is unresolved (unannotated leaf,
                   unsupported intrinsic, partial resolution)
                   else 🟢
-diag(node)      = worst severity of any emitted Diagnostic whose range
-                  covers node's span, mapped: error→🔴, warning→🟡,
-                  info/hint→🟢 (no escalation)
+diag(node)      = worst severity of a UNIT-CONSISTENCY diagnostic owning
+                  node (§3), mapped: error→🔴, warning→🟡, info→🟢
 self(node)      = worst_of(base(node), diag(node))
 marker(node)    = worst_of(self(node), *[marker(c) for c in children])
 ```
 
 `worst_of` is the existing `🔴 > 🟡 > 🟢` order.
+
+**Which diagnostics drive markers — the consistency family only
+(decided 2026-05-25).** A marker means *"is the unit algebra consistent
+here"*, so `diag` reads only the **unit-consistency family**:
+
+```
+{ H001, H002, H003, H004,   # dimension homogeneity (assignment / operand
+                            #   / intrinsic-arg / call-arg mismatch)
+  S001, S002 }              # scale (factor) / affine offset
+```
+
+Deliberately **excluded**: `H010` and the `D1.x` rule markers (implicit
+literal-cast — a *smell*; the units are made-consistent by the cast, not
+inconsistent), and the `U0xx` family (annotation quality / info). They
+still get squiggles; they just don't colour a circle, because a green
+circle there is *correct* ("the algebra is consistent"). This keeps
+markers meaning what they've always meant — adding S002, not turning
+every LMDZ implicit-cast yellow. (The declaration row is the one place an
+annotation-quality code drives a marker — `U002` "unparseable" → 🔴 — but
+that is the *resolution* axis for a declaration, not an expression; §2.1.)
+If H010/U0xx-in-the-panel is ever wanted, it's a deliberate later toggle,
+not a side effect of this refactor.
 
 **Single source of truth = the diagnostic stream** (plus the resolution
 axis, which is *not* a diagnostic — an unannotated leaf is unknown, not
@@ -117,11 +138,13 @@ wrong). Everything else falls out:
 - **Resolution axis (`base`).** Reuse the existing resolve: a node with a
   `Unit`/wrapper is 🟢; `None` (unannotated, unsupported, partial) is 🟡.
   This is the *only* thing the marker still computes from the tree.
-- **Diagnostic axis (`diag`).** Look up the file's diagnostics (see §4
-  caveat 1) whose range covers the node's span; take the worst severity.
-  Mapping: `Severity.ERROR → 🔴`, `WARNING → 🟡`, `INFO`/`HINT → 🟢`
-  (informational, never escalates a marker). `off` diagnostics never
-  exist (dropped in `finalize_diagnostics`), so suppression is free.
+- **Diagnostic axis (`diag`).** Look up the file's **consistency-family**
+  diagnostics (§2: `{H001,H002,H003,H004,S001,S002}`; see §4 caveat 1)
+  that *own* the node (§4 caveat 2, tightest-enclosing); take the worst
+  severity. Mapping: `Severity.ERROR → 🔴`, `WARNING → 🟡`,
+  `INFO`/`HINT → 🟢` (never escalates). Non-family codes (`H010`, `D1.x`,
+  `U0xx`) are skipped here. `off` diagnostics never exist (dropped in
+  `finalize_diagnostics`), so suppression is free.
 - **Aggregation.** `worst_of(self, children)` — the worst-of-children
   rule `panel-info.md` already promises and `_aggregate_marker` already
   implements; it stays, now fed by the unified `self`.
