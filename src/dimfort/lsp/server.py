@@ -2879,6 +2879,20 @@ def _panel_info(ls: LanguageServer, params) -> dict | None:
     )
     innermost_vars = innermost["vars"] if innermost else []
 
+    # Diagnostics on the cursor line — so the panel shows *why* a node is
+    # marked without a hover/Problems trip. Scoped to the line (not the
+    # whole file) to stay relevant and avoid duplicating Problems.
+    diagnostics = [
+        {
+            "severity": str(d.severity),  # "error"/"warning"/"info"/"hint"
+            "code": d.code,
+            "message": d.message,
+            "line": d.start.line,
+        }
+        for d in result.diagnostics.get(resolved, [])
+        if d.start.line <= line_1based <= d.end.line
+    ]
+
     return {
         "expression": expression,
         "scopes": scopes,
@@ -2886,6 +2900,7 @@ def _panel_info(ls: LanguageServer, params) -> dict | None:
         "scopeVars": innermost_vars,
         "routine": innermost_header,
         "routineVars": innermost_vars,
+        "diagnostics": diagnostics,
     }
 
 
