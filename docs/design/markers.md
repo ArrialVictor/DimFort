@@ -1,8 +1,9 @@
 # Marker derivation — design spec
 
-Status: **design agreed 2026-05-25**, not yet implemented. Drafted after an
-audit of the panel/hover marker code (see "The problem" below); the model
-and the three decisions (§6) are settled.
+Status: **implemented 2026-05-25** on the `scale-phase2` branch (markers
+are now diagnostic-driven; the old re-derivation helpers are removed).
+Drafted after an audit of the panel/hover marker code (see "The problem"
+below); model + decisions (§6) settled, then built.
 
 This document is the spec. Code follows the doc. If something here turns
 out wrong during implementation, **update this doc first**, then the code.
@@ -222,12 +223,12 @@ tokens, `then`/`do`/`call` — render no row and carry no marker (matches
 - **panel-info.md** — wire contract is **unchanged** (`marker: ok|warn|
   error`, pre-aggregated). Only the server-side derivation changes, so the
   3 companions are untouched. The "worst-of-children" sentence stays true.
-- **hover-ui.md** — presentation is unchanged. Two paragraphs need a small
-  **addendum once implemented**: the per-row semantics (its 🟢/🟡/🔴 list
-  is dimensional-only — add scale `S001`/offset `S002`), and the
-  assignment-marker "source of truth" note (generalise from
-  `_assignment_homogeneity` to "the file's diagnostics"). Flagged here so
-  the docs stay in sync; not done until the code lands.
+- **hover-ui.md** — presentation is unchanged; its marker *semantics* were
+  synced when this landed: the per-row 🟢/🟡/🔴 list is now diagnostic-
+  driven (consistency family incl. `S001`/`S002`), the "source of truth"
+  note points at the file's diagnostics, and the relational examples show
+  🟡 (relational is not an emission site, for dimension *or* scale — e.g.
+  `p > 0.0` no longer re-derives a 🔴).
 - **scale.md** — unaffected; its S001/S002 *emission* is the source these
   markers now read. The forward-compat note there (soft-units is a
   severity/provenance layer over the same diagnostics) is exactly why
@@ -238,16 +239,19 @@ tokens, `then`/`do`/`call` — render no row and carry no marker (matches
 
 1. **Finding 4 — relational/`max`/`min`: decoupled.** The refactor *alone*
    removes the inconsistency: with no relational diagnostic emitted, the
-   relational hover shows a dimension-only marker (the orphan scale
-   overlay disappears) — consistent by construction, no extra work.
-   *Emitting* S001/S002 at relational + `max`/`min` is genuinely useful
-   (comparing across scales/frames is a real bug) but is a **separate
+   relational hover shows a 🟡 marker (the orphan overlay disappears) —
+   consistent by construction, no extra work. Note the build revealed
+   relational is unemitted for **dimension too**, not just scale (`p >
+   0.0` previously re-derived a 🔴 with no squiggle). *Emitting* H00x /
+   S001 / S002 at relational + `max`/`min` is genuinely useful (comparing
+   across dimensions / scales / frames is a real bug) but is a **separate
    future emission enhancement**, not a prerequisite for this refactor.
-2. **Dirty-buffer fallback: recompute.** The active file's diagnostics are
-   already recomputed on every change (the publish path); the marker
-   lookup reads that per-URI cache, and a miss recomputes one file — the
-   same single-file check the publish path runs, on a debounced cursor
-   event. Negligible for a linter-grade LSP, and the more correct choice.
+2. **Dirty-buffer fallback: read the cache (recompute later if needed).**
+   As built, the markers read the last cached `WorksetResult`
+   (`_last_result`, keyed by file), which the publish path refreshes on
+   every change — so the dirty window is one debounced keystroke. A
+   recompute-on-miss is the same single-file check the publish path runs;
+   left as a refinement since the cache is current in practice.
 3. **Granularity: tightest-enclosing ownership + a behaviour-preserving
    test matrix** (see §4 caveat 2). Diagnostics are assigned to their
    smallest enclosing node; aggregation handles upward propagation.

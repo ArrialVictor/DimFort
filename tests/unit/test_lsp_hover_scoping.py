@@ -270,12 +270,16 @@ def test_trace_hover_inside_if_condition(tmp_path: Path):
     f.write_text(src)
     _server._features.hover = "detailed"
     try:
-        # Column 9 sits inside `p1 + p2 > 0.0`. The relational compares
-        # Pa to a dim'less literal → 🔴 homogeneity violation.
+        # Column 9 sits inside `p1 + p2 > 0.0`. Markers are diagnostic-
+        # driven (docs/design/markers.md) and the checker does NOT emit for
+        # relational operand mismatches — so the comparison carries no
+        # consistency diagnostic and the marker is 🟡 (no unit / not
+        # checked), not a re-derived 🔴. Restoring a backed 🔴 here is the
+        # deferred relational-emission enhancement (markers.md §6.1).
         hit = _drive_trace_hover(f, 4, 9)
         assert hit is not None
         text, _ = hit
-        assert "🔴 DimFort" in text
+        assert "🟡 DimFort" in text
         assert "p1" in text and "p2" in text
     finally:
         _server._features.hover = "short"
