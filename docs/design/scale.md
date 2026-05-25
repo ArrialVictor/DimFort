@@ -675,11 +675,13 @@ Each becomes a fixture with the *correct* form (no diagnostic) and the
    curriculum/doc refinement and one opt-in (default-off) advisory — no
    verdict flips, no data-model rework, provided 2a keeps the offset on
    the unit and never special-cases "Celsius" in the algebra.
-8. **Documented offset conversion** — should a future escape bless the
-   literal `t_c + 273.15` °C→K form (an offset-aware `@unit_assume`
-   sibling, or a `degC + <its exact offset>` → `K` recogniser)? Out of
-   scope for 2a (which fires S002 on it, like Phase 1's untyped `/100`);
-   revisit if the literal form proves common enough to warrant blessing.
+8. ~~Documented offset conversion~~ **RESOLVED (2026-05-25): a *verified*
+   affine-conversion directive `@unit_affine_conversion{src, tgt}`, fully
+   specified in §11.** Not a trusted escape (that would mis-use
+   `@unit_assume`, which is for the irreducible): DimFort *knows* both
+   offsets, so the directive is **checked** — it blesses a correct °C↔K
+   conversion *and errors on a wrong one*, which is what turns the #006
+   triage into validated-vs-suspicious. Phase **2c** (after 2a ships).
 
 
 ## 10. Step-by-step plan (Phase 1)
@@ -692,3 +694,211 @@ Each becomes a fixture with the *correct* form (no diagnostic) and the
 5. Fixtures (§8 multiplicative) — buggy fires S001, correct is clean.
 6. Regression gate: `scale_mode` off ⇒ existing 680 tests + LMDZ
    baseline byte-identical.
+
+
+## 11. `@unit_affine_conversion` — the verified affine-conversion directive (Phase 2c)
+
+Status: **design**, not built. This is the resolution of §9.8 and the
+piece that makes the #006 triage actually pay off. **Build after Phase 2a
+(offset / `S002`) ships; orthogonal to Phase 2b (delta units).**
+
+### 11.1 Why a directive (and why a *verified* one)
+
+A multiplicative conversion rides on a typed `PARAMETER` because units
+compose under `*`/`/`: `play[Pa] / PA_PER_HPA[Pa/hPa] = [hPa]`. An
+**affine** (offset) conversion cannot — addition *preserves* the frame
+(`point + vector = point`, §3.3), and there is no unit you can add that
+turns a `degC` into a `K` (same dimension and factor; only the zero-point
+differs). So a correct `t_k = t_c + 273.15` always fires `S002` (§3.3
+caveat). We need a way to *bless* it.
+
+Crucially, an affine conversion is **not irreducible** — DimFort *knows*
+both offsets — so it must **not** use `@unit_assume` (which is for the
+genuinely underivable: non-rational powers, empirical fits; and is
+*trusted/unchecked*, hence the registry). Instead, because the conversion
+is **computable**, the directive is **verified**: DimFort confirms the
+statement actually performs the `src→tgt` conversion and **errors if it
+doesn't**. That check is what splits the #006 class into *validated*
+(blessed, silent) vs *suspicious* (wrong direction / wrong constant /
+°C-mixed-with-K → fires) — the whole point.
+
+Contrast, to keep the two directives cleanly separated:
+
+| | `@unit_assume` | `@unit_affine_conversion` |
+|---|---|---|
+| domain | the **irreducible** (non-rational power, empirical fit) | a **computable** affine frame conversion |
+| nature | **trusted** (asserted, unchecked) | **verified** (checked against the known offsets) |
+| justification | external → `UNIT_ASSUME_REGISTRY.md` | the **check is the justification** → no registry |
+| failure mode | n/a (can't be checked) | **errors** if the arithmetic doesn't fit |
+
+### 11.2 Syntax & placement
+
+A **statement-level directive**, placed exactly like `@unit_assume` (reuse
+that plumbing — it already maps a source line → directive payload):
+
+```fortran
+t_k = t_c + RTT    !< @unit_affine_conversion{degC -> K}
+```
+
+- Payload: `{ <src-unit> -> <tgt-unit> }`. Arrow form is primary (the
+  direction is the point); accept `{src, tgt}` (comma) as a synonym.
+- Applies to the **assignment statement** it annotates. One per statement.
+- `src` and `tgt` are unit names that must resolve in the active table and
+  be **affine-compatible**: same dimension (they may differ in `factor`
+  *and* `offset`). (Provisional name; `@unit_convert` is a shorter
+  alternative — bikeshed, the semantics are what matter.)
+
+### 11.3 Semantics — the conversion law it asserts
+
+For affine units `S = (dim, f_s, o_s)` and `T = (dim, f_t, o_t)`
+(base-value contract `x_base = f·x + o`, §3.2), the *unique* conversion of
+the same physical quantity from `S` to `T` is:
+
+```
+x_t = a*·x_s + b*        with    a* = f_s / f_t ,   b* = (o_s − o_t) / f_t
+```
+
+- `degC → K`: `f_s=f_t=1, o_s=273.15, o_t=0` ⟹ `a*=1, b*=273.15` → `x_K = x_C + 273.15`.
+- `K → degC`: `a*=1, b*=−273.15` → `x_C = x_K − 273.15`.
+- `degF → K`: `f_s=5/9, f_t=1` ⟹ `a*=5/9, b*=459.67·5/9` → `x_K = (5/9)·x_F + 459.67·5/9`.
+
+A directive is **valid** iff the annotated statement `lhs = RHS` satisfies:
+1. `lhs`'s unit == `T` (the declared target), and
+2. `RHS` is **affine-linear in exactly one `S`-typed operand** `s`, i.e.
+   reduces to `a·s + b` with constant `a`, `b`, and
+3. `a == a*` and `b == b*` (exact `Fraction` equality).
+
+Valid ⟹ the statement is the blessed conversion: **suppress `S002` /
+`offset_mismatch` here**, and treat the result as cleanly `T`. Invalid ⟹
+**`S003`** (§11.5) with the specific reason.
+
+### 11.4 Verification algorithm (the crux — spec it exactly)
+
+**(a) Resolve & check the units.** Look up `src`, `tgt`. Both must exist
+and share dimension (else `S003`: "not affine-compatible"). Compute
+`a* = f_s/f_t`, `b* = (o_s − o_t)/f_t` (Fractions).
+
+**(b) Identify the source operand.** Among `RHS`'s sub-terms, exactly one
+must resolve to unit `S` (a variable, or a `PARAMETER` typed `S`). That is
+`s`. Zero or more-than-one `S`-typed operand ⟹ `S003` ("need exactly one
+`{src}` operand"). *Bare-literal sources must first be typed* (the #006 →
+`PARAMETER` discipline H010 already nudges) — this keeps `s` unambiguous
+and composes with the existing rule.
+
+**(c) Reduce `RHS` to `a·s + b`.** A recursive evaluator `lin(node) →
+(a, b)` over **values** (units of the constant terms are irrelevant here —
+only their numeric value matters):
+
+```
+lin(s)                = (1, 0)                       # the source operand
+lin(const c)          = (0, value(c))                # literal or PARAMETER value
+lin(n1 + n2)          = (a1+a2, b1+b2)
+lin(n1 - n2)          = (a1-a2, b1-b2)
+lin(-n)               = (-a, -b)
+lin(n1 * n2)          = if a1==0: (a2*b1, b2*b1)      # const * linear
+                        elif a2==0: (a1*b2, b1*b2)    # linear * const
+                        else: ERROR (non-linear in s)
+lin(n1 / n2)          = if a2==0 and value≠0: (a1/b2, b1/b2)
+                        else: ERROR
+lin(paren)            = lin(inner)
+otherwise / unresolved const / >1 occurrence of s  → ERROR
+```
+
+`value(c)` reuses `_resolve_constant_value` (literals + PARAMETER folding).
+A non-`s` *variable* with no resolvable value ⟹ ERROR ("RHS not
+affine-linear in `{src}` with constant coefficients" — a conversion must
+not pull in other variables). `RTT[K] = 273.15` contributes `(0, 273.15)`;
+its `K` annotation doesn't matter to the value check.
+
+**(d) Compare.** `a == a*` and `b == b*` (exact). Match ⟹ valid. Else
+`S003`: "stated `degC → K` conversion is wrong: RHS computes `a·s + b`
+(a=…, b=…), expected a=1, b=273.15" (the diagnostic shows both so the
+author sees *how* it's off — wrong sign, wrong constant, etc.).
+
+### 11.5 Diagnostics
+
+| code | when | default severity |
+|------|------|-------------------|
+| `S003` | an `@unit_affine_conversion` directive that does **not** verify (non-affine units / wrong target / not affine-linear in src / `a`,`b` mismatch) | **error** |
+
+`S003` is **error** by default (unlike S001/S002 warnings): a *claimed*
+conversion that is actually wrong is a bug, not a style nudge. Overridable
+via `[diagnostics] S003`. A **valid** directive emits nothing and
+*suppresses* the `S002` that the statement would otherwise raise. It does
+**not** touch `H010`/`D1.5` on a bare additive literal — naming the
+constant is an orthogonal nudge (and the recommended idiom uses a
+`PARAMETER`, so no `H010` arises).
+
+### 11.6 The recommended idiom — a verified conversion function
+
+The cleanest "proper definition": a conversion **function** whose
+signature gives callers a clean typed conversion, with the one irreducible
+body line verified by the directive:
+
+```fortran
+real function c_to_k(t) result(tk)
+  real, intent(in) :: t   !< @unit{degC}
+  real             :: tk  !< @unit{K}
+  tk = t + RTT            !< @unit_affine_conversion{degC -> K}
+end function
+```
+
+Callers (`x_k = c_to_k(x_c)`) are checked against the `degC → K` signature
+— clean and typed — while the single conversion line is *verified* once.
+This is the pattern to teach. Inline use at one-off sites is also fine.
+
+### 11.7 Edge cases & open questions
+
+1. **Same-factor only, or general affine?** The law (§11.3) is fully
+   general (handles `degF`'s `a*=5/9`). Implementation MAY ship the
+   same-factor (`a*=1`, pure-offset) case first (covers all of #006 °C/K)
+   and extend to `a*≠1` later — `lin` already returns `a`, so the check is
+   the same; only `degF`-style table entries differ. Decide at build time.
+2. **`src == tgt`** (identity, `a*=1,b*=0`): valid but pointless; consider
+   a `U`-level "redundant conversion directive" info. Low priority.
+3. **Unresolvable conversion constant** (e.g. `tk = t + some_runtime_var`):
+   `lin` errors → `S003` "cannot verify: non-constant coefficient". Correct
+   — an unverifiable claim must not be silently trusted (that's the
+   `@unit_assume` lane, deliberately not reused here).
+4. **Naming** — `@unit_affine_conversion` vs `@unit_convert` vs `@affine`.
+   Provisional; settle before shipping.
+5. **Directive on a non-conversion statement** (no `S`/`T` involvement):
+   `S003` ("affine-conversion directive but the statement isn't one").
+
+### 11.8 Step-by-step plan (Phase 2c — for a fresh session)
+
+Prereq: Phase 2a (offset, `S002`) is merged (it is — `main`).
+1. **Parse** the directive: reuse the `@unit_assume` statement-directive
+   scanner (`ts_checker` already collects `assumes: dict[line → payload]`);
+   add a parallel `affine_conversions: dict[line → (src, tgt)]`. Same
+   `!< @...{...}` comment lexing.
+2. **`lin` reducer** in `ts_checker` (or `units`): `Node → (Fraction a,
+   Fraction b) | None`, per §11.4(c), reusing `_resolve` (to find the `S`
+   operand) and `_resolve_constant_value` (for constants).
+3. **Emit site**: in the assignment check, if the statement has a
+   directive, run §11.4(a)–(d). Valid → set a flag that *suppresses* the
+   `S002`/`offset_mismatch` for this statement (and reframes the result to
+   `T`). Invalid → `_emit_s003(node, reason)`.
+4. **Severity**: register `S003` default `error` in the override map path
+   (it flows through `finalize_diagnostics` like the rest).
+5. **Markers**: free — `S003` is a consistency-family code, so add it to
+   `_MARKER_DIAG_CODES` (markers.md §2) so a bad directive shows 🔴 in the
+   panel/hover; a *valid* directive leaves the statement 🟢 (no diagnostic).
+6. **Tests + §11.9 corpus**; docs: this section + `annotations.md` +
+   `UNIT_ASSUME_REGISTRY.md` note (affine-conversion is *not* an assume and
+   needs no registry entry — state it so the discipline stays clear).
+
+### 11.9 Test corpus
+
+Each as a fixture, valid form silent (S002 suppressed) + each invalid form
+firing `S003`:
+- **Valid** `t_k = t_c + RTT  !< @unit_affine_conversion{degC -> K}` with
+  `RTT = 273.15 !< @unit{K}` → silent (a*=1,b*=273.15 match).
+- **Valid reverse** `t_c = t_k - RTT  !< @unit_affine_conversion{K -> degC}`.
+- **Valid via function** the `c_to_k` idiom (§11.6) — body silent, callers clean.
+- **Wrong direction** `t_k = t_c - RTT  !< @{degC -> K}` → `S003` (b=−273.15, expected +273.15).
+- **Wrong constant** `t_k = t_c + 100. !< @{degC -> K}` → `S003` (b=100≠273.15).
+- **Wrong target** `lhs` typed `degC` but `{degC -> K}` → `S003` (target mismatch).
+- **Non-affine** `{Pa -> hPa}` (a factor pair, not affine) → `S003` ("use a typed PARAMETER for multiplicative conversions").
+- **Non-linear / extra variable** `t_k = t_c * other + RTT` → `S003`.
+- **`degF -> K`** (if the general case ships) `t_k = (5./9.)*t_f + b !< @{degF -> K}` → silent.
