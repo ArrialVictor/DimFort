@@ -1866,6 +1866,17 @@ def _render_assignment_short(asn, lhs, rhs, ctx, source: bytes) -> tuple[str, ls
         lhs, rhs, ctx, source,
     )
     marker = _verdict_marker(verdict, lhs_u, rhs_u, ctx)
+    # A scale mismatch nested in either side (e.g. RHS ``play + phpa``)
+    # resolves dimensionally, so the two-sided verdict alone misses it.
+    # Fold in the sides' subtree markers so the short hover matches the
+    # panel + detailed-hover header. Gated on scale_mode: scale-off keeps
+    # the dimension-only verdict marker unchanged.
+    if getattr(ctx, "scale_mode", False):
+        marker = _worst_emoji(
+            marker,
+            _node_trace_mark(lhs, lhs_u, ctx, source),
+            _node_trace_mark(rhs, rhs_u, ctx, source),
+        )
     lhs_s = format_unit(lhs_u) if lhs_u is not None else "?"
     rhs_s = format_unit(rhs_u) if rhs_u is not None else "?"
     body = (
@@ -2550,6 +2561,14 @@ _MARKER_TOKEN_RANK = {"ok": 0, "warn": 1, "error": 2}
 def _worst_token(*tokens: str) -> str:
     """Worst (highest-severity) of a set of marker tokens: error>warn>ok."""
     return max(tokens, key=lambda t: _MARKER_TOKEN_RANK.get(t, 1))
+
+
+_MARKER_EMOJI_RANK = {"🟢": 0, "🟡": 1, "🔴": 2}
+
+
+def _worst_emoji(*marks: str) -> str:
+    """Worst (highest-severity) of a set of 🟢/🟡/🔴 markers."""
+    return max(marks, key=lambda m: _MARKER_EMOJI_RANK.get(m, 1))
 
 
 def _build_expression_tree(node, ctx, source: bytes) -> dict | None:

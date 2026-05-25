@@ -182,6 +182,53 @@ def test_panel_scale_marker_reflects_s001(tmp_path: Path):
     assert _markers(scale_on=False) == ("ok", "ok", "ok")
 
 
+def test_assignment_short_hover_reflects_nested_scale(tmp_path: Path):
+    """Hovering the ``=`` of ``psum = play + phpa`` must surface the nested
+    scale mismatch (🟡 default) when scale is on — the two-sided verdict
+    (Pa vs Pa) is clean on its own. Scale off → 🟢."""
+    from dimfort.core import ts_checker
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp import server
+    from dimfort.lsp.server import (
+        _build_ts_ctx,
+        _interesting_children,
+        _render_assignment_short,
+    )
+
+    src = tmp_path / "scale_short.f90"
+    src.write_text(
+        "subroutine s\n"
+        "  real :: play  !< @unit{Pa}\n"
+        "  real :: phpa  !< @unit{hPa}\n"
+        "  real :: psum  !< @unit{Pa}\n"
+        "  psum = play + phpa\n"
+        "end subroutine\n"
+    )
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    asn = next(n for n in _ts.walk(tree.root_node)
+               if n.type == "assignment_statement")
+    kids = _interesting_children(asn)
+    lhs, rhs = kids[0], kids[-1]
+
+    def _marker(scale_on: bool) -> str:
+        result = check_files([src], scale_mode=scale_on)
+        saved = server._scale_mode
+        server._scale_mode = scale_on
+        try:
+            ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+            ctx.var_types.update(ts_checker.collect_var_types(tree, source))
+            text, _ = _render_assignment_short(asn, lhs, rhs, ctx, source)
+        finally:
+            server._scale_mode = saved
+        return text.split(" DimFort")[0].replace("**", "").strip()
+
+    assert _marker(scale_on=True) == "🟡"
+    assert _marker(scale_on=False) == "🟢"
+
+
 def test_panel_marker_matches_assignment_homogeneity(tmp_path: Path):
     """All three render sites must derive their marker from the verdict.
     Touches the regression spotted during the walkthrough: panel was
