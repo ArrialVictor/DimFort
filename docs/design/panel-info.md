@@ -90,6 +90,19 @@ interface PanelInfo {
   scopeVars: ScopeVar[];
   routine: { name: string; kind: string } | null;
   routineVars: ScopeVar[];
+
+  // Diagnostics on the cursor LINE — so the panel can show *why* a node
+  // is marked without a hover / Problems trip. Scoped to the line (not
+  // the whole file) to stay relevant. Empty array when the line is clean;
+  // renderers omit the section entirely in that case.
+  diagnostics: PanelDiagnostic[];
+}
+
+interface PanelDiagnostic {
+  severity: "error" | "warning" | "info" | "hint";
+  code: string;     // H001 / S002 / U005 / …
+  message: string;
+  line: number;     // 1-based
 }
 
 interface ScopeSection {

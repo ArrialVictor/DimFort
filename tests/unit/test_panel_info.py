@@ -231,6 +231,58 @@ def test_panel_marker_matrix_diagnostic_driven(tmp_path: Path):
     assert marks == ["error", "warn", "ok"]
 
 
+def test_panel_info_diagnostics_for_cursor_line(tmp_path: Path):
+    """_panel_info exposes the diagnostics on the cursor line so the panel
+    can show *why* a node is marked. Empty array on a clean line."""
+    from types import SimpleNamespace
+
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp import server
+
+    src = tmp_path / "diag_panel.f90"
+    src.write_text(
+        "module m\n"
+        "  real :: t_k  !< @unit{K}\n"
+        "  real :: t_c  !< @unit{degC}\n"
+        "contains\n"
+        "  subroutine s()\n"
+        "    t_k = t_c\n"   # line 6: S002 (K vs degC)
+        "    t_k = t_k\n"   # line 7: clean
+        "  end subroutine s\n"
+        "end module m\n"
+    )
+    resolved = src.resolve()
+    text = src.read_text()
+    result = check_files([src], scale_mode=True)
+
+    class _Doc:
+        source = text
+
+    ls = SimpleNamespace(
+        workspace=SimpleNamespace(get_text_document=lambda _uri: _Doc())
+    )
+
+    def _diags_at(line_1based: int):
+        with server._last_result_lock:
+            saved_result, server._last_result = server._last_result, result
+        saved_mode, server._scale_mode = server._scale_mode, True
+        try:
+            return server._panel_info(ls, {
+                "textDocument": {"uri": resolved.as_uri()},
+                "position": {"line": line_1based - 1, "character": 6},
+            })["diagnostics"]
+        finally:
+            server._scale_mode = saved_mode
+            with server._last_result_lock:
+                server._last_result = saved_result
+
+    line6 = _diags_at(6)
+    assert [d["code"] for d in line6] == ["S002"]
+    assert line6[0]["severity"] == "warning"
+    assert "Offset mismatch" in line6[0]["message"]
+    assert _diags_at(7) == []   # clean line
+
+
 def test_assignment_short_hover_reflects_nested_scale(tmp_path: Path):
     """Hovering the ``=`` of ``psum = play + phpa`` must surface the nested
     scale mismatch (🟡 default) when scale is on — the two-sided verdict
