@@ -2430,10 +2430,13 @@ def check(
                         else:
                             delta = _offset_mismatch_delta(tu, ru)
                             if delta is not None:
+                                # Render the offset as a readable decimal
+                                # (-273.15), not the raw Fraction (-5463/20).
+                                delta_txt = f"{float(delta):g}"
                                 out.append(_emit_s002(
                                     node,
                                     f"same dimension and scale but a different "
-                                    f"zero-point (offsets differ by {delta}, "
+                                    f"zero-point (offsets differ by {delta_txt}, "
                                     f"e.g. °C vs K) — add the conversion or "
                                     f"keep units consistent",
                                     ctx,
