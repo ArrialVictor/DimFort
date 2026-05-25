@@ -1,6 +1,8 @@
 # Scale checking — design spec for the `scale` branch
 
-Status: **in design**, no implementation yet. Branch created 2026-05-25.
+Status: **Phase 1 shipped** (multiplicative scale, `S001`, merged to
+`main` 2026-05-25). **Phase 2 (affine offset, `S002`) — algebra fully
+specified below (§3.2–§3.3, §6), not yet built.**
 
 This document is the spec. Code follows the doc, not the other way
 around. If something here turns out wrong during implementation,
@@ -133,6 +135,7 @@ the canonical base unit, `x_base = U.factor * x + U.offset`.
 |-------|-----------|--------|---------|
 | K     | Θ         | 1      | 0       |
 | °C    | Θ         | 1      | 273.15  |
+| °F    | Θ         | 5/9    | 459.67·5/9 |
 | Pa    | M/(L·T²)  | 1      | 0       |
 | hPa   | M/(L·T²)  | 100    | 0       |
 | kg/kg | 1         | 1      | 0       |
@@ -143,12 +146,59 @@ Note `g/kg` is **dimensionless** (`dimension = {1}`) yet has `factor ≠ 1`.
 this is a defining requirement, not an edge case. `equal_dim` collapses
 all dimensionless units today; scale mode must not.
 
+**The affine model — absolute vs difference (the design that governs
+everything below).** Temperature (dimension Θ) carries two physically
+distinct *meanings* on one dimension:
+- an **absolute** temperature is a *point* on an affine scale ("it is
+  20 °C" = 293.15 K) — converting needs the offset;
+- a temperature **difference / ΔT** is a *vector* ("rose by 20 °C" =
+  rose by 20 K) — the offset does **not** apply.
+
+This is the affine-point-vs-vector distinction (cf. timestamp vs
+duration). The model encodes it with **one rule, no second mechanism**:
+
+> **`offset ≠ 0` ⟺ an absolute affine quantity. `offset = 0` ⟺ an
+> ordinary quantity** — which covers *every* non-temperature unit,
+> absolute kelvin (offset 0 by construction), *and* every temperature
+> *difference*. A difference is exactly **the offset-0 projection** of
+> its unit: drop the offset, keep the factor. So `Δ°C = {Θ, 1, 0} = K`,
+> and `Δ°F = {Θ, 5/9, 0}` (≠ K — differences only collapse to K when the
+> factor is 1). The offset algebra therefore only *bites* when a unit has
+> `offset ≠ 0`; the overwhelming-majority offset-0 case flows through the
+> Phase-1 (factor-only) logic untouched.
+
+**Design decision (2026-05-25): design for (B), implement the (A) subset
+first.** Two ways to let an author name a *difference*:
+- **(A)** a single absolute `degC` (offset 273.15); a Celsius difference
+  is annotated at its offset-0 projection (`K`). Lower annotation burden;
+  the `+`-ambiguity dissolves (a delta is offset 0, so "absolute + delta"
+  is always the legal exactly-one-offset case). Right for LMDZ, whose
+  differences are naturally in K.
+- **(B)** additionally a *named* difference unit (`Cdeg` / `delta_degC`,
+  offset 0 but a distinct name) so author *intent* is explicit — the
+  pint / Boost.Units design, and the pedagogically richer one (it forces
+  the student to ask "absolute or change?", the exact °C/K bug).
+
+We **design the model and spec for (B)** — offset lives on the unit,
+"difference = offset-0 projection" is the general law, named delta units
+are first-class in the table schema even before they're all populated,
+and nothing special-cases "Celsius" in the algebra. We **implement the
+(A) subset first** (absolute `degC` + the full algebra below + `S002`),
+because that captures the entire #006 research payoff. Named delta units
++ a "prefer the explicit delta unit" advisory are the additive (B) step,
+lit up when the teaching use-case lands. Because (A)'s annotations stay
+valid and correctly-typed under (B), this is a non-breaking refinement,
+not a migration (see §9.7).
+
 Where do non-unit factors/offsets come from? From the unit table: base
 SI units (factor 1, offset 0) plus `.dimfort.toml` definitions
 (`hPa`, `g`, `degC`, …) carrying their factor/offset relative to the
-base. (Audit item: confirm `unit_config` can express factor- and
-offset-bearing unit defs; today it lists `hPa`/`degree` — verify they
-carry a factor.)
+base. **Audit (resolved 2026-05-25):** the table schema today carries
+`factor` only (`default_units.toml` derived defs: `expr` + optional
+`factor`); there is **no `offset` field and no `degC`**. Phase 2 must
+extend the derived-unit schema with an optional `offset` and add
+`degC = { expr = "K", offset = 273.15 }` (and reserve `Cdeg`/`delta_degC`
+for (B)).
 
 
 ### 3.3 How `factor` and `offset` transform under each operation
@@ -165,8 +215,8 @@ for context; it is unchanged by this feature.
 | `a * b` | add | multiply `f_a·f_b` *(implemented)* | both must be 0; result 0 | propagate |
 | `a / b` | subtract | divide `f_a/f_b` *(implemented)* | both must be 0; result 0 | propagate |
 | `a ** n` | ×`n` | `f_a ** n` *(implemented; non-int on a scaled factor already restricted, `units.py:352`)* | must be 0; result 0 | propagate |
-| `a + b`, `a - b` | must be equal | **must be equal** → else `S001(ratio)`; result = common factor | see temperature rules below | **check** |
-| `max/min(a,b,…)`, `a<b`, `a==b` | must be equal | **must be equal** → else `S001` | see temperature rules | **check** |
+| `a + b`, `a - b` | must be equal | **must be equal** → else `S001(ratio)`; result = common factor | see affine algebra below | **check** |
+| `max/min(a,b,…)`, `a<b`, `a==b` | must be equal | **must be equal** → else `S001` | see affine algebra below | **check** |
 | `LOG(a)` / `EXP(a)` (wrappers) | recurse `inner` | recurse `inner` (see log-domain note) | recurse | check inner |
 
 **Key consequences (state them, don't assume the reader infers them):**
@@ -187,15 +237,125 @@ for context; it is unchanged by this feature.
   actionable quantity); **audit the Tetens/FCTTRE `LogWrap` algebra
   (R5.x) for factor handling** before relying on this.
 
-**Temperature / offset rules (Phase 2, affine).** Stated here for
-completeness; not built in Phase 1 (units have `offset = 0` until then):
-- `a - b` with **equal** offsets → result `offset 0` (a *difference* /
-  `ΔT`; the offsets cancel). Legal.
-- `a + b`: if exactly one operand has `offset ≠ 0` (absolute + delta) →
-  result keeps that offset (a shifted absolute). Legal. If **both** have
-  `offset ≠ 0` (two absolute °C) → ill-defined → `S002`.
-- `*`, `/`, `**` on any `offset ≠ 0` operand → ill-defined (cannot
-  multiply an absolute °C) → require `offset 0`, else `S002`.
+#### Affine offset — the complete algebra (Phase 2)
+
+Vocabulary: a unit is **absolute** iff `offset ≠ 0` (an affine *point*,
+e.g. `degC`); otherwise it is **ordinary** (`offset 0` — every
+non-temperature unit, absolute `K`, and every temperature *difference* /
+vector). The rules below are the standard affine-space algebra (point ±
+vector); they are stated per operation so implementation has no room to
+guess. Dimension and `factor` are checked exactly as in Phase 1 *first*;
+the offset rules only apply once dimension and factor agree.
+
+**Propagating ops — an absolute operand is ill-defined.** You cannot
+scale or multiply an affine *point* (`2 × 20 °C` is meaningless;
+`2 × 20 K` is fine):
+- `a * b`, `a / b`, `a ** n`: **require every operand `offset = 0`**;
+  result `offset 0`. Any `offset ≠ 0` operand → **`S002`**. (Factor
+  propagates as in Phase 1.)
+
+**`a + b` (check site).** After dim + factor agree, by operand kind:
+
+| `o_a` | `o_b` | meaning | result | verdict |
+|-------|-------|---------|--------|---------|
+| 0 | 0 | ordinary + ordinary | offset 0 | ok (Phase 1) |
+| ≠0 | 0 | point + vector | `o_a` | ok |
+| 0 | ≠0 | vector + point | `o_b` | ok |
+| ≠0 | ≠0 | point + point | — | **`S002`** |
+
+(`+` is commutative; "exactly one absolute" is always the legal
+shifted-point case.)
+
+**`a − b` (check site).** Subtraction is *asymmetric* — this is the part
+a naive reading gets wrong:
+
+| `o_a` | `o_b` | meaning | result | verdict |
+|-------|-------|---------|--------|---------|
+| 0 | 0 | ordinary − ordinary | offset 0 | ok (Phase 1) |
+| ≠0 | 0 | point − vector | `o_a` | ok |
+| 0 | ≠0 | vector − point | — | **`S002`** |
+| ≠0 | ≠0, **equal** | point − point | **offset 0** (a ΔT!) | ok |
+| ≠0 | ≠0, **unequal** | points, different frames | — | **`S002`** |
+
+The headline row is *point − point (equal offset) → offset 0*: `T2[degC]
+− T1[degC]` is a **difference**, and the result is correctly its
+offset-0 projection (a ΔT, i.e. `K`). This is the one place an absolute
+unit legitimately *produces* an ordinary one.
+
+The `vector − point` row (`ΔT − T_abs` → `S002`) is a **deliberate
+strict choice**: it is undefined in affine algebra and has *no operator*
+in Boost.Units, so we flag it. pint diverges here — it *permits* it and
+returns an absolute (`5 Δ°C − 20 °C → -15 °C`), which is pint
+prioritising "compute something" over correctness. For a bug-catching /
+teaching linter we take the strict side (it's almost always a real
+mistake). See the verification note at the end of this section.
+
+**`max/min`, relational (`<`, `==`, …) — comparison check.** Operands
+must share a frame: equal dimension, factor, *and* offset. `absolute vs
+ordinary` (comparing a temperature to a change), or two absolutes with
+**unequal** offset → **`S002`**. Two absolutes with equal offset compare
+fine (result, for `max/min`, keeps that offset).
+
+**`LOG(a)` / `EXP(a)`.** The argument must be ordinary: `LOG` of an
+absolute °C is frame-dependent nonsense. Require `offset 0` inside the
+wrapper, else **`S002`**; recurse `inner` for factor as in Phase 1.
+
+**Assignment `lhs = rhs` / `compare(lhs, rhs)` — the primary catch.**
+Equal dimension and factor but **different offset** → `offset_mismatch
+(delta = o_lhs − o_rhs)` → **`S002`**. This is the headline #006 bug:
+
+```fortran
+real :: t_k   !< @unit{K}
+real :: t_c   !< @unit{degC}
+t_k = t_c            ! S002: K vs degC, missing +273.15 conversion
+```
+
+As in Phase 1, **most Phase-2 value is at boundaries** (a `degC` quantity
+meeting a `K` slot), surfaced by this assignment/comparison check — not
+by the arithmetic rules, which mainly *reject* nonsense.
+
+**The literal-conversion caveat (honest limitation).** Phase 1 could
+bless a correct conversion by typing the factor on a `PARAMETER`
+(`/ 100[Pa/hPa]`). An **additive offset cannot ride a multiplicative
+`PARAMETER`**, so the correct-but-literal form still fires:
+
+```fortran
+t_k = t_c + 273.15   ! S002 (untyped offset conversion): t_c[degC] + a
+                     ! bare offset-0 literal stays degC, ≠ K target.
+```
+
+This is the offset analogue of Phase 1's untyped-`/100` S001: the
+*missing* conversion is caught regardless, and the nudge is toward
+**keeping absolute temperatures consistently typed** (don't hand-roll
+`+273.15`). A future "documented conversion" escape (an offset-aware
+sibling of `@unit_assume`, or recognising `degC + <its exact offset>` →
+`K`) could bless the literal form; **out of scope for the (A) subset**,
+noted in §9.
+
+**Worked #006 examples** (what fires once the Celsius quantities are
+typed `degC`; today they are untyped K-literals and so silent):
+- `tempvig1[K] = -21.06 + RTT` with `RTT = 273.15[K]`: `-21.06` is an
+  untyped Celsius literal; typed as `degC`, `degC + K(offset 0)` → degC,
+  assigned to `K` → **`S002`** (untyped °C→K). Validates only if the
+  Celsius value never claims to be K without conversion.
+- `t_glace_min_old[K] = RTT - 15.0`: `RTT[K] − 15.0`(ordinary) → K; clean
+  *if* `RTT` is K and `15.0` a ΔT. Fires only if `15.0` is typed `degC`.
+- A genuine bug it now catches: `T1[degC] + T2[degC]` (two absolutes
+  added) → **`S002`** point+point.
+
+**Verification against pint (2026-05-25, pint 0.25.3).** Every rule above
+was cross-checked against `pint` (the reference Python units library with
+explicit offset support). **9 of 10 core rows match exactly**, confirmed
+empirically: `degC − degC → Δ°C`; `degC ± Δ → degC`; `degC + degC`,
+`2 * degC`, `degC * degC` all raise `OffsetUnitCalculusError` (= our
+`S002`); `Δ ± Δ` and scaling a `Δ` are fine; in-frame comparison works.
+The **one divergence is `vector − point`** (`ΔT − T_abs`): pint permits it
+(`-15 °C`), we flag `S002` — the deliberate strict choice noted above
+(Boost.Units and affine algebra side with us). Two corroborations: pint
+*rejects* `degC + 273.15` outright (`DimensionalityError` — can't add a
+bare number to a temperature), strengthening the untyped-literal caveat;
+and pint *auto-converts* cross-frame `degC < degF`, whereas we flag — but
+°C/°F differ in `factor` (5/9), so our **`S001`** fires first regardless.
 
 
 ### 3.4 Numeric literals — the conversion-vs-arithmetic question
@@ -358,23 +518,38 @@ Catches hPa/Pa, g/kg, g/m³, mb/Pa, L⁻¹/m⁻³.
    off, the entire existing suite and the LMDZ baseline are unchanged.
 
 ### Phase 2 — affine offset (`offset`, the °C/K problem)
-Closes the dominant #006 Celsius class.
+Closes the dominant #006 Celsius class. The algebra is fully specified in
+§3.2–§3.3 (written out before any code, per the build discipline). Split
+into two additive milestones; **2a is the (A) subset**, **2b is the (B)
+refinement** (see §3.2 design decision, §9.7 migration note).
 
-6. Add `offset` to `Unit`; conversion contract `x_base = factor·x+offset`.
-7. **The temperature problem.** Absolute offset units don't add: `T1+T2`
-   (two absolute °C) is meaningless; `T1−T2` is a *difference* (offset
-   cancels → result offset 0); `T + ΔT` is fine. The algebra must
-   distinguish **absolute** vs **difference** temperatures. Minimal
-   model: `+`/`-` on two equal-offset operands → subtraction yields
-   offset 0 (a delta), addition of two non-zero-offset absolutes →
-   `S002`/flag. Spec the rules precisely before coding Phase 2.
-8. `S002` emission. A correct `°C→K` conversion (`+273.15` against a K
-   target) validates; a stray `273.15` against a non-temperature or
-   wrong-direction target fires. This is what turns the #006 H010s into
-   *actionable* scale verdicts.
+**Milestone 2a — absolute `degC` + the algebra + `S002`:**
+6. Add `offset: Fraction = 0` to `Unit`; conversion contract
+   `x_base = factor·x + offset`. Extend the derived-unit table schema
+   with an optional `offset`; add `degC = { expr = "K", offset = 273.15 }`.
+7. Add `delta` to `Verdict` and the `offset_mismatch` branch to
+   `compare()` (dim+factor equal, offset differs). Implement the affine
+   algebra of §3.3 in `combine()`/`power()`/wrapper unwrap: propagating
+   ops reject absolute operands; `+`/`-` per the point/vector tables;
+   relational/`max`/`min` require a shared frame.
+8. `S002` emission at the same sites as `S001` (assignment +
+   binary/relational/`max`/`min`), gated on `scale_mode`, default
+   warning, overridable. The assignment/`compare` offset_mismatch is the
+   headline #006 catch (`K = degC`).
+9. Tests + the §8 affine corpus (correct form silent, buggy form fires).
+   Regression: `scale_mode` off ⇒ unchanged; offset-0-everywhere (today's
+   annotations) ⇒ S002 silent.
 
-Phase 2 is deferred until Phase 1 ships and the temperature rules are
-written out in full here.
+**Milestone 2b — named difference units + pedagogy (the (B) step):**
+10. Add `Cdeg`/`delta_degC` (offset 0, distinct name) to the table, plus
+    any `Kdeg` alias; first-class but numerically the offset-0 projection.
+11. Optional opt-in advisory nudging a Celsius *difference* annotated `K`
+    toward the explicit delta unit (severity-tunable; default off to keep
+    2a code non-breaking). This is the teaching-oriented surface.
+
+Everything 2b adds is additive: 2a annotations stay valid and correctly
+typed under 2b (§9.7). 2a ships first for the research payoff; 2b lands
+when the teaching use-case does.
 
 
 ## 7. Forward-compatibility with soft-units
@@ -404,9 +579,25 @@ slot in without a rewrite):
 - `nb_crystals` `×1e3` — `L⁻¹` → `m⁻³`.
 - A `g/kg` vs `kg/kg` assignment — the dimensionless-but-scaled case.
 
-**Affine (Phase 2):**
-- The #006 family: `tempvig1 = -21.06 + RTT`, `t_glace_min_old = RTT-15.0`,
-  `235.15`-cascade in `calc_gammasat`, `tlcrit`/`t_celsius`.
+**Affine (Phase 2a — absolute `degC` + the algebra):**
+- `t_k[K] = t_c[degC]` — the headline missing-conversion offset_mismatch
+  → S002. The correct counterpart: both sides `K` (or both `degC`).
+- `T1[degC] + T2[degC]` — point + point → S002. Correct: `T[degC] +
+  dT[K]` (absolute + difference) → degC, silent.
+- `T2[degC] - T1[degC]` — point − point, equal offset → ΔT (offset 0),
+  **silent** (must NOT fire — pins the legal difference case).
+- `2.0 * T[degC]` — scaling an absolute → S002. Correct: `2.0 * dT[K]`.
+- The #006 family once typed: `tempvig1 = -21.06 + RTT` (RTT=273.15[K]),
+  `t_glace_min_old = RTT-15.0`, `235.15`-cascade in `calc_gammasat`,
+  `tlcrit`/`t_celsius` — untyped K-literals today (silent), fire once the
+  Celsius quantities are annotated `degC`.
+- `t_k = t_c + 273.15` — the untyped-offset-conversion caveat: fires S002
+  (a fixture pinning the documented limitation, not a bug).
+
+**Affine (Phase 2b — named difference units):**
+- A Celsius *difference* annotated `Cdeg` vs the same annotated `K` —
+  must be numerically interchangeable (compare → equal), pinning that 2b
+  is a non-breaking refinement of 2a.
 
 Each becomes a fixture with the *correct* form (no diagnostic) and the
 *buggy* form (S001/S002 fires) so the checker is pinned both ways.
@@ -436,6 +627,26 @@ Each becomes a fixture with the *correct* form (no diagnostic) and the
 6. **The implicit-reference-constant idiom** (`EXP(zprec_cond)` with an
    implicit `1 [kg/m²]`) — is that in scope for scale, or a separate
    "dimensional-argument-to-EXP" concern? Likely separate.
+7. ~~Absolute-vs-difference unit modelling~~ **RESOLVED (2026-05-25):
+   design for (B), implement the (A) subset first** (see §3.2). The model
+   law is "`offset ≠ 0` ⟺ absolute; a difference is the offset-0
+   projection"; the spec/table reserve named delta units (`Cdeg`),
+   2a ships a single absolute `degC`, 2b adds the explicit delta names +
+   a teaching advisory.
+   **Migration is non-breaking (the reason (A)-now is safe):** every
+   annotation valid under (A) stays valid *and correctly typed* under
+   (B) — a Celsius difference written `K` is numerically identical to the
+   `Cdeg` (B) would prefer, and the offset algebra (§3.3) is unchanged
+   between milestones (2b only *adds* names + an opt-in advisory; it
+   reinterprets nothing). Costs of the 2a→2b step are bounded: a
+   curriculum/doc refinement and one opt-in (default-off) advisory — no
+   verdict flips, no data-model rework, provided 2a keeps the offset on
+   the unit and never special-cases "Celsius" in the algebra.
+8. **Documented offset conversion** — should a future escape bless the
+   literal `t_c + 273.15` °C→K form (an offset-aware `@unit_assume`
+   sibling, or a `degC + <its exact offset>` → `K` recogniser)? Out of
+   scope for 2a (which fires S002 on it, like Phase 1's untyped `/100`);
+   revisit if the literal form proves common enough to warrant blessing.
 
 
 ## 10. Step-by-step plan (Phase 1)
