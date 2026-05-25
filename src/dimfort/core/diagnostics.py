@@ -43,6 +43,22 @@ def set_severity_overrides(overrides: dict[str, str]) -> None:
     _severity_overrides.update(overrides)
 
 
+def effective_severity(code: str, default: Severity) -> Severity | None:
+    """Resolve a diagnostic *code*'s effective severity under the active
+    overrides, returning ``None`` when it is overridden to ``"off"``.
+
+    For non-diagnostic surfaces (panel / hover markers) that want to mirror
+    the squiggle's severity without synthesising a Diagnostic. Code-level
+    only — rule-marker (``Dx.y``) overrides aren't consulted here.
+    """
+    override = _severity_overrides.get(code)
+    if override is None:
+        return default
+    if override == "off":
+        return None
+    return Severity.ERROR if override == "error" else Severity.WARNING
+
+
 def _extract_marker(message: str) -> str | None:
     """Pull the ``(Dx.y)`` rule marker from a diagnostic message, if present."""
     m = _MARKER_RE.search(message)
