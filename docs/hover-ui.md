@@ -25,9 +25,9 @@ alignment is preserved.
 
 The header marker aggregates the per-row markers in the body:
 **🔴** if any row is 🔴, else **🟡** if any row is 🟡, else **🟢**.
-A 🔴 deeper in a sub-tree propagates up — every ancestor whose unit
-is `?` because of that violation is also tagged 🔴 (a 🟡 leaf is just
-unknown, but a 🔴 leaf forces every operator above it to fail too).
+Markers are diagnostic-driven and aggregate worst-of-children, so a 🔴
+anywhere in a sub-tree propagates up to every ancestor. See
+[design/markers.md](design/markers.md) for the derivation.
 
 
 ## Settings and surfaces
@@ -228,10 +228,10 @@ literal (or unary-minus literal, or arithmetic of literals), it's an
 initialization — the literal takes on the LHS's unit and the hover
 shows 🟢, e.g. `t : s   ◂   2.0 : s`. No diagnostic fires. This differs
 from a literal *inside* a compound expression (`t = c + 2.0`), which
-still triggers the D1.5 implicit-cast warning. The assignment marker
-comes from `ts_checker._assignment_homogeneity` — the same source of
-truth the diagnostic checker and the side panel use, so the hover and
-the Problems panel never disagree.
+still triggers the D1.5 implicit-cast warning. The assignment marker,
+like every marker, is **diagnostic-driven** — read from the file's
+diagnostics by range ([design/markers.md](design/markers.md)) — so the
+hover and the Problems panel never disagree.
 
 In the detailed-tree view and the side panel, the assignment row shows
 **no unit column** (`label  marker`, not `label : unit  marker`) — an
@@ -247,8 +247,13 @@ p : Pa   ◂   0.0 : 1
 ```
 
 Same homogeneity-check shape as the assignment hover. The relation
-itself has no unit; only its two operands' agreement matters. Marker:
-🟢 equal, 🔴 mismatch, 🟡 either side unresolved.
+itself has no unit; only its two operands' agreement matters. The
+checker does **not** currently emit a diagnostic for relational operand
+mismatches (it is not an emission site — see
+[design/markers.md](design/markers.md) §6.1), so the diagnostic-driven
+marker is 🟡 (no consistency diagnostic / no unit), not a re-derived 🔴.
+Emitting at relational sites — which would restore a backed 🔴 — is a
+documented future enhancement.
 
 **Computed sub-expression**
 
@@ -322,16 +327,26 @@ a sub-expression; rule IDs (R3.1, R4.1, R5.1, …) annotate each rule
 fire so the reader can map the trace to
 [unit-algebra.md](unit-algebra.md).
 
-**Per-row marker semantics:**
+**Per-row marker semantics.** Markers are **diagnostic-driven** — a
+node's marker is its resolution state worst-of the unit-*consistency*
+diagnostics that own it, worst-of its children. So the circle never
+disagrees with the squiggle. See [design/markers.md](design/markers.md)
+for the model; in short:
 
-- 🟢 — this node resolved to a unit.
-- 🔴 — *local* homogeneity check failed (a `+` / `-` / relational with
-  two known-but-different operand units), *or* a 🔴 descendant
-  propagated upward through `*` / `/` / a call etc. — anywhere the
-  parent's unit is `?` because of the deeper violation.
-- 🟡 — the node's unit is `?` for some other reason: an unannotated
-  identifier, an intrinsic outside the supported set, a partial
-  resolution where one operand is unknown.
+- 🟢 — this node resolved to a unit and no consistency diagnostic owns it.
+- 🔴 — an **error**-severity consistency diagnostic owns this node (a
+  dimension mismatch `H001`/`H002`, or an `S001`/`S002` overridden to
+  error), *or* a 🔴 descendant propagated upward (worst-of-children).
+- 🟡 — a **warning**-severity consistency diagnostic owns it (`S001`
+  scale / `S002` offset at default severity), *or* the node's unit is `?`
+  for a non-error reason (unannotated identifier, unsupported intrinsic,
+  partial resolution).
+
+Only the consistency family (`H001`–`H004`, `S001`, `S002`) colours a
+marker. `H010` implicit-cast smells and `U0xx` annotation-quality codes
+keep their squiggles but leave the circle 🟢 (the algebra is consistent).
+Sites the checker does not emit for — relational, `max`/`min` — therefore
+show 🟡 (no consistency diagnostic), not a re-derived 🔴.
 
 
 ## Examples by cursor position
@@ -355,7 +370,7 @@ These ground the rules above with concrete cursor placements.
 | Cursor on | Surface | Short body | Detailed body |
 |---|---|---|---|
 | `p` | identifier | `p : Pa` | (same as Short) |
-| `>` | relational | `p : Pa   ◂   0.0 : 1   🔴` (Pa vs dim'less literal — homogeneity violation) | tree |
+| `>` | relational | `p : Pa   ◂   0.0 : 1   🟡` (relational is not an emission site, so no consistency diagnostic → 🟡, not a re-derived 🔴) | tree |
 | `0.0` | numeric literal | `0.0 : 1` | (same as Short) |
 | `if`, `then`, `(`, `)` | (no hover) | — | — |
 
@@ -367,6 +382,6 @@ These ground the rules above with concrete cursor placements.
 | `update_winds` | subroutine call | pairing layout (see above) |
 | `p1` | identifier | `p1 : Pa` |
 | `p2` | identifier | `p2 : Pa` |
-| `+` | binary operator | `p2 : Pa   ◂   1.0 : 1   🔴` (homogeneity violation — Pa vs dim'less literal) |
+| `+` | binary operator | `p2 : Pa   ◂   1.0 : 1   🟢` (a bare literal added to Pa is an implicit cast — `H010`/`D1.5`, a *smell* not an inconsistency; it still squiggles but the consistency marker stays 🟢, decision B) |
 | `1.0` | numeric literal | `1.0 : 1` |
 | `t_local` | identifier | `t_local : ?` (unannotated) |

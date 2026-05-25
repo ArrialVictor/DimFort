@@ -162,24 +162,73 @@ def test_panel_scale_marker_reflects_s001(tmp_path: Path):
         result = check_files([src], scale_mode=scale_on)
         saved = server._scale_mode
         server._scale_mode = scale_on
+        # Markers read diagnostics from _last_result (keyed by ctx.file).
+        with server._last_result_lock:
+            saved_result = server._last_result
+            server._last_result = result
         try:
             ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+            asns = [n for n in _ts.walk(tree.root_node)
+                    if n.type == "assignment_statement"]
+            # phpa = play (direct scale mismatch at the assignment).
+            assign_marker = _build_expression_tree(asns[0], ctx, source)["marker"]
+            # psum = play + phpa: the `+` child mismatches, and the parent
+            # assignment (Pa = Pa, clean on its own) must inherit it.
+            plus_payload = _build_expression_tree(asns[1], ctx, source)
+            plus_marker = plus_payload["children"][-1]["marker"]
         finally:
             server._scale_mode = saved
-        asns = [n for n in _ts.walk(tree.root_node)
-                if n.type == "assignment_statement"]
-        # phpa = play (direct scale mismatch at the assignment).
-        assign_marker = _build_expression_tree(asns[0], ctx, source)["marker"]
-        # psum = play + phpa: the `+` child mismatches, and the parent
-        # assignment (Pa = Pa, clean on its own) must inherit it.
-        plus_payload = _build_expression_tree(asns[1], ctx, source)
-        plus_marker = plus_payload["children"][-1]["marker"]
+            with server._last_result_lock:
+                server._last_result = saved_result
         return assign_marker, plus_marker, plus_payload["marker"]
 
     # Scale on: direct mismatch, the + node, and the propagated parent.
     assert _markers(scale_on=True) == ("warn", "warn", "warn")
     # Scale off: dimension-only, everything clean.
     assert _markers(scale_on=False) == ("ok", "ok", "ok")
+
+
+def test_panel_marker_matrix_diagnostic_driven(tmp_path: Path):
+    """Behaviour-preserving matrix for the diagnostic-driven markers:
+    dimension mismatch → 🔴 (via H001), offset mismatch → 🟡 (via S002),
+    clean → 🟢. Pins that dimension markers still work (now sourced from
+    the diagnostic, not re-derived) and that S002 surfaces."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp import server
+    from dimfort.lsp.server import _build_expression_tree, _build_ts_ctx
+
+    src = tmp_path / "matrix.f90"
+    src.write_text(
+        "subroutine s\n"
+        "  real :: x   !< @unit{m}\n"
+        "  real :: t   !< @unit{s}\n"
+        "  real :: tk  !< @unit{K}\n"
+        "  real :: tc  !< @unit{degC}\n"
+        "  x = t\n"          # dimension mismatch  → H001 → error 🔴
+        "  tk = tc\n"        # offset mismatch     → S002 → warn  🟡
+        "  x = x\n"          # clean               → 🟢
+        "end subroutine\n"
+    )
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    asns = [n for n in _ts.walk(tree.root_node)
+            if n.type == "assignment_statement"]
+
+    result = check_files([src], scale_mode=True)
+    with server._last_result_lock:
+        saved_result, server._last_result = server._last_result, result
+    saved_mode, server._scale_mode = server._scale_mode, True
+    try:
+        ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+        marks = [_build_expression_tree(a, ctx, source)["marker"] for a in asns]
+    finally:
+        server._scale_mode = saved_mode
+        with server._last_result_lock:
+            server._last_result = saved_result
+
+    assert marks == ["error", "warn", "ok"]
 
 
 def test_assignment_short_hover_reflects_nested_scale(tmp_path: Path):
@@ -217,12 +266,18 @@ def test_assignment_short_hover_reflects_nested_scale(tmp_path: Path):
         result = check_files([src], scale_mode=scale_on)
         saved = server._scale_mode
         server._scale_mode = scale_on
+        # Markers read diagnostics from _last_result (keyed by ctx.file).
+        with server._last_result_lock:
+            saved_result = server._last_result
+            server._last_result = result
         try:
             ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
             ctx.var_types.update(ts_checker.collect_var_types(tree, source))
             text, _ = _render_assignment_short(asn, lhs, rhs, ctx, source)
         finally:
             server._scale_mode = saved
+            with server._last_result_lock:
+                server._last_result = saved_result
         return text.split(" DimFort")[0].replace("**", "").strip()
 
     assert _marker(scale_on=True) == "🟡"

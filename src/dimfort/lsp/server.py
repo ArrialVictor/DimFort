@@ -93,7 +93,6 @@ from dimfort.core.cache_store import CacheStore
 from dimfort.core.diagnostics import (
     Diagnostic,
     Severity,
-    effective_severity,
     set_severity_overrides,
 )
 from dimfort.core.multifile import WorksetResult, check_files
@@ -1578,28 +1577,18 @@ def _expression_hover_for(
     if _features.hover == "short":
         return _render_assignment_short(asn, lhs, rhs, ctx, source)
     rows: list[tuple[str, str | None, str, str]] = []
-    # Root: the whole assignment. No rule fires "for" an assignment
-    # itself; we tag it with the RHS-resolved unit and a ``=`` marker
-    # so the row reads as a final check rather than a rule application.
-    rhs_unit = ts_checker._resolve(rhs, ctx, source)
     lhs_unit = ts_checker._resolve(lhs, ctx, source)
     from dimfort.core.units import format_unit
-    if lhs_unit is None or rhs_unit is None:
-        match_tag = "🟡"
-    elif _checker_equal(lhs_unit, rhs_unit):
-        match_tag = "🟢"
-    else:
-        match_tag = "🔴"
+    # Header marker is diagnostic-driven (docs/design/markers.md): the
+    # assignment's aggregated marker already folds in H001/S001/S002 and any
+    # nested RHS mismatch, so no separate row re-aggregation is needed.
+    match_tag = _node_marker(asn, ctx, source)
     # Root row has no unit / mark column — the verdict lives in the
     # bold header above. Pass ``None`` so the renderer omits the row.
     rows.append((_node_label(asn, source), None, "", ""))
-    # LHS leaf: variable + annotated unit. Mark is the same homogeneity
-    # tag as the header (the LHS is one side of the check).
-    lhs_mark = (
-        "🟢" if (lhs_unit is not None and rhs_unit is not None
-                  and _checker_equal(lhs_unit, rhs_unit))
-        else ("🟡" if lhs_unit is None or rhs_unit is None else "🔴")
-    )
+    # LHS leaf: variable + annotated unit, with its own diagnostic-driven
+    # marker (resolution axis, since the LHS rarely owns a diagnostic).
+    lhs_mark = _node_marker(lhs, ctx, source)
     rows.append((
         "├── " + _node_label(lhs, source),
         format_unit(lhs_unit) if lhs_unit is not None else "?",
@@ -1628,14 +1617,6 @@ def _expression_hover_for(
                 f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}".rstrip()
             )
     body = "\n".join(lines)
-    # If the LHS/RHS top-level homogeneity check is fine but a nested
-    # violation fires inside the RHS, the header still needs to reflect
-    # that — aggregate across all rows.
-    nested = _aggregate_marker(r[2] for r in rows if r[1] is not None)
-    if nested == "🔴" or match_tag == "🔴":
-        match_tag = "🔴"
-    elif match_tag == "🟢" and nested == "🟡":
-        match_tag = "🟡"
     # No horizontal rule between header and code fence: VSCode places a
     # natural paragraph margin between a bold paragraph and a code
     # block already, and every markdown spacer we tried beneath ``---``
@@ -1738,7 +1719,9 @@ def _render_mathop_short(math_expr, ctx, source: bytes) -> tuple[str, lsp.Range]
     if len(operands) < 2:
         return None
     lhs, rhs = operands[0], operands[1]
-    marker, lu, ru = _homogeneity_short_marker(lhs, rhs, ctx, source)
+    marker = _node_marker(math_expr, ctx, source)
+    lu = ts_checker._resolve(lhs, ctx, source)
+    ru = ts_checker._resolve(rhs, ctx, source)
     lhs_s = format_unit(lu) if lu is not None else "?"
     rhs_s = format_unit(ru) if ru is not None else "?"
     body = (
@@ -1782,36 +1765,6 @@ def _expression_hover_render_tree(
     return text, _node_lsp_range(range_node)
 
 
-def _homogeneity_short_marker(lhs, rhs, ctx, source: bytes) -> tuple[str, Unit | None, Unit | None]:
-    """Worst-of marker for a two-side homogeneity hover (assignment,
-    relational, ``+``/``-`` math op). Returns ``(marker, lhs_unit,
-    rhs_unit)``.
-
-    🔴 fires for either a top-level mismatch between LHS/RHS units, or
-    a propagated 🔴 from anywhere inside either side (a nested
-    homogeneity violation makes its operand unresolvable, which
-    bubbles up). 🟢 only when both sides resolve cleanly to the same
-    unit. 🟡 otherwise.
-    """
-    lhs_u = ts_checker._resolve(lhs, ctx, source)
-    rhs_u = ts_checker._resolve(rhs, ctx, source)
-    lmark = _node_trace_mark(lhs, lhs_u, ctx, source)
-    rmark = _node_trace_mark(rhs, rhs_u, ctx, source)
-    if lmark == "🔴" or rmark == "🔴":
-        marker = "🔴"
-    elif lhs_u is not None and rhs_u is not None:
-        marker = "🟢" if _checker_equal(lhs_u, rhs_u) else "🔴"
-    else:
-        marker = "🟡"
-    # Scale overlay: a dimension-clean 🟢 still has a magnitude mismatch
-    # when scale checking is on (hPa vs Pa) — surface it at S001 severity.
-    if marker == "🟢":
-        scale_mark = _scale_marker_emoji(lhs_u, rhs_u, ctx)
-        if scale_mark is not None:
-            marker = scale_mark
-    return marker, lhs_u, rhs_u
-
-
 _VERDICT_TO_MARKER = {
     "homogeneous": "🟢",
     "autocast": "🟢",
@@ -1819,40 +1772,6 @@ _VERDICT_TO_MARKER = {
     "mismatch": "🔴",
     "unresolved": "🟡",
 }
-
-
-def _scale_marker_emoji(lhs_u, rhs_u, ctx) -> str | None:
-    """Marker overlay for a same-dimension magnitude (factor) mismatch.
-
-    Returns 🟡 / 🔴 mirroring the effective S001 severity (warning by
-    default, error when ``[diagnostics] S001 = "error"``), or ``None`` when
-    there is no scale issue, S001 is off, or scale checking is off. The
-    scale-off ``None`` is load-bearing: markers then consider *dimension
-    only*, exactly as before (the byte-identical scale-off guarantee). S001
-    fires only when dimensions agree, so this never masks a dimension 🔴.
-    """
-    if not getattr(ctx, "scale_mode", False):
-        return None
-    if lhs_u is None or rhs_u is None:
-        return None
-    if ts_checker._scale_mismatch_ratio(lhs_u, rhs_u) is None:
-        return None
-    sev = effective_severity("S001", Severity.WARNING)
-    if sev is None:
-        return None
-    return "🔴" if sev is Severity.ERROR else "🟡"
-
-
-def _verdict_marker(verdict: str, lhs_u, rhs_u, ctx) -> str:
-    """Assignment-verdict → marker, overlaying the scale verdict when scale
-    checking is on. A 🟢 (dims agree, clean) becomes 🟡/🔴 if the same-
-    dimension factors differ; every other verdict is unchanged."""
-    base = _VERDICT_TO_MARKER.get(verdict, "🟡")
-    if base == "🟢":
-        scale_mark = _scale_marker_emoji(lhs_u, rhs_u, ctx)
-        if scale_mark is not None:
-            return scale_mark
-    return base
 
 
 def _render_assignment_short(asn, lhs, rhs, ctx, source: bytes) -> tuple[str, lsp.Range] | None:
@@ -1865,18 +1784,11 @@ def _render_assignment_short(asn, lhs, rhs, ctx, source: bytes) -> tuple[str, ls
     verdict, lhs_u, rhs_u = ts_checker._assignment_homogeneity(
         lhs, rhs, ctx, source,
     )
-    marker = _verdict_marker(verdict, lhs_u, rhs_u, ctx)
-    # A scale mismatch nested in either side (e.g. RHS ``play + phpa``)
-    # resolves dimensionally, so the two-sided verdict alone misses it.
-    # Fold in the sides' subtree markers so the short hover matches the
-    # panel + detailed-hover header. Gated on scale_mode: scale-off keeps
-    # the dimension-only verdict marker unchanged.
-    if getattr(ctx, "scale_mode", False):
-        marker = _worst_emoji(
-            marker,
-            _node_trace_mark(lhs, lhs_u, ctx, source),
-            _node_trace_mark(rhs, rhs_u, ctx, source),
-        )
+    # Marker is diagnostic-driven (docs/design/markers.md): the assignment's
+    # aggregated marker reflects H001/S001/S002 (and any nested mismatch in
+    # the RHS) consistently with the panel + detailed header. ``verdict`` is
+    # kept only for the unit display below.
+    marker = _node_marker(asn, ctx, source)
     lhs_s = format_unit(lhs_u) if lhs_u is not None else "?"
     rhs_s = format_unit(rhs_u) if rhs_u is not None else "?"
     body = (
@@ -1899,7 +1811,12 @@ def _render_relational_short(rel, ctx, source: bytes) -> tuple[str, lsp.Range] |
     if len(operands) < 2:
         return None
     lhs, rhs = operands[0], operands[1]
-    marker, lhs_u, rhs_u = _homogeneity_short_marker(lhs, rhs, ctx, source)
+    # Relational is not an emission site (markers.md §6.1), so its marker is
+    # diagnostic-driven like everything else: no consistency diagnostic → 🟡
+    # (no unit / not checked), never a re-derived 🔴.
+    marker = _node_marker(rel, ctx, source)
+    lhs_u = ts_checker._resolve(lhs, ctx, source)
+    rhs_u = ts_checker._resolve(rhs, ctx, source)
     lhs_s = format_unit(lhs_u) if lhs_u is not None else "?"
     rhs_s = format_unit(rhs_u) if rhs_u is not None else "?"
     body = (
@@ -1917,7 +1834,7 @@ def _render_subexpr_short(expr, ctx, source: bytes) -> tuple[str, lsp.Range] | N
     operator has no unit either."""
     from dimfort.core.units import format_unit
     u = ts_checker._resolve(expr, ctx, source)
-    marker = _node_trace_mark(expr, u, ctx, source)
+    marker = _node_marker(expr, ctx, source)
     u_s = format_unit(u) if u is not None else "?"
     body = f"{_node_label(expr, source)} : {u_s}"
     text = f"**{marker} DimFort**\n\n```\n{body}\n```"
@@ -2324,15 +2241,6 @@ def _node_label(node, source: bytes) -> str:
     return text
 
 
-# Operators whose operands must be unit-homogeneous; a mismatch here
-# is a real diagnostic (H001/H002), not just an unknown.
-_HOMOGENEITY_OPS = frozenset({"+", "-"})
-_RELATIONAL_OP_TYPES = frozenset({
-    "<", "<=", "==", "/=", ">", ">=",
-    ".lt.", ".le.", ".eq.", ".ne.", ".gt.", ".ge.",
-})
-
-
 def _aggregate_marker(marks) -> str:
     """Worst-of aggregate: 🔴 > 🟡 > 🟢. Empty stream → 🟢."""
     worst = "🟢"
@@ -2342,69 +2250,6 @@ def _aggregate_marker(marks) -> str:
         if m == "🟡":
             worst = "🟡"
     return worst
-
-
-def _local_homogeneity_violation(node, ctx, source: bytes) -> bool:
-    """True iff this specific node's own homogeneity check fails —
-    both operands resolved to non-None units that disagree.
-    Doesn't look at descendants.
-    """
-    if node.type == "math_expression":
-        op_child = next(
-            (c for c in node.children if c.type in _HOMOGENEITY_OPS), None,
-        )
-        if op_child is None:
-            return False
-        operands = [c for c in node.children if c.type not in _SKIP_TOKEN_TYPES]
-    elif node.type == "relational_expression":
-        operands = [
-            c for c in node.children
-            if c.type not in _SKIP_TOKEN_TYPES
-            and c.type not in _RELATIONAL_OP_TYPES
-        ]
-    else:
-        return False
-    if len(operands) < 2:
-        return False
-    lu = ts_checker._resolve(operands[0], ctx, source)
-    ru = ts_checker._resolve(operands[1], ctx, source)
-    return lu is not None and ru is not None and not _checker_equal(lu, ru)
-
-
-def _node_trace_mark(node, unit, ctx, source: bytes) -> str:
-    """Per-row marker for the trace tree.
-
-    🟢 resolved cleanly. 🔴 a local homogeneity check failed *or* any
-    descendant did (a mismatch in an operand bubbles up through ``*``,
-    ``/``, function calls, etc.). 🟡 unresolved for some other reason
-    (unannotated leaf, intrinsic outside our supported set).
-    """
-    if unit is not None:
-        # A binary +/- can resolve dimensionally yet mix scales (hPa + Pa).
-        # When scale checking is on, surface that at S001 severity instead
-        # of a clean 🟢. Scale-off keeps the dimension-only 🟢.
-        if getattr(ctx, "scale_mode", False) and node.type == "math_expression":
-            op = ts_checker._math_op(node)
-            if op in ("+", "-"):
-                left, right = ts_checker._math_operands(node)
-                scale_mark = _scale_marker_emoji(
-                    ts_checker._resolve(left, ctx, source),
-                    ts_checker._resolve(right, ctx, source),
-                    ctx,
-                )
-                if scale_mark is not None:
-                    return scale_mark
-        return "🟢"
-    if _local_homogeneity_violation(node, ctx, source):
-        return "🔴"
-    # Propagation — descend into children. Stops at the first 🔴 found.
-    for c in _interesting_children(node):
-        if _local_homogeneity_violation(c, ctx, source):
-            return "🔴"
-        c_unit = ts_checker._resolve(c, ctx, source)
-        if c_unit is None and _node_trace_mark(c, c_unit, ctx, source) == "🔴":
-            return "🔴"
-    return "🟡"
 
 
 def _render_ast_tree(
@@ -2475,24 +2320,11 @@ def _render_ast_tree(
         from dimfort.core.units import format_unit
         unit_str = format_unit(unit)
     rule_str = f"({rule_id})" if rule_id else ""
-    # Marker derivation, in order of priority:
-    #   1. R4.4 autocast in this leaf      → 🟢
-    #   2. Node IS an assignment_statement → use the verdict marker so
-    #      the detailed tree agrees with panel/hover-short
-    #   3. Generic fallback                → _node_trace_mark
-    if apply_autocast:
-        mark = "🟢"
-    elif node.type == "assignment_statement":
-        kids_for_marker = _interesting_children(node)
-        if len(kids_for_marker) >= 2:
-            verdict, _lu, _ru = ts_checker._assignment_homogeneity(
-                kids_for_marker[0], kids_for_marker[-1], ctx, source,
-            )
-            mark = _verdict_marker(verdict, _lu, _ru, ctx)
-        else:
-            mark = _node_trace_mark(node, unit, ctx, source)
-    else:
-        mark = _node_trace_mark(node, unit, ctx, source)
+    # Marker (docs/design/markers.md): the diagnostic-driven aggregated
+    # marker — this node's own (resolution ∨ owned consistency diagnostics)
+    # worst-of its descendants. An R4.4 autocast leaf emits nothing and
+    # resolves cleanly, so it falls out 🟢 without a special case.
+    mark = _node_marker(node, ctx, source)
     # Mark is a separate column so the unit can be ljust-padded
     # independently; markers then align vertically on the right.
     rows.append((prefix + connector + label, unit_str, mark, rule_str))
@@ -2571,6 +2403,102 @@ def _worst_emoji(*marks: str) -> str:
     return max(marks, key=lambda m: _MARKER_EMOJI_RANK.get(m, 1))
 
 
+# ---------------------------------------------------------------------------
+# Diagnostic-driven markers (docs/design/markers.md)
+#
+# A node's marker = base (resolution axis: 🟢 resolved / 🟡 unresolved) worst-
+# of the unit-CONSISTENCY diagnostics that *own* it, then worst-of children.
+# Single source of truth = the diagnostic stream, so markers can't drift from
+# squiggles and new checks (S002, soft-units) need no marker code. Only the
+# consistency family drives a circle — H010/D1.x (cast smells) and U0xx
+# (annotation quality) keep squiggles but stay 🟢 here (decision B).
+# ---------------------------------------------------------------------------
+
+# The unit-consistency family — the only codes that colour a marker.
+_MARKER_DIAG_CODES = frozenset({"H001", "H002", "H003", "H004", "S001", "S002"})
+
+_SEVERITY_EMOJI = {
+    Severity.ERROR: "🔴",
+    Severity.WARNING: "🟡",
+    Severity.INFO: "🟢",
+    Severity.HINT: "🟢",
+}
+
+# Node types that are statements/relations, not expressions: they carry no
+# unit of their own, so their resolution-axis base is 🟢 (a clean assignment
+# is not "unresolved"). Their marker comes from the diagnostic axis + children.
+_NO_UNIT_NODE_TYPES = frozenset({"assignment_statement", "relational_expression"})
+
+
+def _diags_for_ctx(ctx) -> tuple[Diagnostic, ...]:
+    """This file's diagnostics from the last cached workspace result, keyed
+    by ``ctx.file``. The single source the markers read — no separate cache,
+    no per-render threading: hover/panel already populate ``_last_result``
+    (and the publish path keeps it current). Empty when nothing's cached."""
+    with _last_result_lock:
+        result = _last_result
+    if result is None:
+        return ()
+    try:
+        p = Path(ctx.file).resolve()
+    except (OSError, TypeError, ValueError):
+        return ()
+    return tuple(result.diagnostics.get(p, ()))
+
+
+def _node_span_lc(node) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Node extent as 1-based ((start_line, start_col), (end_line, end_col)),
+    comparable to a Diagnostic's Position fields."""
+    sr, sc = node.start_point
+    er, ec = node.end_point
+    return (sr + 1, sc + 1), (er + 1, ec + 1)
+
+
+def _span_within(inner, outer) -> bool:
+    """True iff the ``inner`` span sits inside ``outer`` (inclusive)."""
+    return outer[0] <= inner[0] and inner[1] <= outer[1]
+
+
+def _self_marker(node, kid_nodes, ctx, source: bytes) -> str:
+    """The node's own marker (pre-aggregation): resolution-axis base worst-of
+    the consistency-family diagnostics that *own* this node. A diagnostic owns
+    the node when its range sits within the node's span but not within any
+    child's span (tightest-enclosing); upward propagation is the caller's
+    worst-of-children. See docs/design/markers.md §2–§4."""
+    if node.type in _NO_UNIT_NODE_TYPES:
+        base = "🟢"  # statement/relation: no unit of its own
+    else:
+        base = "🟢" if ts_checker._resolve(node, ctx, source) is not None else "🟡"
+    diags = _diags_for_ctx(ctx)
+    if not diags:
+        return base
+    nspan = _node_span_lc(node)
+    kid_spans = [_node_span_lc(k) for k in kid_nodes]
+    worst = base
+    for d in diags:
+        if d.code not in _MARKER_DIAG_CODES:
+            continue
+        dspan = (d.start.line, d.start.column), (d.end.line, d.end.column)
+        if _span_within(dspan, nspan) and not any(
+            _span_within(dspan, ks) for ks in kid_spans
+        ):
+            worst = _worst_emoji(worst, _SEVERITY_EMOJI.get(d.severity, "🟡"))
+    return worst
+
+
+def _node_marker(node, ctx, source: bytes) -> str:
+    """Aggregated marker for a node: its own marker worst-of its children,
+    recursively. Used where rows are emitted top-down (the detailed-hover
+    tree, the short hovers) and built child payloads aren't on hand.
+    ``_build_expression_tree`` aggregates inline from child payloads
+    instead, but both reduce to the same §2 model."""
+    kids = _interesting_children(node)
+    m = _self_marker(node, kids, ctx, source)
+    for k in kids:
+        m = _worst_emoji(m, _node_marker(k, ctx, source))
+    return m
+
+
 def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
     """Build a structured ExpressionNode for the panel.
 
@@ -2596,9 +2524,9 @@ def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
         unit = ts_checker._resolve(node, ctx, source)
     snap = trace.snapshot()
     rule_id = snap[-1].rule_id if snap else None
-    mark = _node_trace_mark(node, unit, ctx, source)
 
     if node.type in ("identifier", "number_literal", "string_literal", "complex_literal"):
+        kids: list = []
         child_nodes = []
     else:
         # ``_interesting_children`` already drops the callee identifier and
@@ -2613,54 +2541,32 @@ def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
     payload = {
         "label": _node_label(node, source),
         "unit": format_unit(unit) if unit is not None else None,
-        "marker": _marker_token(mark),
+        "marker": "ok",  # set below
         "ruleId": rule_id,
         "children": child_nodes,
     }
 
-    # Assignment-level marker: derive from ts_checker._assignment_homogeneity
-    # so the panel agrees with the diagnostic stream and the hover view.
-    # Verdicts:
-    #   homogeneous / autocast → 🟢
-    #   wrapper_untag           → 🟡 (D1.6 implicit untag)
-    #   mismatch                → 🔴 (H001)
-    #   unresolved              → keep the recursive marker
-    # In "autocast", we also propagate the LHS unit to the RHS subtree
-    # root so the panel shows the literal expression as carrying the
-    # autocast unit, not "?".
-    # Assignments are statements, not expressions — they don't carry a
-    # unit of their own. Clear ``unit`` so renderers can omit the ``: ?``
-    # column for the assignment row. The autocast unit (when applicable)
-    # belongs to the RHS child, where it's set below.
+    # Assignments are statements, not expressions — they carry no unit of
+    # their own; clear it so renderers omit the ``: ?`` column. For an
+    # initialization autocast (R4.4) show the LHS unit on the RHS subtree
+    # root (the literal takes the LHS's unit). The *marker* is left entirely
+    # to the diagnostic model below — autocast emits nothing, so it resolves
+    # 🟢 on its own; a real mismatch fires H001 and the model paints it 🔴.
     if node.type == "assignment_statement":
         payload["unit"] = None
-        if len(child_nodes) >= 2:
-            kids = _interesting_children(node)
-            if len(kids) >= 2:
-                verdict, lhs_u, rhs_u_eff = ts_checker._assignment_homogeneity(
-                    kids[0], kids[-1], ctx, source,
-                )
-                if verdict != "unresolved":
-                    payload["marker"] = _marker_token(
-                        _verdict_marker(verdict, lhs_u, rhs_u_eff, ctx)
-                    )
-                if verdict == "autocast" and lhs_u is not None:
-                    # Override only the RHS subtree root — its inner
-                    # detail stays as-is.
-                    lhs_unit_str = format_unit(lhs_u)
-                    payload["children"][-1]["unit"] = lhs_unit_str
-                    payload["children"][-1]["marker"] = "ok"
+        if len(kids) >= 2 and child_nodes:
+            verdict, lhs_u, _rhs_u = ts_checker._assignment_homogeneity(
+                kids[0], kids[-1], ctx, source,
+            )
+            if verdict == "autocast" and lhs_u is not None:
+                child_nodes[-1]["unit"] = format_unit(lhs_u)
 
-    # Worst-of-children propagation for scale: a nested scale mismatch
-    # resolves dimensionally (unit is not None), so it doesn't bubble up
-    # via _node_trace_mark the way a dimension error does. Pull the worst
-    # child marker up so the enclosing node reflects it. Gated on
-    # scale_mode: with scale off, markers are dimension-only and already
-    # propagate, so this stays a no-op (the byte-identical guarantee).
-    if getattr(ctx, "scale_mode", False) and child_nodes:
-        payload["marker"] = _worst_token(
-            payload["marker"], *(c["marker"] for c in child_nodes)
-        )
+    # Marker (docs/design/markers.md): this node's own marker (resolution
+    # axis worst-of the consistency-family diagnostics it owns) worst-of its
+    # children. Single source of truth = the diagnostic stream — S001/S002
+    # and dimension mismatches all flow through here, no per-check overlay.
+    self_token = _marker_token(_self_marker(node, kids, ctx, source))
+    payload["marker"] = _worst_token(self_token, *(c["marker"] for c in child_nodes))
 
     return payload
 
@@ -2918,15 +2824,18 @@ def _panel_info(ls: LanguageServer, params) -> dict | None:
     # collapse to a single-node "tree" for the variable identifier
     # under the cursor (per the design decision: show declarations as
     # single-node trees rather than blanking the section).
+    scan_decls = _scan_declarations_for_uri(ls, uri, resolved)
+    unparseable = result.unparseable_units.get(resolved, frozenset())
+
+    # Markers are diagnostic-driven (docs/design/markers.md): the marker
+    # helpers read this file's diagnostics from _last_result via ctx.file,
+    # so no threading is needed here.
     expr_root = _find_expression_root(tree, line_1based, col_1based)
     expression = (
         _build_expression_tree(expr_root, ctx, source_bytes)
         if expr_root is not None
         else None
     )
-
-    scan_decls = _scan_declarations_for_uri(ls, uri, resolved)
-    unparseable = result.unparseable_units.get(resolved, frozenset())
 
     # One section per enclosing scope, outermost first. Each carries
     # the scope header fields (name, kind) plus its own ``vars`` list.
