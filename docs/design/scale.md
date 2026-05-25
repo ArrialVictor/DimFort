@@ -294,7 +294,9 @@ mistake). See the verification note at the end of this section.
 must share a frame: equal dimension, factor, *and* offset. `absolute vs
 ordinary` (comparing a temperature to a change), or two absolutes with
 **unequal** offset → **`S002`**. Two absolutes with equal offset compare
-fine (result, for `max/min`, keeps that offset).
+fine (result, for `max/min`, keeps that offset). *(Design only — these
+sites are not `S001`/`S002` emission points yet; emitting at relational/
+`max`/`min` is a deferred Phase-1 follow-on shared by both codes, §6.)*
 
 **`LOG(a)` / `EXP(a)`.** The argument must be ordinary: `LOG` of an
 absolute °C is frame-dependent nonsense. Require `offset 0` inside the
@@ -446,9 +448,17 @@ Resolution order for two `Unit` leaves:
 3. dimensions+factors equal, offsets differ → `offset_mismatch(delta)`.
 4. all equal → `equal`.
 
-`compare` is **representation-only**: it reports *what* differs, never
-*how severe*. Wrappers (`LogWrap`/`ExpWrap`) recurse into `inner` as in
-`equal_dim`.
+`compare` is **representation-only**: it reports *what* differs between
+two units, never *how severe*. Wrappers (`LogWrap`/`ExpWrap`) recurse
+into `inner` as in `equal_dim`.
+
+**`compare` is not the whole offset story.** It detects offset
+*mismatches* (operands with different offsets), which covers `S001` at
+every site and the boundary `S002` (`K = degC`). It does **not** detect
+affine *operation-validity* failures, where the operands' offsets are
+equal but the operation is still ill-defined (`degC + degC`, `2 * degC`,
+`LOG(degC)`, `ΔT − degC`). Those live in `combine()`/`power()` per §3.3
+and §5 path 2 — do not expect `compare()` to surface them.
 
 **`scale_mode` collapses the verdict at the policy layer, not in
 `compare`:**
@@ -471,7 +481,23 @@ grouping is clean and the opt-in is obvious:
 | code | rule | when | default severity |
 |------|------|------|-------------------|
 | `S001` | scale (×) | dim-equal, factor ratio ≠ 1 | warning |
-| `S002` | offset (+) | dim+factor equal, offset ≠ 0 difference (Phase 2) | warning |
+| `S002` | offset (+) | affine offset violation (Phase 2) — see two paths below | warning |
+
+**`S002` has two detection paths — this matters for the build.** Unlike
+`S001` (always "factors differ", uniformly a `compare()` `scale_mismatch`
+wherever checked), `S002` covers two structurally different failures:
+
+1. **Boundary `offset_mismatch` (via `compare()`):** two units, same
+   dimension and factor, **different** offset — `t_k[K] = t_c[degC]`.
+   This is the `offset_mismatch(delta)` verdict of §4.
+2. **Affine-invalid operation (via `combine()`/`power()`, *not*
+   `compare()`):** an operation ill-defined on an absolute operand even
+   when the offsets are **equal** — `degC + degC` (point + point),
+   `2 * degC` (scale a point), `ΔT − degC` (vector − point), `LOG(degC)`.
+   `compare(degC, degC)` returns **`equal`**, so these are invisible to
+   `compare()`; they must be flagged by the affine algebra inside
+   `combine()`/`power()` (§3.3). Path 2 is the easy one to forget — the
+   point+point case has *identical* operands.
 
 Rationale for a distinct `S` namespace (vs extending `H0xx`): scale is
 opt-in and severity-tunable as a group; a dedicated prefix lets a user
@@ -497,8 +523,11 @@ existing `U` family (like `U005`) or takes its own free letter (`N`),
 never on `S`. Affine offset stays under the same `S` family (`S002`)
 because it is still a scale-axis concept.
 
-Message shape (S001): `Scale mismatch: <a> is <ratio>× <b> (same
-dimension) — prefer matching units or a documented conversion`.
+Message shape (S001, as shipped): `Scale mismatch: same dimension
+(<dim>) but the magnitudes differ by ×<ratio>. If this is a unit
+conversion, carry the factor on a typed PARAMETER; otherwise the units
+disagree in scale.` S002 will follow the same shape, leading with the
+offset `delta` (or naming the ill-defined operation for path-2 cases).
 
 
 ## 6. Phasing
@@ -532,10 +561,14 @@ refinement** (see §3.2 design decision, §9.7 migration note).
    algebra of §3.3 in `combine()`/`power()`/wrapper unwrap: propagating
    ops reject absolute operands; `+`/`-` per the point/vector tables;
    relational/`max`/`min` require a shared frame.
-8. `S002` emission at the same sites as `S001` (assignment +
-   binary/relational/`max`/`min`), gated on `scale_mode`, default
-   warning, overridable. The assignment/`compare` offset_mismatch is the
-   headline #006 catch (`K = degC`).
+8. `S002` emission at the **sites `S001` actually fires today —
+   assignment + binary `+`/`-`** (ts_checker.py: the `op in ("+","-")`
+   branch and the assignment verdict path), gated on `scale_mode`,
+   default warning, overridable. Relational / `max` / `min` are **not**
+   `S001` sites yet (a Phase-1 deferred follow-on); adding them is a
+   shared S001+S002 extension, out of 2a scope. The assignment/`compare`
+   offset_mismatch is the headline #006 catch (`K = degC`); the path-2
+   affine-operation checks (§5) live in `combine()`/`power()`.
 9. Tests + the §8 affine corpus (correct form silent, buggy form fires).
    Regression: `scale_mode` off ⇒ unchanged; offset-0-everywhere (today's
    annotations) ⇒ S002 silent.
