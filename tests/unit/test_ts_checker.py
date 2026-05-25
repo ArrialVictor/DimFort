@@ -1027,3 +1027,71 @@ def test_scale_dim_mismatch_is_h001_not_s001():
     )]
     assert "H001" in codes
     assert "S001" not in codes
+
+
+# ---------------------------------------------------------------------------
+# S002 — opt-in affine-offset checking (Phase 2, °C/K)
+# ---------------------------------------------------------------------------
+
+
+def _s002_src(stmt: str) -> str:
+    return (
+        "subroutine s\n"
+        "  real :: t_k, t_c, t_c2, dt, prod\n"
+        f"  {stmt}\n"
+        "end subroutine\n"
+    )
+
+
+_TEMP_UNITS = {"t_k": "K", "t_c": "degC", "t_c2": "degC", "dt": "K", "prod": "K"}
+
+
+def _codes(stmt, *, scale_mode=True):
+    return [d.code for d in _check(_s002_src(stmt), _TEMP_UNITS, scale_mode=scale_mode)]
+
+
+def test_s002_assignment_missing_conversion():
+    """``t_k[K] = t_c[degC]`` — same dim+factor, offset differs → S002 (path 1)."""
+    codes = _codes("t_k = t_c")
+    assert "S002" in codes
+    assert "H001" not in codes  # dims agree → not a dimension error
+
+
+def test_s002_point_plus_point():
+    """``t_c[degC] + t_c2[degC]`` — adding two absolutes → S002 (path 2)."""
+    assert "S002" in _codes("t_c2 = t_c + t_c2")
+
+
+def test_s002_point_minus_point_is_silent():
+    """``t_c[degC] - t_c2[degC]`` → a difference (offset 0); assigning it to a
+    K slot is clean. Must NOT fire — pins the legal point−point case."""
+    assert "S002" not in _codes("dt = t_c - t_c2")
+
+
+def test_s002_point_plus_vector_is_silent():
+    """``t_c[degC] + dt[K]`` (absolute + difference) → degC, legal at the +."""
+    assert "S002" not in _codes("t_c2 = t_c + dt")
+
+
+def test_s002_scaling_an_absolute():
+    """``2.0 * t_c[degC]`` — scaling an absolute temperature → S002 (path 2)."""
+    assert "S002" in _codes("prod = 2.0 * t_c")
+
+
+def test_s002_off_by_default_is_silent():
+    """All the above are silent with scale_mode off — dimension-only, the
+    byte-identical guarantee (everything here is dim-homogeneous)."""
+    for stmt in ("t_k = t_c", "t_c2 = t_c + t_c2", "prod = 2.0 * t_c"):
+        assert "S002" not in _codes(stmt, scale_mode=False)
+
+
+def test_s002_matching_offset_no_s002():
+    """``t_k[K] = dt[K]`` — same offset (both 0) → no S002 even with scale on."""
+    assert "S002" not in _codes("t_k = dt")
+
+
+def test_s002_untyped_literal_conversion_fires():
+    """Documented caveat (§3.3): ``t_k[K] = t_c[degC] + 273.15`` still fires
+    S002 — a bare literal can't carry the additive offset, so the RHS stays
+    degC and mismatches the K target. Pins the limitation, not a bug."""
+    assert "S002" in _codes("t_k = t_c + 273.15")
