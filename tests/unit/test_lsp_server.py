@@ -9,10 +9,24 @@ import pytest
 
 pytest.importorskip("pygls")
 
+from types import SimpleNamespace
+
 from lsprotocol import types as lsp
 
-from dimfort.core.diagnostics import Diagnostic, Position, Severity
-from dimfort.lsp.server import _to_lsp_diagnostic, _uri_to_path
+import dimfort.core.unit_config  # noqa: F401  — initialise DEFAULT_TABLE
+from dimfort.core import diagnostics as _diagnostics
+from dimfort.core.diagnostics import (
+    Diagnostic,
+    Position,
+    Severity,
+    set_severity_overrides,
+)
+from dimfort.lsp.server import (
+    _initialize,
+    _normalized_unit,
+    _to_lsp_diagnostic,
+    _uri_to_path,
+)
 
 
 def _diag(line, col, code="H001", severity=Severity.ERROR, msg="msg"):
@@ -85,3 +99,44 @@ def test_to_lsp_diagnostic_handles_zero_lines():
     d = _to_lsp_diagnostic(_diag(line=0, col=0))
     assert d.range.start.line == 0
     assert d.range.start.character == 0
+
+
+def test_normalized_unit_surfaces_scale_factor():
+    # The panel shows the input unit; the normalized form must expose the
+    # otherwise-invisible scale factor and derived-unit expansion.
+    assert _normalized_unit("hPa") == "100×kg/(m×s²)"   # factor surfaced
+    assert _normalized_unit("Pa") == "kg/(m×s²)"        # derived expanded
+    assert _normalized_unit("kg/kg") == "1"             # dimensionless
+
+
+def test_normalized_unit_unchanged_for_base_si():
+    # A base-SI annotation normalizes to itself, so the panel can suppress
+    # the redundant "m = m" and show just "m".
+    assert _normalized_unit("m") == "m"
+    assert _normalized_unit("m/s") == "m/s"
+
+
+def test_normalized_unit_returns_none_on_parse_failure():
+    assert _normalized_unit("not a unit {{{") is None
+
+
+def test_initialize_applies_diagnostic_severity_overrides(tmp_path):
+    # Regression: the LSP must call set_severity_overrides at initialize.
+    # finalize_diagnostics reads a process-wide global, so without this
+    # the editor silently ignores every [diagnostics] override (only the
+    # CLI used to set it). _initialize touches `ls` only via _notify,
+    # which tolerates ls=None.
+    (tmp_path / ".dimfort.toml").write_text(
+        '[diagnostics]\nS001 = "error"\nH001 = "off"\n'
+    )
+    set_severity_overrides({})  # start clean
+    params = SimpleNamespace(
+        workspace_folders=None,
+        root_uri=tmp_path.as_uri(),
+        initialization_options=None,
+    )
+    try:
+        _initialize(None, params)
+        assert _diagnostics._severity_overrides == {"S001": "error", "H001": "off"}
+    finally:
+        set_severity_overrides({})  # don't leak into other tests

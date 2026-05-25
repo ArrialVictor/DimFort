@@ -115,9 +115,15 @@ interface ExpressionNode {
 
 interface ScopeVar {
   name: string;
-  // The annotated unit text, or null for unannotated declarations.
-  // For kind "error" this is the raw (unparseable) annotation text.
+  // The annotated unit text as written, or null for unannotated
+  // declarations. For kind "error" this is the raw (unparseable) text.
   unit: string | null;
+  // The base-SI normalized form (factor included), e.g. "hPa" →
+  // "100×kg/(m×s²)", so scale factors and derived-unit expansions are
+  // visible. Equals `unit` for base-SI annotations; null when the
+  // annotation doesn't parse or is absent. Renderers show
+  // `unit = unitNormalized` only when the two differ.
+  unitNormalized: string | null;
   // 1-based line number of the declaration.
   line: number;
   // 🟢 annotated (valid unit), 🟡 unannotated (no @unit{}),
