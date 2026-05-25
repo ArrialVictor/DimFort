@@ -2882,6 +2882,7 @@ def _panel_info(ls: LanguageServer, params) -> dict | None:
     # Diagnostics on the cursor line — so the panel shows *why* a node is
     # marked without a hover/Problems trip. Scoped to the line (not the
     # whole file) to stay relevant and avoid duplicating Problems.
+    file_diags = result.diagnostics.get(resolved, [])
     diagnostics = [
         {
             "severity": str(d.severity),  # "error"/"warning"/"info"/"hint"
@@ -2889,9 +2890,14 @@ def _panel_info(ls: LanguageServer, params) -> dict | None:
             "message": d.message,
             "line": d.start.line,
         }
-        for d in result.diagnostics.get(resolved, [])
+        for d in file_diags
         if d.start.line <= line_1based <= d.end.line
     ]
+    # Whole-file counts for a panel footer (a mini dashboard).
+    file_diagnostic_counts = {
+        "error": sum(1 for d in file_diags if d.severity == Severity.ERROR),
+        "warning": sum(1 for d in file_diags if d.severity == Severity.WARNING),
+    }
 
     return {
         "expression": expression,
@@ -2901,6 +2907,7 @@ def _panel_info(ls: LanguageServer, params) -> dict | None:
         "routine": innermost_header,
         "routineVars": innermost_vars,
         "diagnostics": diagnostics,
+        "fileDiagnosticCounts": file_diagnostic_counts,
     }
 
 

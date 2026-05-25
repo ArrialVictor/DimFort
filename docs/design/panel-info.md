@@ -96,6 +96,9 @@ interface PanelInfo {
   // the whole file) to stay relevant. Empty array when the line is clean;
   // renderers omit the section entirely in that case.
   diagnostics: PanelDiagnostic[];
+
+  // Whole-file diagnostic counts, for a panel footer / mini-dashboard.
+  fileDiagnosticCounts: { error: number; warning: number };
 }
 
 interface PanelDiagnostic {
