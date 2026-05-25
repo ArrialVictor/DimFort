@@ -64,6 +64,23 @@ def test_changes_with_diagnostic_severities():
     assert a != b
 
 
+def test_changes_with_scale_mode():
+    # Toggling opt-in scale checking changes which S001 diagnostics a
+    # file produces, so it must invalidate the cache (else a scale-on
+    # run's S001s replay after scale is turned off).
+    a = _key(config={"scale_mode": False})
+    b = _key(config={"scale_mode": True})
+    assert a != b
+
+
+def test_scale_mode_absent_equals_false():
+    # A config dict without scale_mode must hash identically to one with
+    # scale_mode=False (the default), so old entries stay valid.
+    a = _key(config={})
+    b = _key(config={"scale_mode": False})
+    assert a == b
+
+
 def test_changes_with_external_modules():
     a = _key(config={"external_modules": ["netcdf"]})
     b = _key(config={"external_modules": ["netcdf", "mpi"]})
