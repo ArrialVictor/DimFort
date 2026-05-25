@@ -31,7 +31,13 @@ from dimfort import __version__ as _dimfort_version
 #     changes what a cached file would have produced
 # After a bump, the cache directory's ``v{N}/`` shard for the old
 # version is orphaned and gets pruned by the LRU sweep.
-CHECKER_OUTPUT_VERSION = 1
+#
+# v2: the LSP now applies [diagnostics] severity overrides (it never
+#     called set_severity_overrides before). v1 entries written by the
+#     buggy server are keyed *with* the severity config but baked the
+#     un-overridden severity in — poisoned hits that replay the wrong
+#     severity. Bumping orphans them so the fix actually surfaces.
+CHECKER_OUTPUT_VERSION = 2
 
 
 # Keys from a workspace config that affect a *file's* output and
