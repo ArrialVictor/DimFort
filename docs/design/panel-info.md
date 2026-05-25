@@ -105,7 +105,12 @@ interface PanelDiagnostic {
   severity: "error" | "warning" | "info" | "hint";
   code: string;     // H001 / S002 / U005 / …
   message: string;
-  line: number;     // 1-based
+  // 1-based span, so a click can land on (and select) the exact range —
+  // not just the line start (the cursor is usually already on the line).
+  line: number;
+  column: number;
+  endLine: number;
+  endColumn: number;
 }
 
 interface ScopeSection {
