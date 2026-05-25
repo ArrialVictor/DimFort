@@ -98,8 +98,13 @@ here"*, so `diag` reads only the **unit-consistency family**:
 ```
 { H001, H002, H003, H004,   # dimension homogeneity (assignment / operand
                             #   / intrinsic-arg / call-arg mismatch)
-  S001, S002 }              # scale (factor) / affine offset
+  S001, S002,               # scale (factor) / affine offset
+  S003 }                    # invalid @unit_affine_conversion directive
 ```
+
+(`S003`, the verified-conversion error, joined the set when Phase 2c
+shipped — a bad directive shows 🔴; a *valid* one emits no diagnostic and so
+stays 🟢, exactly as the diagnostic-driven model intends.)
 
 Deliberately **excluded**: `H010` and the `D1.x` rule markers (implicit
 literal-cast — a *smell*; the units are made-consistent by the cast, not

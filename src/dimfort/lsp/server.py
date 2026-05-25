@@ -2423,7 +2423,9 @@ def _worst_emoji(*marks: str) -> str:
 # ---------------------------------------------------------------------------
 
 # The unit-consistency family — the only codes that colour a marker.
-_MARKER_DIAG_CODES = frozenset({"H001", "H002", "H003", "H004", "S001", "S002"})
+_MARKER_DIAG_CODES = frozenset(
+    {"H001", "H002", "H003", "H004", "S001", "S002", "S003"}
+)
 
 _SEVERITY_EMOJI = {
     Severity.ERROR: "🔴",

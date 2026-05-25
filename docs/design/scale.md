@@ -1,8 +1,10 @@
 # Scale checking — design spec for the `scale` branch
 
-Status: **Phase 1 shipped** (multiplicative scale, `S001`, merged to
-`main` 2026-05-25). **Phase 2 (affine offset, `S002`) — algebra fully
-specified below (§3.2–§3.3, §6), not yet built.**
+Status: **Phase 1 shipped** (multiplicative scale, `S001`). **Phase 2a
+shipped** (affine offset, `S002`). **Phase 2c shipped** (the verified
+`@unit_affine_conversion` directive, `S003` — see §11). All merged to
+`main` 2026-05-25. **Phase 2b (named difference units `Cdeg`, teaching
+advisory) — specified (§6, §9.7), not yet built.**
 
 This document is the spec. Code follows the doc, not the other way
 around. If something here turns out wrong during implementation,
@@ -698,9 +700,34 @@ Each becomes a fixture with the *correct* form (no diagnostic) and the
 
 ## 11. `@unit_affine_conversion` — the verified affine-conversion directive (Phase 2c)
 
-Status: **design**, not built. This is the resolution of §9.8 and the
-piece that makes the #006 triage actually pay off. **Build after Phase 2a
-(offset / `S002`) ships; orthogonal to Phase 2b (delta units).**
+Status: **SHIPPED 2026-05-25** (built on top of Phase 2a). This is the
+resolution of §9.8 and the piece that makes the #006 triage actually pay
+off. Orthogonal to Phase 2b (delta units, still future).
+
+**As built (notes vs the spec below):**
+- The general affine law (§11.3, handles `a*≠1`) is implemented — *not*
+  the same-factor subset of §11.7.1 — at no extra cost, because the
+  directive suppresses the path-2 affine-op `S002` over the whole annotated
+  RHS (so `(5/9)*t_f` doesn't self-fire). No `degF` table entry ships, so
+  the °F path is untested in practice; add `degF` + a fixture to exercise it.
+- **Leaf-only source detection (the one non-obvious implementation point):**
+  a node is the source `s` only at a *leaf*, and a literal/PARAMETER with a
+  foldable value is treated as a **constant first** — even when it is typed
+  like the source frame. This is what lets the reverse `t_c = t_k - RTT`
+  (`{K -> degC}`) verify: `RTT` is `K` (= the source frame) but is the
+  273.15 constant, not a second `K` source operand. A compound RHS like
+  `t_c + RTT` resolves to `degC` as a whole, so the leaf-only rule also
+  stops the entire expression being mistaken for the source.
+- The directive is gated on `scale_mode` (the whole scale family is opt-in):
+  scale off ⇒ even a wrong conversion is silent.
+- A valid directive walks the RHS for genuine dimension/structure errors
+  (H00x / D1.x still surface) but drops `S001`/`S002` from that walk — the
+  verification is the sole scale authority for the statement.
+- Code/tests: `annotations.py` (`RawAffineConv`, `_find_affine_invocations`),
+  `ts_checker.py` (`_lin_reduce`, `_verify_affine_conversion`, `_emit_s003`,
+  the assignment branch), `multifile.py` wiring, `S003` in the LSP marker
+  set. Tests: `tests/unit/test_affine_conversion.py` (§11.9 corpus) +
+  scanner tests in `test_annotations.py`.
 
 ### 11.1 Why a directive (and why a *verified* one)
 

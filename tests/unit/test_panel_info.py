@@ -231,6 +231,47 @@ def test_panel_marker_matrix_diagnostic_driven(tmp_path: Path):
     assert marks == ["error", "warn", "ok"]
 
 
+def test_panel_marker_s003_is_error(tmp_path: Path):
+    """An invalid ``@unit_affine_conversion`` directive (S003) colours the
+    assignment 🔴; a valid one emits no diagnostic and stays 🟢."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp import server
+    from dimfort.lsp.server import _build_expression_tree, _build_ts_ctx
+
+    src = tmp_path / "s003_panel.f90"
+    src.write_text(
+        "module m\n"
+        " real, parameter :: RTT = 273.15  !< @unit{K}\n"
+        " contains\n"
+        "  subroutine s()\n"
+        "   real :: t_k  !< @unit{K}\n"
+        "   real :: t_c  !< @unit{degC}\n"
+        "   t_k = t_c - RTT  !< @unit_affine_conversion{degC -> K}\n"  # wrong dir → S003 🔴
+        "   t_k = t_c + RTT  !< @unit_affine_conversion{degC -> K}\n"  # valid → 🟢
+        "  end subroutine\n end module\n"
+    )
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    asns = [n for n in _ts.walk(tree.root_node)
+            if n.type == "assignment_statement"]
+
+    result = check_files([src], scale_mode=True)
+    with server._last_result_lock:
+        saved_result, server._last_result = server._last_result, result
+    saved_mode, server._scale_mode = server._scale_mode, True
+    try:
+        ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+        marks = [_build_expression_tree(a, ctx, source)["marker"] for a in asns]
+    finally:
+        server._scale_mode = saved_mode
+        with server._last_result_lock:
+            server._last_result = saved_result
+
+    assert marks == ["error", "ok"]
+
+
 def test_panel_info_diagnostics_for_cursor_line(tmp_path: Path):
     """_panel_info exposes the diagnostics on the cursor line so the panel
     can show *why* a node is marked. Empty array on a clean line."""
