@@ -1892,6 +1892,14 @@ def _render_call_pairing_a(
             actual = f"{atext} : {aunit_s}"
         else:
             an, aunit, actual = None, None, "—"
+        # Per-arg marker is intentionally NOT diagnostic-driven (cf.
+        # docs/design/markers.md): H004 is emitted on the *whole call*, not
+        # per argument, and the checker emits no scale/offset diagnostic at
+        # call-arg sites — so there is no per-arg diagnostic to read. A local
+        # dimension comparison (matching exactly what H004 checks,
+        # ``equal_dim``) is the right tool here; using ``compare()`` would
+        # paint scale/offset mismatches with no backing squiggle (the orphan-
+        # marker anti-pattern). So this surface stays a local per-arg check.
         if funit is None or aunit is None:
             mark = "🟡"
             any_unknown = True
@@ -2432,17 +2440,27 @@ _NO_UNIT_NODE_TYPES = frozenset({"assignment_statement", "relational_expression"
 
 def _diags_for_ctx(ctx) -> tuple[Diagnostic, ...]:
     """This file's diagnostics from the last cached workspace result, keyed
-    by ``ctx.file``. The single source the markers read — no separate cache,
-    no per-render threading: hover/panel already populate ``_last_result``
-    (and the publish path keeps it current). Empty when nothing's cached."""
+    by ``ctx.file``. The single source the markers read — no per-render
+    threading: hover/panel already populate ``_last_result`` (and the
+    publish path keeps it current). Empty when nothing's cached.
+
+    The expensive ``Path.resolve()`` (a disk stat) is cached on the ctx
+    object — fresh per render, so no cross-render staleness — while the
+    current ``_last_result`` is always re-read (the diagnostics axis must
+    never go stale)."""
     with _last_result_lock:
         result = _last_result
     if result is None:
         return ()
-    try:
-        p = Path(ctx.file).resolve()
-    except (OSError, TypeError, ValueError):
-        return ()
+    p = getattr(ctx, "_resolved_file", None)
+    if p is None:
+        try:
+            p = Path(ctx.file).resolve()
+        except (OSError, TypeError, ValueError):
+            return ()
+        # frozen/slotted ctx — skip the cache, correctness unaffected
+        with contextlib.suppress(AttributeError, TypeError):
+            ctx._resolved_file = p
     return tuple(result.diagnostics.get(p, ()))
 
 
