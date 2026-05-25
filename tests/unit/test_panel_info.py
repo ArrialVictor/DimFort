@@ -135,6 +135,50 @@ def test_assignment_with_matching_units_marks_ok(tmp_path: Path):
     assert payload["marker"] == "ok"
 
 
+def test_panel_scale_marker_reflects_s001(tmp_path: Path):
+    """A dimension-clean but scale-mismatched assignment (hPa = Pa) shows
+    🟡 in the panel when scale checking is on, and the +/- site too — but
+    stays 🟢 with scale off (markers consider dimension only)."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp import server
+    from dimfort.lsp.server import _build_expression_tree, _build_ts_ctx
+
+    src = tmp_path / "scale_panel.f90"
+    src.write_text(
+        "subroutine s\n"
+        "  real :: play  !< @unit{Pa}\n"
+        "  real :: phpa  !< @unit{hPa}\n"
+        "  real :: psum  !< @unit{Pa}\n"
+        "  phpa = play\n"
+        "  psum = play + phpa\n"
+        "end subroutine\n"
+    )
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+
+    def _markers(scale_on: bool):
+        result = check_files([src], scale_mode=scale_on)
+        saved = server._scale_mode
+        server._scale_mode = scale_on
+        try:
+            ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+        finally:
+            server._scale_mode = saved
+        asns = [n for n in _ts.walk(tree.root_node)
+                if n.type == "assignment_statement"]
+        # phpa = play (scale mismatch) and psum = play + phpa (+ site).
+        assign_marker = _build_expression_tree(asns[0], ctx, source)["marker"]
+        plus_payload = _build_expression_tree(asns[1], ctx, source)
+        # The RHS child of the second assignment is the `+` node.
+        plus_marker = plus_payload["children"][-1]["marker"]
+        return assign_marker, plus_marker
+
+    assert _markers(scale_on=True) == ("warn", "warn")
+    assert _markers(scale_on=False) == ("ok", "ok")
+
+
 def test_panel_marker_matches_assignment_homogeneity(tmp_path: Path):
     """All three render sites must derive their marker from the verdict.
     Touches the regression spotted during the walkthrough: panel was

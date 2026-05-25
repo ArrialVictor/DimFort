@@ -93,6 +93,7 @@ from dimfort.core.cache_store import CacheStore
 from dimfort.core.diagnostics import (
     Diagnostic,
     Severity,
+    effective_severity,
     set_severity_overrides,
 )
 from dimfort.core.multifile import WorksetResult, check_files
@@ -1802,6 +1803,12 @@ def _homogeneity_short_marker(lhs, rhs, ctx, source: bytes) -> tuple[str, Unit |
         marker = "🟢" if _checker_equal(lhs_u, rhs_u) else "🔴"
     else:
         marker = "🟡"
+    # Scale overlay: a dimension-clean 🟢 still has a magnitude mismatch
+    # when scale checking is on (hPa vs Pa) — surface it at S001 severity.
+    if marker == "🟢":
+        scale_mark = _scale_marker_emoji(lhs_u, rhs_u, ctx)
+        if scale_mark is not None:
+            marker = scale_mark
     return marker, lhs_u, rhs_u
 
 
@@ -1814,6 +1821,40 @@ _VERDICT_TO_MARKER = {
 }
 
 
+def _scale_marker_emoji(lhs_u, rhs_u, ctx) -> str | None:
+    """Marker overlay for a same-dimension magnitude (factor) mismatch.
+
+    Returns 🟡 / 🔴 mirroring the effective S001 severity (warning by
+    default, error when ``[diagnostics] S001 = "error"``), or ``None`` when
+    there is no scale issue, S001 is off, or scale checking is off. The
+    scale-off ``None`` is load-bearing: markers then consider *dimension
+    only*, exactly as before (the byte-identical scale-off guarantee). S001
+    fires only when dimensions agree, so this never masks a dimension 🔴.
+    """
+    if not getattr(ctx, "scale_mode", False):
+        return None
+    if lhs_u is None or rhs_u is None:
+        return None
+    if ts_checker._scale_mismatch_ratio(lhs_u, rhs_u) is None:
+        return None
+    sev = effective_severity("S001", Severity.WARNING)
+    if sev is None:
+        return None
+    return "🔴" if sev is Severity.ERROR else "🟡"
+
+
+def _verdict_marker(verdict: str, lhs_u, rhs_u, ctx) -> str:
+    """Assignment-verdict → marker, overlaying the scale verdict when scale
+    checking is on. A 🟢 (dims agree, clean) becomes 🟡/🔴 if the same-
+    dimension factors differ; every other verdict is unchanged."""
+    base = _VERDICT_TO_MARKER.get(verdict, "🟡")
+    if base == "🟢":
+        scale_mark = _scale_marker_emoji(lhs_u, rhs_u, ctx)
+        if scale_mark is not None:
+            return scale_mark
+    return base
+
+
 def _render_assignment_short(asn, lhs, rhs, ctx, source: bytes) -> tuple[str, lsp.Range] | None:
     """One-line homogeneity hover for an assignment cursor position.
 
@@ -1824,7 +1865,7 @@ def _render_assignment_short(asn, lhs, rhs, ctx, source: bytes) -> tuple[str, ls
     verdict, lhs_u, rhs_u = ts_checker._assignment_homogeneity(
         lhs, rhs, ctx, source,
     )
-    marker = _VERDICT_TO_MARKER.get(verdict, "🟡")
+    marker = _verdict_marker(verdict, lhs_u, rhs_u, ctx)
     lhs_s = format_unit(lhs_u) if lhs_u is not None else "?"
     rhs_s = format_unit(rhs_u) if rhs_u is not None else "?"
     body = (
@@ -2328,6 +2369,20 @@ def _node_trace_mark(node, unit, ctx, source: bytes) -> str:
     (unannotated leaf, intrinsic outside our supported set).
     """
     if unit is not None:
+        # A binary +/- can resolve dimensionally yet mix scales (hPa + Pa).
+        # When scale checking is on, surface that at S001 severity instead
+        # of a clean 🟢. Scale-off keeps the dimension-only 🟢.
+        if getattr(ctx, "scale_mode", False) and node.type == "math_expression":
+            op = ts_checker._math_op(node)
+            if op in ("+", "-"):
+                left, right = ts_checker._math_operands(node)
+                scale_mark = _scale_marker_emoji(
+                    ts_checker._resolve(left, ctx, source),
+                    ts_checker._resolve(right, ctx, source),
+                    ctx,
+                )
+                if scale_mark is not None:
+                    return scale_mark
         return "🟢"
     if _local_homogeneity_violation(node, ctx, source):
         return "🔴"
@@ -2422,7 +2477,7 @@ def _render_ast_tree(
             verdict, _lu, _ru = ts_checker._assignment_homogeneity(
                 kids_for_marker[0], kids_for_marker[-1], ctx, source,
             )
-            mark = _VERDICT_TO_MARKER.get(verdict, "🟡")
+            mark = _verdict_marker(verdict, _lu, _ru, ctx)
         else:
             mark = _node_trace_mark(node, unit, ctx, source)
     else:
@@ -2558,9 +2613,10 @@ def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
                 verdict, lhs_u, rhs_u_eff = ts_checker._assignment_homogeneity(
                     kids[0], kids[-1], ctx, source,
                 )
-                verdict_marker = _VERDICT_TO_MARKER.get(verdict)
-                if verdict_marker is not None and verdict != "unresolved":
-                    payload["marker"] = _marker_token(verdict_marker)
+                if verdict != "unresolved":
+                    payload["marker"] = _marker_token(
+                        _verdict_marker(verdict, lhs_u, rhs_u_eff, ctx)
+                    )
                 if verdict == "autocast" and lhs_u is not None:
                     # Override only the RHS subtree root — its inner
                     # detail stays as-is.

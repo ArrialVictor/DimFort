@@ -21,12 +21,19 @@ from dimfort.core.diagnostics import (
     Severity,
     set_severity_overrides,
 )
+from dimfort.core.units import parse as parse_unit
 from dimfort.lsp.server import (
     _initialize,
     _normalized_unit,
+    _scale_marker_emoji,
     _to_lsp_diagnostic,
     _uri_to_path,
+    _verdict_marker,
 )
+
+
+class _Ctx(SimpleNamespace):
+    """Minimal stand-in: the marker helpers only read ctx.scale_mode."""
 
 
 def _diag(line, col, code="H001", severity=Severity.ERROR, msg="msg"):
@@ -118,6 +125,60 @@ def test_normalized_unit_unchanged_for_base_si():
 
 def test_normalized_unit_returns_none_on_parse_failure():
     assert _normalized_unit("not a unit {{{") is None
+
+
+def test_scale_marker_off_when_scale_disabled():
+    # Hard requirement: with scale off, markers consider dimension only —
+    # a same-dimension factor mismatch must NOT colour the marker.
+    assert _scale_marker_emoji(parse_unit("hPa"), parse_unit("Pa"),
+                               _Ctx(scale_mode=False)) is None
+
+
+def test_scale_marker_warning_by_default():
+    set_severity_overrides({})
+    try:
+        assert _scale_marker_emoji(parse_unit("hPa"), parse_unit("Pa"),
+                                   _Ctx(scale_mode=True)) == "🟡"
+    finally:
+        set_severity_overrides({})
+
+
+def test_scale_marker_red_when_s001_error():
+    set_severity_overrides({"S001": "error"})
+    try:
+        assert _scale_marker_emoji(parse_unit("hPa"), parse_unit("Pa"),
+                                   _Ctx(scale_mode=True)) == "🔴"
+    finally:
+        set_severity_overrides({})
+
+
+def test_scale_marker_none_when_s001_off_or_no_mismatch():
+    set_severity_overrides({"S001": "off"})
+    try:
+        assert _scale_marker_emoji(parse_unit("hPa"), parse_unit("Pa"),
+                                   _Ctx(scale_mode=True)) is None
+    finally:
+        set_severity_overrides({})
+    # Same factor → no scale issue regardless of mode.
+    assert _scale_marker_emoji(parse_unit("m"), parse_unit("m"),
+                               _Ctx(scale_mode=True)) is None
+
+
+def test_verdict_marker_overlays_scale_only_on_clean_dims():
+    set_severity_overrides({})
+    try:
+        ctx = _Ctx(scale_mode=True)
+        # Dimension-clean homogeneous assignment with a factor mismatch → 🟡.
+        assert _verdict_marker("homogeneous", parse_unit("hPa"),
+                               parse_unit("Pa"), ctx) == "🟡"
+        # Matching factor stays 🟢.
+        assert _verdict_marker("homogeneous", parse_unit("m"),
+                               parse_unit("m"), ctx) == "🟢"
+        # A dimension mismatch is 🔴 and scale never masks it.
+        assert _verdict_marker("mismatch", parse_unit("m"),
+                               parse_unit("s"), ctx) == "🔴"
+    finally:
+        set_severity_overrides({})
 
 
 def test_initialize_applies_diagnostic_severity_overrides(tmp_path):
