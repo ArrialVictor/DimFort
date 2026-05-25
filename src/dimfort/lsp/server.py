@@ -2888,7 +2888,13 @@ def _panel_info(ls: LanguageServer, params) -> dict | None:
             "severity": str(d.severity),  # "error"/"warning"/"info"/"hint"
             "code": d.code,
             "message": d.message,
+            # 1-based start/end so a click can land on (and select) the
+            # exact span, not the line start — the cursor is usually
+            # already on the line.
             "line": d.start.line,
+            "column": d.start.column,
+            "endLine": d.end.line,
+            "endColumn": d.end.column,
         }
         for d in file_diags
         if d.start.line <= line_1based <= d.end.line
