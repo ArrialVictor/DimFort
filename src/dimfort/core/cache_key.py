@@ -47,12 +47,17 @@ CHECKER_OUTPUT_VERSION = 1
 # - ``diagnostic_severities``: ``[diagnostics]`` overrides are applied
 #   inside ``ts_checker.check`` via ``finalize_diagnostics`` *before*
 #   diagnostics are cached. A change to overrides must invalidate.
+# - ``scale_mode``: opt-in scale checking changes which S001 diagnostics
+#   a file produces for the same bytes. Toggling it (CLI ``--scale`` /
+#   ``[scale] enabled`` / LSP ``scaleMode``) must invalidate, else a
+#   scale-on run's S001s are replayed after scale is turned off.
 PER_FILE_CONFIG_KEYS: tuple[str, ...] = (
     "external_modules",
     "extra_defines",
     "extra_include_paths",
     "units_file_hash",
     "diagnostic_severities",
+    "scale_mode",
 )
 
 
@@ -73,6 +78,7 @@ def _config_bytes(config: dict[str, object]) -> bytes:
     list_keys = {"external_modules", "extra_defines", "extra_include_paths"}
     dict_keys = {"diagnostic_severities"}
     str_keys = {"units_file_hash"}
+    bool_keys = {"scale_mode"}
     subset: dict[str, object] = {}
     for k in PER_FILE_CONFIG_KEYS:
         v = config.get(k)
@@ -83,6 +89,8 @@ def _config_bytes(config: dict[str, object]) -> bytes:
                 v = {}
             elif k in str_keys:
                 v = ""
+            elif k in bool_keys:
+                v = False
             else:
                 v = None
         # Frozenset / set are unordered; coerce to a sorted list.

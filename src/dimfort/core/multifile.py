@@ -395,6 +395,7 @@ def _build_cache_config_view(
     include_paths: tuple[Path, ...],
     units_file: Path | None,
     diagnostic_severities: dict[str, str] | None,
+    scale_mode: bool,
 ) -> dict[str, object]:
     """Assemble the per-file-affecting config dict for the cache key.
 
@@ -408,6 +409,7 @@ def _build_cache_config_view(
         "extra_include_paths": [str(p) for p in include_paths],
         "units_file_hash": _hash_file(units_file) if units_file else "",
         "diagnostic_severities": dict(diagnostic_severities or {}),
+        "scale_mode": scale_mode,
     }
 
 
@@ -658,6 +660,7 @@ def check_files(
         include_paths=include_paths,
         units_file=units_file,
         diagnostic_severities=diagnostic_severities,
+        scale_mode=scale_mode,
     )
 
     for di, entry in enumerate(loaded, start=1):
