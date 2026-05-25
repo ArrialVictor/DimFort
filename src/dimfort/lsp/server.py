@@ -90,7 +90,11 @@ from dimfort.core import ts_parser as _ts
 from dimfort.core import units as _units_mod
 from dimfort.core._source_io import FORTRAN_EXTS as _FORTRAN_EXTS
 from dimfort.core.cache_store import CacheStore
-from dimfort.core.diagnostics import Diagnostic, Severity
+from dimfort.core.diagnostics import (
+    Diagnostic,
+    Severity,
+    set_severity_overrides,
+)
 from dimfort.core.multifile import WorksetResult, check_files
 from dimfort.core.symbols import FuncSig, ModuleExports
 from dimfort.core.units import Unit, UnitExpr
@@ -1144,6 +1148,11 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         _max_workset_size = config.max_workset_size
     # Scale mode: config default, optionally overridden per-client.
     _scale_mode = config.scale_mode
+
+    # [diagnostics] severity overrides are applied by finalize_diagnostics
+    # via a process-wide global. The CLI sets it; the LSP must too, or
+    # editor diagnostics silently ignore every [diagnostics] override.
+    set_severity_overrides(config.diagnostic_severities)
 
     if isinstance(opts, dict):
         _features.inlay_hints = bool(opts.get("inlayHintsEnabled", True))
@@ -2654,10 +2663,28 @@ def _build_scope_vars(
             out.append({
                 "name": vname,
                 "unit": unit_text if unit_text else None,
+                "unitNormalized": _normalized_unit(unit_text) if kind == "annotated" else None,
                 "line": decl.line_start,
                 "kind": kind,
             })
     return out
+
+
+def _normalized_unit(unit_text: str) -> str | None:
+    """Render the base-SI normalized form of an annotation, factor included.
+
+    The panel shows the *input* unit as written (``hPa``); the normalized
+    form makes the otherwise-invisible scale factor visible (``hPa`` →
+    ``100×kg/(m×s²)``, ``g/kg`` → ``1/1000``). ``None`` if it doesn't parse.
+    Uses the installed default unit table (project units already loaded at
+    initialize), so prefixes/derived units resolve as in checking.
+    """
+    from dimfort.core.units import format_unit
+    from dimfort.core.units import parse as parse_unit
+    try:
+        return format_unit(parse_unit(unit_text), show_factor=True)
+    except Exception:
+        return None
 
 
 def _scope_name(scope_node, source: bytes) -> str | None:
