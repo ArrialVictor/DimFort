@@ -168,15 +168,18 @@ def test_panel_scale_marker_reflects_s001(tmp_path: Path):
             server._scale_mode = saved
         asns = [n for n in _ts.walk(tree.root_node)
                 if n.type == "assignment_statement"]
-        # phpa = play (scale mismatch) and psum = play + phpa (+ site).
+        # phpa = play (direct scale mismatch at the assignment).
         assign_marker = _build_expression_tree(asns[0], ctx, source)["marker"]
+        # psum = play + phpa: the `+` child mismatches, and the parent
+        # assignment (Pa = Pa, clean on its own) must inherit it.
         plus_payload = _build_expression_tree(asns[1], ctx, source)
-        # The RHS child of the second assignment is the `+` node.
         plus_marker = plus_payload["children"][-1]["marker"]
-        return assign_marker, plus_marker
+        return assign_marker, plus_marker, plus_payload["marker"]
 
-    assert _markers(scale_on=True) == ("warn", "warn")
-    assert _markers(scale_on=False) == ("ok", "ok")
+    # Scale on: direct mismatch, the + node, and the propagated parent.
+    assert _markers(scale_on=True) == ("warn", "warn", "warn")
+    # Scale off: dimension-only, everything clean.
+    assert _markers(scale_on=False) == ("ok", "ok", "ok")
 
 
 def test_panel_marker_matches_assignment_homogeneity(tmp_path: Path):

@@ -2544,6 +2544,14 @@ def _marker_token(mark: str) -> str:
     return {"🟢": "ok", "🟡": "warn", "🔴": "error"}.get(mark, "warn")
 
 
+_MARKER_TOKEN_RANK = {"ok": 0, "warn": 1, "error": 2}
+
+
+def _worst_token(*tokens: str) -> str:
+    """Worst (highest-severity) of a set of marker tokens: error>warn>ok."""
+    return max(tokens, key=lambda t: _MARKER_TOKEN_RANK.get(t, 1))
+
+
 def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
     """Build a structured ExpressionNode for the panel.
 
@@ -2623,6 +2631,17 @@ def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
                     lhs_unit_str = format_unit(lhs_u)
                     payload["children"][-1]["unit"] = lhs_unit_str
                     payload["children"][-1]["marker"] = "ok"
+
+    # Worst-of-children propagation for scale: a nested scale mismatch
+    # resolves dimensionally (unit is not None), so it doesn't bubble up
+    # via _node_trace_mark the way a dimension error does. Pull the worst
+    # child marker up so the enclosing node reflects it. Gated on
+    # scale_mode: with scale off, markers are dimension-only and already
+    # propagate, so this stays a no-op (the byte-identical guarantee).
+    if getattr(ctx, "scale_mode", False) and child_nodes:
+        payload["marker"] = _worst_token(
+            payload["marker"], *(c["marker"] for c in child_nodes)
+        )
 
     return payload
 
