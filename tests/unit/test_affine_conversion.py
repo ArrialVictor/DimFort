@@ -176,3 +176,18 @@ def test_malformed_directive_is_reported(tmp_path):
     error (U001), not a silent drop."""
     codes = _codes(tmp_path, "t_k = t_c + RTT  !< @unit_affine_conversion{degC K}")
     assert "U001" in codes, codes
+
+
+def test_h010_on_affine_target_suggests_parseable_unit(tmp_path):
+    """A literal added to an absolute temperature (``t_c + 100.``) casts to
+    the degC frame. The H010 message *describes* it as ``K + 273.15`` but its
+    copy-pasteable ``@unit{...}`` suggestion must stay valid syntax (``K``) —
+    ``K + 273.15`` would not parse. See format_unit show_offset."""
+    f = _write(tmp_path, "t_k = t_c + 100.")
+    res = check_files([f], scale_mode=True)
+    h010 = [d for d in res.diagnostics[f.resolve()] if d.code == "H010"]
+    assert len(h010) == 1, [d.code for d in res.diagnostics[f.resolve()]]
+    msg = h010[0].message
+    assert "to K + 273.15" in msg, msg          # description shows the offset
+    assert "@unit{K}" in msg, msg               # suggestion is parseable
+    assert "@unit{K + 273.15}" not in msg, msg  # …and never the invalid form
