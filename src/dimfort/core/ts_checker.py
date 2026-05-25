@@ -1212,6 +1212,63 @@ def _scale_mismatch_ratio(a: UnitExpr, b: UnitExpr) -> Fraction | None:
     return v.ratio if v.kind == "scale_mismatch" else None
 
 
+def _emit_s002(loc: Node, reason: str, ctx: _Ctx) -> Diagnostic:
+    """Affine offset violation (S002, Phase 2).
+
+    Opt-in (``ctx.scale_mode``), warning severity, overridable via
+    ``[diagnostics] S002``. Covers both detection paths: a boundary
+    ``offset_mismatch`` (``K = degC``) and an operation ill-defined on an
+    absolute temperature (``degC + degC``, ``2 * degC``). ``reason`` is the
+    pre-formatted specifics. See docs/design/scale.md §3.3, §5.
+    """
+    start, end = _node_span(loc)
+    return Diagnostic(
+        file=ctx.file,
+        start=start,
+        end=end,
+        severity=Severity.WARNING,
+        code="S002",
+        message=f"Offset mismatch: {reason}",
+    )
+
+
+def _offset_mismatch_delta(a: UnitExpr, b: UnitExpr) -> Fraction | None:
+    """Return the offset delta if ``a``/``b`` are dim+factor-equal but
+    differ in zero-point (S002 path 1, boundary), else ``None``."""
+    v = compare(a, b)
+    return v.delta if v.kind == "offset_mismatch" else None
+
+
+def _affine_violation(op: str, lu: UnitExpr, ru: UnitExpr) -> str | None:
+    """Reason string if ``lu <op> ru`` is an affine-invalid operation
+    (S002 path 2), else ``None``. Encodes the §3.3 algebra: an absolute
+    operand (``offset != 0``) cannot be multiplied/divided/raised; two
+    absolutes cannot be added; a difference minus an absolute (or
+    absolutes in different zero-points) is ill-defined. Offsets only live
+    on Regular ``Unit`` leaves, so wrappers are out of scope (return None).
+    """
+    if not isinstance(lu, Unit) or not isinstance(ru, Unit):
+        return None
+    lo, ro = lu.offset, ru.offset
+    if lo == 0 and ro == 0:
+        return None  # ordinary operands — Phase-1 territory, nothing affine
+    if op in ("*", "/"):
+        return ("an absolute temperature (offset unit) cannot be scaled, "
+                "multiplied, or divided — use a temperature difference")
+    if op == "+":
+        if lo != 0 and ro != 0:
+            return ("cannot add two absolute temperatures — one operand "
+                    "must be a difference (offset-0)")
+        return None  # point + vector — legal
+    if op == "-":
+        if ro != 0 and lo != ro:
+            return ("ill-defined subtraction: a difference minus an "
+                    "absolute temperature, or absolutes in different "
+                    "zero-points")
+        return None  # point - vector, or point - point (equal) -> difference
+    return None
+
+
 def _is_dimensionless(u: Unit) -> bool:
     """Return True if ``u`` is the dim'less unit (all base exponents zero)."""
     return all(d == 0 for d in u.dimension)
@@ -1388,6 +1445,16 @@ def _walk_expressions(
                 yield _emit_d12(node, base, base, "**", ctx)
             elif diag == "D1.7":
                 yield _emit_d17(node, base, exponent_unit, ctx)
+            # Affine (S002 path 2): can't raise an absolute temperature to
+            # a power. base is a UnitExpr; offsets only on Regular Units.
+            if (ctx.scale_mode and isinstance(base, Unit)
+                    and base.offset != 0):
+                yield _emit_s002(
+                    node,
+                    "an absolute temperature (offset unit) cannot be "
+                    "raised to a power — use a temperature difference",
+                    ctx,
+                )
             return
         if op not in ("+", "-", "*", "/"):
             return
@@ -1403,6 +1470,14 @@ def _walk_expressions(
             ratio = _scale_mismatch_ratio(lu, ru)
             if ratio is not None:
                 yield _emit_s001(node, lu, ru, ratio, ctx)
+        # Affine offset (S002 path 2): an operation ill-defined on an
+        # absolute temperature (degC+degC, 2*degC, …). compare() can't see
+        # these (the operands' offsets may be equal), so check the op rules
+        # directly. Mutually exclusive with S001 (factor) by construction.
+        if ctx.scale_mode:
+            affine_reason = _affine_violation(op, lu, ru)
+            if affine_reason is not None:
+                yield _emit_s002(node, affine_reason, ctx)
         left_lit_val: int | Fraction | Exponent | None = (
             _resolve_constant_value(left, ctx, source) if left is not None else None
         )
@@ -2343,12 +2418,26 @@ def check(
                             _build_autocast_event(value, tu, str(ctx.file), source)
                         )
                     # Scale layer (opt-in): dims agree (homogeneous) but the
-                    # magnitude factors differ → S001. Dimension-only mode
-                    # leaves this untouched (scale_mode default False).
+                    # magnitude factors differ → S001, or the zero-point
+                    # differs → S002 (path 1, e.g. K = degC). Factor takes
+                    # precedence (compare order); they're mutually exclusive
+                    # since offset_mismatch requires equal factors. Dimension-
+                    # only mode leaves this untouched (scale_mode default off).
                     if ctx.scale_mode and verdict == "homogeneous":
                         ratio = _scale_mismatch_ratio(tu, ru)
                         if ratio is not None:
                             out.append(_emit_s001(node, tu, ru, ratio, ctx))
+                        else:
+                            delta = _offset_mismatch_delta(tu, ru)
+                            if delta is not None:
+                                out.append(_emit_s002(
+                                    node,
+                                    f"same dimension and scale but a different "
+                                    f"zero-point (offsets differ by {delta}, "
+                                    f"e.g. °C vs K) — add the conversion or "
+                                    f"keep units consistent",
+                                    ctx,
+                                ))
             _attach_traces_since(before_len, stmt_trace)
             continue
 
