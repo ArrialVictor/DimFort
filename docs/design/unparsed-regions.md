@@ -24,8 +24,15 @@ lines."* Honest by construction.
   Emacs all render it from day one.
 - **One diagnostic per contiguous unparsed region.** Tree-sitter can emit many
   nested `ERROR`/`missing` nodes for one bad construct; we coalesce their line
-  spans into contiguous regions and emit a single `P001` per region, so a file
-  with one unparseable statement gets one marker, not twenty.
+  spans (overlapping *or* adjacent) into contiguous regions and emit a single
+  `P001` per region, so a file with one unparseable statement gets one marker,
+  not twenty.
+- **Innermost nodes only.** Tree-sitter frequently wraps a single bad statement
+  in an outer `ERROR` node spanning the *whole enclosing construct* (e.g. the
+  entire subroutine). We drop any error node that strictly contains another, so
+  `P001` lands on the offending line(s), not the whole routine. When the parser
+  gives only a coarse wrapper (it couldn't localise at all), that wrapper is the
+  best signal available and is reported as-is.
 - **Message**: `could not parse this region — DimFort makes no unit guarantee
   here`.
 - **Scope**: emitted only for files that *parsed with errors*. A file that fails

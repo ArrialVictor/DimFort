@@ -46,6 +46,28 @@ def test_p001_absent_for_valid_file(tmp_path: Path):
     assert _p001(result, src) == []
 
 
+def test_p001_localizes_not_whole_routine(tmp_path: Path):
+    """Tree-sitter often wraps a bad statement in an outer ERROR spanning the
+    whole routine; P001 must report the *innermost* error, not blue-underline
+    every line of the subroutine."""
+    src = tmp_path / "mid.f90"
+    src.write_text(
+        "subroutine s\n"                 # 1
+        "  real :: a  !< @unit{m}\n"     # 2 (valid decl)
+        "  a = 1.0\n"                    # 3 (valid)
+        "  a = * / +\n"                  # 4 (unparseable)
+        "  a = 2.0\n"                    # 5 (valid)
+        "end subroutine\n"              # 6
+    )
+    result = check_files([src])
+    p = _p001(result, src)
+    assert len(p) == 1, [(d.start.line, d.end.line) for d in p]
+    # The marker sits on the bad line, not at the subroutine header (line 1),
+    # and doesn't span the whole routine.
+    assert p[0].start.line == 4
+    assert p[0].end.line <= 5
+
+
 def test_p001_suppressible_via_override(tmp_path: Path):
     src = tmp_path / "bad.f90"
     src.write_text(_BAD)
