@@ -18,7 +18,7 @@ from tree_sitter import Tree
 from dimfort.core import ts_checker
 from dimfort.core import units as _units_mod
 from dimfort.core.multifile import WorksetResult
-from dimfort.core.units import Unit
+from dimfort.core.units import UnitExpr
 from dimfort.lsp.state import state
 
 
@@ -87,7 +87,7 @@ def _build_ts_ctx(
     assert table is not None, (
         "DEFAULT_TABLE not initialised — import dimfort.core.unit_config"
     )
-    var_units_by_scope: dict[tuple[str | None, str], Unit] = {}
+    var_units_by_scope: dict[tuple[str | None, str], UnitExpr] = {}
     routine_scopes: tuple[tuple[int, int, str], ...] = ()
     if path is not None:
         var_units_by_scope = result.var_units_by_scope.get(path, {})
