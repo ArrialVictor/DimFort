@@ -84,6 +84,11 @@ Pre-alpha. Working pipeline pieces:
   `log`, trig family, `min`/`max`/`mod`/`merge`,
   `dot_product`/`matmul`, `sum`/`minval`/`maxval`, the
   kind-conversion family)
+- **P001** (info): a region the parser couldn't read. DimFort makes no
+  unit guarantee on those lines, so it says so (a blue squiggle) rather
+  than implying they're clean. On by default; silence it with
+  `[diagnostics]` `P001 = "off"` in `.dimfort.toml` (e.g. on known F77
+  files). See [docs/design/unparsed-regions.md](design/unparsed-regions.md).
 - unit-algebra rules for `LOG` / `EXP`-tagged quantities (Phase
   B): `@unit{LOG(Pa)}`, `@unit{EXP(K)}`, and nested forms.
   Wrapper arithmetic raises H001 / H002 with `(D1.2)` / `(D1.3)` /
