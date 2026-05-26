@@ -232,6 +232,13 @@ def _find_expression_root(tree: Tree, line_1based: int, col_1based: int) -> Node
                 )
                 if first_id is not None and first_id.start_byte == best.start_byte:
                     best = parent
+    # Don't surface an expression tree for an unparsed region: tree-sitter's
+    # error recovery yields a malformed node that bleeds in adjacent lines
+    # (the next statement's tokens), so the "tree" is nonsense. The cursor is
+    # already flagged by P001 — return None so the panel/hover shows no
+    # expression rather than a confident-looking but wrong one.
+    if best is not None and best.has_error:
+        return None
     return best
 
 

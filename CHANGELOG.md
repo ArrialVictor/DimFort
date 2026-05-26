@@ -4,6 +4,18 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### Feature: `P001` — "unparsed region" marker
+
+- A new **info-level** diagnostic that flags regions tree-sitter couldn't parse.
+  Where the parser left an `ERROR`/`missing` region the checker resolves
+  nothing, so `P001` says so (a blue squiggle, no companion changes needed)
+  rather than letting the absence of a squiggle imply the lines are clean.
+- One `P001` per contiguous unparsed region (nested error nodes coalesced).
+  Emitted inside `check`, so it inherits severity overrides and cpp line-map
+  remapping. On by default; silence project-wide with `[diagnostics]`
+  `P001 = "off"` (DimFort targets F90+, so a known-F77 file can opt out).
+- Spec: `docs/design/unparsed-regions.md`.
+
 ### Feature: `dimfort interactions <symbol>` — cross-site unit analysis + X001
 
 - A new **on-demand** query that, for one variable, lists every site that reads

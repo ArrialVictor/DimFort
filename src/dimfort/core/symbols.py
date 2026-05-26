@@ -53,6 +53,13 @@ CODES: dict[str, CodeSpec] = {
         "U020", Severity.INFO,
         "RHS unit assumed via @unit_assume (derivation suppressed)",
     ),
+    # P-codes: parse-state findings. P001 marks a region tree-sitter could
+    # not parse — DimFort makes no unit guarantee there. INFO (blue squiggle);
+    # see docs/design/unparsed-regions.md.
+    "P001": CodeSpec(
+        "P001", Severity.INFO,
+        "region could not be parsed — no unit guarantee here",
+    ),
     # X-codes: cross-site (whole-symbol) findings produced on demand by the
     # ``interactions`` query, not by the per-statement ``check`` pass.
     "X001": CodeSpec(
