@@ -353,14 +353,19 @@ def walk(node: Node) -> Iterator[Node]:
     full pipeline.
     """
     cursor = node.walk()
-    yield cursor.node
+    # ``cursor.node`` is ``Node | None`` in the API but is non-None at every
+    # step of a live walk; guard to satisfy the typed ``Iterator[Node]``.
+    if (n := cursor.node) is not None:
+        yield n
     while True:
         if cursor.goto_first_child():
-            yield cursor.node
+            if (n := cursor.node) is not None:
+                yield n
             continue
         while True:
             if cursor.goto_next_sibling():
-                yield cursor.node
+                if (n := cursor.node) is not None:
+                    yield n
                 break
             if not cursor.goto_parent():
                 return

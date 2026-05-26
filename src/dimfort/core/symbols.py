@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from fractions import Fraction
+from typing import Any
 
 from dimfort.core.diagnostics import Severity
 from dimfort.core.units import Unit
@@ -159,7 +160,7 @@ class ModuleExports:
 
 
 def deps_consumed_from_uses(
-    uses: tuple,
+    uses: tuple[Any, ...],
     unresolved: frozenset[str],
     external_modules: frozenset[str],
 ) -> frozenset[str]:
@@ -190,7 +191,7 @@ def deps_consumed_from_uses(
 
 
 def apply_use_clauses(
-    uses: tuple,
+    uses: tuple[Any, ...],
     module_exports: dict[str, ModuleExports],
     base_var_units: dict[str, Unit],
     base_signatures: dict[str, FuncSig],
