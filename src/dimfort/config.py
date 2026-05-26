@@ -21,6 +21,7 @@ import logging
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 log = logging.getLogger("dimfort.config")
 
@@ -117,7 +118,7 @@ def load_config(start: Path) -> DimfortConfig:
     return _from_raw(raw, path)
 
 
-def _from_raw(raw: dict, path: Path) -> DimfortConfig:
+def _from_raw(raw: dict[str, Any], path: Path) -> DimfortConfig:
     base = path.parent
 
     project = raw.get("project", {}) or {}

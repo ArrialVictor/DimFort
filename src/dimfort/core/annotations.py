@@ -34,6 +34,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from tree_sitter import Node
+
 from dimfort.core import ts_parser as _ts
 
 
@@ -465,12 +467,12 @@ def scan_text(source: str) -> ScanResult:
 _NAME_WRAPPERS = {"sized_declarator", "init_declarator"}
 
 
-def _ts_decl_names(decl_node) -> list[str]:
+def _ts_decl_names(decl_node: Node) -> list[str]:
     """Return the variable names declared by a ``variable_declaration``."""
     names: list[str] = []
     for c in decl_node.children:
         if c.type == "identifier":
-            names.append(c.text.decode("utf-8", "replace"))
+            names.append((c.text or b"").decode("utf-8", "replace"))
             continue
         if c.type in _NAME_WRAPPERS:
             inner = _ts_declarator_name(c)
@@ -479,7 +481,7 @@ def _ts_decl_names(decl_node) -> list[str]:
     return names
 
 
-def _ts_declarator_name(node) -> str | None:
+def _ts_declarator_name(node: Node) -> str | None:
     """Find the leading identifier inside a declarator wrapper.
 
     Walks descendants until the first ``identifier`` — that's the name
@@ -488,7 +490,7 @@ def _ts_declarator_name(node) -> str | None:
     """
     for c in node.children:
         if c.type == "identifier":
-            return c.text.decode("utf-8", "replace")
+            return (c.text or b"").decode("utf-8", "replace")
         if c.type in _NAME_WRAPPERS:
             inner = _ts_declarator_name(c)
             if inner is not None:
@@ -496,7 +498,7 @@ def _ts_declarator_name(node) -> str | None:
     return None
 
 
-def _ts_type_name(type_def_node) -> str | None:
+def _ts_type_name(type_def_node: Node) -> str | None:
     """Pull the type name out of a ``derived_type_definition`` node.
 
     The first ``derived_type_statement`` child carries a ``type_name``
@@ -510,10 +512,10 @@ def _ts_type_name(type_def_node) -> str | None:
     if stmt is None:
         return None
     name_node = next((c for c in stmt.children if c.type == "type_name"), None)
-    return name_node.text.decode("utf-8", "replace") if name_node else None
+    return (name_node.text or b"").decode("utf-8", "replace") if name_node else None
 
 
-def _ts_routine_name(node) -> str | None:
+def _ts_routine_name(node: Node) -> str | None:
     """Pull the name of a ``subroutine`` / ``function`` node."""
     stmt_type = (
         "subroutine_statement"
@@ -524,7 +526,7 @@ def _ts_routine_name(node) -> str | None:
     if stmt is None:
         return None
     name_node = next((c for c in stmt.children if c.type == "name"), None)
-    return name_node.text.decode("utf-8", "replace") if name_node else None
+    return (name_node.text or b"").decode("utf-8", "replace") if name_node else None
 
 
 def _scan_declarations(
@@ -625,7 +627,7 @@ _INTRINSIC_QUALIFIER_TYPES = frozenset({
 })
 
 
-def _ts_decl_intrinsic_type(decl_node) -> str | None:
+def _ts_decl_intrinsic_type(decl_node: Node) -> str | None:
     for c in decl_node.children:
         if c.type != "intrinsic_type":
             continue
