@@ -4,6 +4,36 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### Feature: `dimfort interactions <symbol>` — cross-site unit analysis + X001
+
+- A new **on-demand** query that, for one variable, lists every site that reads
+  or writes it across the workset, grouped by what each site says about the
+  variable's unit: **Declaration** (the `@unit{}`), **Write** (the unit an
+  assignment sets it to), **Read** (the unit a use requires of it), and
+  **Undetermined read** (a read whose required unit couldn't be determined —
+  none exists, or a coefficient was un-annotated).
+- The required unit at a read is solved by propagating a known target down
+  through `+`/`-`/`*`/`/` (a bare literal anchors a sum to `{1}`, even when a
+  sibling term is unresolvable), reusing the existing resolver and
+  `_assignment_homogeneity` — so the R4.4 literal-autocast rule applies and a
+  literal init (`x = 0.0`) makes no false claim. No new dimensional logic;
+  unknown stays unknown (never a false constraint).
+- **New diagnostic `X001`** (ERROR, produced only by this query): fires when two
+  sites disagree on a variable's *dimension* — **even when the variable is
+  unannotated**, which the per-statement `check` pass cannot see. Phrased as
+  conflicting unit *claims* (e.g. "write here claims `kg/(m³×s)`, but
+  declaration … claims `1/s`"). `--scale` also treats magnitude disagreements as
+  conflicts. Never crosses a scope boundary (same name in two routines = two
+  variables).
+- `--file` / `--scope` narrow a reused name. Array-element accesses (`x(i)`) and
+  call-argument positions are handled. Spec: `docs/design/interaction-points.md`.
+- **LSP**: new `dimfort/interactions` custom request — resolves the symbol under
+  the cursor (or an explicit `symbol`), returns the serialised report
+  (`points` + `conflicts`). Consumed by the editor companions' Interactions
+  panel section.
+- Internal: extracted `ts_checker._build_ctx` as the single source of truth for
+  `_Ctx` construction, now shared by `check` and the new `interactions` query.
+
 ### Fix: scope bleed — unannotated param inheriting a sibling routine's unit
 
 - An annotated formal parameter leaked its unit to a same-named
