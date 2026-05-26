@@ -21,11 +21,13 @@ from tree_sitter import Node
 
 from dimfort.core.diagnostics import Diagnostic, Position, Severity
 from dimfort.core.ts_checker import (
+    _assignment_homogeneity,
     _assignment_sides,
     _build_ctx,
     _call_args,
     _call_callee_name,
     _Ctx,
+    _is_pure_numeric_constant,
     _math_op,
     _math_operands,
     _position,
@@ -263,10 +265,22 @@ def _classify(
     if vp is not None and vp.type == "assignment_statement":
         lhs, rhs = _assignment_sides(vp)
         if _same(value, lhs):
+            # Route through the checker's homogeneity logic so a pure-literal
+            # RHS (``x = 0.0``) is handled by the autocast rule (R4.4) exactly
+            # as ``check`` does: the literal is unit-agnostic, adopts the
+            # declared LHS unit, and makes no independent claim — so it can't
+            # manufacture a conflict. A real computed RHS keeps its own unit.
+            _verdict, lhs_unit, eff_rhs = _assignment_homogeneity(
+                lhs, rhs, ctx, source
+            )
+            contributed = (
+                lhs_unit
+                if (rhs is not None and _is_pure_numeric_constant(rhs))
+                else eff_rhs
+            )
             return InteractionPoint(
                 file=file, line=pos.line, column=pos.column, scope=scope,
-                kind=CONTRIBUTES, unit=_resolve(rhs, ctx, source),
-                snippet=snippet,
+                kind=CONTRIBUTES, unit=contributed, snippet=snippet,
             )
 
     # Read: does the context pin a unit?

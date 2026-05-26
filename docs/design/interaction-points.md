@@ -113,7 +113,11 @@ unit **down** through arithmetic — the mechanical version of the manual trace:
   exponent must be dimensionless but that is a separate, existing check).
 
 A write occurrence (assignment LHS) is a **contributes**: the contributed unit
-is `_resolve(rhs)`.
+comes from `_assignment_homogeneity` (the checker's single source of truth), so
+the autocast rule R4.4 applies — a *pure-literal* RHS (`x = 0.0`) is
+unit-agnostic, adopts the declared LHS unit, and makes **no independent claim**
+(so it can never manufacture a conflict, exactly as `dimfort check` stays
+silent). A real computed RHS keeps its own resolved unit.
 
 All unit resolution reuses `ts_checker._resolve` and the unit algebra
 (`Unit.__mul__`/`__truediv__`, `combine`, `compare`) — no new dimensional logic.
