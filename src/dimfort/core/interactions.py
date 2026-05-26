@@ -14,8 +14,10 @@ Public entry: :func:`collect_interactions`. CLI-agnostic — returns a structure
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from tree_sitter import Node
 
@@ -35,6 +37,9 @@ from dimfort.core.ts_checker import (
     resolve_unit,
 )
 from dimfort.core.units import Unit, UnitExpr, compare, format_unit
+
+if TYPE_CHECKING:
+    from dimfort.core.multifile import WorksetResult
 
 # Constraint kinds (see the design doc's table).
 DECLARES = "declares"
@@ -96,7 +101,7 @@ def _same(a: Node | None, b: Node | None) -> bool:
     return a is not None and b is not None and a.id == b.id
 
 
-def _iter_identifiers(node: Node, name_lc: str, source: bytes):
+def _iter_identifiers(node: Node, name_lc: str, source: bytes) -> Iterator[Node]:
     """Yield every ``identifier`` node whose text equals ``name_lc`` (ci)."""
     if node.type == "identifier" and _text(node, source).lower() == name_lc:
         yield node
@@ -399,7 +404,7 @@ def _file_matches(path: Path, file_filter: str | None) -> bool:
 
 
 def collect_interactions(
-    workset,  # multifile.WorksetResult
+    workset: WorksetResult,
     symbol: str,
     *,
     file: str | None = None,
