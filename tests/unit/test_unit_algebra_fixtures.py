@@ -26,7 +26,7 @@ from dimfort.core import annotations as _ann
 from dimfort.core import attach as _attach
 from dimfort.core import ts_checker, ts_parser, unit_config  # noqa: F401
 from dimfort.core import ts_parser as ts
-from dimfort.core.ts_checker import _Ctx, _resolve
+from dimfort.core.ts_checker import Ctx, resolve_unit
 from dimfort.core.units import (
     DEFAULT_TABLE,
     Unit,
@@ -117,8 +117,8 @@ def _build_source(context: str, expression: str) -> str:
     )
 
 
-def _build_ctx(source: str) -> tuple[_Ctx, object]:
-    """Scan + attach + parse, returning ``(_Ctx, tree)`` ready for resolution."""
+def _build_ctx(source: str) -> tuple[Ctx, object]:
+    """Scan + attach + parse, returning ``(Ctx, tree)`` ready for resolution."""
     src_b = source.encode()
     tree = ts.parse_text(src_b)
     scan = _ann.scan_text(source)
@@ -129,7 +129,7 @@ def _build_ctx(source: str) -> tuple[_Ctx, object]:
             parsed_vars[name] = parse_unit(unit_text, DEFAULT_TABLE)
         except Exception:
             continue
-    ctx = _Ctx(
+    ctx = Ctx(
         file="fixture.f90",
         var_units=parsed_vars,
         table=DEFAULT_TABLE,
@@ -221,7 +221,7 @@ def test_fixture_case(case: dict) -> None:
                 )
             ctx, tree = _build_ctx(source)
             rhs = _find_probe_rhs(tree)
-            actual = _resolve(rhs, ctx, source.encode())
+            actual = resolve_unit(rhs, ctx, source.encode())
             assert actual is not None
             assert equal_dim(actual, expected_unit), (
                 f"expected {expected_unit}; got {actual}"
@@ -232,7 +232,7 @@ def test_fixture_case(case: dict) -> None:
     if expected_raw == "unknown":
         ctx, tree = _build_ctx(source)
         rhs = _find_probe_rhs(tree)
-        actual = _resolve(rhs, ctx, source.encode())
+        actual = resolve_unit(rhs, ctx, source.encode())
         assert actual is None
         return
 
@@ -243,7 +243,7 @@ def test_fixture_case(case: dict) -> None:
         pytest.skip(f"unparseable expected unit: {expected_raw!r}")
     ctx, tree = _build_ctx(source)
     rhs = _find_probe_rhs(tree)
-    actual = _resolve(rhs, ctx, source.encode())
+    actual = resolve_unit(rhs, ctx, source.encode())
     assert actual is not None, (
         f"expression {expression!r} resolved to None, expected {expected_raw}"
     )

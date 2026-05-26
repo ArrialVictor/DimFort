@@ -2,7 +2,7 @@
 
 The bridge between an editor URI and the cached workset result: convert the
 URI to a filesystem path, look up the parsed tree-sitter tree, and spin up a
-``ts_checker._Ctx`` pre-loaded with the workset's unit tables. Every
+``ts_checker.Ctx`` pre-loaded with the workset's unit tables. Every
 tree-walking feature handler (hover, definition, inlay, panel, interactions)
 starts here. Reads the shared ``state`` singleton but acquires no
 ``ts_handler_lock`` of its own — callers hold that around their traversal.
@@ -68,8 +68,8 @@ def _trees_for(uri: str) -> tuple[Path, object, bytes] | None:
 def _build_ts_ctx(
     result: WorksetResult, source: bytes, file: str,
     *, path: Path | None = None,
-) -> ts_checker._Ctx:
-    """Spin up a ts_checker ``_Ctx`` pre-loaded with the workset's tables.
+) -> ts_checker.Ctx:
+    """Spin up a ts_checker ``Ctx`` pre-loaded with the workset's tables.
 
     Reused by hover / inlay so identifier-to-unit lookup goes through
     the same logic as the diagnostic pipeline — no second source of
@@ -88,7 +88,7 @@ def _build_ts_ctx(
         att = result.attachments.get(path)
         if att is not None:
             routine_scopes = att.routine_scopes
-    return ts_checker._Ctx(
+    return ts_checker.Ctx(
         file=file,
         var_units=result.merged_var_units,
         table=_units_mod.DEFAULT_TABLE,

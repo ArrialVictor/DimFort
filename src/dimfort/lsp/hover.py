@@ -147,7 +147,7 @@ def _resolve_hover(
         ctx.var_types.update(ts_checker.collect_var_types(tree, source))
         ctx.parameter_values.update(ts_checker.collect_parameter_values(tree, source))
         ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
-        unit = ts_checker._resolve_member_chain(member_hit, ctx, source)
+        unit = ts_checker.resolve_member_chain(member_hit, ctx, source)
         base, path = _ts_h.member_expr_chain(member_hit, source)
         if base is not None and path:
             display = f"{base}%{'%'.join(path)}"
@@ -227,7 +227,7 @@ def _resolve_hover(
                 ctx = _build_ts_ctx(
                     result, source, str(resolved_path), path=resolved_path,
                 )
-                unit = ts_checker._resolve(call_hit, ctx, source)
+                unit = ts_checker.resolve_unit(call_hit, ctx, source)
                 # Show the full source text of the call rather than
                 # `name(...)` — the user sees the exact expression
                 # whose unit is being reported.
@@ -241,7 +241,7 @@ def _resolve_hover(
     # found we still want to show *something* (the variable's unit if
     # known, or "no annotation"). Without this fallback, hovering on
     # the callee of an intrinsic or an unindexed call shows nothing.
-    ident_ctx: ts_checker._Ctx | None = None
+    ident_ctx: ts_checker.Ctx | None = None
     for ident in _ts_h.walk_identifiers(tree):
         if not _ts_h.node_contains(ident, line_1based, col_1based):
             continue
@@ -283,7 +283,7 @@ def _resolve_hover(
             continue
         from dimfort.core.units import format_unit
         ctx = _build_ts_ctx(result, source, str(resolved_path), path=resolved_path)
-        u = ts_checker._resolve(n, ctx, source)
+        u = ts_checker.resolve_unit(n, ctx, source)
         u_s = format_unit(u) if u is not None else "1"
         body = f"{_node_label(n, source)} : {u_s}"
         text = f"**🟢 DimFort**\n\n```\n{body}\n```"
@@ -402,7 +402,7 @@ def _expression_hover_for(
     if hover_mode == "short":
         return _render_assignment_short(asn, lhs, rhs, ctx, source)
     rows: list[tuple[str, str | None, str, str]] = []
-    lhs_unit = ts_checker._resolve(lhs, ctx, source)
+    lhs_unit = ts_checker.resolve_unit(lhs, ctx, source)
     from dimfort.core.units import format_unit
     # Header marker is diagnostic-driven (docs/design/markers.md): the
     # assignment's aggregated marker already folds in H001/S001/S002 and any
@@ -547,8 +547,8 @@ def _render_mathop_short(math_expr, ctx, source: bytes) -> tuple[str, lsp.Range]
         return None
     lhs, rhs = operands[0], operands[1]
     marker = _node_marker(math_expr, ctx, source)
-    lu = ts_checker._resolve(lhs, ctx, source)
-    ru = ts_checker._resolve(rhs, ctx, source)
+    lu = ts_checker.resolve_unit(lhs, ctx, source)
+    ru = ts_checker.resolve_unit(rhs, ctx, source)
     lhs_s = format_unit(lu) if lu is not None else "?"
     rhs_s = format_unit(ru) if ru is not None else "?"
     body = (
@@ -596,10 +596,10 @@ def _render_assignment_short(asn, lhs, rhs, ctx, source: bytes) -> tuple[str, ls
     """One-line homogeneity hover for an assignment cursor position.
 
     Delegates the assignment-specific logic (autocast detection,
-    unit comparison) to ``ts_checker._assignment_homogeneity`` — the
+    unit comparison) to ``ts_checker.assignment_homogeneity`` — the
     single source of truth shared with the panel and the checker."""
     from dimfort.core.units import format_unit
-    verdict, lhs_u, rhs_u = ts_checker._assignment_homogeneity(
+    verdict, lhs_u, rhs_u = ts_checker.assignment_homogeneity(
         lhs, rhs, ctx, source,
     )
     # Marker is diagnostic-driven (docs/design/markers.md): the assignment's
@@ -633,8 +633,8 @@ def _render_relational_short(rel, ctx, source: bytes) -> tuple[str, lsp.Range] |
     # diagnostic-driven like everything else: no consistency diagnostic → 🟡
     # (no unit / not checked), never a re-derived 🔴.
     marker = _node_marker(rel, ctx, source)
-    lhs_u = ts_checker._resolve(lhs, ctx, source)
-    rhs_u = ts_checker._resolve(rhs, ctx, source)
+    lhs_u = ts_checker.resolve_unit(lhs, ctx, source)
+    rhs_u = ts_checker.resolve_unit(rhs, ctx, source)
     lhs_s = format_unit(lhs_u) if lhs_u is not None else "?"
     rhs_s = format_unit(rhs_u) if rhs_u is not None else "?"
     body = (
@@ -651,7 +651,7 @@ def _render_subexpr_short(expr, ctx, source: bytes) -> tuple[str, lsp.Range] | N
     homogeneity violation surfaces as 🔴 even though the wrapping
     operator has no unit either."""
     from dimfort.core.units import format_unit
-    u = ts_checker._resolve(expr, ctx, source)
+    u = ts_checker.resolve_unit(expr, ctx, source)
     marker = _node_marker(expr, ctx, source)
     u_s = format_unit(u) if u is not None else "?"
     body = f"{_node_label(expr, source)} : {u_s}"
@@ -705,7 +705,7 @@ def _render_call_pairing_a(
         if i < len(actuals):
             an = actuals[i]
             atext = _node_label(an, source)
-            aunit = ts_checker._resolve(an, rctx, source)
+            aunit = ts_checker.resolve_unit(an, rctx, source)
             aunit_s = format_unit(aunit) if aunit is not None else "?"
             actual = f"{atext} : {aunit_s}"
         else:
@@ -800,7 +800,7 @@ def _render_call_pairing_c(
         if i < len(actuals):
             an = actuals[i]
             atext = _node_label(an, source)
-            aunit = ts_checker._resolve(an, rctx, source)
+            aunit = ts_checker.resolve_unit(an, rctx, source)
             aunit_s = format_unit(aunit) if aunit is not None else "?"
         else:
             an, aunit, atext, aunit_s = None, None, "—", "—"
@@ -1049,19 +1049,19 @@ def _render_ast_tree(
 
     from dimfort.core.trace import with_trace
     with with_trace() as trace:
-        unit = ts_checker._resolve(node, ctx, source)
+        unit = ts_checker.resolve_unit(node, ctx, source)
     snap = trace.snapshot()
     rule_id = snap[-1].rule_id if snap else None
 
     # Initialization autocast: a pure-numeric-constant subtree (literal,
     # unary-minus literal, math of literals) in a propagated target
     # context takes on the target unit and is marked 🟢. Uses the same
-    # predicate as the checker's R4.4 — :func:`_is_pure_numeric_constant`
+    # predicate as the checker's R4.4 — :func:`ts_checker.is_pure_numeric_constant`
     # — so all three sites (checker, hover, panel) agree on the set of
     # nodes that autocast.
     apply_autocast = (
         target_unit_for_literal is not None
-        and ts_checker._is_pure_numeric_constant(node)
+        and ts_checker.is_pure_numeric_constant(node)
     )
     if apply_autocast:
         unit = target_unit_for_literal
@@ -1107,7 +1107,7 @@ def _render_ast_tree(
         if first.type == "identifier":
             children = children[1:]
     # Compute the autocast target to propagate into children.
-    # - Assignment: ask ``_assignment_homogeneity`` for the effective
+    # - Assignment: ask ``ts_checker.assignment_homogeneity`` for the effective
     #   RHS unit; pass it to the last child (the RHS) when the verdict
     #   says we're in autocast mode.
     # - Unary-minus: if THIS node is already being autocast (i.e. it's
@@ -1115,7 +1115,7 @@ def _render_ast_tree(
     #   the target through to the inner literal.
     child_target = None
     if node.type == "assignment_statement" and children:
-        verdict, lhs_u, _ = ts_checker._assignment_homogeneity(
+        verdict, lhs_u, _ = ts_checker.assignment_homogeneity(
             children[0], children[-1], ctx, source,
         )
         if verdict == "autocast" and lhs_u is not None:
