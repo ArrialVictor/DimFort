@@ -27,10 +27,11 @@ def _drive_hover(file: Path, line_1based: int, col_1based: int):
     with _server.state.last_result_lock:
         _server.state.last_result = result
     uri = file.resolve().as_uri()
+    mode = _server._features.hover
     try:
-        hit = _server._resolve_hover(uri, line_1based, col_1based, None)
+        hit = _server._resolve_hover(uri, line_1based, col_1based, None, hover_mode=mode)
         if hit is None:
-            hit = _server._expression_hover_for(uri, line_1based, col_1based)
+            hit = _server._expression_hover_for(uri, line_1based, col_1based, hover_mode=mode)
         return hit
     finally:
         with _server.state.last_result_lock:
@@ -224,7 +225,9 @@ def _drive_trace_hover(file: Path, line_1based: int, col_1based: int):
         _server.state.last_result = result
     uri = file.resolve().as_uri()
     try:
-        return _server._expression_hover_for(uri, line_1based, col_1based)
+        return _server._expression_hover_for(
+            uri, line_1based, col_1based, hover_mode=_server._features.hover,
+        )
     finally:
         with _server.state.last_result_lock:
             _server.state.last_result = None
