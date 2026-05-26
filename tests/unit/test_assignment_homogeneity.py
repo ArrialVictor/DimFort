@@ -29,7 +29,7 @@ def _materialise(tmp_path: Path, body: str) -> Path:
 
 
 def _ctx_for(src: Path, result):
-    from dimfort.lsp.server import _build_ts_ctx
+    from dimfort.lsp.tree_access import _build_ts_ctx
     resolved = src.resolve()
     source = src.read_bytes()
     tree = _ts.parse_text(source)
