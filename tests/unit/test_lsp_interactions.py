@@ -28,7 +28,7 @@ def _src(tmp_path: Path) -> Path:
 
 def test_identifier_at_resolves_symbol_under_cursor(tmp_path: Path):
     from dimfort.core import ts_parser as _ts
-    from dimfort.lsp.server import _identifier_at
+    from dimfort.lsp.tree_nav import _identifier_at
 
     f = _src(tmp_path)
     src = f.read_bytes()
@@ -39,7 +39,7 @@ def test_identifier_at_resolves_symbol_under_cursor(tmp_path: Path):
 
 def test_identifier_at_returns_none_off_identifier(tmp_path: Path):
     from dimfort.core import ts_parser as _ts
-    from dimfort.lsp.server import _identifier_at
+    from dimfort.lsp.tree_nav import _identifier_at
 
     f = _src(tmp_path)
     src = f.read_bytes()
@@ -50,7 +50,7 @@ def test_identifier_at_returns_none_off_identifier(tmp_path: Path):
 
 def test_serialize_interaction_point_shape(tmp_path: Path):
     from dimfort.core.interactions import InteractionPoint
-    from dimfort.lsp.server import _serialize_interaction_point
+    from dimfort.lsp.interactions import _serialize_interaction_point
 
     p = InteractionPoint(
         file="i.f90", line=5, column=7, scope="s",

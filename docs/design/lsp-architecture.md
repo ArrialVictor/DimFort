@@ -6,7 +6,8 @@ this document is for people editing the server itself.
 
 The server speaks LSP over stdio (via [pygls](https://github.com/openlawlibrary/pygls))
 and lives under `src/dimfort/lsp/`. It started as one ~3900-line `server.py` and
-is being split into focused modules around a single `LanguageServer` instance.
+was split into focused modules around a single `LanguageServer` instance;
+`server.py` is now ~1230 lines of lifecycle + publish + feature registration.
 
 ## Module map
 
@@ -24,9 +25,6 @@ registration, plus the parts that are inherently central:
 - **Feature toggles**: `_FeatureToggles` / `_features` (set from
   `initializationOptions`).
 - **Misc**: `_notify`, the `dimfort.checkWorkspace` command, `run_stdio`.
-- **(Transitional)**: the hover machinery (`_resolve_hover`, the `_render_*`
-  short-hover + call-pairing renderers, the trace tree) still lives here —
-  it is the last chunk pending extraction into `hover.py`.
 
 Each `@server.feature` handler in `server.py` is a **thin wrapper**: it does the
 feature-flag check, calls `_ensure_uri_loaded` if needed, acquires the
@@ -58,6 +56,7 @@ Registered in `server.py`, logic delegated here:
 | `interactions.py` | `dimfort/interactions` (cross-site unit analysis + X001 conflicts). |
 | `code_action.py` | `textDocument/codeAction` — Add `@unit{}`, Extract literal to PARAMETER. |
 | `panel.py` | `dimfort/panelInfo` (cursor-following side-panel payload). |
+| `hover.py` | `textDocument/hover` — unit resolution + the short/detailed renderers, call-pairing layouts, and the unit-algebra trace tree. The `_hover` wrapper reads the verbosity toggle and threads it in as `hover_mode` (the module never imports `server`). |
 
 ## Three load-bearing patterns
 
@@ -99,17 +98,18 @@ No module under `lsp/` imports `server`. Shared layers may import each other in
 one direction only (e.g. `expr_tree` → `tree_nav`/`markers`/`state`;
 `tree_access` → `state`).
 
-## Testing note (transitional)
+## Testing note
 
-The test suite imports some internals directly from `dimfort.lsp.server`. Symbols
-that have moved out are **re-imported** into `server.py` to keep those imports
-working; ones `server.py` no longer uses itself use the redundant-alias idiom
-(`from … import x as x`) so the linter doesn't drop them. This re-export layer is
-transitional — once the split is complete, the test imports should be migrated to
-the modules' real homes and the layer removed.
+The test suite imports internals from the module that actually defines them
+(e.g. `from dimfort.lsp.tree_nav import _identifier_at`,
+`from dimfort.lsp.hover import _resolve_hover`). The earlier transitional
+re-export layer in `server.py` (which re-imported moved symbols so old test
+imports kept working) has been removed; only symbols `server.py` genuinely owns
+(`_initialize`, `_to_lsp_diagnostic`, `_cap_workset`, `_features`, the feature
+handlers, `state`) are imported from it.
 
 ## Status
 
-The split is in progress (branch `refactor-lsp-split`). The hover machinery is
-the remaining chunk in `server.py`; once it moves to `hover.py`, `server.py` will
-be just lifecycle + publish + feature registration.
+The split is complete (branch `refactor-lsp-split`). `server.py` is the spine —
+lifecycle, diagnostic publish, feature registration, and the `dimfort.checkWorkspace`
+command — and every feature's logic lives in its own module.
