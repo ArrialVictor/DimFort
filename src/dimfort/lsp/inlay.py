@@ -63,14 +63,14 @@ def resolve(params: lsp.InlayHintParams) -> list[lsp.InlayHint] | None:
 
     # Member accesses (a%b, a%b%c) — emit on the whole chain expression.
     for member in _ts_h.walk_member_exprs(tree):
-        _emit(member, ts_checker._resolve_member_chain(member, ctx, source))
+        _emit(member, ts_checker.resolve_member_chain(member, ctx, source))
 
     # Calls — emit on the full call expression so the [unit] sits past
     # the closing paren.
     for call in _ts_h.walk_calls(tree):
         if call.type == "subroutine_call":
             continue  # subroutines have no return unit
-        _emit(call, ts_checker._resolve(call, ctx, source))
+        _emit(call, ts_checker.resolve_unit(call, ctx, source))
 
     # Plain identifier uses — skip declaration-site identifiers,
     # type-qualifier identifiers, member-expression parts (handled
@@ -88,5 +88,5 @@ def resolve(params: lsp.InlayHintParams) -> list[lsp.InlayHint] | None:
         parent = ident.parent
         if parent is not None and parent.type == "derived_type_member_expression":
             continue
-        _emit(ident, ts_checker._resolve(ident, ctx, source))
+        _emit(ident, ts_checker.resolve_unit(ident, ctx, source))
     return hints

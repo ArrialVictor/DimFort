@@ -410,7 +410,7 @@ def test_panel_marker_matches_assignment_homogeneity(tmp_path: Path):
         n for n in _ts.walk(tree.root_node) if n.type == "assignment_statement"
     )
     lhs, rhs = ts_checker._assignment_sides(asn)
-    verdict, _, _ = ts_checker._assignment_homogeneity(lhs, rhs, ctx, source)
+    verdict, _, _ = ts_checker.assignment_homogeneity(lhs, rhs, ctx, source)
     panel_payload = _build_expression_tree(asn, ctx, source)
     expected_marker = _marker_token(_VERDICT_TO_MARKER[verdict])
     assert panel_payload["marker"] == expected_marker
