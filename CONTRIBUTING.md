@@ -36,7 +36,7 @@ is a runtime dependency installed automatically.
 ## Running tests
 
 ```bash
-pytest                      # 228 tests across unit + integration
+pytest                      # full unit + integration suite
 pytest tests/unit -q        # unit only
 pytest -k <expression>      # filter by name
 ruff check .                # lint
@@ -46,10 +46,9 @@ A patch that breaks tests or trips ruff will not be merged.
 
 ## Code style
 
-- Follow the existing module organisation. See
-  [ARCHITECTURE.md](https://github.com/ArrialVictor/DimFort/blob/main/ARCHITECTURE.md)
-  (when present) and the docstrings at the top of each `core/`
-  module for the layout rationale.
+- Follow the existing module organisation. See the per-feature design
+  docs under [docs/design/](docs/design/) and the docstrings at the top
+  of each `core/` module for the layout rationale.
 - Comments should explain **why**, not what. Reading the code
   tells you what; the comment is for the non-obvious constraint,
   invariant, or trade-off.
