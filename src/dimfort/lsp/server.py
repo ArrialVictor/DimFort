@@ -94,20 +94,22 @@ from dimfort.core.diagnostics import (
     Severity,
     set_severity_overrides,
 )
-from dimfort.core.interactions import collect_interactions
 from dimfort.core.multifile import check_files
 from dimfort.core.workspace_index import (
     resolve_workset,
     scan_workspace,
     update_index,
 )
-from dimfort.lsp import completion, definition, inlay
+from dimfort.lsp import completion, definition, inlay, interactions
 from dimfort.lsp import ts_helpers as _ts_h
 from dimfort.lsp.hover_render import (
     _hover_signature,
     _hover_text,
     _module_hover_md,
     _unit_pretty,
+)
+from dimfort.lsp.interactions import (
+    _serialize_interaction_point as _serialize_interaction_point,
 )
 from dimfort.lsp.markers import (
     _aggregate_marker,
@@ -126,7 +128,6 @@ from dimfort.lsp.tree_nav import (
     _SKIP_TOKEN_TYPES,
     _enclosing_scopes,
     _find_expression_root,
-    _identifier_at,
     _interesting_children,
     _node_label,
     _node_lsp_range,
@@ -135,6 +136,9 @@ from dimfort.lsp.tree_nav import (
     _scope_header,
     _scope_name,
     _span_within,
+)
+from dimfort.lsp.tree_nav import (
+    _identifier_at as _identifier_at,
 )
 from dimfort.lsp.tree_nav import (
     _smallest_enclosing_scope as _smallest_enclosing_scope,
@@ -2382,18 +2386,6 @@ def _panel_info(ls: LanguageServer, params) -> dict | None:
     }
 
 
-def _serialize_interaction_point(p) -> dict:
-    return {
-        "file": p.file,
-        "line": p.line,
-        "column": p.column,
-        "scope": p.scope,
-        "kind": p.kind,            # declares | contributes | requires | uses
-        "unit": p.unit_str,        # rendered unit, or "?" when unknown
-        "snippet": p.snippet,
-    }
-
-
 @server.feature("dimfort/interactions")
 def _interactions(ls: LanguageServer, params) -> dict | None:
     """Cross-site unit analysis for the symbol under the cursor.
@@ -2403,66 +2395,7 @@ def _interactions(ls: LanguageServer, params) -> dict | None:
     cached workset and returns the report. See
     docs/design/interaction-points.md.
     """
-    def _get(obj, key):
-        if hasattr(obj, key):
-            return getattr(obj, key)
-        if isinstance(obj, dict):
-            return obj.get(key)
-        return None
-
-    text_document = _get(params, "textDocument") or _get(params, "text_document")
-    position = _get(params, "position")
-    uri = _get(text_document, "uri") if text_document is not None else None
-    explicit_symbol = _get(params, "symbol")
-    scale = bool(_get(params, "scale"))
-
-    with state.last_result_lock:
-        result = state.last_result
-    if result is None:
-        return None
-
-    symbol = explicit_symbol
-    if symbol is None:
-        if uri is None or position is None:
-            return None
-        found = _trees_for(uri)
-        if found is None:
-            return None
-        _path, cached_tree, cached_source = found
-        try:
-            doc = ls.workspace.get_text_document(uri)
-            source_bytes = doc.source.encode("utf-8")
-            tree = _ts.parse_text(source_bytes)
-        except Exception:
-            tree, source_bytes = cached_tree, cached_source
-        line = _get(position, "line")
-        character = _get(position, "character")
-        if line is None or character is None:
-            return None
-        symbol = _identifier_at(tree, source_bytes, int(line) + 1, int(character) + 1)
-    if not symbol:
-        return None
-
-    report = collect_interactions(result, symbol, scale=scale)
-
-    conflicts = [
-        {
-            "code": c.diagnostic.code,
-            "message": c.diagnostic.message,
-            "file": c.diagnostic.file,
-            "line": c.diagnostic.start.line,
-            "column": c.diagnostic.start.column,
-            "site": _serialize_interaction_point(c.site),
-            "reference": _serialize_interaction_point(c.reference),
-        }
-        for c in report.conflicts
-    ]
-    return {
-        "symbol": report.symbol,
-        "points": [_serialize_interaction_point(p) for p in report.points],
-        "conflicts": conflicts,
-        "hasConflict": bool(conflicts),
-    }
+    return interactions.resolve(ls, params)
 
 
 # ---------------------------------------------------------------------------
