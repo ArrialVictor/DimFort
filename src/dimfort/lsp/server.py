@@ -107,6 +107,12 @@ from dimfort.core.workspace_index import (
     update_index,
 )
 from dimfort.lsp import ts_helpers as _ts_h
+from dimfort.lsp.markers import (
+    _aggregate_marker,
+    _marker_token,
+    _worst_emoji,
+    _worst_token,
+)
 
 log = logging.getLogger("dimfort.lsp")
 
@@ -2250,17 +2256,6 @@ def _node_label(node, source: bytes) -> str:
     return text
 
 
-def _aggregate_marker(marks) -> str:
-    """Worst-of aggregate: 🔴 > 🟡 > 🟢. Empty stream → 🟢."""
-    worst = "🟢"
-    for m in marks:
-        if m == "🔴":
-            return "🔴"
-        if m == "🟡":
-            worst = "🟡"
-    return worst
-
-
 def _render_ast_tree(
     node, ctx, source: bytes,
     *,
@@ -2389,27 +2384,6 @@ def _render_ast_tree(
 # side panel can lay it out in its own idiom (Nvim split, Emacs window,
 # VSCode webview). See docs/design/panel-info.md.
 # ---------------------------------------------------------------------------
-
-
-def _marker_token(mark: str) -> str:
-    """Map a 🟢/🟡/🔴 emoji to a wire-format-friendly token."""
-    return {"🟢": "ok", "🟡": "warn", "🔴": "error"}.get(mark, "warn")
-
-
-_MARKER_TOKEN_RANK = {"ok": 0, "warn": 1, "error": 2}
-
-
-def _worst_token(*tokens: str) -> str:
-    """Worst (highest-severity) of a set of marker tokens: error>warn>ok."""
-    return max(tokens, key=lambda t: _MARKER_TOKEN_RANK.get(t, 1))
-
-
-_MARKER_EMOJI_RANK = {"🟢": 0, "🟡": 1, "🔴": 2}
-
-
-def _worst_emoji(*marks: str) -> str:
-    """Worst (highest-severity) of a set of 🟢/🟡/🔴 markers."""
-    return max(marks, key=lambda m: _MARKER_EMOJI_RANK.get(m, 1))
 
 
 # ---------------------------------------------------------------------------
