@@ -984,6 +984,45 @@ def _node_span(node: Node) -> tuple[Position, Position]:
     return Position(sr + 1, sc + 1), Position(er + 1, ec + 1)
 
 
+def _emit_unparsed_regions(tree: Tree, ctx: _Ctx) -> list[Diagnostic]:
+    """Emit one P001 (INFO) per contiguous region tree-sitter couldn't parse.
+
+    The honesty marker: where the parser left ``ERROR`` / ``missing`` nodes the
+    checker resolves nothing, so we say so rather than implying the lines are
+    clean. Nested error nodes for one bad construct are coalesced by line span
+    into a single region. See docs/design/unparsed-regions.md.
+    """
+    spans: list[tuple[int, int, int, int]] = []
+    for n in _ts.error_nodes(tree):
+        start, end = _node_span(n)
+        spans.append((start.line, start.column, end.line, end.column))
+    if not spans:
+        return []
+    spans.sort()
+    merged: list[list[int]] = [list(spans[0])]
+    for sl, sc, el, ec in spans[1:]:
+        prev = merged[-1]
+        if sl <= prev[2]:  # starts within the running region's lines → coalesce
+            if (el, ec) > (prev[2], prev[3]):
+                prev[2], prev[3] = el, ec
+        else:
+            merged.append([sl, sc, el, ec])
+    return [
+        Diagnostic(
+            file=str(ctx.file),
+            start=Position(sl, sc),
+            end=Position(el, ec),
+            severity=Severity.INFO,
+            code="P001",
+            message=(
+                "could not parse this region — DimFort makes no unit "
+                "guarantee here"
+            ),
+        )
+        for sl, sc, el, ec in merged
+    ]
+
+
 def _emit_u005_for_unannotated(
     tree: Tree, ctx: _Ctx, source: bytes,
 ) -> list[Diagnostic]:
@@ -2618,6 +2657,8 @@ def check(
     out: list[Diagnostic] = []
     out.extend(assume_diags)
     out.extend(_emit_u005_for_unannotated(tree, ctx, source))
+    # P001: flag regions tree-sitter couldn't parse (no unit guarantee there).
+    out.extend(_emit_unparsed_regions(tree, ctx))
 
     # Phase D: if tracing was activated by the caller, open a fresh
     # per-statement trace so each diagnostic carries just its own
