@@ -14,19 +14,20 @@ pytest.importorskip("pygls")
 
 from dimfort.core import unit_config  # noqa: F401
 from dimfort.core.multifile import check_files
+from dimfort.lsp import hover
 from dimfort.lsp import server as _server
 
 
 def _drive(files: list[Path]):
     """Run check_files + stash the result in the LSP module globals."""
     result = check_files(files)
-    with _server._last_result_lock:
-        _server._last_result = result
+    with _server.state.last_result_lock:
+        _server.state.last_result = result
     return result
 
 
 def _hover(uri: str, line_1based: int, col_1based: int):
-    return _server._resolve_hover(uri, line_1based, col_1based, None)
+    return hover._resolve_hover(uri, line_1based, col_1based, None)
 
 
 def _goto_definition_inline(uri: str, line_0based: int, col_0based: int):
@@ -74,8 +75,8 @@ def test_module_hover_renders_exports(tmp_path: Path):
         assert "g" in text and "omega" in text
         assert "accel" in text
     finally:
-        with _server._last_result_lock:
-            _server._last_result = None
+        with _server.state.last_result_lock:
+            _server.state.last_result = None
 
 
 def test_module_hover_includes_unannotated_vars(tmp_path: Path):
@@ -111,8 +112,8 @@ def test_module_hover_includes_unannotated_vars(tmp_path: Path):
         assert "another_unset" in text
         assert "no unit annotation" in text
     finally:
-        with _server._last_result_lock:
-            _server._last_result = None
+        with _server.state.last_result_lock:
+            _server.state.last_result = None
 
 
 def test_module_hover_unresolved(tmp_path: Path):
@@ -131,8 +132,8 @@ def test_module_hover_unresolved(tmp_path: Path):
         text, _ = res
         assert "not found" in text.lower()
     finally:
-        with _server._last_result_lock:
-            _server._last_result = None
+        with _server.state.last_result_lock:
+            _server.state.last_result = None
 
 
 def test_goto_definition_variable(tmp_path: Path):
@@ -155,8 +156,8 @@ def test_goto_definition_variable(tmp_path: Path):
         # The declaration's 'pte' identifier is on line 2, column 10 (0-based: 1, 10).
         assert loc.range.start.line == 1
     finally:
-        with _server._last_result_lock:
-            _server._last_result = None
+        with _server.state.last_result_lock:
+            _server.state.last_result = None
 
 
 def test_goto_definition_callable(tmp_path: Path):
@@ -180,8 +181,8 @@ def test_goto_definition_callable(tmp_path: Path):
         # Declaration is at line 1 (0-based 0) — 'subroutine target'.
         assert loc.range.start.line == 0
     finally:
-        with _server._last_result_lock:
-            _server._last_result = None
+        with _server.state.last_result_lock:
+            _server.state.last_result = None
 
 
 def test_goto_definition_module(tmp_path: Path):
@@ -210,5 +211,5 @@ def test_goto_definition_module(tmp_path: Path):
         assert loc.range.start.line == 0
         assert loc.range.start.character == 7
     finally:
-        with _server._last_result_lock:
-            _server._last_result = None
+        with _server.state.last_result_lock:
+            _server.state.last_result = None

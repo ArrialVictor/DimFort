@@ -15,26 +15,29 @@ pytest.importorskip("pygls")
 
 from dimfort.core import unit_config  # noqa: F401
 from dimfort.core.multifile import check_files
+from dimfort.lsp import code_action as _code_action
+from dimfort.lsp import hover as _hover
 from dimfort.lsp import server as _server
 
 
 def _drive_hover(file: Path, line_1based: int, col_1based: int):
-    """Populate ``_last_result`` and dispatch the full hover pipeline:
+    """Populate ``state.last_result`` and dispatch the full hover pipeline:
     specific hover first, then the expression-context fallback —
     mirroring ``_hover``'s logic without pygls.
     """
     result = check_files([file])
-    with _server._last_result_lock:
-        _server._last_result = result
+    with _server.state.last_result_lock:
+        _server.state.last_result = result
     uri = file.resolve().as_uri()
+    mode = _server._features.hover
     try:
-        hit = _server._resolve_hover(uri, line_1based, col_1based, None)
+        hit = _hover._resolve_hover(uri, line_1based, col_1based, None, hover_mode=mode)
         if hit is None:
-            hit = _server._expression_hover_for(uri, line_1based, col_1based)
+            hit = _hover._expression_hover_for(uri, line_1based, col_1based, hover_mode=mode)
         return hit
     finally:
-        with _server._last_result_lock:
-            _server._last_result = None
+        with _server.state.last_result_lock:
+            _server.state.last_result = None
 
 
 def test_hover_picks_per_routine_unit(tmp_path: Path):
@@ -89,13 +92,13 @@ def test_hover_trace_section_when_enabled(tmp_path: Path):
         # The hover for `r` shows its unit; the trace section appends
         # the rule-chain that produced the RHS unit.
         result = check_files([f])
-        with _server._last_result_lock:
-            _server._last_result = result
+        with _server.state.last_result_lock:
+            _server.state.last_result = result
         try:
-            extra = _server._trace_section_for(f.resolve().as_uri(), 5, 3)
+            extra = _hover._trace_section_for(f.resolve().as_uri(), 5, 3)
         finally:
-            with _server._last_result_lock:
-                _server._last_result = None
+            with _server.state.last_result_lock:
+                _server.state.last_result = None
         assert extra is not None
         assert "Unit-algebra trace" in extra
         assert "R3.1" in extra  # LOG fires
@@ -140,8 +143,8 @@ def test_h010_extract_to_parameter_action(tmp_path: Path):
     f = tmp_path / "qf.f90"
     f.write_text(src)
     result = check_files([f])
-    with _server._last_result_lock:
-        _server._last_result = result
+    with _server.state.last_result_lock:
+        _server.state.last_result = result
     try:
         # Mock a pygls workspace doc with .lines
         class _Doc:
@@ -166,10 +169,10 @@ def test_h010_extract_to_parameter_action(tmp_path: Path):
         cap = pygls_lsp.CodeActionParams(
             text_document=text_doc, range=diag_range, context=ctx,
         )
-        actions = _server._h010_extract_to_parameter_actions(cap, _Doc(src), f.resolve())
+        actions = _code_action._h010_extract_to_parameter_actions(cap, _Doc(src), f.resolve())
     finally:
-        with _server._last_result_lock:
-            _server._last_result = None
+        with _server.state.last_result_lock:
+            _server.state.last_result = None
 
     assert len(actions) == 1
     action = actions[0]
@@ -218,16 +221,18 @@ def test_hover_marks_intrinsic_default_on_integer(tmp_path: Path):
 
 
 def _drive_trace_hover(file: Path, line_1based: int, col_1based: int):
-    """Populate ``_last_result`` and dispatch ``_expression_hover_for`` directly."""
+    """Populate ``state.last_result`` and dispatch ``_expression_hover_for`` directly."""
     result = check_files([file])
-    with _server._last_result_lock:
-        _server._last_result = result
+    with _server.state.last_result_lock:
+        _server.state.last_result = result
     uri = file.resolve().as_uri()
     try:
-        return _server._expression_hover_for(uri, line_1based, col_1based)
+        return _hover._expression_hover_for(
+            uri, line_1based, col_1based, hover_mode=_server._features.hover,
+        )
     finally:
-        with _server._last_result_lock:
-            _server._last_result = None
+        with _server.state.last_result_lock:
+            _server.state.last_result = None
 
 
 def test_trace_hover_inside_call_argument(tmp_path: Path):
