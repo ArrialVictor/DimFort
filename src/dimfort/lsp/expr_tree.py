@@ -80,7 +80,7 @@ def _self_marker(node, kid_nodes, ctx, source: bytes) -> str:
     if node.type in _NO_UNIT_NODE_TYPES:
         base = "🟢"  # statement/relation: no unit of its own
     else:
-        base = "🟢" if ts_checker._resolve(node, ctx, source) is not None else "🟡"
+        base = "🟢" if ts_checker.resolve_unit(node, ctx, source) is not None else "🟡"
     diags = _diags_for_ctx(ctx)
     if not diags:
         return base
@@ -119,7 +119,7 @@ def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
     nodes (identifiers, literals) have an empty ``children`` list.
 
     Defers all assignment-specific logic (verdict, autocast detection)
-    to :func:`ts_checker._assignment_homogeneity` — the single source
+    to :func:`ts_checker.assignment_homogeneity` — the single source
     of truth shared with the checker and the in-buffer hover.
     """
     if node is None:
@@ -133,7 +133,7 @@ def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
     from dimfort.core.units import format_unit
 
     with with_trace() as trace:
-        unit = ts_checker._resolve(node, ctx, source)
+        unit = ts_checker.resolve_unit(node, ctx, source)
     snap = trace.snapshot()
     rule_id = snap[-1].rule_id if snap else None
 
@@ -167,7 +167,7 @@ def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
     if node.type == "assignment_statement":
         payload["unit"] = None
         if len(kids) >= 2 and child_nodes:
-            verdict, lhs_u, _rhs_u = ts_checker._assignment_homogeneity(
+            verdict, lhs_u, _rhs_u = ts_checker.assignment_homogeneity(
                 kids[0], kids[-1], ctx, source,
             )
             if verdict == "autocast" and lhs_u is not None:

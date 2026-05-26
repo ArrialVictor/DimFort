@@ -4,7 +4,7 @@ Locating the identifier / scope / expression under a cursor, mapping node
 extents to LSP ranges, and rendering one-line node previews — the read-only
 tree queries every feature handler (hover, definition, inlay, panel,
 interactions) needs. These depend only on tree-sitter and ``lsprotocol``
-types; they hold no server state, take no checker ``_Ctx``, and never mutate
+types; they hold no server state, take no checker ``Ctx``, and never mutate
 anything. Extracted from ``server.py`` (the LSP-split refactor) so handler
 modules can share one navigation definition.
 """
