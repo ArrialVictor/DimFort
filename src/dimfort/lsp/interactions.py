@@ -12,14 +12,21 @@ shared cached tree, except as a fallback when the fresh parse fails).
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
+from pygls.lsp.server import LanguageServer
+
 from dimfort.core import ts_parser as _ts
 from dimfort.core.interactions import collect_interactions
 from dimfort.lsp.state import state
 from dimfort.lsp.tree_access import _trees_for
 from dimfort.lsp.tree_nav import _identifier_at
 
+if TYPE_CHECKING:
+    from dimfort.core.interactions import InteractionPoint
 
-def _serialize_interaction_point(p) -> dict:
+
+def _serialize_interaction_point(p: InteractionPoint) -> dict[str, Any]:
     return {
         "file": p.file,
         "line": p.line,
@@ -31,8 +38,8 @@ def _serialize_interaction_point(p) -> dict:
     }
 
 
-def resolve(ls, params) -> dict | None:
-    def _get(obj, key):
+def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
+    def _get(obj: Any, key: str) -> Any:
         if hasattr(obj, key):
             return getattr(obj, key)
         if isinstance(obj, dict):

@@ -11,8 +11,13 @@ modules can share one navigation definition.
 from __future__ import annotations
 
 from lsprotocol import types as lsp
+from tree_sitter import Node, Tree
 
 from dimfort.core import ts_parser as _ts
+
+# A 1-based ((start_line, start_col), (end_line, end_col)) extent, comparable
+# to a Diagnostic's Position fields.
+_Span = tuple[tuple[int, int], tuple[int, int]]
 
 # Token types we never want to render as their own tree nodes — operators
 # and punctuation that visually belong to their parent expression.
@@ -25,7 +30,7 @@ _SKIP_TOKEN_TYPES = frozenset({
 _SCOPE_NODE_TYPES = ("subroutine", "function", "module", "program")
 
 
-def _node_lsp_range(node) -> lsp.Range:
+def _node_lsp_range(node: Node) -> lsp.Range:
     """Convert a tree-sitter node's extent to an LSP 0-based ``Range``."""
     sr, sc = node.start_point
     er, ec = node.end_point
@@ -35,7 +40,7 @@ def _node_lsp_range(node) -> lsp.Range:
     )
 
 
-def _node_label(node, source: bytes) -> str:
+def _node_label(node: Node, source: bytes) -> str:
     """One-line preview of a node's source text, truncated for hover width."""
     text = source[node.start_byte:node.end_byte].decode("utf-8", "replace")
     text = " ".join(text.split())  # collapse newlines / runs of spaces
@@ -44,7 +49,7 @@ def _node_label(node, source: bytes) -> str:
     return text
 
 
-def _node_span_lc(node) -> tuple[tuple[int, int], tuple[int, int]]:
+def _node_span_lc(node: Node) -> _Span:
     """Node extent as 1-based ((start_line, start_col), (end_line, end_col)),
     comparable to a Diagnostic's Position fields."""
     sr, sc = node.start_point
@@ -52,12 +57,12 @@ def _node_span_lc(node) -> tuple[tuple[int, int], tuple[int, int]]:
     return (sr + 1, sc + 1), (er + 1, ec + 1)
 
 
-def _span_within(inner, outer) -> bool:
+def _span_within(inner: _Span, outer: _Span) -> bool:
     """True iff the ``inner`` span sits inside ``outer`` (inclusive)."""
     return outer[0] <= inner[0] and inner[1] <= outer[1]
 
 
-def _interesting_children(node) -> list:
+def _interesting_children(node: Node) -> list[Node]:
     """Return the children worth rendering as sub-tree nodes.
 
     Skips punctuation/operator tokens. For ``call_expression`` /
@@ -90,7 +95,7 @@ def _interesting_children(node) -> list:
     return out
 
 
-def _identifier_at(tree, source: bytes, line_1based: int, col_1based: int) -> str | None:
+def _identifier_at(tree: Tree, source: bytes, line_1based: int, col_1based: int) -> str | None:
     """Return the text of the smallest ``identifier`` node at the cursor."""
     best = None
     best_size = None
@@ -108,7 +113,7 @@ def _identifier_at(tree, source: bytes, line_1based: int, col_1based: int) -> st
     return source[best.start_byte:best.end_byte].decode("utf-8", "replace")
 
 
-def _scope_name(scope_node, source: bytes) -> str | None:
+def _scope_name(scope_node: Node | None, source: bytes) -> str | None:
     """Return the scope's identifier name. The ``name`` token sits
     inside the ``*_statement`` header child, not directly on the
     scope block node — true for subroutine / function / module /
@@ -129,7 +134,7 @@ def _scope_name(scope_node, source: bytes) -> str | None:
     return _ts.node_text(name_node, source)
 
 
-def _scope_header(scope_node, source: bytes) -> dict | None:
+def _scope_header(scope_node: Node | None, source: bytes) -> dict[str, str] | None:
     """``{name, kind}`` header for the panel's scope section, or
     ``None`` when there's no enclosing scope (bare file-level code)."""
     if scope_node is None:
@@ -143,7 +148,7 @@ def _scope_header(scope_node, source: bytes) -> dict | None:
     }
 
 
-def _enclosing_scopes(tree, line_1based: int, col_1based: int):
+def _enclosing_scopes(tree: Tree, line_1based: int, col_1based: int) -> list[Node]:
     """Return *all* scope nodes enclosing the position, **outermost
     first** (e.g. ``[module, subroutine]`` for a cursor inside a
     module-contained subroutine). Empty for bare file-level code.
@@ -164,7 +169,7 @@ def _enclosing_scopes(tree, line_1based: int, col_1based: int):
     return matches
 
 
-def _smallest_enclosing_scope(tree, line_1based: int, col_1based: int):
+def _smallest_enclosing_scope(tree: Tree, line_1based: int, col_1based: int) -> Node | None:
     """Return the innermost scope node (subroutine / function / module /
     program) enclosing the position, or ``None`` for bare file-level
     code outside any of them."""
@@ -172,7 +177,7 @@ def _smallest_enclosing_scope(tree, line_1based: int, col_1based: int):
     return scopes[-1] if scopes else None
 
 
-def _find_expression_root(tree, line_1based: int, col_1based: int):
+def _find_expression_root(tree: Tree, line_1based: int, col_1based: int) -> Node | None:
     """Find the smallest expression-bearing node containing the cursor.
 
     Walks the tree and picks the deepest node whose type indicates it

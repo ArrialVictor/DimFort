@@ -19,8 +19,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from lsprotocol import types as lsp
+from tree_sitter import Node, Tree
 
 from dimfort.core import ts_checker
 from dimfort.core import ts_parser as _ts
@@ -41,6 +43,16 @@ from dimfort.lsp.tree_nav import (
     _node_label,
     _node_lsp_range,
 )
+
+if TYPE_CHECKING:
+    from dimfort.core.multifile import WorksetResult
+    from dimfort.core.symbols import FuncSig
+    from dimfort.core.units import Unit
+
+# A rendered unit-algebra tree row: (label, unit-or-None, marker, rule-tag).
+# ``unit`` is ``None`` only for the synthetic assignment root row (a statement,
+# which has no unit of its own).
+_TreeRow = tuple[str, str | None, str, str]
 
 
 def resolve(
@@ -158,9 +170,9 @@ def _resolve_hover(
         _ts_h.walk_calls(tree), line_1based, col_1based
     )
     if call_hit is not None:
-        name = _ts_h.call_name(call_hit, source)
-        if name is not None:
-            sig = result.signatures.get(name.lower())
+        callee_nm = _ts_h.call_name(call_hit, source)
+        if callee_nm is not None:
+            sig = result.signatures.get(callee_nm.lower())
             if sig is not None:
                 # Range the callee identifier specifically so the
                 # "Go to Definition" link targets the callable name,
@@ -185,14 +197,14 @@ def _resolve_hover(
                     )
                     if level == "detailed":
                         text = _render_call_pairing_c(
-                            name, call_hit, sig, rctx, source,
+                            callee_nm, call_hit, sig, rctx, source,
                         )
                     else:
                         text = _render_call_pairing_a(
-                            name, call_hit, sig, rctx, source,
+                            callee_nm, call_hit, sig, rctx, source,
                         )
                     if text is None:
-                        text = _hover_signature(name, sig)
+                        text = _hover_signature(callee_nm, sig)
                     return text, _node_lsp_range(callee)
             # No user-defined signature — but the call might be a known
             # Fortran intrinsic (log, exp, sqrt, sin, sum, ...). Show
@@ -208,7 +220,7 @@ def _resolve_hover(
                 TRANSFORMING_INTRINSICS,
                 TRANSPARENT_INTRINSICS,
             )
-            name_lc = name.lower()
+            name_lc = callee_nm.lower()
             is_known_intrinsic = (
                 name_lc in DIMENSIONLESS_INTRINSICS
                 or name_lc in EXP_INTRINSICS
@@ -257,11 +269,11 @@ def _resolve_hover(
             )
         unit = ident_ctx.unit_for(name, ident.start_byte)
         if unit is not None:
-            source = _unit_source_for(
+            unit_src = _unit_source_for(
                 result, resolved_path, name, ident_ctx.scope_at(ident.start_byte),
             )
             return (
-                _hover_text(name, _unit_pretty(unit), unit_source=source),
+                _hover_text(name, _unit_pretty(unit), unit_source=unit_src),
                 _node_lsp_range(ident),
             )
         # Lower-case fallback for var_units keyed by original case
@@ -283,8 +295,8 @@ def _resolve_hover(
             continue
         from dimfort.core.units import format_unit
         ctx = _build_ts_ctx(result, source, str(resolved_path), path=resolved_path)
-        u = ts_checker.resolve_unit(n, ctx, source)
-        u_s = format_unit(u) if u is not None else "1"
+        nu = ts_checker.resolve_unit(n, ctx, source)
+        u_s = format_unit(nu) if nu is not None else "1"
         body = f"{_node_label(n, source)} : {u_s}"
         text = f"**🟢 DimFort**\n\n```\n{body}\n```"
         return text, _node_lsp_range(n)
@@ -292,7 +304,7 @@ def _resolve_hover(
 
 
 def _unit_source_for(
-    result, resolved_path: Path, name: str, scope_lc: str | None,
+    result: WorksetResult, resolved_path: Path, name: str, scope_lc: str | None,
 ) -> str | None:
     """Return the provenance tag (``"explicit"`` / ``"intrinsic_default"``)
     for a variable's annotation, or ``None`` if unknown.
@@ -305,7 +317,9 @@ def _unit_source_for(
     attached = result.attachments.get(resolved_path)
     if attached is None:
         return None
-    sources = getattr(attached, "var_unit_sources", None)
+    sources: dict[tuple[str | None, str], str] | None = getattr(
+        attached, "var_unit_sources", None
+    )
     if not sources:
         return None
     # Scope-aware lookup first, then module-level, then any-scope.
@@ -401,7 +415,7 @@ def _expression_hover_for(
     ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
     if hover_mode == "short":
         return _render_assignment_short(asn, lhs, rhs, ctx, source)
-    rows: list[tuple[str, str | None, str, str]] = []
+    rows: list[_TreeRow] = []
     lhs_unit = ts_checker.resolve_unit(lhs, ctx, source)
     from dimfort.core.units import format_unit
     # Header marker is diagnostic-driven (docs/design/markers.md): the
@@ -452,7 +466,7 @@ def _expression_hover_for(
 
 
 def _expression_hover_for_context(
-    tree, source: bytes, resolved_path, result,
+    tree: Tree, source: bytes, resolved_path: Path, result: WorksetResult,
     line_1based: int, col_1based: int,
     *,
     hover_mode: str = "short",
@@ -489,7 +503,7 @@ def _expression_hover_for_context(
         if expr.type == "relational_expression":
             return _render_relational_short(expr, rctx, source)
         return _render_subexpr_short(expr, rctx, source)
-    rows: list[tuple[str, str, str, str]] = []
+    rows: list[_TreeRow] = []
     _render_ast_tree(
         expr, rctx, source,
         prefix="", is_last=True, is_root=True, rows=rows,
@@ -501,12 +515,12 @@ def _expression_hover_for_context(
     # all (e.g. the assignment_statement row — a statement, not an
     # expression). Compute column width only over rows that DO show
     # a unit; unit-less rows skip the ``: unit`` block entirely.
-    units_present = [r[1] for r in rows if r[1] != ""]
+    units_present = [r[1] for r in rows if r[1]]
     max_unit = max((len(u) for u in units_present), default=0)
     lines: list[str] = []
     for label, unit, mark, rule in rows:
         head = label.ljust(max_label)
-        mid = f"  :  {unit.ljust(max_unit)}" if unit != "" else ""
+        mid = f"  :  {unit.ljust(max_unit)}" if unit else ""
         if rule:
             lines.append(f"{head}{mid}  {mark}  {rule}")
         else:
@@ -520,7 +534,7 @@ def _expression_hover_for_context(
 _MATH_OP_TYPES = frozenset({"+", "-", "*", "/", "**"})
 
 
-def _math_op_at_cursor(tree, line: int, col: int):
+def _math_op_at_cursor(tree: Tree, line: int, col: int) -> tuple[Node, Node] | None:
     """Find a math-expression operator token at the cursor.
 
     Returns ``(op_node, parent_math_expression)`` if the cursor sits
@@ -539,7 +553,9 @@ def _math_op_at_cursor(tree, line: int, col: int):
     return None
 
 
-def _render_mathop_short(math_expr, ctx, source: bytes) -> tuple[str, lsp.Range] | None:
+def _render_mathop_short(
+    math_expr: Node, ctx: ts_checker.Ctx, source: bytes
+) -> tuple[str, lsp.Range] | None:
     """One-line homogeneity hover for a ``+`` / ``-`` math expression."""
     from dimfort.core.units import format_unit
     operands = [c for c in math_expr.children if c.type not in _SKIP_TOKEN_TYPES]
@@ -560,11 +576,11 @@ def _render_mathop_short(math_expr, ctx, source: bytes) -> tuple[str, lsp.Range]
 
 
 def _expression_hover_render_tree(
-    root, ctx, source: bytes, *, range_node,
+    root: Node, ctx: ts_checker.Ctx, source: bytes, *, range_node: Node,
 ) -> tuple[str, lsp.Range] | None:
     """Detailed-mode tree render rooted at ``root``. Shared by the
     operator-specific path and the generic expression-context path."""
-    rows: list[tuple[str, str, str, str]] = []
+    rows: list[_TreeRow] = []
     _render_ast_tree(
         root, ctx, source,
         prefix="", is_last=True, is_root=True, rows=rows,
@@ -576,12 +592,12 @@ def _expression_hover_render_tree(
     # all (e.g. the assignment_statement row — a statement, not an
     # expression). Compute column width only over rows that DO show
     # a unit; unit-less rows skip the ``: unit`` block entirely.
-    units_present = [r[1] for r in rows if r[1] != ""]
+    units_present = [r[1] for r in rows if r[1]]
     max_unit = max((len(u) for u in units_present), default=0)
     lines: list[str] = []
     for label, unit, mark, rule in rows:
         head = label.ljust(max_label)
-        mid = f"  :  {unit.ljust(max_unit)}" if unit != "" else ""
+        mid = f"  :  {unit.ljust(max_unit)}" if unit else ""
         if rule:
             lines.append(f"{head}{mid}  {mark}  {rule}")
         else:
@@ -592,7 +608,9 @@ def _expression_hover_render_tree(
     return text, _node_lsp_range(range_node)
 
 
-def _render_assignment_short(asn, lhs, rhs, ctx, source: bytes) -> tuple[str, lsp.Range] | None:
+def _render_assignment_short(
+    asn: Node, lhs: Node, rhs: Node, ctx: ts_checker.Ctx, source: bytes
+) -> tuple[str, lsp.Range] | None:
     """One-line homogeneity hover for an assignment cursor position.
 
     Delegates the assignment-specific logic (autocast detection,
@@ -617,7 +635,9 @@ def _render_assignment_short(asn, lhs, rhs, ctx, source: bytes) -> tuple[str, ls
     return text, _node_lsp_range(asn)
 
 
-def _render_relational_short(rel, ctx, source: bytes) -> tuple[str, lsp.Range] | None:
+def _render_relational_short(
+    rel: Node, ctx: ts_checker.Ctx, source: bytes
+) -> tuple[str, lsp.Range] | None:
     """One-line homogeneity hover for a relational expression
     (``<``, ``<=``, ``==``, ``/=``, ``>``, ``>=``). The relation
     itself has no unit; only the operands must agree."""
@@ -645,7 +665,9 @@ def _render_relational_short(rel, ctx, source: bytes) -> tuple[str, lsp.Range] |
     return text, _node_lsp_range(rel)
 
 
-def _render_subexpr_short(expr, ctx, source: bytes) -> tuple[str, lsp.Range] | None:
+def _render_subexpr_short(
+    expr: Node, ctx: ts_checker.Ctx, source: bytes
+) -> tuple[str, lsp.Range] | None:
     """One-line resolved-unit hover for a computed sub-expression or
     a numeric literal. Marker uses propagated-mark logic so a nested
     homogeneity violation surfaces as 🔴 even though the wrapping
@@ -659,7 +681,7 @@ def _render_subexpr_short(expr, ctx, source: bytes) -> tuple[str, lsp.Range] | N
     return text, _node_lsp_range(expr)
 
 
-def _call_actual_args(call_node) -> list:
+def _call_actual_args(call_node: Node) -> list[Node]:
     """Return the actual argument expression nodes of a call, in order."""
     arglist = next(
         (c for c in call_node.children if c.type == "argument_list"), None,
@@ -677,7 +699,7 @@ def _call_actual_args(call_node) -> list:
 
 
 def _render_call_pairing_a(
-    callee_name: str, call_node, sig, rctx, source: bytes,
+    callee_name: str, call_node: Node, sig: FuncSig, rctx: ts_checker.Ctx, source: bytes,
 ) -> str | None:
     """Layout B: one row per argument, vertical pairing.
 
@@ -762,7 +784,7 @@ def _render_call_pairing_a(
 
 
 def _render_call_pairing_c(
-    callee_name: str, call_node, sig, rctx, source: bytes,
+    callee_name: str, call_node: Node, sig: FuncSig, rctx: ts_checker.Ctx, source: bytes,
 ) -> str | None:
     """Layout C: B's row layout, plus sub-trees expanded under any
     computed argument so the reader can see how each non-trivial actual
@@ -816,7 +838,7 @@ def _render_call_pairing_c(
         # Expand sub-tree for computed args only — a bare identifier or
         # literal would just repeat what the actual cell already says.
         if an is not None and an.type not in ("identifier", "number_literal"):
-            sub_rows: list[tuple[str, str, str, str]] = []
+            sub_rows: list[_TreeRow] = []
             _render_ast_tree(
                 an, rctx, source,
                 prefix="", is_last=True, is_root=True, rows=sub_rows,
@@ -825,15 +847,16 @@ def _render_call_pairing_c(
             # keep only the descendants.
             if len(sub_rows) > 1:
                 max_l = max(len(r[0]) for r in sub_rows[1:])
-                max_u = max(len(r[1]) for r in sub_rows[1:])
+                max_u = max(len(r[1] or "") for r in sub_rows[1:])
                 for label, unit, mk, rule in sub_rows[1:]:
+                    us = (unit or "").ljust(max_u)
                     if rule:
                         sub_lines.append(
-                            f"      {label.ljust(max_l)}  :  {unit.ljust(max_u)}  {mk}  {rule}"
+                            f"      {label.ljust(max_l)}  :  {us}  {mk}  {rule}"
                         )
                     else:
                         sub_lines.append(
-                            f"      {label.ljust(max_l)}  :  {unit.ljust(max_u)}  {mk}".rstrip()
+                            f"      {label.ljust(max_l)}  :  {us}  {mk}".rstrip()
                         )
         rows.append(_Row(mark, fname, funit_s, atext, aunit_s, sub_lines))
 
@@ -870,7 +893,7 @@ def _render_call_pairing_c(
     return f"**{marker} DimFort**\n\n```\n{body}\n```"
 
 
-def _checker_equal(a, b) -> bool:
+def _checker_equal(a: Unit, b: Unit) -> bool:
     """Wrapper-aware dimension equality (delegates to units.equal_dim)."""
     from dimfort.core.units import equal_dim
     return equal_dim(a, b)
@@ -916,7 +939,7 @@ def _trace_section_for(uri: str, line_1based: int, col_1based: int) -> str | Non
     ctx.var_types.update(ts_checker.collect_var_types(tree, source))
     ctx.parameter_values.update(ts_checker.collect_parameter_values(tree, source))
     ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
-    rows: list[tuple[str, str, str, str]] = []  # (label, unit, mark, rule)
+    rows: list[_TreeRow] = []  # (label, unit, mark, rule)
     _render_ast_tree(rhs, ctx, source, prefix="", is_last=True, is_root=True, rows=rows)
     if not rows:
         return None
@@ -925,12 +948,12 @@ def _trace_section_for(uri: str, line_1based: int, col_1based: int) -> str | Non
     # all (e.g. the assignment_statement row — a statement, not an
     # expression). Compute column width only over rows that DO show
     # a unit; unit-less rows skip the ``: unit`` block entirely.
-    units_present = [r[1] for r in rows if r[1] != ""]
+    units_present = [r[1] for r in rows if r[1]]
     max_unit = max((len(u) for u in units_present), default=0)
     lines: list[str] = []
     for label, unit, mark, rule in rows:
         head = label.ljust(max_label)
-        mid = f"  :  {unit.ljust(max_unit)}" if unit != "" else ""
+        mid = f"  :  {unit.ljust(max_unit)}" if unit else ""
         if rule:
             lines.append(f"{head}{mid}  {mark}  {rule}")
         else:
@@ -975,7 +998,7 @@ _SKIP_TRACE_CHILD_TYPES = frozenset({
 })
 
 
-def _pick_trace_subexpr(ctx_node, line: int, col: int):
+def _pick_trace_subexpr(ctx_node: Node, line: int, col: int) -> Node | None:
     """Find the cursor-containing sub-expression inside a trace context.
 
     Descends through wrapper nodes (parens, argument lists, loop
@@ -1018,11 +1041,11 @@ def _pick_trace_subexpr(ctx_node, line: int, col: int):
 
 
 def _render_ast_tree(
-    node, ctx, source: bytes,
+    node: Node, ctx: ts_checker.Ctx, source: bytes,
     *,
     prefix: str, is_last: bool, is_root: bool,
-    rows: list[tuple[str, str, str]],
-    target_unit_for_literal=None,
+    rows: list[_TreeRow],
+    target_unit_for_literal: Unit | None = None,
 ) -> None:
     """Recursively collect ``(label, unit, rule)`` rows for the tree.
 

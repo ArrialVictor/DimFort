@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from lsprotocol import types as lsp
+from tree_sitter import Node
 
 from dimfort.core import ts_parser as _ts
 from dimfort.lsp import ts_helpers as _ts_h
@@ -73,7 +74,7 @@ def resolve(params: lsp.DefinitionParams) -> list[lsp.Location] | None:
         return None
     target_lc = target_name.lower()
 
-    def _name_node_location(tree_path: Path, name_node) -> lsp.Location:
+    def _name_node_location(tree_path: Path, name_node: Node) -> lsp.Location:
         sr, sc = name_node.start_point
         er, ec = name_node.end_point
         return lsp.Location(

@@ -62,3 +62,26 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 python_version = "3.11"
 strict = true
 files = ["src/dimfort"]
+
+# Incremental strict-typing rollout (audit item: strict mypy). The whole
+# package is checked under --strict; modules not yet annotated are listed
+# below with ignore_errors so the gate is green and CI-enforceable today.
+# Clean a module, then delete its entry here — the list only shrinks. New
+# files are checked by default (not ignored), so regressions can't sneak in.
+# Cleaned so far: the entire lsp/ layer.
+[[tool.mypy.overrides]]
+module = [
+    "dimfort.config",
+    "dimfort.core.annotations",
+    "dimfort.core.cache_serde",
+    "dimfort.core.cache_store",
+    "dimfort.core.interactions",
+    "dimfort.core.multifile",
+    "dimfort.core.symbols",
+    "dimfort.core.trace",
+    "dimfort.core.ts_checker",
+    "dimfort.core.ts_parser",
+    "dimfort.core.unit_config",
+    "dimfort.core.units",
+]
+ignore_errors = true
