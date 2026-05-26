@@ -2581,14 +2581,14 @@ def _build_ctx(
 
 def check(
     tree: Tree,
-    var_units: dict[str, str | Unit],
+    var_units: Mapping[str, str | UnitExpr],
     *,
     source: bytes,
     file: str | Path,
     table: UnitTable | None = None,
     signatures: dict[str, FuncSig] | None = None,
-    field_units: dict[tuple[str, str], str | Unit] | None = None,
-    var_units_by_scope: dict[tuple[str | None, str], str | Unit] | None = None,
+    field_units: Mapping[tuple[str, str], str | UnitExpr] | None = None,
+    var_units_by_scope: Mapping[tuple[str | None, str], str | UnitExpr] | None = None,
     routine_scopes: tuple[tuple[int, int, str], ...] = (),
     out_autocast_events: list[AutocastEvent] | None = None,
     assumes: dict[int, tuple[str, str, int]] | None = None,
