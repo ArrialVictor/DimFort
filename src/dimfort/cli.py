@@ -404,10 +404,10 @@ def _run_interactions(args: argparse.Namespace) -> int:
 
     print(_hdr(args.symbol))
     order = (
-        ("declares", "declared"),
-        ("contributes", "contributed (writes)"),
-        ("requires", "required (reads)"),
-        ("uses", "used (no unit constraint)"),
+        ("declares", "Declaration"),
+        ("contributes", "Write"),
+        ("requires", "Read"),
+        ("uses", "Unconstrained read"),
     )
     for kind, label in order:
         sites = [p for p in report.points if p.kind == kind]

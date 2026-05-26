@@ -43,6 +43,17 @@ USES = "uses"
 # Only these kinds pin the variable's actual unit; ``uses`` does not.
 _CONSTRAINING = frozenset({DECLARES, CONTRIBUTES, REQUIRES})
 
+# User-facing labels. Deliberately *structural* (what the site is) rather than
+# directional (contributes/requires) — the latter forced a viewpoint that read
+# ambiguously. The internal kind names above stay as-is; this is the only
+# vocabulary any user surface (CLI, X001 message) should speak.
+KIND_DISPLAY = {
+    DECLARES: "declaration",
+    CONTRIBUTES: "write",
+    REQUIRES: "read",
+    USES: "unconstrained read",
+}
+
 
 @dataclass(frozen=True)
 class InteractionPoint:
@@ -307,9 +318,10 @@ def _detect_conflicts(
             if _is_conflict(reference.unit, p.unit, scale=scale):
                 seen.add(key)
                 msg = (
-                    f"conflicting unit constraints for {symbol!r}: this site "
-                    f"{p.kind} {p.unit_str}, but {reference.kind} "
-                    f"{reference.unit_str} at {reference.file}:{reference.line}"
+                    f"conflicting unit claims for {symbol!r}: "
+                    f"{KIND_DISPLAY[p.kind]} here claims {p.unit_str}, but "
+                    f"{KIND_DISPLAY[reference.kind]} at "
+                    f"{reference.file}:{reference.line} claims {reference.unit_str}"
                 )
                 diag = Diagnostic(
                     file=p.file,

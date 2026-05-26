@@ -42,15 +42,21 @@ workset, it collects every **interaction point** — a read or write of the
 symbol in a unit-checked expression — and classifies the **constraint** each
 places on the symbol's unit:
 
-| Kind | Meaning | Example |
-|---|---|---|
-| **declares** | the `@unit{...}` annotation on the declaration | `real :: x !< @unit{m/s}` |
-| **contributes** | a *write*: an assignment whose RHS unit flows into the symbol | `x = a*b` ⇒ contributes `unit(a*b)` |
-| **requires** | a *read* whose context fixes the symbol's unit (an equality constraint) | `x + y` ⇒ requires `unit(y)` |
-| **uses** | a *read* with no equality constraint (the unit just flows onward) | `z = x*w` ⇒ x merely *used* |
+| Kind (internal) | User-facing label | Meaning | Example |
+|---|---|---|---|
+| `declares` | **Declaration** | the `@unit{...}` annotation on the declaration | `real :: x !< @unit{m/s}` |
+| `contributes` | **Write** | variable on the LHS of `=`; the RHS unit flows into it | `x = a*b` ⇒ `unit(a*b)` |
+| `requires` | **Read** | a read whose context fixes the symbol's unit (an equality constraint) | `x + y` ⇒ `unit(y)` |
+| `uses` | **Unconstrained read** | a read with no equality constraint (the unit just flows onward) | `z = x*w` |
 
-The command prints the symbol grouped by kind, each site with `file:line`, the
-resolved unit (or `?` when unknown), and the source slice.
+User-facing labels are deliberately **structural** (what the site *is*), not
+directional ("contributes"/"requires" forced a viewpoint that read ambiguously
+— a read can equally be seen as the variable *contributing* its unit outward or
+the context *requiring* a unit of it). The internal kind names keep the
+directional vocabulary since they describe what the analyzer computed; only the
+display layer (`interactions.KIND_DISPLAY`) is structural. The command prints the
+symbol grouped by kind, each site with `file:line`, the resolved unit (or `?`
+when unknown), and the source slice.
 
 `--file` / `--scope` disambiguate a name reused across files / routines. With
 no filter, every scope that declares-or-uses the name is reported (each scope
@@ -69,8 +75,8 @@ when two sites disagree on its dimension:
 Each such pair emits **`X001`** (ERROR), e.g.
 
 ```
-lmdz_lscp_main.f90:669: error: X001 conflicting unit constraints for 'dzfice':
-  site requires 1 here, but 1/K is required at lmdz_lscp_main.f90:857
+lmdz_lscp_main.f90:669: error: X001 conflicting unit claims for 'dzfice':
+  read here claims 1, but declaration at lmdz_lscp_main.f90:264 claims 1/K
 ```
 
 `X001` is *only* produced by the `interactions` command (it is not part of the

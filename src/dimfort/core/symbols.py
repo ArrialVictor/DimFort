@@ -56,7 +56,7 @@ CODES: dict[str, CodeSpec] = {
     # ``interactions`` query, not by the per-statement ``check`` pass.
     "X001": CodeSpec(
         "X001", Severity.ERROR,
-        "conflicting unit constraints across a symbol's use-sites",
+        "conflicting unit claims across a symbol's use-sites",
     ),
 }
 
