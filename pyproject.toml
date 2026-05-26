@@ -68,16 +68,11 @@ files = ["src/dimfort"]
 # below with ignore_errors so the gate is green and CI-enforceable today.
 # Clean a module, then delete its entry here — the list only shrinks. New
 # files are checked by default (not ignored), so regressions can't sneak in.
-# Cleaned so far: the entire lsp/ layer + the mechanical core/ modules +
-# the unit model (units / unit_config / cache_serde + the FuncSig /
-# ModuleExports unit fields, now UnitExpr).
-# Remaining (their own follow-up passes): the two big tree-walkers (ts_checker,
-# multifile) and interactions (its last errors come from ts_checker's
-# _build_ctx signature — clean together).
+# Cleaned so far: the entire lsp/ layer + all of core/ except the orchestrator.
+# Remaining (its own follow-up pass): multifile, the workset orchestrator
+# (~84 errors, mostly union-attr from the tree-walking pipeline).
 [[tool.mypy.overrides]]
 module = [
-    "dimfort.core.interactions",
     "dimfort.core.multifile",
-    "dimfort.core.ts_checker",
 ]
 ignore_errors = true

@@ -20,7 +20,7 @@ strings instead of the LFortran ``node`` discriminator.
 from __future__ import annotations
 
 import bisect
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
@@ -43,7 +43,7 @@ from dimfort.core.symbols import (
     ModuleExports,
     apply_use_clauses,
 )
-from dimfort.core.trace import current_trace, with_trace
+from dimfort.core.trace import Trace, current_trace, with_trace
 from dimfort.core.units import (
     Exponent,
     ExpWrap,
@@ -105,12 +105,12 @@ class _Ctx:
     """Static context for one file's check pass."""
 
     file: str
-    var_units: dict[str, Unit]
+    var_units: dict[str, UnitExpr]
     table: UnitTable
     signatures: dict[str, FuncSig]
     var_types: dict[str, str]                       # varname → derived-type name
     type_field_types: dict[tuple[str, str], str]    # (type, field) → field's struct type
-    field_units: dict[tuple[str, str], Unit]        # (type, field) → unit
+    field_units: dict[tuple[str, str], UnitExpr]    # (type, field) → unit
     # OQ4: PARAMETER literal values, keyed by lowercased name. Populated
     # from ``collect_parameter_values``. Used by ``_resolve_constant_value``
     # so ``p ** kappa`` (where ``kappa`` is a PARAMETER with a literal
@@ -146,7 +146,7 @@ class _Ctx:
     # populated, ``unit_for(name, byte_offset)`` honours the enclosing
     # subroutine/function so same-named params across routines don't
     # alias. Empty dict ⇒ behaves identically to flat lookup.
-    var_units_by_scope: dict[tuple[str | None, str], Unit] = field(
+    var_units_by_scope: dict[tuple[str | None, str], UnitExpr] = field(
         default_factory=dict
     )
     # Byte-range cover of every subroutine/function (sorted by
@@ -162,15 +162,15 @@ class _Ctx:
     # references the symbol in another case (e.g. ``rhoh2o = ratm/100.``)
     # would miss a case-sensitive lookup and silently lose its unit. Built
     # once per file in ``__post_init__``; ``unit_for`` queries these.
-    _var_units_lc: dict[str, Unit] = field(default_factory=dict)
-    _by_scope_lc: dict[tuple[str | None, str], Unit] = field(
+    _var_units_lc: dict[str, UnitExpr] = field(default_factory=dict)
+    _by_scope_lc: dict[tuple[str | None, str], UnitExpr] = field(
         default_factory=dict
     )
     # Case-insensitive mirror of ``field_units`` (derived-type ``%`` fields).
     # ``_resolve_member_chain`` lowercases the type + field at lookup, but
     # ``field_units`` is keyed in declaration case, so without this mirror
     # any type/field with an uppercase letter would never resolve.
-    _field_units_lc: dict[tuple[str, str], Unit] = field(default_factory=dict)
+    _field_units_lc: dict[tuple[str, str], UnitExpr] = field(default_factory=dict)
     # Opt-in scale checking (Phase 1: multiplicative). When False (default)
     # the checker is dimension-only — ``factor`` differences are ignored,
     # exactly as before. When True, dim-equal-but-factor-differing operands
@@ -214,7 +214,7 @@ class _Ctx:
             idx -= 1
         return best[2] if best else None
 
-    def unit_for(self, name: str, byte_offset: int) -> Unit | None:
+    def unit_for(self, name: str, byte_offset: int) -> UnitExpr | None:
         """Resolve ``name`` at ``byte_offset`` honouring subroutine scope.
 
         Order: enclosing routine's scope → file/module-level scope →
@@ -331,13 +331,16 @@ def _assignment_sides(node: Node) -> tuple[Node | None, Node | None]:
 #                          diagnostic from this rule; 🟡.
 AssignmentVerdict = str  # one of the literals above
 
+# A scope-aware unit lookup: ``(name, scope_lc) -> unit-or-None``.
+_ScopedLookup = Callable[[str, str | None], UnitExpr | None]
+
 
 def _assignment_homogeneity(
     target: Node | None,
     value: Node | None,
     ctx: _Ctx,
     source: bytes,
-) -> tuple[AssignmentVerdict, Unit | None, Unit | None]:
+) -> tuple[AssignmentVerdict, UnitExpr | None, UnitExpr | None]:
     """Decide what an assignment's homogeneity status is — and what
     units it has after applying the initialization-autocast rule R4.4.
 
@@ -375,7 +378,7 @@ def _assignment_homogeneity(
         return "autocast", tu, tu
     if (
         isinstance(tu, Unit)
-        and _is_wrapper(ru)
+        and isinstance(ru, (LogWrap, ExpWrap))
         and isinstance(ru.inner, Unit)
         and equal_dim(tu, ru.inner)
     ):
@@ -738,7 +741,7 @@ def _constant_exponent(node: Node, source: bytes) -> int | Fraction | None:
 # ---------------------------------------------------------------------------
 
 
-def _resolve(node: Node | None, ctx: _Ctx, source: bytes) -> Unit | None:
+def _resolve(node: Node | None, ctx: _Ctx, source: bytes) -> UnitExpr | None:
     """Return the unit of ``node``, or ``None`` if we don't know.
 
     "Unknown" is a first-class outcome — many expression shapes
@@ -836,7 +839,7 @@ def _resolve(node: Node | None, ctx: _Ctx, source: bytes) -> Unit | None:
 
 def _resolve_member_chain(
     node: Node, ctx: _Ctx, source: bytes
-) -> Unit | None:
+) -> UnitExpr | None:
     """Resolve a ``derived_type_member_expression`` chain to its unit.
 
     For ``o%inner%x``: look up ``var_types["o"]`` → T1, step
@@ -858,7 +861,7 @@ def _resolve_member_chain(
     return ctx._field_units_lc.get((current_type, final.lower()))
 
 
-def _resolve_call(node: Node, ctx: _Ctx, source: bytes) -> Unit | None:
+def _resolve_call(node: Node, ctx: _Ctx, source: bytes) -> UnitExpr | None:
     """Resolve a ``call_expression``'s result unit.
 
     Dispatches in order: intrinsic categories first, then the user-
@@ -929,13 +932,13 @@ def _resolve_call(node: Node, ctx: _Ctx, source: bytes) -> Unit | None:
     if name_lc in PRODUCT_INTRINSICS:
         if len(arg_exprs) < 2:
             return None
-        a = _resolve(arg_exprs[0], ctx, source)
-        b = _resolve(arg_exprs[1], ctx, source)
-        if a is None or b is None:
+        ua = _resolve(arg_exprs[0], ctx, source)
+        ub = _resolve(arg_exprs[1], ctx, source)
+        if ua is None or ub is None:
             return None
-        if not (isinstance(a, Unit) and isinstance(b, Unit)):
+        if not (isinstance(ua, Unit) and isinstance(ub, Unit)):
             return None  # wrapper product is sub-step 3
-        return a * b
+        return ua * ub
 
     if name_lc in REDUCTION_INTRINSICS:
         if not arg_exprs:
@@ -982,7 +985,7 @@ def _node_span(node: Node) -> tuple[Position, Position]:
 
 
 def _emit_u005_for_unannotated(
-    tree, ctx: _Ctx, source: bytes,
+    tree: Tree, ctx: _Ctx, source: bytes,
 ) -> list[Diagnostic]:
     """Emit U005 on declarations whose names are used in a checked context but unannotated.
 
@@ -1099,7 +1102,7 @@ def _emit_u005_for_unannotated(
     return out
 
 
-def _decl_name_nodes(decl: Node):
+def _decl_name_nodes(decl: Node) -> Iterator[Node]:
     """Yield identifier nodes that name a declared entity in ``decl``.
 
     Same logic as :func:`_collect_decl_names`, but yields the nodes so
@@ -1154,7 +1157,7 @@ def _is_pure_numeric_constant(node: Node | None) -> bool:
     return False
 
 
-def _emit_h001(loc: Node, lhs: Unit, rhs: Unit, ctx: _Ctx) -> Diagnostic:
+def _emit_h001(loc: Node, lhs: UnitExpr, rhs: UnitExpr, ctx: _Ctx) -> Diagnostic:
     start, end = _node_span(loc)
     return Diagnostic(
         file=ctx.file, start=start, end=end,
@@ -1492,8 +1495,13 @@ def _fmt_frac(x: Fraction) -> str:
     return f"{dec:g}" if Fraction(dec).limit_denominator(10**6) == x else str(x)
 
 
-def _is_dimensionless(u: Unit) -> bool:
-    """Return True if ``u`` is the dim'less unit (all base exponents zero)."""
+def _is_dimensionless(u: UnitExpr) -> bool:
+    """Return True if ``u`` is the dim'less unit (all base exponents zero).
+
+    LOG/EXP wrappers carry no SI dimension, so they count as dimensionless.
+    """
+    if not isinstance(u, Unit):
+        return True
     return all(d == 0 for d in u.dimension)
 
 
@@ -1589,7 +1597,7 @@ def _emit_d16_untag(
     )
 
 
-def _emit_h003(loc: Node, intrinsic: str, arg_unit: Unit, ctx: _Ctx) -> Diagnostic:
+def _emit_h003(loc: Node, intrinsic: str, arg_unit: UnitExpr, ctx: _Ctx) -> Diagnostic:
     start, end = _node_span(loc)
     return Diagnostic(
         file=ctx.file, start=start, end=end,
@@ -1602,7 +1610,7 @@ def _emit_h003(loc: Node, intrinsic: str, arg_unit: Unit, ctx: _Ctx) -> Diagnost
 
 
 def _emit_h004(
-    loc: Node, func: str, arg_index: int, expected: Unit, actual: Unit,
+    loc: Node, func: str, arg_index: int, expected: UnitExpr, actual: UnitExpr,
     ctx: _Ctx, arg_name: str | None = None,
 ) -> Diagnostic:
     start, end = _node_span(loc)
@@ -1726,10 +1734,10 @@ def _walk_expressions(
             # H010 implicit-literal-cast warning. The non-literal side
             # is the target unit (combine() returned it as ``result``).
             # Locate the literal operand to anchor the diagnostic span.
-            if left_lit_val is not None:
+            if left_lit_val is not None and left is not None:
                 target = ru
                 yield _emit_h010(left, _text(left, source), target, ctx)
-            else:
+            elif right is not None:
                 target = lu
                 yield _emit_h010(right, _text(right, source), target, ctx)
         elif diag == "D1.2":
@@ -2001,14 +2009,14 @@ def collect_type_field_types(
 
 def collect_function_signatures(
     tree: Tree,
-    var_units: dict[str, Unit],
+    var_units: dict[str, UnitExpr],
     source: bytes,
 ) -> dict[str, FuncSig]:
     """Return ``{name_lc: FuncSig}`` for every ``function`` and ``subroutine``."""
     out: dict[str, FuncSig] = {}
     # Case-insensitive view: a header arg may differ in case from its
     # declaration (Fortran identifiers are case-insensitive).
-    vu_lc: dict[str, Unit] = {}
+    vu_lc: dict[str, UnitExpr] = {}
     for _k, _v in var_units.items():
         vu_lc.setdefault(_k.lower(), _v)
     for n in _ts.walk(tree.root_node):
@@ -2033,7 +2041,7 @@ def collect_function_signatures(
                     arg_names.append(_text(c, source))
         arg_units = tuple(vu_lc.get(a.lower()) for a in arg_names)
 
-        return_unit: Unit | None = None
+        return_unit: UnitExpr | None = None
         if not is_subroutine:
             # ``result(y)`` clause renames the return variable; without
             # it, F90 reuses the function name as the return var.
@@ -2060,7 +2068,7 @@ def collect_function_signatures(
 
 def collect_module_exports(
     tree: Tree,
-    var_units: dict[str, Unit],
+    var_units: dict[str, UnitExpr],
     source: bytes,
 ) -> dict[str, ModuleExports]:
     """Return ``{module_name_lc: ModuleExports}`` for every ``module`` node.
@@ -2085,7 +2093,7 @@ def collect_module_exports(
         # Module-level variable names: every variable_declaration that
         # is a *direct* child of the module (not inside a contained
         # function/subroutine or a derived-type block).
-        export_var_units: dict[str, Unit] = {}
+        export_var_units: dict[str, UnitExpr] = {}
         all_var_names: list[str] = []
         # ``lookup`` resolves case-insensitively (Fortran identifiers are).
         lookup = _make_scoped_lookup(var_units, None)
@@ -2182,9 +2190,9 @@ def collect_var_types_and_type_field_types(
 
 
 def _make_scoped_lookup(
-    var_units: dict[str, Unit],
-    var_units_by_scope: dict[tuple[str | None, str], Unit] | None,
-):
+    var_units: dict[str, UnitExpr],
+    var_units_by_scope: dict[tuple[str | None, str], UnitExpr] | None,
+) -> _ScopedLookup:
     """Build a ``(name, scope_lc) -> Unit | None`` lookup.
 
     Semantics distinguish None from empty dict:
@@ -2206,18 +2214,18 @@ def _make_scoped_lookup(
     # regardless of case (e.g. a ``function f(PTE)`` whose body declares
     # ``real :: pte``, or a consumer using a UPPERCASE module constant).
     if var_units_by_scope is None:
-        flat_lc: dict[str, Unit] = {}
+        flat_lc: dict[str, UnitExpr] = {}
         for k, v in var_units.items():
             flat_lc.setdefault(k.lower(), v)
         return lambda name, scope: flat_lc.get(name.lower())
 
-    by_scope_lc: dict[tuple[str | None, str], Unit] = {}
+    by_scope_lc: dict[tuple[str | None, str], UnitExpr] = {}
     for (s, n), v in var_units_by_scope.items():
         by_scope_lc.setdefault(
             (s.lower() if s is not None else None, n.lower()), v
         )
 
-    def lookup(name: str, scope: str | None) -> Unit | None:
+    def lookup(name: str, scope: str | None) -> UnitExpr | None:
         name_lc = name.lower()
         if scope is not None:
             u = by_scope_lc.get((scope.lower(), name_lc))
@@ -2230,10 +2238,10 @@ def _make_scoped_lookup(
 
 def collect_function_signatures_and_module_exports(
     tree: Tree,
-    var_units: dict[str, Unit],
+    var_units: dict[str, UnitExpr],
     source: bytes,
     *,
-    var_units_by_scope: dict[tuple[str | None, str], Unit] | None = None,
+    var_units_by_scope: dict[tuple[str | None, str], UnitExpr] | None = None,
 ) -> tuple[dict[str, FuncSig], dict[str, ModuleExports]]:
     """Produce both function/subroutine signatures *and* module exports
     in a single tree walk.
@@ -2268,7 +2276,7 @@ def collect_function_signatures_and_module_exports(
 
 def _signature_for_node(
     node: Node,
-    lookup,
+    lookup: _ScopedLookup,
     source: bytes,
 ) -> tuple[str, FuncSig] | None:
     """Extract a single ``FuncSig`` from a ``function`` / ``subroutine`` node.
@@ -2295,7 +2303,7 @@ def _signature_for_node(
                 arg_names.append(_text(c, source))
     arg_units = tuple(lookup(a, scope_lc) for a in arg_names)
 
-    return_unit: Unit | None = None
+    return_unit: UnitExpr | None = None
     if not is_subroutine:
         result = next(
             (c for c in stmt.children if c.type == "function_result"), None
@@ -2319,7 +2327,7 @@ def _signature_for_node(
 
 def _module_exports_for_node(
     node: Node,
-    lookup,
+    lookup: _ScopedLookup,
     source: bytes,
 ) -> tuple[str, ModuleExports] | None:
     """Extract ``ModuleExports`` from a single ``module`` node."""
@@ -2335,7 +2343,7 @@ def _module_exports_for_node(
     # name (whether annotated or not) so the LSP can flag unannotated
     # exports in hover; ``export_var_units`` keeps only the annotated
     # ones for the actual unit-checking path.
-    export_var_units: dict[str, Unit] = {}
+    export_var_units: dict[str, UnitExpr] = {}
     all_var_names: list[str] = []
     for decl in node.children:
         if decl.type != "variable_declaration":
@@ -2367,7 +2375,7 @@ def _module_exports_for_node(
 
 def _signatures_for_subtree(
     node: Node,
-    lookup,
+    lookup: _ScopedLookup,
     source: bytes,
 ) -> dict[str, FuncSig]:
     """Run :func:`collect_function_signatures` over a sub-tree only.
@@ -2395,7 +2403,7 @@ def _signatures_for_subtree(
             if c.type == "identifier":
                 arg_names.append(_text(c, source))
     arg_units = tuple(lookup(a, scope_lc) for a in arg_names)
-    return_unit: Unit | None = None
+    return_unit: UnitExpr | None = None
     if not is_subroutine:
         result = next(
             (c for c in stmt.children if c.type == "function_result"), None
@@ -2459,14 +2467,14 @@ def _declarator_leading_identifier(node: Node, source: bytes) -> str | None:
 
 def _build_ctx(
     tree: Tree,
-    var_units: dict[str, str | Unit],
+    var_units: Mapping[str, str | UnitExpr],
     *,
     source: bytes,
     file: str | Path,
     table: UnitTable | None = None,
     signatures: dict[str, FuncSig] | None = None,
-    field_units: dict[tuple[str, str], str | Unit] | None = None,
-    var_units_by_scope: dict[tuple[str | None, str], str | Unit] | None = None,
+    field_units: Mapping[tuple[str, str], str | UnitExpr] | None = None,
+    var_units_by_scope: Mapping[tuple[str | None, str], str | UnitExpr] | None = None,
     routine_scopes: tuple[tuple[int, int, str], ...] = (),
     assumes: dict[int, tuple[str, str, int]] | None = None,
     affine_conversions: dict[int, tuple[str, str, int]] | None = None,
@@ -2616,7 +2624,7 @@ def check(
     # statement's chain rather than the whole file's accumulated steps.
     tracing_on = current_trace() is not None
 
-    def _attach_traces_since(start_idx: int, trace_obj) -> None:
+    def _attach_traces_since(start_idx: int, trace_obj: Trace | None) -> None:
         if trace_obj is None:
             return
         snapshot = trace_obj.snapshot()
@@ -2626,9 +2634,9 @@ def check(
         for i in range(start_idx, len(out)):
             out[i] = dataclasses.replace(out[i], trace=snapshot)
 
-    from contextlib import nullcontext
+    from contextlib import AbstractContextManager, nullcontext
 
-    def _stmt_trace_ctx():
+    def _stmt_trace_ctx() -> AbstractContextManager[Trace | None]:
         return with_trace() if tracing_on else nullcontext()
 
     for node in _ts.walk(tree.root_node):
@@ -2682,20 +2690,25 @@ def check(
                     verdict, tu, ru = _assignment_homogeneity(
                         target, value, ctx, source,
                     )
-                    if verdict == "wrapper_untag":
+                    if verdict == "wrapper_untag" and tu is not None and ru is not None:
                         out.append(
                             _emit_d16_untag(
                                 target if target is not None else node,
                                 tu, ru, ctx,
                             )
                         )
-                    elif verdict == "mismatch":
+                    elif verdict == "mismatch" and tu is not None and ru is not None:
                         # Span the squiggle over the whole assignment so the
                         # editor highlights both sides of `=`; lets the user
                         # see the offending statement at a glance instead of
                         # squinting at the LHS identifier.
                         out.append(_emit_h001(node, tu, ru, ctx))
-                    elif verdict == "autocast" and out_autocast_events is not None:
+                    elif (
+                        verdict == "autocast"
+                        and out_autocast_events is not None
+                        and value is not None
+                        and tu is not None
+                    ):
                         # R4.4 — record the event for any audit consumer.
                         # The literal_text is the source slice of the RHS,
                         # which may be a compound numeric expression like
@@ -2709,7 +2722,10 @@ def check(
                     # precedence (compare order); they're mutually exclusive
                     # since offset_mismatch requires equal factors. Dimension-
                     # only mode leaves this untouched (scale_mode default off).
-                    if ctx.scale_mode and verdict == "homogeneous":
+                    if (
+                        ctx.scale_mode and verdict == "homogeneous"
+                        and tu is not None and ru is not None
+                    ):
                         ratio = _scale_mismatch_ratio(tu, ru)
                         if ratio is not None:
                             out.append(_emit_s001(node, tu, ru, ratio, ctx))

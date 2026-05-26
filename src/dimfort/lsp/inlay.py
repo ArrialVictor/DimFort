@@ -12,7 +12,7 @@ from lsprotocol import types as lsp
 from tree_sitter import Node
 
 from dimfort.core import ts_checker
-from dimfort.core.units import Unit
+from dimfort.core.units import UnitExpr
 from dimfort.lsp import ts_helpers as _ts_h
 from dimfort.lsp.hover_render import _unit_pretty
 from dimfort.lsp.state import state
@@ -40,7 +40,7 @@ def resolve(params: lsp.InlayHintParams) -> list[lsp.InlayHint] | None:
     seen: set[tuple[int, int]] = set()
     hints: list[lsp.InlayHint] = []
 
-    def _emit(node: Node, unit: Unit | None) -> None:
+    def _emit(node: Node, unit: UnitExpr | None) -> None:
         if unit is None:
             return
         # Anchor on the node's last column so the hint sits flush against
