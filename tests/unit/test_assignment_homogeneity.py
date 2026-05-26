@@ -47,7 +47,7 @@ def test_homogeneous_returns_ok(tmp_path: Path):
     tree, source, ctx = _ctx_for(src, result)
     asn = _find(tree, "assignment_statement")
     lhs, rhs = ts_checker._assignment_sides(asn)
-    verdict, lu, ru = ts_checker._assignment_homogeneity(lhs, rhs, ctx, source)
+    verdict, lu, ru = ts_checker.assignment_homogeneity(lhs, rhs, ctx, source)
     assert verdict == "homogeneous"
     assert lu is not None and ru is not None
 
@@ -62,7 +62,7 @@ def test_mismatch_returns_mismatch(tmp_path: Path):
     tree, source, ctx = _ctx_for(src, result)
     asn = _find(tree, "assignment_statement")
     lhs, rhs = ts_checker._assignment_sides(asn)
-    verdict, _lu, _ru = ts_checker._assignment_homogeneity(lhs, rhs, ctx, source)
+    verdict, _lu, _ru = ts_checker.assignment_homogeneity(lhs, rhs, ctx, source)
     assert verdict == "mismatch"
 
 
@@ -75,7 +75,7 @@ def test_autocast_for_bare_literal(tmp_path: Path):
     tree, source, ctx = _ctx_for(src, result)
     asn = _find(tree, "assignment_statement")
     lhs, rhs = ts_checker._assignment_sides(asn)
-    verdict, lu, ru = ts_checker._assignment_homogeneity(lhs, rhs, ctx, source)
+    verdict, lu, ru = ts_checker.assignment_homogeneity(lhs, rhs, ctx, source)
     assert verdict == "autocast"
     # effective RHS unit equals LHS unit
     assert lu == ru
@@ -90,7 +90,7 @@ def test_autocast_for_unary_minus_literal(tmp_path: Path):
     tree, source, ctx = _ctx_for(src, result)
     asn = _find(tree, "assignment_statement")
     lhs, rhs = ts_checker._assignment_sides(asn)
-    verdict, _lu, _ru = ts_checker._assignment_homogeneity(lhs, rhs, ctx, source)
+    verdict, _lu, _ru = ts_checker.assignment_homogeneity(lhs, rhs, ctx, source)
     assert verdict == "autocast"
 
 
@@ -103,7 +103,7 @@ def test_autocast_for_arithmetic_of_literals(tmp_path: Path):
     tree, source, ctx = _ctx_for(src, result)
     asn = _find(tree, "assignment_statement")
     lhs, rhs = ts_checker._assignment_sides(asn)
-    verdict, _lu, _ru = ts_checker._assignment_homogeneity(lhs, rhs, ctx, source)
+    verdict, _lu, _ru = ts_checker.assignment_homogeneity(lhs, rhs, ctx, source)
     assert verdict == "autocast"
 
 
@@ -120,7 +120,7 @@ def test_compound_with_unitful_operand_is_not_autocast(tmp_path: Path):
     tree, source, ctx = _ctx_for(src, result)
     asn = _find(tree, "assignment_statement")
     lhs, rhs = ts_checker._assignment_sides(asn)
-    verdict, _lu, _ru = ts_checker._assignment_homogeneity(lhs, rhs, ctx, source)
+    verdict, _lu, _ru = ts_checker.assignment_homogeneity(lhs, rhs, ctx, source)
     # c + 2.0 resolves to s (R4.1 auto-cast inside the compound) →
     # homogeneous from the assignment's perspective.
     assert verdict == "homogeneous"

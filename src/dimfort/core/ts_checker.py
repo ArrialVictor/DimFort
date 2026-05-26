@@ -2755,12 +2755,42 @@ def check(
     return finalize_diagnostics(out)
 
 
+# ---------------------------------------------------------------------------
+# Intended-public checker API.
+#
+# These are the resolution primitives that tooling consumers (the LSP hover /
+# inlay / panel renderers and the cross-site interactions analysis) need in
+# order to report units consistently with what ``check`` computes. They are
+# exposed under stable public names so those consumers don't reach into the
+# leading-underscore internals (which are free to change shape). The aliases
+# point at the same objects, so docstrings and behaviour are identical.
+#
+#   Ctx                     — the per-file static context a resolver runs in
+#                             (build one via ``dimfort.lsp.tree_access``).
+#   resolve_unit            — resolve a node's unit (or None if unknown).
+#   assignment_homogeneity  — the single source of truth for an assignment's
+#                             verdict + (lhs, effective-rhs) units.
+#   resolve_member_chain    — resolve a derived-type member chain ``a%b%c``.
+#   is_pure_numeric_constant — R4.4 autocast predicate (literal-only subtree).
+# ---------------------------------------------------------------------------
+Ctx = _Ctx
+resolve_unit = _resolve
+assignment_homogeneity = _assignment_homogeneity
+resolve_member_chain = _resolve_member_chain
+is_pure_numeric_constant = _is_pure_numeric_constant
+
+
 __all__ = [
+    "Ctx",
     "ModuleExports",
     "apply_use_clauses",
+    "assignment_homogeneity",
     "check",
     "collect_function_signatures",
     "collect_module_exports",
     "collect_type_field_types",
     "collect_var_types",
+    "is_pure_numeric_constant",
+    "resolve_member_chain",
+    "resolve_unit",
 ]

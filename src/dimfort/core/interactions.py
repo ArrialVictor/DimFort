@@ -21,18 +21,18 @@ from tree_sitter import Node
 
 from dimfort.core.diagnostics import Diagnostic, Position, Severity
 from dimfort.core.ts_checker import (
-    _assignment_homogeneity,
+    Ctx,
     _assignment_sides,
     _build_ctx,
     _call_args,
     _call_callee_name,
-    _Ctx,
-    _is_pure_numeric_constant,
     _math_op,
     _math_operands,
     _position,
-    _resolve,
     _text,
+    assignment_homogeneity,
+    is_pure_numeric_constant,
+    resolve_unit,
 )
 from dimfort.core.units import Unit, UnitExpr, compare, format_unit
 
@@ -180,7 +180,7 @@ def _additive_terms(node: Node) -> list[Node]:
     return [node]
 
 
-def _required_unit_of(node: Node, ctx: _Ctx, source: bytes) -> UnitExpr | None:
+def _required_unit_of(node: Node, ctx: Ctx, source: bytes) -> UnitExpr | None:
     """Unit the *position* of ``node`` is forced to have by its context.
 
     Walks up the AST, propagating a known target unit down through
@@ -198,7 +198,7 @@ def _required_unit_of(node: Node, ctx: _Ctx, source: bytes) -> UnitExpr | None:
     if pt == "assignment_statement":
         lhs, rhs = _assignment_sides(p)
         if _same(node, rhs):          # node is the whole RHS
-            return _resolve(lhs, ctx, source)
+            return resolve_unit(lhs, ctx, source)
         return None                   # node is the LHS → a write, not a constraint
 
     if pt == "argument_list":
@@ -234,7 +234,7 @@ def _required_unit_of(node: Node, ctx: _Ctx, source: bytes) -> UnitExpr | None:
             for term in _additive_terms(_additive_root(p)):
                 if node.start_byte <= term.start_byte and term.end_byte <= node.end_byte:
                     continue
-                u = _resolve(term, ctx, source)
+                u = resolve_unit(term, ctx, source)
                 if u is not None:
                     return u
             return None
@@ -242,7 +242,7 @@ def _required_unit_of(node: Node, ctx: _Ctx, source: bytes) -> UnitExpr | None:
             req = _required_unit_of(p, ctx, source)
             if req is None:
                 return None
-            sib = _resolve(sibling, ctx, source)
+            sib = resolve_unit(sibling, ctx, source)
             if sib is None:
                 return None
             if op == "*":
@@ -262,7 +262,7 @@ def _required_unit_of(node: Node, ctx: _Ctx, source: bytes) -> UnitExpr | None:
 
 def _classify(
     occ: Node,
-    ctx: _Ctx,
+    ctx: Ctx,
     source: bytes,
     file: str,
     name_lc: str,
@@ -308,12 +308,12 @@ def _classify(
             # as ``check`` does: the literal is unit-agnostic, adopts the
             # declared LHS unit, and makes no independent claim — so it can't
             # manufacture a conflict. A real computed RHS keeps its own unit.
-            _verdict, lhs_unit, eff_rhs = _assignment_homogeneity(
+            _verdict, lhs_unit, eff_rhs = assignment_homogeneity(
                 lhs, rhs, ctx, source
             )
             contributed = (
                 lhs_unit
-                if (rhs is not None and _is_pure_numeric_constant(rhs))
+                if (rhs is not None and is_pure_numeric_constant(rhs))
                 else eff_rhs
             )
             return InteractionPoint(
