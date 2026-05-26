@@ -47,7 +47,7 @@ from dimfort.lsp.tree_nav import (
 if TYPE_CHECKING:
     from dimfort.core.multifile import WorksetResult
     from dimfort.core.symbols import FuncSig
-    from dimfort.core.units import Unit
+    from dimfort.core.units import Unit, UnitExpr
 
 # A rendered unit-algebra tree row: (label, unit-or-None, marker, rule-tag).
 # ``unit`` is ``None`` only for the synthetic assignment root row (a statement,
@@ -893,7 +893,7 @@ def _render_call_pairing_c(
     return f"**{marker} DimFort**\n\n```\n{body}\n```"
 
 
-def _checker_equal(a: Unit, b: Unit) -> bool:
+def _checker_equal(a: UnitExpr, b: UnitExpr) -> bool:
     """Wrapper-aware dimension equality (delegates to units.equal_dim)."""
     from dimfort.core.units import equal_dim
     return equal_dim(a, b)
