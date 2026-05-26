@@ -21,7 +21,7 @@ from __future__ import annotations
 import contextvars
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -116,7 +116,7 @@ def format_trace(steps: tuple[Provenance, ...] | list[Provenance]) -> str:
     """
     if not steps:
         return ""
-    seen: set[tuple] = set()
+    seen: set[tuple[Any, ...]] = set()
     lines = ["trace:"]
     for step in steps:
         key = (step.rule_id, step.before, step.after)

@@ -87,7 +87,7 @@ class CacheStore:
             return None
         try:
             with gzip.open(path, "rb") as fh:
-                payload = json.loads(fh.read().decode())
+                payload: dict[str, Any] = json.loads(fh.read().decode())
             self.hits += 1
             return payload
         except (OSError, ValueError, json.JSONDecodeError):
