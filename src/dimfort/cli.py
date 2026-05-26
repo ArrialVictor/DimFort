@@ -117,6 +117,42 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    interactions = sub.add_parser(
+        "interactions",
+        help=(
+            "List every site that reads/writes a symbol across the workset, "
+            "tagged with the unit each site requires or contributes, and flag "
+            "sites whose unit constraints conflict (X001)."
+        ),
+    )
+    interactions.add_argument("symbol", help="Variable name to analyse (case-insensitive).")
+    interactions.add_argument(
+        "paths", nargs="+", help="Fortran source files / directories to search."
+    )
+    interactions.add_argument(
+        "--file",
+        default=None,
+        help="Restrict to occurrences in this file (name or path suffix).",
+    )
+    interactions.add_argument(
+        "--scope",
+        default=None,
+        help="Restrict to occurrences in this routine (case-insensitive name).",
+    )
+    interactions.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Disable ANSI colour (also auto-disabled outside a TTY).",
+    )
+    interactions.add_argument(
+        "--scale",
+        action="store_true",
+        help=(
+            "Also treat magnitude (factor) disagreements between sites as "
+            "conflicts, not just dimension mismatches. Mirrors `check --scale`."
+        ),
+    )
+
     lsp = sub.add_parser("lsp", help="Start the DimFort language server (stdio).")
     # Some LSP clients (vscode-languageclient with TransportKind.stdio) tack
     # this argument on automatically. We only speak stdio, so it's a no-op
@@ -304,6 +340,97 @@ def _run_check(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# `interactions` subcommand
+# ---------------------------------------------------------------------------
+
+
+def _run_interactions(args: argparse.Namespace) -> int:
+    from dimfort.config import load_config
+    from dimfort.core import unit_config  # populate DEFAULT_TABLE
+    from dimfort.core._source_io import FORTRAN_EXTS, discover_fortran_files
+    from dimfort.core.interactions import collect_interactions
+    from dimfort.core.multifile import check_files
+
+    roots: list[Path] = []
+    for raw in args.paths:
+        p = Path(raw)
+        if not p.exists():
+            print(f"dimfort: path not found: {p}", file=sys.stderr)
+            return 2
+        roots.append(p)
+
+    paths = discover_fortran_files(roots)
+    if not paths:
+        print(
+            "dimfort: no Fortran sources found "
+            f"(looked for {sorted(FORTRAN_EXTS)})",
+            file=sys.stderr,
+        )
+        return 2
+
+    config = load_config(roots[0])
+    if config.units_file is not None:
+        unit_config.install_default(config.units_file)
+
+    workset = check_files(
+        paths,
+        cpp_defines=config.cpp_defines,
+        include_paths=config.include_paths,
+        external_modules=frozenset(config.external_modules),
+        units_file=config.units_file,
+        scale_mode=args.scale or config.scale_mode,
+    )
+
+    report = collect_interactions(
+        workset,
+        args.symbol,
+        file=args.file,
+        scope=args.scope,
+        scale=args.scale or config.scale_mode,
+    )
+
+    color = _color_enabled(args.no_color)
+
+    def _hdr(text: str) -> str:
+        return f"{_BOLD}{text}{_RESET}" if color else text
+
+    if not report.points:
+        print(
+            f"dimfort: no read/write of {args.symbol!r} found"
+            + (f" in {args.file}" if args.file else "")
+            + (f" (scope {args.scope})" if args.scope else "")
+        )
+        return 0
+
+    print(_hdr(args.symbol))
+    order = (
+        ("declares", "declared"),
+        ("contributes", "contributed (writes)"),
+        ("requires", "required (reads)"),
+        ("uses", "used (no unit constraint)"),
+    )
+    for kind, label in order:
+        sites = [p for p in report.points if p.kind == kind]
+        if not sites:
+            continue
+        print(f"  {label}:")
+        for s in sites:
+            scope = f" [{s.scope}]" if s.scope else ""
+            unit = s.unit_str.ljust(12)
+            print(f"    {s.file}:{s.line}{scope}  {unit}  {s.snippet}")
+
+    if report.conflicts:
+        print()
+        for c in report.conflicts:
+            d = c.diagnostic
+            line = _format_diag(d.file, d.start.line, "error", d.code, d.message, color=color)
+            print(f"  ⚠ {line}")
+        return 1
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Top-level dispatch
 # ---------------------------------------------------------------------------
 
@@ -314,6 +441,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "check":
         return _run_check(args)
+    if args.command == "interactions":
+        return _run_interactions(args)
     if args.command == "lsp":
         from dimfort.lsp.server import run_stdio
 

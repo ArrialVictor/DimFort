@@ -4,6 +4,28 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### Feature: `dimfort interactions <symbol>` — cross-site unit analysis + X001
+
+- A new **on-demand** query that, for one variable, lists every site that
+  reads or writes it across the workset and tags each with the constraint it
+  places on the variable's unit: **declares** (the `@unit{}`), **contributes**
+  (a write's RHS unit), **requires** (a read whose context pins the unit), or
+  **uses** (a read with no equality constraint).
+- Constraints are derived by propagating a known target unit down through
+  `+`/`-`/`*`/`/` (e.g. `coeff*x` inside a sum whose total unit is known pins
+  `x`), reusing the existing resolver and unit algebra — no new dimensional
+  logic. Unknown units stay unknown (never a false constraint).
+- **New diagnostic `X001`** (ERROR, produced only by this query): fires when
+  two sites in the same scope disagree on a variable's *dimension* — **even
+  when the variable is unannotated**, which the per-statement `check` pass
+  cannot see. `--scale` additionally treats magnitude (`factor`) disagreements
+  as conflicts. Conflict detection never crosses a scope boundary (same name in
+  two routines = two variables).
+- `--file` / `--scope` narrow a reused name. Array-element reads (`x(i)`) and
+  call-argument positions are handled. Spec: `docs/design/interaction-points.md`.
+- Internal: extracted `ts_checker._build_ctx` as the single source of truth for
+  `_Ctx` construction, now shared by `check` and the new `interactions` query.
+
 ### Fix: scope bleed — unannotated param inheriting a sibling routine's unit
 
 - An annotated formal parameter leaked its unit to a same-named
