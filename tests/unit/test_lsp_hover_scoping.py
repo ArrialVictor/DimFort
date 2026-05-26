@@ -15,6 +15,8 @@ pytest.importorskip("pygls")
 
 from dimfort.core import unit_config  # noqa: F401
 from dimfort.core.multifile import check_files
+from dimfort.lsp import code_action as _code_action
+from dimfort.lsp import hover as _hover
 from dimfort.lsp import server as _server
 
 
@@ -29,9 +31,9 @@ def _drive_hover(file: Path, line_1based: int, col_1based: int):
     uri = file.resolve().as_uri()
     mode = _server._features.hover
     try:
-        hit = _server._resolve_hover(uri, line_1based, col_1based, None, hover_mode=mode)
+        hit = _hover._resolve_hover(uri, line_1based, col_1based, None, hover_mode=mode)
         if hit is None:
-            hit = _server._expression_hover_for(uri, line_1based, col_1based, hover_mode=mode)
+            hit = _hover._expression_hover_for(uri, line_1based, col_1based, hover_mode=mode)
         return hit
     finally:
         with _server.state.last_result_lock:
@@ -93,7 +95,7 @@ def test_hover_trace_section_when_enabled(tmp_path: Path):
         with _server.state.last_result_lock:
             _server.state.last_result = result
         try:
-            extra = _server._trace_section_for(f.resolve().as_uri(), 5, 3)
+            extra = _hover._trace_section_for(f.resolve().as_uri(), 5, 3)
         finally:
             with _server.state.last_result_lock:
                 _server.state.last_result = None
@@ -167,7 +169,7 @@ def test_h010_extract_to_parameter_action(tmp_path: Path):
         cap = pygls_lsp.CodeActionParams(
             text_document=text_doc, range=diag_range, context=ctx,
         )
-        actions = _server._h010_extract_to_parameter_actions(cap, _Doc(src), f.resolve())
+        actions = _code_action._h010_extract_to_parameter_actions(cap, _Doc(src), f.resolve())
     finally:
         with _server.state.last_result_lock:
             _server.state.last_result = None
@@ -225,7 +227,7 @@ def _drive_trace_hover(file: Path, line_1based: int, col_1based: int):
         _server.state.last_result = result
     uri = file.resolve().as_uri()
     try:
-        return _server._expression_hover_for(
+        return _hover._expression_hover_for(
             uri, line_1based, col_1based, hover_mode=_server._features.hover,
         )
     finally:

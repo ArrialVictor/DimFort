@@ -89,62 +89,11 @@ from dimfort.lsp import (
     interactions,
     panel,
 )
-from dimfort.lsp.code_action import (
-    _h010_extract_to_parameter_actions as _h010_extract_to_parameter_actions,
-)
-from dimfort.lsp.expr_tree import (
-    _build_expression_tree as _build_expression_tree,
-)
-from dimfort.lsp.expr_tree import (
-    _build_scope_vars as _build_scope_vars,
-)
-from dimfort.lsp.hover import (
-    _expression_hover_for as _expression_hover_for,
-)
-from dimfort.lsp.hover import (
-    _render_assignment_short as _render_assignment_short,
-)
-from dimfort.lsp.hover import (
-    _resolve_hover as _resolve_hover,
-)
-from dimfort.lsp.hover import (
-    _trace_section_for as _trace_section_for,
-)
-from dimfort.lsp.interactions import (
-    _serialize_interaction_point as _serialize_interaction_point,
-)
-from dimfort.lsp.markers import (
-    _marker_token as _marker_token,
-)
 from dimfort.lsp.state import DEFAULT_EXTERNAL_MODULES, state
-from dimfort.lsp.tree_access import (
-    _build_ts_ctx as _build_ts_ctx,
-)
 from dimfort.lsp.tree_access import (
     _trees_for,
     _uri_for_path,
     _uri_to_path,
-)
-from dimfort.lsp.tree_nav import (
-    _enclosing_scopes as _enclosing_scopes,
-)
-from dimfort.lsp.tree_nav import (
-    _find_expression_root as _find_expression_root,
-)
-from dimfort.lsp.tree_nav import (
-    _identifier_at as _identifier_at,
-)
-from dimfort.lsp.tree_nav import (
-    _interesting_children as _interesting_children,
-)
-from dimfort.lsp.tree_nav import (
-    _normalized_unit as _normalized_unit,
-)
-from dimfort.lsp.tree_nav import (
-    _scope_header as _scope_header,
-)
-from dimfort.lsp.tree_nav import (
-    _smallest_enclosing_scope as _smallest_enclosing_scope,
 )
 
 log = logging.getLogger("dimfort.lsp")

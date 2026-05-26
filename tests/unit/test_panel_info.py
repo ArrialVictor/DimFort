@@ -18,7 +18,7 @@ pygls = pytest.importorskip("pygls")  # noqa: F841
 
 
 def test_marker_token():
-    from dimfort.lsp.server import _marker_token
+    from dimfort.lsp.markers import _marker_token
     assert _marker_token("🟢") == "ok"
     assert _marker_token("🟡") == "warn"
     assert _marker_token("🔴") == "error"
@@ -43,7 +43,7 @@ def _materialise(tmp_path: Path) -> Path:
 
 def test_find_expression_root_picks_smallest_enclosing(tmp_path: Path):
     from dimfort.core import ts_parser as _ts
-    from dimfort.lsp.server import _find_expression_root
+    from dimfort.lsp.tree_nav import _find_expression_root
 
     src = _materialise(tmp_path)
     tree = _ts.parse_text(src.read_bytes())
@@ -56,7 +56,7 @@ def test_find_expression_root_picks_smallest_enclosing(tmp_path: Path):
 
 def test_find_expression_root_returns_none_off_expression(tmp_path: Path):
     from dimfort.core import ts_parser as _ts
-    from dimfort.lsp.server import _find_expression_root
+    from dimfort.lsp.tree_nav import _find_expression_root
 
     src = _materialise(tmp_path)
     tree = _ts.parse_text(src.read_bytes())
@@ -71,7 +71,8 @@ def test_build_expression_tree_shape(tmp_path: Path):
     """
     from dimfort.core import ts_parser as _ts
     from dimfort.core.multifile import check_files
-    from dimfort.lsp.server import _build_expression_tree, _build_ts_ctx
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
 
     src = _materialise(tmp_path)
     result = check_files([src])
@@ -106,7 +107,8 @@ def test_assignment_with_matching_units_marks_ok(tmp_path: Path):
     fix routes through ``_assignment_homogeneity`` instead."""
     from dimfort.core import ts_parser as _ts
     from dimfort.core.multifile import check_files
-    from dimfort.lsp.server import _build_expression_tree, _build_ts_ctx
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
 
     src = tmp_path / "match.f90"
     src.write_text(
@@ -142,7 +144,8 @@ def test_panel_scale_marker_reflects_s001(tmp_path: Path):
     from dimfort.core import ts_parser as _ts
     from dimfort.core.multifile import check_files
     from dimfort.lsp import server
-    from dimfort.lsp.server import _build_expression_tree, _build_ts_ctx
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
 
     src = tmp_path / "scale_panel.f90"
     src.write_text(
@@ -196,7 +199,8 @@ def test_panel_marker_matrix_diagnostic_driven(tmp_path: Path):
     from dimfort.core import ts_parser as _ts
     from dimfort.core.multifile import check_files
     from dimfort.lsp import server
-    from dimfort.lsp.server import _build_expression_tree, _build_ts_ctx
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
 
     src = tmp_path / "matrix.f90"
     src.write_text(
@@ -237,7 +241,8 @@ def test_panel_marker_s003_is_error(tmp_path: Path):
     from dimfort.core import ts_parser as _ts
     from dimfort.core.multifile import check_files
     from dimfort.lsp import server
-    from dimfort.lsp.server import _build_expression_tree, _build_ts_ctx
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
 
     src = tmp_path / "s003_panel.f90"
     src.write_text(
@@ -332,11 +337,9 @@ def test_assignment_short_hover_reflects_nested_scale(tmp_path: Path):
     from dimfort.core import ts_parser as _ts
     from dimfort.core.multifile import check_files
     from dimfort.lsp import server
-    from dimfort.lsp.server import (
-        _build_ts_ctx,
-        _interesting_children,
-        _render_assignment_short,
-    )
+    from dimfort.lsp.hover import _render_assignment_short
+    from dimfort.lsp.tree_access import _build_ts_ctx
+    from dimfort.lsp.tree_nav import _interesting_children
 
     src = tmp_path / "scale_short.f90"
     src.write_text(
@@ -384,12 +387,10 @@ def test_panel_marker_matches_assignment_homogeneity(tmp_path: Path):
     from dimfort.core import ts_checker
     from dimfort.core import ts_parser as _ts
     from dimfort.core.multifile import check_files
-    from dimfort.lsp.server import (
-        _VERDICT_TO_MARKER,
-        _build_expression_tree,
-        _build_ts_ctx,
-        _marker_token,
-    )
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.markers import _marker_token
+    from dimfort.lsp.server import _VERDICT_TO_MARKER
+    from dimfort.lsp.tree_access import _build_ts_ctx
 
     src = tmp_path / "vmatch.f90"
     src.write_text(
@@ -421,7 +422,8 @@ def test_build_scope_vars_lists_each_declared_name(tmp_path: Path):
     from dimfort.core import ts_parser as _ts
     from dimfort.core.annotations import scan_file
     from dimfort.core.multifile import check_files
-    from dimfort.lsp.server import _build_scope_vars, _smallest_enclosing_scope
+    from dimfort.lsp.expr_tree import _build_scope_vars
+    from dimfort.lsp.tree_nav import _smallest_enclosing_scope
 
     src = _materialise(tmp_path)
     result = check_files([src])
@@ -454,7 +456,7 @@ def test_find_expression_root_promotes_callee_to_call(tmp_path: Path):
     callee identifier (which has no unit and renders as a lone leaf).
     An argument identifier under the same call is left as-is."""
     from dimfort.core import ts_parser as _ts
-    from dimfort.lsp.server import _find_expression_root
+    from dimfort.lsp.tree_nav import _find_expression_root
 
     line = "  a = f(a)"
     src = (
@@ -485,7 +487,7 @@ def test_find_expression_root_promotes_subroutine_callee_to_call(tmp_path: Path)
     tree). The leading ``call`` keyword means the callee does not start
     where the statement does, so the byte-offset check must handle it."""
     from dimfort.core import ts_parser as _ts
-    from dimfort.lsp.server import _find_expression_root
+    from dimfort.lsp.tree_nav import _find_expression_root
 
     line = "  call s2(a)"
     src = (
@@ -511,11 +513,9 @@ def test_build_expression_tree_call_includes_argument(tmp_path: Path):
     return unit) with its argument(s) as children, not a childless leaf."""
     from dimfort.core import ts_parser as _ts
     from dimfort.core.multifile import check_files
-    from dimfort.lsp.server import (
-        _build_expression_tree,
-        _build_ts_ctx,
-        _find_expression_root,
-    )
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
+    from dimfort.lsp.tree_nav import _find_expression_root
 
     line = "  b = f(a)"
     src = tmp_path / "call.f90"
@@ -555,7 +555,8 @@ def test_build_scope_vars_marks_unparseable_as_error(tmp_path: Path):
     from dimfort.core import ts_parser as _ts
     from dimfort.core.annotations import scan_file
     from dimfort.core.multifile import check_files
-    from dimfort.lsp.server import _build_scope_vars, _smallest_enclosing_scope
+    from dimfort.lsp.expr_tree import _build_scope_vars
+    from dimfort.lsp.tree_nav import _smallest_enclosing_scope
 
     src = tmp_path / "e.f90"
     src.write_text(
@@ -602,7 +603,8 @@ def test_build_scope_vars_module_level(tmp_path: Path):
     from dimfort.core import ts_parser as _ts
     from dimfort.core.annotations import scan_file
     from dimfort.core.multifile import check_files
-    from dimfort.lsp.server import _build_scope_vars, _smallest_enclosing_scope
+    from dimfort.lsp.expr_tree import _build_scope_vars
+    from dimfort.lsp.tree_nav import _smallest_enclosing_scope
 
     src = tmp_path / "mod.f90"
     src.write_text(
@@ -641,7 +643,8 @@ def test_build_scope_vars_drops_half_typed_declaration(tmp_path: Path):
     from dimfort.core import ts_parser as _ts
     from dimfort.core.annotations import scan_text
     from dimfort.core.multifile import check_files
-    from dimfort.lsp.server import _build_scope_vars, _smallest_enclosing_scope
+    from dimfort.lsp.expr_tree import _build_scope_vars
+    from dimfort.lsp.tree_nav import _smallest_enclosing_scope
 
     # Build a valid file first so the workset has attachments, then
     # scan a half-typed variant directly.
@@ -683,7 +686,7 @@ def test_enclosing_scopes_stacks_module_then_subroutine(tmp_path: Path):
     """A cursor inside a module-contained subroutine yields both scopes,
     outermost (module) first."""
     from dimfort.core import ts_parser as _ts
-    from dimfort.lsp.server import _enclosing_scopes
+    from dimfort.lsp.tree_nav import _enclosing_scopes
 
     src = tmp_path / "nested.f90"
     src.write_text(
@@ -708,11 +711,8 @@ def test_build_scope_vars_program_level(tmp_path: Path):
     from dimfort.core import ts_parser as _ts
     from dimfort.core.annotations import scan_file
     from dimfort.core.multifile import check_files
-    from dimfort.lsp.server import (
-        _build_scope_vars,
-        _scope_header,
-        _smallest_enclosing_scope,
-    )
+    from dimfort.lsp.expr_tree import _build_scope_vars
+    from dimfort.lsp.tree_nav import _scope_header, _smallest_enclosing_scope
 
     src = tmp_path / "prog.f90"
     src.write_text(

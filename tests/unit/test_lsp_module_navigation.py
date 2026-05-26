@@ -14,6 +14,7 @@ pytest.importorskip("pygls")
 
 from dimfort.core import unit_config  # noqa: F401
 from dimfort.core.multifile import check_files
+from dimfort.lsp import hover
 from dimfort.lsp import server as _server
 
 
@@ -26,7 +27,7 @@ def _drive(files: list[Path]):
 
 
 def _hover(uri: str, line_1based: int, col_1based: int):
-    return _server._resolve_hover(uri, line_1based, col_1based, None)
+    return hover._resolve_hover(uri, line_1based, col_1based, None)
 
 
 def _goto_definition_inline(uri: str, line_0based: int, col_0based: int):

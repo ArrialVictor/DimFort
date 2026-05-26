@@ -23,10 +23,10 @@ from dimfort.core.diagnostics import (
 )
 from dimfort.lsp.server import (
     _initialize,
-    _normalized_unit,
     _to_lsp_diagnostic,
-    _uri_to_path,
 )
+from dimfort.lsp.tree_access import _uri_to_path
+from dimfort.lsp.tree_nav import _normalized_unit
 
 
 def _diag(line, col, code="H001", severity=Severity.ERROR, msg="msg"):
