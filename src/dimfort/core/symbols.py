@@ -52,6 +52,12 @@ CODES: dict[str, CodeSpec] = {
         "U020", Severity.INFO,
         "RHS unit assumed via @unit_assume (derivation suppressed)",
     ),
+    # X-codes: cross-site (whole-symbol) findings produced on demand by the
+    # ``interactions`` query, not by the per-statement ``check`` pass.
+    "X001": CodeSpec(
+        "X001", Severity.ERROR,
+        "conflicting unit claims across a symbol's use-sites",
+    ),
 }
 
 

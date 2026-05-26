@@ -2457,7 +2457,7 @@ def _declarator_leading_identifier(node: Node, source: bytes) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def check(
+def _build_ctx(
     tree: Tree,
     var_units: dict[str, str | Unit],
     *,
@@ -2468,16 +2468,16 @@ def check(
     field_units: dict[tuple[str, str], str | Unit] | None = None,
     var_units_by_scope: dict[tuple[str | None, str], str | Unit] | None = None,
     routine_scopes: tuple[tuple[int, int, str], ...] = (),
-    out_autocast_events: list[AutocastEvent] | None = None,
     assumes: dict[int, tuple[str, str, int]] | None = None,
     affine_conversions: dict[int, tuple[str, str, int]] | None = None,
     scale_mode: bool = False,
-) -> list[Diagnostic]:
-    """Run the checker over a tree-sitter-parsed file.
+) -> tuple[_Ctx, list[Diagnostic]]:
+    """Build the static :class:`_Ctx` for one file's pass.
 
-    Signature parallels :func:`ast_checker.check` so the same callers
-    can swap implementations. Tree-sitter requires the original
-    ``source`` bytes alongside the tree to extract identifier text.
+    Shared by :func:`check` and :func:`dimfort.core.interactions` so the
+    fragile table-parsing / collector setup lives in exactly one place.
+    Returns ``(ctx, assume_diags)`` — ``assume_diags`` carries the U002s
+    raised by un-parseable ``@unit_assume`` units (empty for most files).
     """
     active_table = table if table is not None else _units_mod.DEFAULT_TABLE
     if active_table is None:
@@ -2566,6 +2566,45 @@ def check(
         assumes=parsed_assumes,
         affine_conversions=dict(affine_conversions or {}),
         scope_aware=var_units_by_scope is not None,
+        scale_mode=scale_mode,
+    )
+    return ctx, assume_diags
+
+
+def check(
+    tree: Tree,
+    var_units: dict[str, str | Unit],
+    *,
+    source: bytes,
+    file: str | Path,
+    table: UnitTable | None = None,
+    signatures: dict[str, FuncSig] | None = None,
+    field_units: dict[tuple[str, str], str | Unit] | None = None,
+    var_units_by_scope: dict[tuple[str | None, str], str | Unit] | None = None,
+    routine_scopes: tuple[tuple[int, int, str], ...] = (),
+    out_autocast_events: list[AutocastEvent] | None = None,
+    assumes: dict[int, tuple[str, str, int]] | None = None,
+    affine_conversions: dict[int, tuple[str, str, int]] | None = None,
+    scale_mode: bool = False,
+) -> list[Diagnostic]:
+    """Run the checker over a tree-sitter-parsed file.
+
+    Signature parallels :func:`ast_checker.check` so the same callers
+    can swap implementations. Tree-sitter requires the original
+    ``source`` bytes alongside the tree to extract identifier text.
+    """
+    ctx, assume_diags = _build_ctx(
+        tree,
+        var_units,
+        source=source,
+        file=file,
+        table=table,
+        signatures=signatures,
+        field_units=field_units,
+        var_units_by_scope=var_units_by_scope,
+        routine_scopes=routine_scopes,
+        assumes=assumes,
+        affine_conversions=affine_conversions,
         scale_mode=scale_mode,
     )
     out: list[Diagnostic] = []

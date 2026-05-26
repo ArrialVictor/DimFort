@@ -95,6 +95,7 @@ from dimfort.core.diagnostics import (
     Severity,
     set_severity_overrides,
 )
+from dimfort.core.interactions import collect_interactions
 from dimfort.core.multifile import WorksetResult, check_files
 from dimfort.core.symbols import FuncSig, ModuleExports
 from dimfort.core.units import Unit, UnitExpr
@@ -2916,6 +2917,107 @@ def _panel_info(ls: LanguageServer, params) -> dict | None:
         "routineVars": innermost_vars,
         "diagnostics": diagnostics,
         "fileDiagnosticCounts": file_diagnostic_counts,
+    }
+
+
+def _identifier_at(tree, source: bytes, line_1based: int, col_1based: int) -> str | None:
+    """Return the text of the smallest ``identifier`` node at the cursor."""
+    best = None
+    best_size = None
+    for n in _ts.walk(tree.root_node):
+        if n.type != "identifier":
+            continue
+        sp = _ts.position_for(n)
+        ep = _ts.end_position_for(n)
+        if (sp.line, sp.column) <= (line_1based, col_1based) <= (ep.line, ep.column):
+            size = n.end_byte - n.start_byte
+            if best_size is None or size < best_size:
+                best, best_size = n, size
+    if best is None:
+        return None
+    return source[best.start_byte:best.end_byte].decode("utf-8", "replace")
+
+
+def _serialize_interaction_point(p) -> dict:
+    return {
+        "file": p.file,
+        "line": p.line,
+        "column": p.column,
+        "scope": p.scope,
+        "kind": p.kind,            # declares | contributes | requires | uses
+        "unit": p.unit_str,        # rendered unit, or "?" when unknown
+        "snippet": p.snippet,
+    }
+
+
+@server.feature("dimfort/interactions")
+def _interactions(ls: LanguageServer, params) -> dict | None:
+    """Cross-site unit analysis for the symbol under the cursor.
+
+    Resolves the identifier at ``(uri, position)`` (or an explicit
+    ``symbol`` param), then runs :func:`collect_interactions` over the
+    cached workset and returns the report. See
+    docs/design/interaction-points.md.
+    """
+    def _get(obj, key):
+        if hasattr(obj, key):
+            return getattr(obj, key)
+        if isinstance(obj, dict):
+            return obj.get(key)
+        return None
+
+    text_document = _get(params, "textDocument") or _get(params, "text_document")
+    position = _get(params, "position")
+    uri = _get(text_document, "uri") if text_document is not None else None
+    explicit_symbol = _get(params, "symbol")
+    scale = bool(_get(params, "scale"))
+
+    with _last_result_lock:
+        result = _last_result
+    if result is None:
+        return None
+
+    symbol = explicit_symbol
+    if symbol is None:
+        if uri is None or position is None:
+            return None
+        found = _trees_for(uri)
+        if found is None:
+            return None
+        _path, cached_tree, cached_source = found
+        try:
+            doc = ls.workspace.get_text_document(uri)
+            source_bytes = doc.source.encode("utf-8")
+            tree = _ts.parse_text(source_bytes)
+        except Exception:
+            tree, source_bytes = cached_tree, cached_source
+        line = _get(position, "line")
+        character = _get(position, "character")
+        if line is None or character is None:
+            return None
+        symbol = _identifier_at(tree, source_bytes, int(line) + 1, int(character) + 1)
+    if not symbol:
+        return None
+
+    report = collect_interactions(result, symbol, scale=scale)
+
+    conflicts = [
+        {
+            "code": c.diagnostic.code,
+            "message": c.diagnostic.message,
+            "file": c.diagnostic.file,
+            "line": c.diagnostic.start.line,
+            "column": c.diagnostic.start.column,
+            "site": _serialize_interaction_point(c.site),
+            "reference": _serialize_interaction_point(c.reference),
+        }
+        for c in report.conflicts
+    ]
+    return {
+        "symbol": report.symbol,
+        "points": [_serialize_interaction_point(p) for p in report.points],
+        "conflicts": conflicts,
+        "hasConflict": bool(conflicts),
     }
 
 

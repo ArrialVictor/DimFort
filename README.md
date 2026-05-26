@@ -78,8 +78,15 @@ CPP `#`-directives DimFort shells out to the system `cpp` if
 dimfort check path/to/file.f90       # check a single file
 dimfort check path/to/project/       # walk a directory recursively
 dimfort check path/...  --summary    # also print a per-file H/U count table
+dimfort interactions <var> path/...  # cross-site unit report for one variable
 dimfort lsp                          # start the language server (stdio)
 ```
+
+`interactions` is an on-demand query: for a single variable it lists every
+site that reads or writes it across the workset — grouped into Declaration /
+Write / Read / Undetermined read, each with the unit that site implies — and
+emits `X001` when two sites make conflicting unit *claims* (which the
+per-statement `check` can't see, since it fires even on unannotated variables).
 
 Exit code is `0` if no errors, `1` if any error-severity diagnostic was
 produced, `2` for usage / file / config errors. Warnings alone do not
@@ -97,6 +104,9 @@ Diagnostic codes split into two families:
 - **U-series** (`U001`, `U002`, `U005`–`U007`, `U010`, `U-conflict`) —
   annotation / metadata problems: something's wrong with the
   annotations themselves, not the math.
+- **X-series** (`X001`) — cross-site findings produced only by
+  `dimfort interactions`, not by the `check` pass: a variable whose
+  use-sites make conflicting unit claims.
 
 Full reference: [docs/usage.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/usage.md).
 The wrapper-rule specification — including the rule IDs surfaced by
