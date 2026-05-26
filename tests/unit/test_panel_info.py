@@ -65,6 +65,29 @@ def test_find_expression_root_returns_none_off_expression(tmp_path: Path):
     assert node is None
 
 
+def test_find_expression_root_skips_unparsed_region(tmp_path: Path):
+    """In a region tree-sitter couldn't parse, the recovered node is malformed
+    (bleeds in adjacent lines), so the panel must show no expression tree there
+    rather than a confident-but-wrong one. The clean LHS identifier still
+    resolves."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.lsp.tree_nav import _find_expression_root
+
+    src = (
+        "subroutine s\n"               # 1
+        "  real :: a  !< @unit{m}\n"   # 2
+        "  a = * / +\n"                # 3 unparseable RHS
+        "  a = 1.0\n"                  # 4 (keeps the routine parseable)
+        "end subroutine\n"
+    ).encode()
+    tree = _ts.parse_text(src)
+    # Cursor on the malformed RHS (the ``*``) → suppressed.
+    assert _find_expression_root(tree, 3, 7) is None
+    # Cursor on the LHS ``a`` → still resolves (clean identifier).
+    lhs = _find_expression_root(tree, 3, 3)
+    assert lhs is not None and lhs.type == "identifier"
+
+
 def test_build_expression_tree_shape(tmp_path: Path):
     """Build a structured tree for ``z = x * y`` and confirm the
     shape: an assignment with two operand children and a math RHS.
