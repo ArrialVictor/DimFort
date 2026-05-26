@@ -76,7 +76,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
 
 from lsprotocol import types as lsp
 from pygls.lsp.server import LanguageServer
@@ -88,7 +87,6 @@ from dimfort.core import (
     unit_config,  # noqa: F401  populates DEFAULT_TABLE
 )
 from dimfort.core import ts_parser as _ts
-from dimfort.core import units as _units_mod
 from dimfort.core._source_io import FORTRAN_EXTS as _FORTRAN_EXTS
 from dimfort.core.cache_store import CacheStore
 from dimfort.core.diagnostics import (
@@ -97,7 +95,7 @@ from dimfort.core.diagnostics import (
     set_severity_overrides,
 )
 from dimfort.core.interactions import collect_interactions
-from dimfort.core.multifile import WorksetResult, check_files
+from dimfort.core.multifile import check_files
 from dimfort.core.units import Unit
 from dimfort.core.workspace_index import (
     resolve_workset,
@@ -119,6 +117,7 @@ from dimfort.lsp.markers import (
     _worst_token,
 )
 from dimfort.lsp.state import DEFAULT_EXTERNAL_MODULES, state
+from dimfort.lsp.tree_access import _build_ts_ctx, _trees_for, _uri_to_path
 from dimfort.lsp.tree_nav import (
     _SKIP_TOKEN_TYPES,
     _enclosing_scopes,
@@ -280,22 +279,6 @@ def _uri_for_path(path: Path) -> str:
 # ---------------------------------------------------------------------------
 # URI / position helpers
 # ---------------------------------------------------------------------------
-
-
-def _uri_to_path(uri: str) -> Path | None:
-    if not uri.startswith("file:"):
-        return None
-    path = unquote(urlparse(uri).path)
-    # On Windows, a URI like ``file:///C:/Users/...`` decodes to
-    # ``/C:/Users/...`` — the leading slash is a URL-path artefact,
-    # not part of the filesystem path. ``Path("/C:/Users/...")`` on
-    # Windows doesn't equal ``Path("C:/Users/...")``, so a workset
-    # keyed by the latter misses a lookup keyed by the former. Detect
-    # the leading-slash-before-drive-letter pattern and strip it.
-    # POSIX paths (no drive letter) are untouched.
-    if len(path) >= 3 and path[0] == "/" and path[2] == ":" and path[1].isalpha():
-        path = path[1:]
-    return Path(path)
 
 
 def _to_lsp_diagnostic(d: Diagnostic) -> lsp.Diagnostic:
@@ -486,22 +469,6 @@ def _is_current(uri: str, version: int) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _trees_for(uri: str) -> tuple[Path, object, bytes] | None:
-    """Return ``(resolved_path, tree, source_bytes)`` for ``uri`` if loaded."""
-    with state.last_result_lock:
-        result = state.last_result
-    if result is None:
-        return None
-    path = _uri_to_path(uri)
-    if path is None:
-        return None
-    entry = result.trees.get(path.resolve())
-    if entry is None:
-        return None
-    tree, source = entry
-    return path.resolve(), tree, source
-
-
 def _ensure_uri_loaded(ls: LanguageServer, uri: str) -> None:
     """Re-publish for ``uri`` if its tree isn't in ``state.last_result``.
 
@@ -527,54 +494,6 @@ def _ensure_uri_loaded(ls: LanguageServer, uri: str) -> None:
         return
     with state.check_lock:
         _publish_for_uri(ls, uri)
-
-
-def _build_ts_ctx(
-    result: WorksetResult, source: bytes, file: str,
-    *, path: Path | None = None,
-) -> ts_checker._Ctx:
-    """Spin up a ts_checker ``_Ctx`` pre-loaded with the workset's tables.
-
-    Reused by hover / inlay so identifier-to-unit lookup goes through
-    the same logic as the diagnostic pipeline — no second source of
-    truth for derived-type / use-chain resolution.
-
-    When ``path`` is provided we also splice in the per-file scoped
-    annotation table and routine byte-ranges, so ``ctx.unit_for(name,
-    byte_offset)`` honours the cursor's enclosing subroutine. Without
-    ``path`` we degrade to flat ``merged_var_units`` (same behaviour
-    as before scope-aware lookups existed).
-    """
-    var_units_by_scope: dict[tuple[str | None, str], Unit] = {}
-    routine_scopes: tuple[tuple[int, int, str], ...] = ()
-    if path is not None:
-        var_units_by_scope = result.var_units_by_scope.get(path, {})
-        att = result.attachments.get(path)
-        if att is not None:
-            routine_scopes = att.routine_scopes
-    return ts_checker._Ctx(
-        file=file,
-        var_units=result.merged_var_units,
-        table=_units_mod.DEFAULT_TABLE,
-        signatures=result.signatures,
-        # var_types / type_field_types are collected per-tree on demand
-        # by callers that need member-access resolution.
-        var_types={},
-        type_field_types={},
-        field_units=result.merged_field_units,
-        var_units_by_scope=var_units_by_scope,
-        routine_scopes=routine_scopes,
-        _scope_starts=tuple(r[0] for r in routine_scopes),
-        # With a path we have the per-file scoped table (incl. use-imports
-        # under the (None, name) layer): resolve scope-aware so a name
-        # resolves to its OWN routine's unit, never a same-named symbol
-        # from elsewhere (finding #018). Without a path, degrade to flat.
-        scope_aware=path is not None,
-        # Honour the project's opt-in scale mode so on-demand features
-        # (hover / panel / re-check) reason consistently with the
-        # diagnostic pipeline. Default off ⇒ dimension-only.
-        scale_mode=state.scale_mode,
-    )
 
 
 # ---------------------------------------------------------------------------
