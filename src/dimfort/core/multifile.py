@@ -52,7 +52,7 @@ from dimfort.core.symbols import (
     apply_use_clauses,
     deps_consumed_from_uses,
 )
-from dimfort.core.units import Unit, UnitError, UnitTable
+from dimfort.core.units import Unit, UnitError, UnitExpr, UnitTable
 
 # ---------------------------------------------------------------------------
 # Public result types
@@ -77,14 +77,14 @@ class WorksetResult:
     trees: dict[Path, tuple[Tree, bytes]] = field(default_factory=dict)
     # Per-file parsed unit table (for hover formatting); same key set
     # as ``trees``.
-    merged_var_units: dict[str, Unit] = field(default_factory=dict)
-    merged_field_units: dict[tuple[str, str], Unit] = field(default_factory=dict)
+    merged_var_units: dict[str, UnitExpr] = field(default_factory=dict)
+    merged_field_units: dict[tuple[str, str], UnitExpr] = field(default_factory=dict)
     # Per-file scope-aware unit table. Key: file path → (scope_lc|None,
     # name) → Unit. Consumed by LSP hover/inlay so identifier lookups
     # honour the enclosing subroutine instead of falling back to the
     # flat merged_var_units (which is first-seen-wins across the
     # workset).
-    var_units_by_scope: dict[Path, dict[tuple[str | None, str], Unit]] = field(
+    var_units_by_scope: dict[Path, dict[tuple[str | None, str], UnitExpr]] = field(
         default_factory=dict
     )
     # Function / subroutine signatures resolved across the whole workset.

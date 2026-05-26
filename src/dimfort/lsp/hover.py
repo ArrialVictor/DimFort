@@ -47,7 +47,7 @@ from dimfort.lsp.tree_nav import (
 if TYPE_CHECKING:
     from dimfort.core.multifile import WorksetResult
     from dimfort.core.symbols import FuncSig
-    from dimfort.core.units import Unit, UnitExpr
+    from dimfort.core.units import UnitExpr
 
 # A rendered unit-algebra tree row: (label, unit-or-None, marker, rule-tag).
 # ``unit`` is ``None`` only for the synthetic assignment root row (a statement,
@@ -1045,7 +1045,7 @@ def _render_ast_tree(
     *,
     prefix: str, is_last: bool, is_root: bool,
     rows: list[_TreeRow],
-    target_unit_for_literal: Unit | None = None,
+    target_unit_for_literal: UnitExpr | None = None,
 ) -> None:
     """Recursively collect ``(label, unit, rule)`` rows for the tree.
 
