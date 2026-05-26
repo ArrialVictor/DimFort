@@ -190,6 +190,39 @@ def test_repeated_use_on_one_line_reports_one_conflict(tmp_path):
     assert len(line6) == 1
 
 
+def test_literal_init_write_adopts_declared_unit_no_conflict(tmp_path):
+    # `x = 0.0` is unit-agnostic (R4.4 autocast); `dimfort check` stays silent,
+    # so the interactions query must NOT manufacture an X001 against x's
+    # declared unit. The write adopts the declared unit, not dimensionless {1}.
+    src = (
+        "subroutine s(x, y)\n"
+        "  real :: x  !< @unit{1/K}\n"
+        "  real :: y  !< @unit{1/K}\n"
+        "  x = 0.0\n"
+        "  y = x\n"
+        "end subroutine\n"
+    )
+    report = _report(tmp_path, src, "x")
+    assert report.conflicts == ()
+    writes = [p for p in report.points if p.kind == CONTRIBUTES]
+    assert writes and writes[0].unit_str == "1/K"
+
+
+def test_literal_init_to_unannotated_var_makes_no_claim(tmp_path):
+    # `x = 0.0` with x unannotated claims nothing, so a read that requires a
+    # specific unit must not conflict with the literal write.
+    src = (
+        "subroutine s(x, y)\n"
+        "  real :: x\n"
+        "  real :: y  !< @unit{m/s}\n"
+        "  x = 0.0\n"
+        "  y = x\n"
+        "end subroutine\n"
+    )
+    report = _report(tmp_path, src, "x")
+    assert report.conflicts == ()
+
+
 def test_no_conflict_when_constraints_agree(tmp_path):
     src = (
         "subroutine s(x, y, z)\n"
