@@ -9,6 +9,7 @@ holding ``state.ts_handler_lock`` — delegates the traversal here.
 from __future__ import annotations
 
 from lsprotocol import types as lsp
+from tree_sitter import Node
 
 from dimfort.core import ts_checker
 from dimfort.core.units import Unit
@@ -39,7 +40,7 @@ def resolve(params: lsp.InlayHintParams) -> list[lsp.InlayHint] | None:
     seen: set[tuple[int, int]] = set()
     hints: list[lsp.InlayHint] = []
 
-    def _emit(node, unit: Unit | None) -> None:
+    def _emit(node: Node, unit: Unit | None) -> None:
         if unit is None:
             return
         # Anchor on the node's last column so the hint sits flush against

@@ -29,5 +29,7 @@ jobs:
           pip install -e ".[dev,lsp]"
       - name: Lint
         run: ruff check .
+      - name: Type-check
+        run: mypy
       - name: Test
         run: pytest --cov=dimfort --cov-fail-under=75

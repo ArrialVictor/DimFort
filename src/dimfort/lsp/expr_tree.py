@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import contextlib
 import re
+from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from tree_sitter import Node
 
 from dimfort.core import ts_checker
 from dimfort.core import ts_parser as _ts
@@ -26,6 +30,10 @@ from dimfort.lsp.tree_nav import (
     _scope_name,
     _span_within,
 )
+
+if TYPE_CHECKING:
+    from dimfort.core.annotations import DeclarationSite
+    from dimfort.core.attach import AttachmentResult
 
 # The unit-consistency family — the only codes that colour a marker.
 _MARKER_DIAG_CODES = frozenset(
@@ -45,7 +53,7 @@ _SEVERITY_EMOJI = {
 _NO_UNIT_NODE_TYPES = frozenset({"assignment_statement", "relational_expression"})
 
 
-def _diags_for_ctx(ctx) -> tuple[Diagnostic, ...]:
+def _diags_for_ctx(ctx: ts_checker.Ctx) -> tuple[Diagnostic, ...]:
     """This file's diagnostics from the last cached workspace result, keyed
     by ``ctx.file``. The single source the markers read — no per-render
     threading: hover/panel already populate ``state.last_result`` (and the
@@ -65,13 +73,15 @@ def _diags_for_ctx(ctx) -> tuple[Diagnostic, ...]:
             p = Path(ctx.file).resolve()
         except (OSError, TypeError, ValueError):
             return ()
-        # frozen/slotted ctx — skip the cache, correctness unaffected
+        # frozen/slotted ctx — skip the cache, correctness unaffected.
+        # ``_resolved_file`` is an optional render-time cache, not a declared
+        # _Ctx field, so stash it dynamically.
         with contextlib.suppress(AttributeError, TypeError):
-            ctx._resolved_file = p
+            ctx._resolved_file = p  # type: ignore[attr-defined]
     return tuple(result.diagnostics.get(p, ()))
 
 
-def _self_marker(node, kid_nodes, ctx, source: bytes) -> str:
+def _self_marker(node: Node, kid_nodes: list[Node], ctx: ts_checker.Ctx, source: bytes) -> str:
     """The node's own marker (pre-aggregation): resolution-axis base worst-of
     the consistency-family diagnostics that *own* this node. A diagnostic owns
     the node when its range sits within the node's span but not within any
@@ -98,7 +108,7 @@ def _self_marker(node, kid_nodes, ctx, source: bytes) -> str:
     return worst
 
 
-def _node_marker(node, ctx, source: bytes) -> str:
+def _node_marker(node: Node, ctx: ts_checker.Ctx, source: bytes) -> str:
     """Aggregated marker for a node: its own marker worst-of its children,
     recursively. Used where rows are emitted top-down (the detailed-hover
     tree, the short hovers) and built child payloads aren't on hand.
@@ -111,7 +121,9 @@ def _node_marker(node, ctx, source: bytes) -> str:
     return m
 
 
-def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
+def _build_expression_tree(
+    node: Node | None, ctx: ts_checker.Ctx, source: bytes
+) -> dict[str, Any] | None:
     """Build a structured ExpressionNode for the panel.
 
     Recursive: each node carries its resolved unit, the rule ID that
@@ -138,8 +150,8 @@ def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
     rule_id = snap[-1].rule_id if snap else None
 
     if node.type in ("identifier", "number_literal", "string_literal", "complex_literal"):
-        kids: list = []
-        child_nodes = []
+        kids: list[Node] = []
+        child_nodes: list[dict[str, Any]] = []
     else:
         # ``_interesting_children`` already drops the callee identifier and
         # expands the argument list for calls, so each argument becomes a
@@ -147,10 +159,10 @@ def _build_expression_tree(node, ctx, source: bytes) -> dict | None:
         # first child: that used to remove the leading *argument* when it
         # was a bare identifier, collapsing calls to a childless leaf.
         kids = _interesting_children(node)
-        child_nodes = [_build_expression_tree(c, ctx, source) for c in kids]
-        child_nodes = [c for c in child_nodes if c is not None]
+        built = [_build_expression_tree(c, ctx, source) for c in kids]
+        child_nodes = [c for c in built if c is not None]
 
-    payload = {
+    payload: dict[str, Any] = {
         "label": _node_label(node, source),
         "unit": format_unit(unit) if unit is not None else None,
         "marker": "ok",  # set below
@@ -191,9 +203,12 @@ _ROUTINE_SCOPE_TYPES = ("subroutine", "function")
 
 
 def _build_scope_vars(
-    scope_node, scan_decls, attached, source: bytes,
+    scope_node: Node | None,
+    scan_decls: Iterable[DeclarationSite] | None,
+    attached: AttachmentResult | None,
+    source: bytes,
     unparseable: frozenset[str] = frozenset(),
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Build the declarations table for the enclosing scope.
 
     Returns one row per declared variable visible in ``scope_node``,
@@ -225,7 +240,7 @@ def _build_scope_vars(
     ep = _ts.end_position_for(scope_node).line
     source_lines = source.decode("utf-8", "replace").splitlines()
 
-    def _name_on_first_line(decl) -> bool:
+    def _name_on_first_line(decl: DeclarationSite) -> bool:
         """Robustness guard: tree-sitter error recovery on a half-typed
         declaration (``real ::`` before a name is typed) scavenges an
         identifier from the *following* statement into ``decl.names``,
@@ -244,7 +259,7 @@ def _build_scope_vars(
             for n in decl.names
         )
 
-    out: list[dict] = []
+    out: list[dict[str, Any]] = []
     for decl in scan_decls:
         if decl.enclosing_type is not None:
             continue
@@ -271,7 +286,9 @@ def _build_scope_vars(
             out.append({
                 "name": vname,
                 "unit": unit_text if unit_text else None,
-                "unitNormalized": _normalized_unit(unit_text) if kind == "annotated" else None,
+                "unitNormalized": (
+                    _normalized_unit(unit_text) if unit_text and kind == "annotated" else None
+                ),
                 "line": decl.line_start,
                 "kind": kind,
             })
