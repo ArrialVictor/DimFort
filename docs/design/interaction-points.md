@@ -99,8 +99,12 @@ unit **down** through arithmetic — the mechanical version of the manual trace:
   `signature(foo).arg_units[i]` for the argument position `i` that contains `n`
   (only when the callee has a known signature — array indexing has none).
 - **additive** parent (`a + b`, `a - b`): if a target propagated from above is
-  known, `n`'s term must equal it; else `n` must equal the *sibling* operand's
-  resolved unit. (This is what pins `invtau_phaserelax` from `+ invtau_e`.)
+  known, `n`'s term must equal it; else the unit is pinned by *any other term in
+  the enclosing `+`/`-` chain that resolves* — a bare literal (`1.`) anchors the
+  whole sum to `{1}`, so a single unknown inside a sibling term can't blind us.
+  (This pins `invtau_phaserelax` from `+ invtau_e`, and the `dzfice` term in a
+  `1. + … - coeff*dzfice` denominator from the `1.` literal.) Only the term
+  containing `n` is skipped, to avoid the circular "`n` requires its own unit."
 - **multiplicative** parent (`a * b`, `a / b`): solve through, *only if* the
   enclosing target is known and the sibling factor resolves:
   - `n * s = R` ⇒ `n = R / s`

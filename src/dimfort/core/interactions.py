@@ -153,6 +153,33 @@ def _unit_div(a: UnitExpr | None, b: UnitExpr | None) -> Unit | None:
     return None
 
 
+def _additive_root(node: Node) -> Node:
+    """Walk up through a (left/right-nested) ``+``/``-`` chain to its top node."""
+    root = node
+    while True:
+        par = root.parent
+        if (
+            par is not None and par.type == "math_expression"
+            and _math_op(par) in ("+", "-")
+        ):
+            root = par
+        else:
+            return root
+
+
+def _additive_terms(node: Node) -> list[Node]:
+    """Flatten a ``+``/``-`` expression into its individual operand subtrees."""
+    if node.type == "math_expression" and _math_op(node) in ("+", "-"):
+        left, right = _math_operands(node)
+        out: list[Node] = []
+        if left is not None:
+            out += _additive_terms(left)
+        if right is not None:
+            out += _additive_terms(right)
+        return out
+    return [node]
+
+
 def _required_unit_of(node: Node, ctx: _Ctx, source: bytes) -> UnitExpr | None:
     """Unit the *position* of ``node`` is forced to have by its context.
 
@@ -199,7 +226,18 @@ def _required_unit_of(node: Node, ctx: _Ctx, source: bytes) -> UnitExpr | None:
             req = _required_unit_of(p, ctx, source)
             if req is not None:
                 return req
-            return _resolve(sibling, ctx, source)
+            # Any *other* term in the enclosing +/- chain pins the unit (a bare
+            # literal ⇒ {1}). Don't insist on resolving one whole sibling
+            # subtree — a single unknown inside it shouldn't blind us to a
+            # literal elsewhere in the sum. Skip every term within our own
+            # subtree (avoids circularity if `node` is itself annotated).
+            for term in _additive_terms(_additive_root(p)):
+                if node.start_byte <= term.start_byte and term.end_byte <= node.end_byte:
+                    continue
+                u = _resolve(term, ctx, source)
+                if u is not None:
+                    return u
+            return None
         if op in ("*", "/"):
             req = _required_unit_of(p, ctx, source)
             if req is None:
