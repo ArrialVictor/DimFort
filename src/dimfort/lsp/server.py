@@ -102,7 +102,7 @@ from dimfort.core.workspace_index import (
     scan_workspace,
     update_index,
 )
-from dimfort.lsp import completion
+from dimfort.lsp import completion, definition
 from dimfort.lsp import ts_helpers as _ts_h
 from dimfort.lsp.hover_render import (
     _hover_signature,
@@ -117,7 +117,12 @@ from dimfort.lsp.markers import (
     _worst_token,
 )
 from dimfort.lsp.state import DEFAULT_EXTERNAL_MODULES, state
-from dimfort.lsp.tree_access import _build_ts_ctx, _trees_for, _uri_to_path
+from dimfort.lsp.tree_access import (
+    _build_ts_ctx,
+    _trees_for,
+    _uri_for_path,
+    _uri_to_path,
+)
 from dimfort.lsp.tree_nav import (
     _SKIP_TOKEN_TYPES,
     _enclosing_scopes,
@@ -261,19 +266,6 @@ def _forget_uri(uri: str) -> None:
         return
     with state.opened_uris_lock:
         state.opened_uris.pop(resolved, None)
-
-
-def _uri_for_path(path: Path) -> str:
-    """Prefer the editor's original URI for a known-open file.
-
-    Falls back to ``Path.as_uri()`` for files the editor hasn't opened
-    yet (cross-file diagnostics on closed files).
-    """
-    with state.opened_uris_lock:
-        known = state.opened_uris.get(path)
-    if known is not None:
-        return known
-    return path.as_uri()
 
 
 # ---------------------------------------------------------------------------
@@ -2615,112 +2607,14 @@ def _definition(
     """
     # Tab-switch safety: re-publish if the URI isn't currently loaded.
     _ensure_uri_loaded(ls, params.text_document.uri)
+    if not _features.goto_definition:
+        return None
     # See state.ts_handler_lock declaration: tree-sitter's C library isn't
     # thread-safe for concurrent traversal; Cmd-hover fires hover +
     # definition simultaneously and was triggering native-level
     # crashes. Serialise.
     with state.ts_handler_lock:
-        return _definition_locked(ls, params)
-
-
-def _definition_locked(
-    ls: LanguageServer, params: lsp.DefinitionParams
-) -> list[lsp.Location] | None:
-    if not _features.goto_definition:
-        return None
-    found = _trees_for(params.text_document.uri)
-    if found is None:
-        return None
-    _, tree, source = found
-    with state.last_result_lock:
-        result = state.last_result
-    if result is None:
-        return None
-
-    line = params.position.line + 1
-    col = params.position.character + 1
-
-    # Identify the target. Order matters: the most specific node
-    # type wins. ``use foo`` first (its module_name token isn't an
-    # identifier or call-callee), then call-callees, then plain
-    # identifiers.
-    target_name: str | None = None
-    target_kind: str | None = None  # "module", "var", or "callable"
-    for use_node in _ts_h.walk_use_statements(tree):
-        nm = _ts_h.use_statement_module_name(use_node, source)
-        if nm is None:
-            continue
-        mod_name, mod_name_node = nm
-        if _ts_h.node_contains(mod_name_node, line, col):
-            target_name = mod_name
-            target_kind = "module"
-            break
-    if target_name is None:
-        for call in _ts_h.walk_calls(tree):
-            name = _ts_h.call_name(call, source)
-            if name is None:
-                continue
-            # Match only if the cursor is on the callee identifier
-            # (not on an argument inside the call).
-            for c in call.children:
-                if c.type == "identifier" and _ts_h.node_contains(c, line, col):
-                    target_name = name
-                    target_kind = "callable"
-                    break
-            if target_name:
-                break
-    if target_name is None:
-        for ident in _ts_h.walk_identifiers(tree):
-            if not _ts_h.node_contains(ident, line, col):
-                continue
-            if _ts_h.is_inside_type_qualifier(ident):
-                continue
-            target_name = _ts.node_text(ident, source)
-            target_kind = "var"
-            break
-    if target_name is None:
-        return None
-    target_lc = target_name.lower()
-
-    def _name_node_location(tree_path: Path, name_node) -> lsp.Location:
-        sr, sc = name_node.start_point
-        er, ec = name_node.end_point
-        return lsp.Location(
-            uri=_uri_for_path(tree_path),
-            range=lsp.Range(
-                start=lsp.Position(line=sr, character=sc),
-                end=lsp.Position(line=er, character=ec),
-            ),
-        )
-
-    # Walk every loaded tree for the matching declaration / function.
-    # When the cursor was on a "callable", we try function/subroutine
-    # definitions first but fall through to variable declarations —
-    # ``a(1)`` in Fortran could be either an array index or a function
-    # call, and tree-sitter can't distinguish them syntactically.
-    for tree_path, (other_tree, other_source) in result.trees.items():
-        if target_kind == "module":
-            for mod in _ts_h.walk_module_definitions(other_tree):
-                nm = _ts_h.module_definition_name(mod, other_source)
-                if nm is None:
-                    continue
-                name, name_node = nm
-                if name.lower() == target_lc:
-                    return [_name_node_location(tree_path, name_node)]
-            continue
-        if target_kind == "callable":
-            for func in _ts_h.walk_function_definitions(other_tree):
-                nm = _ts_h.function_definition_name(func, other_source)
-                if nm is None:
-                    continue
-                name, name_node = nm
-                if name.lower() == target_lc:
-                    return [_name_node_location(tree_path, name_node)]
-        for _decl, name_node in _ts_h.walk_decl_identifiers(other_tree):
-            if _ts.node_text(name_node, other_source).lower() != target_lc:
-                continue
-            return [_name_node_location(tree_path, name_node)]
-    return None
+        return definition.resolve(params)
 
 
 # ---------------------------------------------------------------------------

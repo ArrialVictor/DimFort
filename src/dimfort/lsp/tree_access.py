@@ -20,6 +20,19 @@ from dimfort.core.units import Unit
 from dimfort.lsp.state import state
 
 
+def _uri_for_path(path: Path) -> str:
+    """Prefer the editor's original URI for a known-open file.
+
+    Falls back to ``Path.as_uri()`` for files the editor hasn't opened
+    yet (cross-file diagnostics on closed files).
+    """
+    with state.opened_uris_lock:
+        known = state.opened_uris.get(path)
+    if known is not None:
+        return known
+    return path.as_uri()
+
+
 def _uri_to_path(uri: str) -> Path | None:
     if not uri.startswith("file:"):
         return None
