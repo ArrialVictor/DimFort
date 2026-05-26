@@ -407,7 +407,7 @@ def _run_interactions(args: argparse.Namespace) -> int:
         ("declares", "Declaration"),
         ("contributes", "Write"),
         ("requires", "Read"),
-        ("uses", "Unconstrained read"),
+        ("uses", "Undetermined read"),
     )
     for kind, label in order:
         sites = [p for p in report.points if p.kind == kind]
@@ -416,8 +416,12 @@ def _run_interactions(args: argparse.Namespace) -> int:
         print(f"  {label}:")
         for s in sites:
             scope = f" [{s.scope}]" if s.scope else ""
-            unit = s.unit_str.ljust(12)
-            print(f"    {s.file}:{s.line}{scope}  {unit}  {s.snippet}")
+            # The Undetermined group has no derived unit — its label already
+            # says so, so don't print a redundant "?" column.
+            if kind == "uses":
+                print(f"    {s.file}:{s.line}{scope}  {s.snippet}")
+            else:
+                print(f"    {s.file}:{s.line}{scope}  {s.unit_str.ljust(12)}  {s.snippet}")
 
     if report.conflicts:
         print()
