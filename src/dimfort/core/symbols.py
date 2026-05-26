@@ -17,7 +17,7 @@ from fractions import Fraction
 from typing import Any
 
 from dimfort.core.diagnostics import Severity
-from dimfort.core.units import Unit
+from dimfort.core.units import UnitExpr
 
 # ---------------------------------------------------------------------------
 # Diagnostic-code metadata
@@ -79,8 +79,10 @@ class FuncSig:
     """
 
     arg_names: tuple[str, ...]
-    arg_units: tuple[Unit | None, ...]
-    return_unit: Unit | None
+    # Units may be wrapped (LOG/EXP), e.g. a function annotated
+    # ``@unit{LOG(Pa)}`` — hence UnitExpr, not just Unit.
+    arg_units: tuple[UnitExpr | None, ...]
+    return_unit: UnitExpr | None
     is_subroutine: bool = False
 
 
@@ -154,7 +156,7 @@ class ModuleExports:
     """
 
     name: str
-    var_units: dict[str, Unit]
+    var_units: dict[str, UnitExpr]
     signatures: dict[str, FuncSig]
     all_var_names: tuple[str, ...] = ()
 
@@ -193,11 +195,11 @@ def deps_consumed_from_uses(
 def apply_use_clauses(
     uses: tuple[Any, ...],
     module_exports: dict[str, ModuleExports],
-    base_var_units: dict[str, Unit],
+    base_var_units: dict[str, UnitExpr],
     base_signatures: dict[str, FuncSig],
     *,
     external_modules: frozenset[str] = frozenset(),
-) -> tuple[dict[str, Unit], dict[str, FuncSig], frozenset[str]]:
+) -> tuple[dict[str, UnitExpr], dict[str, FuncSig], frozenset[str]]:
     """Merge imported symbols into a file's scope.
 
     ``uses`` is the tuple of :class:`workspace_index.UseRef` produced
