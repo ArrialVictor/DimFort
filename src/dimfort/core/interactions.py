@@ -349,11 +349,16 @@ def collect_interactions(
     disagreements as conflicts, mirroring S001's opt-in.
     """
     name_lc = symbol.lower()
+    name_bytes = name_lc.encode("utf-8")
     scope_lc = scope.lower() if scope is not None else None
     points: list[InteractionPoint] = []
 
     for path, (tree, source) in workset.trees.items():
         if not _file_matches(path, file):
+            continue
+        # Cheap gate: skip files that don't mention the symbol at all, so a
+        # whole-workset query (esp. from the LSP) doesn't build a ctx per file.
+        if name_bytes not in source.lower():
             continue
         att = workset.attachments.get(path)
         routine_scopes = att.routine_scopes if att is not None else ()

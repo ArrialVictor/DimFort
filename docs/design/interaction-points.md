@@ -128,10 +128,20 @@ participates in conflict detection (unknown ≠ conflict — no false positives)
 - `cli.py`: `interactions` subcommand + `_run_interactions` (formatting only).
 - `diagnostics.py`: register `X001` in `CODES`.
 
+## LSP endpoint
+
+`dimfort/interactions` (custom request) — resolves the identifier under the
+cursor (or an explicit `symbol` param), runs `collect_interactions` over the
+cached workset (`_last_result`), and returns the serialised report
+(`{symbol, points[], conflicts[], hasConflict}`). Mirrors `dimfort/panelInfo`'s
+cursor model. This is what the editor companions consume for an interactions
+panel tab.
+
 ## Explicitly out of scope for v1
 
-- **Editor UI** (VS Code panel tab / LSP request). Feasible — the VS Code panel
-  is a webview; the report dataclass is designed to serialise — but deferred.
+- **VS Code panel tab** (and the other companions' equivalents). The LSP
+  endpoint above makes it a thin client change, but the UI itself is deferred
+  to a companion branch.
 - **Whole-workset "audit every symbol" sweep.** v1 is one symbol per
   invocation; an always-on `X001` over the whole tree risks noise + perf cost
   and needs the U005-cross-file machinery first (see memory

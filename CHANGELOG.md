@@ -23,6 +23,9 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
   two routines = two variables).
 - `--file` / `--scope` narrow a reused name. Array-element reads (`x(i)`) and
   call-argument positions are handled. Spec: `docs/design/interaction-points.md`.
+- **LSP**: new `dimfort/interactions` custom request — resolves the symbol under
+  the cursor (or an explicit `symbol`), returns the serialised report
+  (`points` + `conflicts`). Consumed by the editor companions' interactions tab.
 - Internal: extracted `ts_checker._build_ctx` as the single source of truth for
   `_Ctx` construction, now shared by `check` and the new `interactions` query.
 
