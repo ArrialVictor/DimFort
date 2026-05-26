@@ -52,7 +52,7 @@ from dimfort.core.symbols import (
     apply_use_clauses,
     deps_consumed_from_uses,
 )
-from dimfort.core.units import Unit, UnitError, UnitExpr, UnitTable
+from dimfort.core.units import UnitError, UnitExpr, UnitTable
 
 # ---------------------------------------------------------------------------
 # Public result types
@@ -186,7 +186,7 @@ def _load_one(
     in-memory text, which we want parsed verbatim.
     """
     from dimfort.core._source_io import read_text
-    text = overrides.get(path) if path in overrides else read_text(path)
+    text = overrides[path] if path in overrides else read_text(path)
     source = text.encode("utf-8")
     scan = scan_text(text)
     attachment = attach(scan)
@@ -332,8 +332,8 @@ def _attachment_diags(file: str, att: AttachmentResult) -> list[Diagnostic]:
 
 def _parse_var_units(
     text: dict[str, str], table: UnitTable
-) -> dict[str, Unit]:
-    out: dict[str, Unit] = {}
+) -> dict[str, UnitExpr]:
+    out: dict[str, UnitExpr] = {}
     for name, raw in text.items():
         try:
             out[name] = _units_mod.parse(raw, table)
@@ -344,8 +344,8 @@ def _parse_var_units(
 
 def _parse_var_units_by_scope(
     text: dict[tuple[str | None, str], str], table: UnitTable
-) -> dict[tuple[str | None, str], Unit]:
-    out: dict[tuple[str | None, str], Unit] = {}
+) -> dict[tuple[str | None, str], UnitExpr]:
+    out: dict[tuple[str | None, str], UnitExpr] = {}
     for key, raw in text.items():
         try:
             out[key] = _units_mod.parse(raw, table)
@@ -535,11 +535,13 @@ def check_files(
         if max_load_workers is not None
         else max(1, (multiprocessing.cpu_count() or 4) - 1)
     )
-    loaded: list[_Loaded | None] = [None] * total
+    load_slots: list[_Loaded | None] = [None] * total
     progress_lock = threading.Lock()
     progress_counter = [0]
 
-    def _do_load(idx: int, src: Path):
+    def _do_load(
+        idx: int, src: Path
+    ) -> tuple[int, Path, _Loaded | None, OSError | None]:
         try:
             return idx, src, _load_one(
                 src,
@@ -557,20 +559,19 @@ def check_files(
             if err is not None:
                 result.load_failures[src] = FileLoadFailure(stderr=str(err))
                 empty_scan = scan_text("")
-                loaded[idx] = _Loaded(
+                load_slots[idx] =_Loaded(
                     src, "", b"", empty_scan, attach(empty_scan), None, str(err),
                 )
             else:
-                loaded[idx] = entry
+                load_slots[idx] =entry
             if progress_cb is not None:
                 with progress_lock:
                     progress_counter[0] += 1
                     n = progress_counter[0]
                 progress_cb("load", n, total, src)
-    loaded_files: list[_Loaded] = [e for e in loaded if e is not None]
-    if len(loaded_files) != total:
+    loaded: list[_Loaded] = [e for e in load_slots if e is not None]
+    if len(loaded) != total:
         raise RuntimeError("internal: parallel load left None entries")
-    loaded = loaded_files  # type: ignore[assignment]
     result.phase_timings["load"] = time.perf_counter() - t_phase_start
 
     # Phase B — aggregate annotation tables across the workset.
@@ -578,8 +579,8 @@ def check_files(
     merged_var_units_text: dict[str, str] = {}
     merged_field_units_text: dict[tuple[str, str], str] = {}
     for entry in loaded:
-        for n, u in entry.attachment.var_units.items():
-            merged_var_units_text.setdefault(n, u)
+        for vn, u in entry.attachment.var_units.items():
+            merged_var_units_text.setdefault(vn, u)
         for k, u in entry.attachment.field_units.items():
             merged_field_units_text.setdefault(k, u)
     result.attachments = {entry.path: entry.attachment for entry in loaded}
@@ -616,7 +617,7 @@ def check_files(
     # re-parse the same annotations in the checker. Empty entries when a
     # file has no scoped annotations or failed to load.
     per_file_var_units_by_scope: dict[
-        Path, dict[tuple[str | None, str], Unit]
+        Path, dict[tuple[str | None, str], UnitExpr]
     ] = {}
     for i, entry in enumerate(loaded, start=1):
         if entry.tree is not None:
@@ -684,7 +685,7 @@ def check_files(
         # a name appears in several scopes — good enough to put the
         # squiggle on the right region.
         decl_line_for: dict[str, int] = {}
-        for decl in getattr(entry.scan, "declarations", ()):  # type: ignore[attr-defined]
+        for decl in getattr(entry.scan, "declarations", ()):
             for vn in decl.names:
                 decl_line_for.setdefault(vn.lower(), decl.line_start)
         unparseable: set[str] = set()
@@ -764,16 +765,16 @@ def check_files(
         # ``_Ctx`` resolves imports the same way (no second source of truth).
         own_scoped = per_file_var_units_by_scope.get(entry.path) or {}
         own_names_lc = {n.lower() for n in file_var_units}
-        scoped_with_imports: dict[tuple[str | None, str], Unit] = dict(own_scoped)
-        for n, u in per_file_var_units.items():
-            if n.lower() not in own_names_lc:
-                scoped_with_imports.setdefault((None, n), u)
+        scoped_with_imports: dict[tuple[str | None, str], UnitExpr] = dict(own_scoped)
+        for nm, uu in per_file_var_units.items():
+            if nm.lower() not in own_names_lc:
+                scoped_with_imports.setdefault((None, nm), uu)
         result.var_units_by_scope[entry.path] = scoped_with_imports
 
         # ---- cache lookup ------------------------------------------------
         cache_key: str | None = None
         replayed: list[Diagnostic] | None = None
-        if cache_active:
+        if cache_active and cache is not None and include_hasher is not None:
             cache_key, replayed = _try_replay_from_cache(
                 cache=cache,
                 include_hasher=include_hasher,
@@ -817,7 +818,7 @@ def check_files(
             remapped = [_remap_diagnostic(d, entry.line_map) for d in check_diags]
             diags.extend(remapped)
 
-            if cache_writes_enabled and cache_key is not None:
+            if cache_writes_enabled and cache_key is not None and cache is not None:
                 _write_cache_entry(
                     cache=cache,
                     key=cache_key,

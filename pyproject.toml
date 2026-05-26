@@ -62,17 +62,5 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 python_version = "3.11"
 strict = true
 files = ["src/dimfort"]
-
-# Incremental strict-typing rollout (audit item: strict mypy). The whole
-# package is checked under --strict; modules not yet annotated are listed
-# below with ignore_errors so the gate is green and CI-enforceable today.
-# Clean a module, then delete its entry here — the list only shrinks. New
-# files are checked by default (not ignored), so regressions can't sneak in.
-# Cleaned so far: the entire lsp/ layer + all of core/ except the orchestrator.
-# Remaining (its own follow-up pass): multifile, the workset orchestrator
-# (~84 errors, mostly union-attr from the tree-walking pipeline).
-[[tool.mypy.overrides]]
-module = [
-    "dimfort.core.multifile",
-]
-ignore_errors = true
+# The whole package is strict-clean and CI-gated — no per-module
+# ignore_errors overrides remain. Keep it that way.
