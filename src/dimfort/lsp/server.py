@@ -21,50 +21,35 @@ Provides:
 - ``textDocument/hover`` — resolved unit for the variable or
   derived-type member under the cursor.
 
-File map (top-to-bottom):
+This module is the *spine* of the LSP package: it owns the pygls
+``LanguageServer`` instance and every ``@server.feature`` registration, the
+lifecycle handlers (``initialize`` / ``initialized`` / document-sync), the
+diagnostic publish side (``_publish_for_uri`` / ``_ensure_uri_loaded`` /
+``_refresh_inlay_hints``), the feature toggles, and the entry point
+(``run_stdio``). The hover machinery (``_resolve_hover`` + the ``_render_*``
+renderers) also still lives here, pending extraction into ``hover.py``.
 
-1. **Imports and feature toggles**: the shared mutable state (locks,
-   caches, config) lives on the ``state`` singleton in ``lsp/state.py``;
-   only the feature toggles stay module-local here.
-2. **URI / position helpers** (`_uri_to_path`, `_uri_for_path`,
-   `_to_lsp_diagnostic`): conversions between LSP-flavoured strings
-   and DimFort's internal `Path`/`Diagnostic` types.
-3. **Workspace traversal** (`_discover_fortran_files`,
-   `_workset_for`): driving the workspace scan and per-active-file
-   workset resolution.
-4. **Diagnostic publication** (`_publish_for_uri`,
-   `_refresh_inlay_hints`): the pipeline's write side.
-5. **Tree-access helpers** (`_trees_for`, `_ensure_uri_loaded`,
-   `_build_ts_ctx`): how every handler below reaches a parsed
-   tree without racing the publisher.
-6. **Hover rendering** (`_unit_pretty`, `_hover_text`,
-   `_sig_render_md`, `_module_hover_md`): parser-agnostic markdown
-   generation. Pure functions; no LSP state.
-7. **Hover dispatch** (`_resolve_hover`): the four-step dispatch
-   from cursor position to a rendered markdown reply.
-8. **LSP handlers** (one section per feature):
-   8.1 `initialize` / `initialized` — workspace folder capture
-       and background index build.
-   8.2 Document-sync (`did_open`, `did_save`, `did_close`,
-       `did_change`).
-   8.3 `textDocument/hover`.
-   8.4 `textDocument/inlayHint`.
-   8.5 `textDocument/completion` (inside `@unit{…}`).
-   8.6 `textDocument/definition`.
-   8.7 `textDocument/codeAction` (insert `@unit{}` skeleton).
-9. **Commands and entry point** (`dimfort.checkWorkspace`,
-   `run_stdio`, `_install_crash_trace_hook`).
+Each ``@server.feature`` handler here is a *thin wrapper*: it does the
+feature-flag check, calls ``_ensure_uri_loaded`` if needed, acquires
+``state.ts_handler_lock`` if it traverses the cached tree, then delegates to a
+logic function in a feature module (``completion`` / ``definition`` / ``inlay``
+/ ``interactions`` / ``code_action`` / ``panel``). Shared logic lives in
+``state`` / ``tree_access`` / ``tree_nav`` / ``decl_scan`` / ``expr_tree`` /
+``hover_render`` / ``markers``. See ``docs/design/lsp-architecture.md`` for the
+full module map and the three load-bearing patterns (singleton state, handler
+delegation, lock discipline).
 
 Cross-cutting concerns:
 
-- All handlers go through `_ensure_uri_loaded(ls, uri)` first so
-  tab switches don't leave them querying a stale workset.
-- All tree-walking handlers (hover, definition, inlay) acquire
-  `state.ts_handler_lock` so they can't race on tree-sitter's
-  not-thread-safe traversal.
-- Module-level state mutations (`state.last_result`, `state.workspace_index`,
-  `state.doc_versions`, `state.opened_uris`) are guarded by the matching
-  `*_lock` and never accessed without it.
+- Handlers go through ``_ensure_uri_loaded(ls, uri)`` first so tab switches
+  don't leave them querying a stale workset.
+- Tree-walking handlers that read the *cached* tree (hover, definition, inlay)
+  acquire ``state.ts_handler_lock`` so they can't race on tree-sitter's
+  not-thread-safe traversal. Handlers that parse a *fresh* tree (interactions,
+  panel) and code-action do not.
+- Mutations of ``state.last_result`` / ``state.workspace_index`` /
+  ``state.doc_versions`` / ``state.opened_uris`` are guarded by the matching
+  ``state.*_lock`` and never accessed without it.
 """
 from __future__ import annotations
 
