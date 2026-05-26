@@ -8,11 +8,15 @@ section and the code-action provider can see which declarations still lack a
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pygls.lsp.server import LanguageServer
 
+if TYPE_CHECKING:
+    from dimfort.core.annotations import DeclarationSite
 
-def _last_scan_declarations(path: Path):
+
+def _last_scan_declarations(path: Path) -> tuple[DeclarationSite, ...] | None:
     """Re-scan the file on disk to recover the source-side declarations.
 
     Disk-only fallback. Prefer :func:`_scan_declarations_for_uri` when
@@ -28,7 +32,9 @@ def _last_scan_declarations(path: Path):
         return None
 
 
-def _scan_declarations_for_uri(ls: LanguageServer, uri: str, resolved: Path):
+def _scan_declarations_for_uri(
+    ls: LanguageServer, uri: str, resolved: Path
+) -> tuple[DeclarationSite, ...] | None:
     """Scan declarations from the live document text when available.
 
     Reads the open buffer's text (which includes unsaved edits) so the

@@ -11,6 +11,10 @@ for cursor→node mapping, so it does not need ``state.ts_handler_lock``.
 """
 from __future__ import annotations
 
+from typing import Any
+
+from pygls.lsp.server import LanguageServer
+
 from dimfort.core import ts_parser as _ts
 from dimfort.core.diagnostics import Severity
 from dimfort.lsp.decl_scan import _scan_declarations_for_uri
@@ -24,11 +28,11 @@ from dimfort.lsp.tree_nav import (
 )
 
 
-def resolve(ls, params) -> dict | None:
+def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
     # pygls passes custom-method params as a plain dict-like object.
     # Accept either attribute access (TypedDict-style) or dict access
     # so we don't depend on a specific wrapper class.
-    def _get(obj, key):
+    def _get(obj: Any, key: str) -> Any:
         if hasattr(obj, key):
             return getattr(obj, key)
         if isinstance(obj, dict):
@@ -105,7 +109,7 @@ def resolve(ls, params) -> dict | None:
 
     # One section per enclosing scope, outermost first. Each carries
     # the scope header fields (name, kind) plus its own ``vars`` list.
-    scopes: list[dict] = []
+    scopes: list[dict[str, Any]] = []
     for sn in scope_nodes:
         header = _scope_header(sn, source_bytes)
         if header is None:

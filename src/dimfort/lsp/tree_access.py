@@ -13,6 +13,8 @@ from __future__ import annotations
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from tree_sitter import Tree
+
 from dimfort.core import ts_checker
 from dimfort.core import units as _units_mod
 from dimfort.core.multifile import WorksetResult
@@ -49,7 +51,7 @@ def _uri_to_path(uri: str) -> Path | None:
     return Path(path)
 
 
-def _trees_for(uri: str) -> tuple[Path, object, bytes] | None:
+def _trees_for(uri: str) -> tuple[Path, Tree, bytes] | None:
     """Return ``(resolved_path, tree, source_bytes)`` for ``uri`` if loaded."""
     with state.last_result_lock:
         result = state.last_result
@@ -81,6 +83,10 @@ def _build_ts_ctx(
     ``path`` we degrade to flat ``merged_var_units`` (same behaviour
     as before scope-aware lookups existed).
     """
+    table = _units_mod.DEFAULT_TABLE
+    assert table is not None, (
+        "DEFAULT_TABLE not initialised — import dimfort.core.unit_config"
+    )
     var_units_by_scope: dict[tuple[str | None, str], Unit] = {}
     routine_scopes: tuple[tuple[int, int, str], ...] = ()
     if path is not None:
@@ -91,7 +97,7 @@ def _build_ts_ctx(
     return ts_checker.Ctx(
         file=file,
         var_units=result.merged_var_units,
-        table=_units_mod.DEFAULT_TABLE,
+        table=table,
         signatures=result.signatures,
         # var_types / type_field_types are collected per-tree on demand
         # by callers that need member-access resolution.
