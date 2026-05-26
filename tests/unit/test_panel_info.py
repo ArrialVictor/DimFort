@@ -74,12 +74,12 @@ def test_find_expression_root_skips_unparsed_region(tmp_path: Path):
     from dimfort.lsp.tree_nav import _find_expression_root
 
     src = (
-        "subroutine s\n"               # 1
-        "  real :: a  !< @unit{m}\n"   # 2
-        "  a = * / +\n"                # 3 unparseable RHS
-        "  a = 1.0\n"                  # 4 (keeps the routine parseable)
-        "end subroutine\n"
-    ).encode()
+        b"subroutine s\n"               # 1
+        b"  real :: a  !< @unit{m}\n"   # 2
+        b"  a = * / +\n"                # 3 unparseable RHS
+        b"  a = 1.0\n"                  # 4 (keeps the routine parseable)
+        b"end subroutine\n"
+    )
     tree = _ts.parse_text(src)
     # Cursor on the malformed RHS (the ``*``) → suppressed.
     assert _find_expression_root(tree, 3, 7) is None
