@@ -160,12 +160,12 @@ def test_panel_scale_marker_reflects_s001(tmp_path: Path):
 
     def _markers(scale_on: bool):
         result = check_files([src], scale_mode=scale_on)
-        saved = server._scale_mode
-        server._scale_mode = scale_on
-        # Markers read diagnostics from _last_result (keyed by ctx.file).
-        with server._last_result_lock:
-            saved_result = server._last_result
-            server._last_result = result
+        saved = server.state.scale_mode
+        server.state.scale_mode = scale_on
+        # Markers read diagnostics from state.last_result (keyed by ctx.file).
+        with server.state.last_result_lock:
+            saved_result = server.state.last_result
+            server.state.last_result = result
         try:
             ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
             asns = [n for n in _ts.walk(tree.root_node)
@@ -177,9 +177,9 @@ def test_panel_scale_marker_reflects_s001(tmp_path: Path):
             plus_payload = _build_expression_tree(asns[1], ctx, source)
             plus_marker = plus_payload["children"][-1]["marker"]
         finally:
-            server._scale_mode = saved
-            with server._last_result_lock:
-                server._last_result = saved_result
+            server.state.scale_mode = saved
+            with server.state.last_result_lock:
+                server.state.last_result = saved_result
         return assign_marker, plus_marker, plus_payload["marker"]
 
     # Scale on: direct mismatch, the + node, and the propagated parent.
@@ -217,16 +217,16 @@ def test_panel_marker_matrix_diagnostic_driven(tmp_path: Path):
             if n.type == "assignment_statement"]
 
     result = check_files([src], scale_mode=True)
-    with server._last_result_lock:
-        saved_result, server._last_result = server._last_result, result
-    saved_mode, server._scale_mode = server._scale_mode, True
+    with server.state.last_result_lock:
+        saved_result, server.state.last_result = server.state.last_result, result
+    saved_mode, server.state.scale_mode = server.state.scale_mode, True
     try:
         ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
         marks = [_build_expression_tree(a, ctx, source)["marker"] for a in asns]
     finally:
-        server._scale_mode = saved_mode
-        with server._last_result_lock:
-            server._last_result = saved_result
+        server.state.scale_mode = saved_mode
+        with server.state.last_result_lock:
+            server.state.last_result = saved_result
 
     assert marks == ["error", "warn", "ok"]
 
@@ -258,16 +258,16 @@ def test_panel_marker_s003_is_error(tmp_path: Path):
             if n.type == "assignment_statement"]
 
     result = check_files([src], scale_mode=True)
-    with server._last_result_lock:
-        saved_result, server._last_result = server._last_result, result
-    saved_mode, server._scale_mode = server._scale_mode, True
+    with server.state.last_result_lock:
+        saved_result, server.state.last_result = server.state.last_result, result
+    saved_mode, server.state.scale_mode = server.state.scale_mode, True
     try:
         ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
         marks = [_build_expression_tree(a, ctx, source)["marker"] for a in asns]
     finally:
-        server._scale_mode = saved_mode
-        with server._last_result_lock:
-            server._last_result = saved_result
+        server.state.scale_mode = saved_mode
+        with server.state.last_result_lock:
+            server.state.last_result = saved_result
 
     assert marks == ["error", "ok"]
 
@@ -304,18 +304,18 @@ def test_panel_info_diagnostics_for_cursor_line(tmp_path: Path):
     )
 
     def _diags_at(line_1based: int):
-        with server._last_result_lock:
-            saved_result, server._last_result = server._last_result, result
-        saved_mode, server._scale_mode = server._scale_mode, True
+        with server.state.last_result_lock:
+            saved_result, server.state.last_result = server.state.last_result, result
+        saved_mode, server.state.scale_mode = server.state.scale_mode, True
         try:
             return server._panel_info(ls, {
                 "textDocument": {"uri": resolved.as_uri()},
                 "position": {"line": line_1based - 1, "character": 6},
             })["diagnostics"]
         finally:
-            server._scale_mode = saved_mode
-            with server._last_result_lock:
-                server._last_result = saved_result
+            server.state.scale_mode = saved_mode
+            with server.state.last_result_lock:
+                server.state.last_result = saved_result
 
     line6 = _diags_at(6)
     assert [d["code"] for d in line6] == ["S002"]
@@ -357,20 +357,20 @@ def test_assignment_short_hover_reflects_nested_scale(tmp_path: Path):
 
     def _marker(scale_on: bool) -> str:
         result = check_files([src], scale_mode=scale_on)
-        saved = server._scale_mode
-        server._scale_mode = scale_on
-        # Markers read diagnostics from _last_result (keyed by ctx.file).
-        with server._last_result_lock:
-            saved_result = server._last_result
-            server._last_result = result
+        saved = server.state.scale_mode
+        server.state.scale_mode = scale_on
+        # Markers read diagnostics from state.last_result (keyed by ctx.file).
+        with server.state.last_result_lock:
+            saved_result = server.state.last_result
+            server.state.last_result = result
         try:
             ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
             ctx.var_types.update(ts_checker.collect_var_types(tree, source))
             text, _ = _render_assignment_short(asn, lhs, rhs, ctx, source)
         finally:
-            server._scale_mode = saved
-            with server._last_result_lock:
-                server._last_result = saved_result
+            server.state.scale_mode = saved
+            with server.state.last_result_lock:
+                server.state.last_result = saved_result
         return text.split(" DimFort")[0].replace("**", "").strip()
 
     assert _marker(scale_on=True) == "🟡"

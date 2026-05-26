@@ -23,8 +23,9 @@ Provides:
 
 File map (top-to-bottom):
 
-1. **Imports and module-level state**: globals, locks, feature
-   toggles, workspace folders, configuration.
+1. **Imports and feature toggles**: the shared mutable state (locks,
+   caches, config) lives on the ``state`` singleton in ``lsp/state.py``;
+   only the feature toggles stay module-local here.
 2. **URI / position helpers** (`_uri_to_path`, `_uri_for_path`,
    `_to_lsp_diagnostic`): conversions between LSP-flavoured strings
    and DimFort's internal `Path`/`Diagnostic` types.
@@ -59,10 +60,10 @@ Cross-cutting concerns:
 - All handlers go through `_ensure_uri_loaded(ls, uri)` first so
   tab switches don't leave them querying a stale workset.
 - All tree-walking handlers (hover, definition, inlay) acquire
-  `_ts_handler_lock` so they can't race on tree-sitter's
+  `state.ts_handler_lock` so they can't race on tree-sitter's
   not-thread-safe traversal.
-- Module-level state mutations (`_last_result`, `_workspace_index`,
-  `_doc_versions`, `_opened_uris`) are guarded by the matching
+- Module-level state mutations (`state.last_result`, `state.workspace_index`,
+  `state.doc_versions`, `state.opened_uris`) are guarded by the matching
   `*_lock` and never accessed without it.
 """
 from __future__ import annotations
@@ -81,7 +82,7 @@ from lsprotocol import types as lsp
 from pygls.lsp.server import LanguageServer
 
 from dimfort import __version__
-from dimfort.config import DimfortConfig, load_config
+from dimfort.config import load_config
 from dimfort.core import (
     ts_checker,
     unit_config,  # noqa: F401  populates DEFAULT_TABLE
@@ -101,7 +102,6 @@ from dimfort.core.symbols import FuncSig, ModuleExports
 from dimfort.core.units import Unit, UnitExpr
 from dimfort.core.units import base_symbols as _base_symbols
 from dimfort.core.workspace_index import (
-    WorkspaceIndex,
     resolve_workset,
     scan_workspace,
     update_index,
@@ -113,6 +113,7 @@ from dimfort.lsp.markers import (
     _worst_emoji,
     _worst_token,
 )
+from dimfort.lsp.state import DEFAULT_EXTERNAL_MODULES, state
 
 log = logging.getLogger("dimfort.lsp")
 
@@ -172,92 +173,9 @@ _SEVERITY_TO_LSP = {
     Severity.HINT: lsp.DiagnosticSeverity.Hint,
 }
 
-# Debounce for `didChange`: keep a per-URI monotonically increasing
-# version. A scheduled re-check checks the version under the lock
-# before actually running, so a burst of keystrokes only runs the
-# last one.
-_doc_versions: dict[str, int] = {}
-_doc_versions_lock = threading.Lock()
-
-# Serialises every pipeline run across didOpen / didSave / didChange.
-# Without this, VSCode restoring N tabs after a reload fires N
-# concurrent didOpens, each spawning its own LFortran subprocesses
-# and ASR JSON in memory; the pile-up exceeds macOS jetsam's budget
-# and the LSP process gets SIGKILLed.
-_check_lock = threading.Lock()
-
-# Last successful check result, used for hover.
-_last_result: WorksetResult | None = None
-_last_result_lock = threading.Lock()
-
-# Workspace folders, captured at initialise time.
-_workspace_folders: list[Path] = []
-
-# Workspace module index — built once at initialize on a background
-# thread (it can take several seconds on large codebases), updated
-# incrementally on didChange / didSave. ``None`` until the initial
-# scan completes; callers fall back to whole-workspace check while
-# ``None``.
-_workspace_index: WorkspaceIndex | None = None
-_workspace_index_lock = threading.Lock()
-
-# Serialises tree-sitter tree traversal across feature handlers. The
-# Python bindings call into the underlying C library, which is NOT
-# thread-safe for concurrent traversal of the same tree. VSCode's
-# Cmd-hover fires textDocument/hover and textDocument/definition
-# nearly simultaneously; pygls schedules sync handlers on a worker
-# pool, so both run on different threads and can race on the same
-# tree-sitter Tree, producing silent native-level crashes (no Python
-# traceback). Serialising the bodies of the affected handlers
-# eliminates the race; each handler is sub-millisecond, so the
-# serialisation cost is invisible to the user.
-_ts_handler_lock = threading.Lock()
-
-# Modules treated as known-external (Fortran intrinsics + common libs).
-# Anything `use`d that matches this set is silently dropped from the
-# dep chain rather than producing a missing-module diagnostic.
-_DEFAULT_EXTERNAL_MODULES: frozenset[str] = frozenset({
-    # Fortran 2003+ intrinsic modules
-    "iso_fortran_env", "iso_c_binding",
-    "ieee_arithmetic", "ieee_exceptions", "ieee_features",
-    # Common external libraries
-    "mpi", "mpi_f08", "openacc", "omp_lib",
-    "netcdf", "netcdf95", "ioipsl", "nrtype",
-})
-_external_modules: frozenset[str] = _DEFAULT_EXTERNAL_MODULES
-
-# Maximum number of files to feed into a single check. Resolving the
-# full transitive `use` closure of a deep entry point in a large
-# Fortran codebase (e.g. ~353 dependent files) holds enough AST/ASR JSON in
-# memory to trigger macOS jetsam SIGKILL on the LSP process. The cap
-# trades cross-file coverage for stability: when the workset exceeds
-# this, we keep the last N entries in topo order — the active file
-# plus its nearest deps. Override via `maxWorksetSize` in
-# initializationOptions.
-_DEFAULT_MAX_WORKSET = 40
-_max_workset_size: int = _DEFAULT_MAX_WORKSET
-
-# Resolved project config (``.dimfort.toml``). Loaded once at
-# ``initialize`` time; an LSP restart is required to re-read.
-# Read from worker threads without a lock: per the LSP protocol the
-# client cannot send textDocument/* requests before our initialize
-# response, so the write in ``_initialize`` happens-before every
-# worker-thread read. Don't introduce code paths that read these
-# state vars before the initialize handler returns.
-_project_config: DimfortConfig = DimfortConfig()
-
-# Content-hash cache (see docs/design/content-hash-cache.md). Set during
-# ``_initialize`` from ``initializationOptions``. ``None`` means caching
-# is disabled — the workspace check runs as it did before the cache
-# landed.
-_cache: CacheStore | None = None
-_cache_mode: str = "off"
-
-# Opt-in multiplicative-scale checking (Phase 1; see docs/design/scale.md).
-# Defaults from ``.dimfort.toml`` ([scale] enabled) and may be overridden
-# per-client via the ``scaleMode`` initializationOption. Off ⇒ dimension-only.
-_scale_mode: bool = False
-
+# Shared mutable server state (locks, caches, config) lives on the single
+# ``state`` object imported above. See ``lsp/state.py`` for the concurrency
+# contract — in particular ``state.ts_handler_lock`` and ``state.check_lock``.
 
 def _cap_workset(
     paths: list[Path], active: Path, limit: int,
@@ -299,14 +217,6 @@ def _cap_workset(
     # process deps before users.
     return [p for p in paths if p in out_set]
 
-# Tracks every file VSCode (or whichever client) has currently open.
-# Keyed by resolved Path so we can recover the *exact* URI the editor
-# uses, even when its normalisation differs from ours (symlinks, case,
-# percent-encoding). Publishing back to the editor's URI is what makes
-# squiggles actually appear.
-_opened_uris: dict[Path, str] = {}
-_opened_uris_lock = threading.Lock()
-
 
 def _remember_uri(uri: str) -> None:
     p = _uri_to_path(uri)
@@ -316,8 +226,8 @@ def _remember_uri(uri: str) -> None:
         resolved = p.resolve()
     except OSError:
         return
-    with _opened_uris_lock:
-        _opened_uris[resolved] = uri
+    with state.opened_uris_lock:
+        state.opened_uris[resolved] = uri
 
 
 def _forget_uri(uri: str) -> None:
@@ -328,8 +238,8 @@ def _forget_uri(uri: str) -> None:
         resolved = p.resolve()
     except OSError:
         return
-    with _opened_uris_lock:
-        _opened_uris.pop(resolved, None)
+    with state.opened_uris_lock:
+        state.opened_uris.pop(resolved, None)
 
 
 def _uri_for_path(path: Path) -> str:
@@ -338,8 +248,8 @@ def _uri_for_path(path: Path) -> str:
     Falls back to ``Path.as_uri()`` for files the editor hasn't opened
     yet (cross-file diagnostics on closed files).
     """
-    with _opened_uris_lock:
-        known = _opened_uris.get(path)
+    with state.opened_uris_lock:
+        known = state.opened_uris.get(path)
     if known is not None:
         return known
     return path.as_uri()
@@ -423,14 +333,14 @@ def _workset_for(ls: LanguageServer, active_uri: str) -> tuple[list[Path], Path 
     if active is None or not active.is_file():
         return [], active
 
-    with _workspace_index_lock:
-        idx = _workspace_index
+    with state.workspace_index_lock:
+        idx = state.workspace_index
 
     resolved_active = active.resolve()
 
     if idx is not None:
         res = resolve_workset(
-            idx, [resolved_active], external_modules=_external_modules
+            idx, [resolved_active], external_modules=state.external_modules
         )
         paths = list(res.compile_order)
         # Belt-and-braces: ensure the active file is present even if it
@@ -452,13 +362,13 @@ def _workset_for(ls: LanguageServer, active_uri: str) -> tuple[list[Path], Path 
                 must_keep.add(tgt)
         # Cap to keep the LSP process alive on deep workspaces.
         capped = _cap_workset(
-            paths, resolved_active, _max_workset_size,
+            paths, resolved_active, state.max_workset_size,
             must_keep=frozenset(must_keep),
         )
         if len(capped) < len(paths):
             _notify(
                 ls,
-                f"DimFort: workset capped at {_max_workset_size} "
+                f"DimFort: workset capped at {state.max_workset_size} "
                 f"(full deps: {len(paths)}) for {resolved_active.name}",
             )
         return capped, active
@@ -489,22 +399,21 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
         result = check_files(
             paths,
             overrides=overrides,
-            external_modules=_external_modules,
-            cpp_defines=_project_config.cpp_defines,
-            include_paths=_project_config.include_paths,
-            cache=_cache,
-            cache_mode=_cache_mode,
-            units_file=_project_config.units_file,
-            diagnostic_severities=_project_config.diagnostic_severities,
-            scale_mode=_scale_mode,
+            external_modules=state.external_modules,
+            cpp_defines=state.project_config.cpp_defines,
+            include_paths=state.project_config.include_paths,
+            cache=state.cache,
+            cache_mode=state.cache_mode,
+            units_file=state.project_config.units_file,
+            diagnostic_severities=state.project_config.diagnostic_severities,
+            scale_mode=state.scale_mode,
         )
     except Exception:
         log.exception("dimfort pipeline crashed on %s", active)
         return
 
-    with _last_result_lock:
-        global _last_result
-        _last_result = result
+    with state.last_result_lock:
+        state.last_result = result
 
     # Publish per-file. Files that produced no diagnostics still get an
     # empty publish, so stale squiggles clear immediately.
@@ -528,7 +437,7 @@ def _refresh_inlay_hints(ls: LanguageServer) -> None:
 
     The client may issue a ``textDocument/inlayHint`` request *before*
     the server's initial workspace check has populated
-    ``_last_result``; that early request returns empty and the
+    ``state.last_result``; that early request returns empty and the
     client caches "no hints". Without this nudge the user has to
     perform a buffer edit to coax the client into re-querying. The
     method is opt-in via the LSP spec (``workspace.inlayHint.refreshSupport``),
@@ -540,14 +449,14 @@ def _refresh_inlay_hints(ls: LanguageServer) -> None:
 
 
 def _bump_version(uri: str) -> int:
-    with _doc_versions_lock:
-        _doc_versions[uri] = _doc_versions.get(uri, 0) + 1
-        return _doc_versions[uri]
+    with state.doc_versions_lock:
+        state.doc_versions[uri] = state.doc_versions.get(uri, 0) + 1
+        return state.doc_versions[uri]
 
 
 def _is_current(uri: str, version: int) -> bool:
-    with _doc_versions_lock:
-        return _doc_versions.get(uri) == version
+    with state.doc_versions_lock:
+        return state.doc_versions.get(uri) == version
 
 
 # ---------------------------------------------------------------------------
@@ -557,8 +466,8 @@ def _is_current(uri: str, version: int) -> bool:
 
 def _trees_for(uri: str) -> tuple[Path, object, bytes] | None:
     """Return ``(resolved_path, tree, source_bytes)`` for ``uri`` if loaded."""
-    with _last_result_lock:
-        result = _last_result
+    with state.last_result_lock:
+        result = state.last_result
     if result is None:
         return None
     path = _uri_to_path(uri)
@@ -572,9 +481,9 @@ def _trees_for(uri: str) -> tuple[Path, object, bytes] | None:
 
 
 def _ensure_uri_loaded(ls: LanguageServer, uri: str) -> None:
-    """Re-publish for ``uri`` if its tree isn't in ``_last_result``.
+    """Re-publish for ``uri`` if its tree isn't in ``state.last_result``.
 
-    The LSP keeps a single global ``_last_result``, updated on every
+    The LSP keeps a single global ``state.last_result``, updated on every
     didOpen / didSave / didChange. When the user navigates between
     open tabs, VSCode doesn't fire any LSP event — but the last
     publish may have been for a *different* active file whose
@@ -594,7 +503,7 @@ def _ensure_uri_loaded(ls: LanguageServer, uri: str) -> None:
         return
     if path.suffix.lower() not in _FORTRAN_EXTS:
         return
-    with _check_lock:
+    with state.check_lock:
         _publish_for_uri(ls, uri)
 
 
@@ -642,7 +551,7 @@ def _build_ts_ctx(
         # Honour the project's opt-in scale mode so on-demand features
         # (hover / panel / re-check) reason consistently with the
         # diagnostic pipeline. Default off ⇒ dimension-only.
-        scale_mode=_scale_mode,
+        scale_mode=state.scale_mode,
     )
 
 
@@ -882,8 +791,8 @@ def _resolve_hover(
     if found is None:
         return None
     resolved_path, tree, source = found
-    with _last_result_lock:
-        result = _last_result
+    with state.last_result_lock:
+        result = state.last_result
     if result is None:
         return None
 
@@ -900,7 +809,7 @@ def _resolve_hover(
             continue
         mod_lc = mod_name.lower()
         exports = result.module_exports.get(mod_lc)
-        external = mod_lc in _external_modules
+        external = mod_lc in state.external_modules
         return (
             _module_hover_md(
                 mod_name, exports,
@@ -1118,7 +1027,6 @@ def _unit_source_for(
 
 @server.feature(lsp.INITIALIZE)
 def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
-    global _workspace_folders
     folders: list[Path] = []
     if params.workspace_folders:
         for folder in params.workspace_folders:
@@ -1129,13 +1037,12 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         p = _uri_to_path(params.root_uri)
         if p is not None:
             folders.append(p)
-    _workspace_folders = folders
+    state.workspace_folders = folders
 
     # Load .dimfort.toml from the first workspace folder, if any.
-    global _project_config
     if folders:
-        _project_config = load_config(folders[0])
-    config = _project_config
+        state.project_config = load_config(folders[0])
+    config = state.project_config
 
     # Project-specific unit table (projects ship a ``*_units.toml`` with
     # ``degree``, ``hPa``, ``day``, etc.). Install before any check
@@ -1145,16 +1052,15 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         _unit_config.install_default(config.units_file)
 
     # Start from config-provided values; initializationOptions override.
-    _external_modules_from_config = _DEFAULT_EXTERNAL_MODULES | frozenset(
+    _external_modules_from_config = DEFAULT_EXTERNAL_MODULES | frozenset(
         config.external_modules
     )
     opts = params.initialization_options or {}
-    global _external_modules, _max_workset_size, _scale_mode
-    _external_modules = _external_modules_from_config
+    state.external_modules = _external_modules_from_config
     if config.max_workset_size is not None:
-        _max_workset_size = config.max_workset_size
+        state.max_workset_size = config.max_workset_size
     # Scale mode: config default, optionally overridden per-client.
-    _scale_mode = config.scale_mode
+    state.scale_mode = config.scale_mode
 
     # [diagnostics] severity overrides are applied by finalize_diagnostics
     # via a process-wide global. The CLI sets it; the LSP must too, or
@@ -1184,25 +1090,24 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         # Init options extend whatever config already contributed.
         extra = opts.get("externalModules")
         if isinstance(extra, list):
-            _external_modules = _external_modules | frozenset(
+            state.external_modules = state.external_modules | frozenset(
                 str(m).lower() for m in extra if isinstance(m, str)
             )
         cap = opts.get("maxWorksetSize")
         if isinstance(cap, int) and cap > 0:
-            _max_workset_size = cap
+            state.max_workset_size = cap
 
         # Opt-in scale checking: initializationOption overrides config.
         scale_opt = opts.get("scaleMode")
         if isinstance(scale_opt, bool):
-            _scale_mode = scale_opt
+            state.scale_mode = scale_opt
 
         # Content-hash cache: opt-in via initializationOptions. The
         # cache directory defaults to ``.dimfort-cache/`` under the
         # first workspace folder; clients can override with cacheDir.
-        global _cache, _cache_mode
         requested = opts.get("cacheMode", "off")
         if requested in ("off", "read-only", "read-write") and folders:
-            _cache_mode = requested
+            state.cache_mode = requested
             if requested != "off":
                 from dimfort.core.cache_store import default_cache_dir
                 cache_dir_opt = opts.get("cacheDir")
@@ -1210,7 +1115,7 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
                     Path(cache_dir_opt) if isinstance(cache_dir_opt, str)
                     else default_cache_dir(folders[0])
                 )
-                _cache = CacheStore(root=cache_root)
+                state.cache = CacheStore(root=cache_root)
 
     config_note = (
         f" (config: {config.config_path.name})"
@@ -1220,7 +1125,7 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
     _notify(
         ls,
         f"DimFort LSP initialised — {len(folders)} folder(s), "
-        f"{len(_external_modules)} external module(s) on allowlist"
+        f"{len(state.external_modules)} external module(s) on allowlist"
         f"{config_note}",
     )
 
@@ -1235,14 +1140,14 @@ def _initialized(ls: LanguageServer, params: lsp.InitializedParams) -> None:
     e.g. from inside the ``initialize`` handler — races against the
     client's readiness and produces JsonRpcMethodNotFound responses.
     """
-    folders = _workspace_folders
+    folders = state.workspace_folders
     if not folders:
         return
     # If ``.dimfort.toml`` narrows the source tree via [project].src_paths,
     # scan only those subdirectories. Otherwise scan every workspace
     # folder. Useful on large monorepos where DimFort cares about a
     # handful of subtrees.
-    scan_roots = tuple(_project_config.src_paths) or tuple(folders)
+    scan_roots = tuple(state.project_config.src_paths) or tuple(folders)
     _notify(
         ls,
         f"DimFort: scanning workspace ({len(scan_roots)} root(s))…",
@@ -1262,7 +1167,6 @@ def _build_initial_index(ls: LanguageServer, roots: tuple[Path, ...]) -> None:
     spinner with per-file detail. Reports are throttled to ~10/sec so
     a 2435-file scan doesn't flood the wire.
     """
-    global _workspace_index
     token = f"dimfort-scan-{int(time.time() * 1000)}"
     progress = ls.work_done_progress
     progress_started = False
@@ -1313,8 +1217,8 @@ def _build_initial_index(ls: LanguageServer, roots: tuple[Path, ...]) -> None:
                 log.debug("workDoneProgress end failed", exc_info=True)
         return
 
-    with _workspace_index_lock:
-        _workspace_index = idx
+    with state.workspace_index_lock:
+        state.workspace_index = idx
 
     if progress_started:
         try:
@@ -1335,8 +1239,8 @@ def _build_initial_index(ls: LanguageServer, roots: tuple[Path, ...]) -> None:
     # nothing ever re-triggered them. Now that the index is in
     # place, ``_workset_for`` will resolve full topo-sorted
     # closures.
-    with _opened_uris_lock:
-        opened = list(_opened_uris.values())
+    with state.opened_uris_lock:
+        opened = list(state.opened_uris.values())
     if opened:
         _notify(
             ls,
@@ -1344,7 +1248,7 @@ def _build_initial_index(ls: LanguageServer, roots: tuple[Path, ...]) -> None:
         )
         for uri in opened:
             try:
-                with _check_lock:
+                with state.check_lock:
                     _publish_for_uri(ls, uri)
             except Exception:
                 log.exception("post-index refresh failed for %s", uri)
@@ -1353,8 +1257,8 @@ def _build_initial_index(ls: LanguageServer, roots: tuple[Path, ...]) -> None:
 def _update_index_for(path: Path, *, new_text: str | None = None) -> None:
     """Incrementally re-scan one file into the index. No-op when the
     initial build hasn't completed."""
-    with _workspace_index_lock:
-        idx = _workspace_index
+    with state.workspace_index_lock:
+        idx = state.workspace_index
     if idx is None:
         return
     try:
@@ -1374,7 +1278,7 @@ def _did_open(ls: LanguageServer, params: lsp.DidOpenTextDocumentParams) -> None
     _remember_uri(uri)
 
     def worker() -> None:
-        with _check_lock:
+        with state.check_lock:
             try:
                 _publish_for_uri(ls, uri)
             except Exception:
@@ -1392,7 +1296,7 @@ def _did_save(ls: LanguageServer, params: lsp.DidSaveTextDocumentParams) -> None
         _update_index_for(saved.resolve())
 
     def worker() -> None:
-        with _check_lock:
+        with state.check_lock:
             try:
                 _publish_for_uri(ls, uri)
             except Exception:
@@ -1419,8 +1323,8 @@ def _did_close(ls: LanguageServer, params: lsp.DidCloseTextDocumentParams) -> No
         except OSError:
             resolved = None
         if resolved is not None:
-            with _last_result_lock:
-                result = _last_result
+            with state.last_result_lock:
+                result = state.last_result
             if result is not None:
                 cached = result.diagnostics.get(resolved, [])
 
@@ -1448,7 +1352,7 @@ def _did_change(ls: LanguageServer, params: lsp.DidChangeTextDocumentParams) -> 
         time.sleep(_DEBOUNCE_SECONDS)
         if not _is_current(uri, version):
             return  # superseded by a later keystroke
-        with _check_lock:
+        with state.check_lock:
             # Re-check version inside the lock: a later keystroke may
             # have arrived while we were waiting for our turn.
             if not _is_current(uri, version):
@@ -1481,7 +1385,7 @@ def _hover(ls: LanguageServer, params: lsp.HoverParams) -> Any:
     # event, but their workset may not include the now-active file.
     # Trigger a fresh publish before reading trees.
     _ensure_uri_loaded(ls, params.text_document.uri)
-    with _ts_handler_lock:
+    with state.ts_handler_lock:
         uri = params.text_document.uri
         # LSP positions are 0-based; our internal helpers are 1-based.
         line = params.position.line + 1
@@ -1526,8 +1430,8 @@ def _expression_hover_for(
     if found is None:
         return None
     resolved_path, tree, source = found
-    with _last_result_lock:
-        result = _last_result
+    with state.last_result_lock:
+        result = state.last_result
     if result is None:
         return None
     # Most-specific wins: a cursor directly on a ``+`` / ``-`` / ``*``
@@ -2078,8 +1982,8 @@ def _trace_section_for(uri: str, line_1based: int, col_1based: int) -> str | Non
     if found is None:
         return None
     resolved_path, tree, source = found
-    with _last_result_lock:
-        result = _last_result
+    with state.last_result_lock:
+        result = state.last_result
     if result is None:
         return None
     asn = _ts_h.smallest_enclosing(
@@ -2418,15 +2322,15 @@ _NO_UNIT_NODE_TYPES = frozenset({"assignment_statement", "relational_expression"
 def _diags_for_ctx(ctx) -> tuple[Diagnostic, ...]:
     """This file's diagnostics from the last cached workspace result, keyed
     by ``ctx.file``. The single source the markers read — no per-render
-    threading: hover/panel already populate ``_last_result`` (and the
+    threading: hover/panel already populate ``state.last_result`` (and the
     publish path keeps it current). Empty when nothing's cached.
 
     The expensive ``Path.resolve()`` (a disk stat) is cached on the ctx
     object — fresh per render, so no cross-render staleness — while the
-    current ``_last_result`` is always re-read (the diagnostics axis must
+    current ``state.last_result`` is always re-read (the diagnostics axis must
     never go stale)."""
-    with _last_result_lock:
-        result = _last_result
+    with state.last_result_lock:
+        result = state.last_result
     if result is None:
         return ()
     p = getattr(ctx, "_resolved_file", None)
@@ -2779,8 +2683,8 @@ def _panel_info(ls: LanguageServer, params) -> dict | None:
         return None
     resolved = path.resolve()
 
-    with _last_result_lock:
-        result = _last_result
+    with state.last_result_lock:
+        result = state.last_result
     if result is None:
         return None
     attached = result.attachments.get(resolved)
@@ -2823,7 +2727,7 @@ def _panel_info(ls: LanguageServer, params) -> dict | None:
     unparseable = result.unparseable_units.get(resolved, frozenset())
 
     # Markers are diagnostic-driven (docs/design/markers.md): the marker
-    # helpers read this file's diagnostics from _last_result via ctx.file,
+    # helpers read this file's diagnostics from state.last_result via ctx.file,
     # so no threading is needed here.
     expr_root = _find_expression_root(tree, line_1based, col_1based)
     expression = (
@@ -2946,8 +2850,8 @@ def _interactions(ls: LanguageServer, params) -> dict | None:
     explicit_symbol = _get(params, "symbol")
     scale = bool(_get(params, "scale"))
 
-    with _last_result_lock:
-        result = _last_result
+    with state.last_result_lock:
+        result = state.last_result
     if result is None:
         return None
 
@@ -3074,10 +2978,10 @@ def _inlay_hint(
     """
     # Tab-switch safety: re-publish if the URI isn't currently loaded.
     _ensure_uri_loaded(ls, params.text_document.uri)
-    # See _ts_handler_lock declaration: tree-sitter's C library isn't
+    # See state.ts_handler_lock declaration: tree-sitter's C library isn't
     # thread-safe for concurrent traversal; serialise alongside hover
     # and definition.
-    with _ts_handler_lock:
+    with state.ts_handler_lock:
         return _inlay_hint_locked(params)
 
 
@@ -3090,8 +2994,8 @@ def _inlay_hint_locked(
     if found is None:
         return []
     resolved_path, tree, source = found
-    with _last_result_lock:
-        result = _last_result
+    with state.last_result_lock:
+        result = state.last_result
     if result is None:
         return []
 
@@ -3235,11 +3139,11 @@ def _definition(
     """
     # Tab-switch safety: re-publish if the URI isn't currently loaded.
     _ensure_uri_loaded(ls, params.text_document.uri)
-    # See _ts_handler_lock declaration: tree-sitter's C library isn't
+    # See state.ts_handler_lock declaration: tree-sitter's C library isn't
     # thread-safe for concurrent traversal; Cmd-hover fires hover +
     # definition simultaneously and was triggering native-level
     # crashes. Serialise.
-    with _ts_handler_lock:
+    with state.ts_handler_lock:
         return _definition_locked(ls, params)
 
 
@@ -3252,8 +3156,8 @@ def _definition_locked(
     if found is None:
         return None
     _, tree, source = found
-    with _last_result_lock:
-        result = _last_result
+    with state.last_result_lock:
+        result = state.last_result
     if result is None:
         return None
 
@@ -3357,8 +3261,8 @@ def _code_action(
 ) -> list[lsp.CodeAction] | None:
     if not _features.code_actions:
         return None
-    with _last_result_lock:
-        result = _last_result
+    with state.last_result_lock:
+        result = state.last_result
     if result is None:
         return None
     path = _uri_to_path(params.text_document.uri)
@@ -3626,7 +3530,7 @@ def _cmd_check_workspace(ls: LanguageServer, *_args) -> None:
     Whole Workspace").
 
     The work runs on a daemon thread so the LSP stays responsive. The
-    server-wide ``_check_lock`` is held for the duration to avoid
+    server-wide ``state.check_lock`` is held for the duration to avoid
     racing with per-file didOpen/didSave/didChange checks.
     """
     threading.Thread(
@@ -3638,8 +3542,8 @@ def _cmd_check_workspace(ls: LanguageServer, *_args) -> None:
 
 
 def _check_whole_workspace(ls: LanguageServer) -> None:
-    with _workspace_index_lock:
-        idx = _workspace_index
+    with state.workspace_index_lock:
+        idx = state.workspace_index
     if idx is None:
         _notify(
             ls,
@@ -3702,19 +3606,19 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
                 ),
             )
 
-    with _check_lock:
+    with state.check_lock:
         try:
             result = check_files(
                 files,
-                external_modules=_external_modules,
-                cpp_defines=_project_config.cpp_defines,
-                include_paths=_project_config.include_paths,
+                external_modules=state.external_modules,
+                cpp_defines=state.project_config.cpp_defines,
+                include_paths=state.project_config.include_paths,
                 progress_cb=on_load_progress,
-                cache=_cache,
-                cache_mode=_cache_mode,
-                units_file=_project_config.units_file,
-                diagnostic_severities=_project_config.diagnostic_severities,
-                scale_mode=_scale_mode,
+                cache=state.cache,
+                cache_mode=state.cache_mode,
+                units_file=state.project_config.units_file,
+                diagnostic_severities=state.project_config.diagnostic_severities,
+                scale_mode=state.scale_mode,
             )
         except Exception:
             log.exception("workspace check failed")
@@ -3725,9 +3629,8 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
                     )
             return
 
-        with _last_result_lock:
-            global _last_result
-            _last_result = result
+        with state.last_result_lock:
+            state.last_result = result
 
         published = 0
         for path in files:
@@ -3771,7 +3674,7 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
     total_seconds = result.phase_timings.get("total")
     timing = f" in {total_seconds:.1f} s" if total_seconds is not None else ""
     cache_note = ""
-    if _cache is not None and (
+    if state.cache is not None and (
         result.cache_hits or result.cache_misses or result.cache_dirty
     ):
         cache_note = (
