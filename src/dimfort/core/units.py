@@ -170,7 +170,7 @@ class Exponent:
 
     def __add__(self, other: Exponent | Number) -> Exponent:
         if isinstance(other, Exponent):
-            agg: dict[str, Fraction] = dict(self.terms)
+            agg: dict[str, Number] = dict(self.terms)
             for name, coeff in other.terms:
                 agg[name] = agg.get(name, Fraction(0)) + coeff
             return Exponent.build(agg, self.constant + other.constant)
@@ -435,7 +435,12 @@ def wrap_exp(u: UnitExpr) -> UnitExpr:
 
 
 def _u(dim: Dim, factor: Number = 1) -> Unit:
-    return Unit(dim, Fraction(factor))
+    # Promote any scalar slots to Exponent so the type matches Unit.dimension
+    # (Unit.__post_init__ would coerce at runtime regardless).
+    promoted = tuple(
+        d if isinstance(d, Exponent) else Exponent.from_value(d) for d in dim
+    )
+    return Unit(promoted, Fraction(factor))
 
 
 # ---------------------------------------------------------------------------
@@ -813,9 +818,9 @@ def power(
         new_inner = _logwrap_inner_pow(base.inner, exponent_value)
         if new_inner is None:
             return None, None
-        result = wrap_exp(new_inner)
-        trace_step("R6.4", (base,), result)
-        return result, None
+        wrapped = wrap_exp(new_inner)
+        trace_step("R6.4", (base,), wrapped)
+        return wrapped, None
 
     return None, None
 
