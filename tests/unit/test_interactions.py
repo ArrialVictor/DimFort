@@ -86,6 +86,25 @@ def test_literal_anchors_sum_without_lhs_annotation(tmp_path):
     assert _unit_at(report, 5) == "1/K"
 
 
+def test_literal_anchor_survives_unresolvable_sibling_term(tmp_path):
+    # `1.0 + junk - lcp*x`: the literal pins the whole sum to {1} even though
+    # the sibling term `junk` is unannotated. Before the additive-flatten fix,
+    # _resolve of the entire sibling `(1.0 + junk)` failed on `junk` and `x`
+    # fell through to Unconstrained; now `x` is pinned to {1}/{K} = {1/K}.
+    src = (
+        "subroutine s(x, lcp, junk, denom)\n"
+        "  real :: x\n"
+        "  real :: lcp    !< @unit{K}\n"
+        "  real :: junk\n"
+        "  real :: denom\n"
+        "  denom = 1.0 + junk - lcp*x\n"
+        "end subroutine\n"
+    )
+    report = _report(tmp_path, src, "x")
+    reqs = [p for p in report.points if p.kind == REQUIRES]
+    assert reqs and reqs[0].unit_str == "1/K"
+
+
 def test_assignment_lhs_is_contributes(tmp_path):
     src = (
         "subroutine s(x, a, b)\n"
