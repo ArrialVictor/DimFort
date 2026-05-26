@@ -13,8 +13,11 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 from lsprotocol import types as lsp
+from pygls.lsp.server import LanguageServer
+from tree_sitter import Node, Tree
 
 from dimfort.core import ts_parser as _ts
 from dimfort.lsp.decl_scan import _last_scan_declarations
@@ -22,7 +25,7 @@ from dimfort.lsp.state import state
 from dimfort.lsp.tree_access import _trees_for, _uri_to_path
 
 
-def resolve(ls, params: lsp.CodeActionParams) -> list[lsp.CodeAction] | None:
+def resolve(ls: LanguageServer, params: lsp.CodeActionParams) -> list[lsp.CodeAction] | None:
     with state.last_result_lock:
         result = state.last_result
     if result is None:
@@ -110,7 +113,7 @@ _H010_CAST_RE = re.compile(
 
 
 def _h010_extract_to_parameter_actions(
-    params: lsp.CodeActionParams, doc, resolved_path: Path,
+    params: lsp.CodeActionParams, doc: Any, resolved_path: Path,
 ) -> list[lsp.CodeAction]:
     """Build the 'extract literal to PARAMETER' action for each H010 D1.5
     diagnostic in the requested range.
@@ -192,7 +195,7 @@ def _h010_extract_to_parameter_actions(
     return out
 
 
-def _smallest_enclosing_routine(tree, line_1based: int, col_1based: int):
+def _smallest_enclosing_routine(tree: Tree, line_1based: int, col_1based: int) -> Node | None:
     """Return the innermost ``subroutine`` / ``function`` node enclosing
     the position, or ``None`` if the position isn't inside any routine
     (file-level / module-level code)."""
@@ -210,7 +213,7 @@ def _smallest_enclosing_routine(tree, line_1based: int, col_1based: int):
     return best
 
 
-def _routine_decl_insertion_line(routine, source: bytes) -> int | None:
+def _routine_decl_insertion_line(routine: Node, source: bytes) -> int | None:
     """Return the 0-based line index right after the last
     ``variable_declaration`` direct child of ``routine``.
 

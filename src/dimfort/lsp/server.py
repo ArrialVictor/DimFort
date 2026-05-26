@@ -849,7 +849,7 @@ _VERDICT_TO_MARKER = {
 
 
 @server.feature("dimfort/panelInfo")
-def _panel_info(ls: LanguageServer, params) -> dict | None:
+def _panel_info(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
     """Return the side-panel payload for ``(uri, position)``.
 
     See docs/design/panel-info.md for the data model. Stateless:
@@ -860,7 +860,7 @@ def _panel_info(ls: LanguageServer, params) -> dict | None:
 
 
 @server.feature("dimfort/interactions")
-def _interactions(ls: LanguageServer, params) -> dict | None:
+def _interactions(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
     """Cross-site unit analysis for the symbol under the cursor.
 
     Resolves the identifier at ``(uri, position)`` (or an explicit
@@ -964,7 +964,7 @@ def _code_action(
 
 
 @server.command("dimfort.checkWorkspace")
-def _cmd_check_workspace(ls: LanguageServer, *_args) -> None:
+def _cmd_check_workspace(ls: LanguageServer, *_args: Any) -> None:
     """Run the active checker backend over every file in the workspace
     index, publishing diagnostics for each. Triggered from the client
     via ``workspace/executeCommand`` (palette command "DimFort: Check
@@ -1162,6 +1162,7 @@ def _install_crash_trace_hook() -> None:
     import os
     import sys
     import traceback
+    from types import TracebackType
 
     env = os.environ.get("DIMFORT_CRASH_LOG")
     if env is None:
@@ -1179,7 +1180,11 @@ def _install_crash_trace_hook() -> None:
         except Exception:  # noqa: BLE001 — diagnostic path; can't help if write fails
             pass
 
-    def _hook(exc_type, exc_value, exc_tb) -> None:
+    def _hook(
+        exc_type: type[BaseException],
+        exc_value: BaseException,
+        exc_tb: TracebackType | None,
+    ) -> None:
         _write(
             "sys.excepthook",
             "".join(traceback.format_exception(exc_type, exc_value, exc_tb)),
@@ -1190,9 +1195,9 @@ def _install_crash_trace_hook() -> None:
     # Without this, exceptions from a worker thread don't reach
     # excepthook on older Pythons.
     if hasattr(threading, "excepthook"):
-        def _thread_hook(args):
+        def _thread_hook(args: threading.ExceptHookArgs) -> None:
             _write(
-                f"thread {args.thread.name}",
+                f"thread {args.thread.name if args.thread else '?'}",
                 "".join(traceback.format_exception(
                     args.exc_type, args.exc_value, args.exc_traceback,
                 )),
@@ -1206,7 +1211,7 @@ def _install_crash_trace_hook() -> None:
     # handler that mirrors ERROR-level logs into our crash file so
     # we capture them too.
     class _CrashFileHandler(logging.Handler):
-        def emit(self, record):  # type: ignore[override]
+        def emit(self, record: logging.LogRecord) -> None:
             try:
                 msg = self.format(record)
             except Exception:  # noqa: BLE001

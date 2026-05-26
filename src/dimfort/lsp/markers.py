@@ -6,6 +6,8 @@ no dependency on server state or tree-sitter — extracted from ``server.py``
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 
 def _marker_token(mark: str) -> str:
     """Map a 🟢/🟡/🔴 emoji to a wire-format-friendly token."""
@@ -28,7 +30,7 @@ def _worst_emoji(*marks: str) -> str:
     return max(marks, key=lambda m: _MARKER_EMOJI_RANK.get(m, 1))
 
 
-def _aggregate_marker(marks) -> str:
+def _aggregate_marker(marks: Iterable[str]) -> str:
     """Worst-of aggregate: 🔴 > 🟡 > 🟢. Empty stream → 🟢."""
     worst = "🟢"
     for m in marks:
