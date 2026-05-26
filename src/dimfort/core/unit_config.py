@@ -30,9 +30,17 @@ from __future__ import annotations
 import tomllib
 from fractions import Fraction
 from pathlib import Path
+from typing import Any
 
 from dimfort.core import units as _units_mod
-from dimfort.core.units import DIM_LEN, Unit, UnitError, UnitTable, UnknownUnitError
+from dimfort.core.units import (
+    DIM_LEN,
+    Exponent,
+    Unit,
+    UnitError,
+    UnitTable,
+    UnknownUnitError,
+)
 
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("default_units.toml")
 
@@ -51,28 +59,28 @@ def _coerce_factor(value: object) -> Fraction:
     raise UnitError(f"prefix factor must be number/string, got {value!r}")
 
 
-def _build_base(data: dict) -> dict[str, Unit]:
+def _build_base(data: dict[str, Any]) -> dict[str, Unit]:
     base: dict[str, Unit] = {}
     for name, slot_name in data.items():
         if slot_name not in _DIM_SLOT:
             raise UnitError(f"base unit {name!r}: unknown dimension slot {slot_name!r}")
         idx = _DIM_SLOT[slot_name]
-        dim = tuple(1 if i == idx else 0 for i in range(DIM_LEN))
+        dim = tuple(Exponent.from_value(1 if i == idx else 0) for i in range(DIM_LEN))
         base[name] = Unit(dim, Fraction(1))
     return base
 
 
-def _build_prefixes(data: dict) -> dict[str, Fraction]:
+def _build_prefixes(data: dict[str, Any]) -> dict[str, Fraction]:
     return {name: _coerce_factor(value) for name, value in data.items()}
 
 
 def _build_derived(
-    data: dict, base: dict[str, Unit], prefixes: dict[str, Fraction]
+    data: dict[str, Any], base: dict[str, Unit], prefixes: dict[str, Fraction]
 ) -> tuple[dict[str, Unit], frozenset[str]]:
     derived: dict[str, Unit] = {}
     prefixable: set[str] = set(base)  # base units always prefixable
 
-    pending: dict[str, dict] = dict(data)
+    pending: dict[str, dict[str, Any]] = dict(data)
     while pending:
         progressed = False
         partial = UnitTable(
@@ -86,9 +94,16 @@ def _build_derived(
             if not isinstance(expr, str):
                 raise UnitError(f"derived unit {name!r}: missing 'expr'")
             try:
-                u = _units_mod.parse(expr, partial)
+                parsed = _units_mod.parse(expr, partial)
             except UnknownUnitError:
                 continue
+            # Unit-table entries are always plain units; LOG()/EXP() wrappers
+            # only arise from user annotations, never a table definition.
+            if not isinstance(parsed, Unit):
+                raise UnitError(
+                    f"derived unit {name!r}: expression {expr!r} is not a plain unit"
+                )
+            u = parsed
             # Optional scalar ``factor`` multiplies the parsed unit's
             # factor. Used for non-SI units whose value can't be
             # expressed by combining symbols (mbar = 100 Pa, atm =
@@ -143,7 +158,7 @@ def _check_collisions(table: UnitTable) -> None:
             add(p + unit_name, f"prefix '{p}' + '{unit_name}'")
 
 
-def _merge(base: dict, override: dict) -> dict:
+def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     out = {k: dict(v) if isinstance(v, dict) else v for k, v in base.items()}
     for k, v in override.items():
         if isinstance(v, dict) and isinstance(out.get(k), dict):
@@ -186,7 +201,10 @@ def install_default(user_path: Path | None = None) -> UnitTable:
     try:
         table = load_config(user_path)
     except (OSError, UnitError, tomllib.TOMLDecodeError):
-        return _units_mod.DEFAULT_TABLE
+        # Keep the current default (always initialised at module import below).
+        current = _units_mod.DEFAULT_TABLE
+        assert current is not None
+        return current
     _units_mod.DEFAULT_TABLE = table
     return table
 
