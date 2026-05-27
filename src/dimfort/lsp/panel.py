@@ -18,7 +18,12 @@ from pygls.lsp.server import LanguageServer
 from dimfort.core import ts_parser as _ts
 from dimfort.core.diagnostics import Severity
 from dimfort.lsp.decl_scan import _scan_declarations_for_uri
-from dimfort.lsp.expr_tree import _build_expression_tree, _build_scope_vars
+from dimfort.lsp.expr_tree import (
+    _build_expression_tree,
+    _build_scope_vars,
+    build_scope_vars_by_span,
+    recover_scopes,
+)
 from dimfort.lsp.state import state
 from dimfort.lsp.tree_access import _build_ts_ctx, _trees_for, _uri_to_path
 from dimfort.lsp.tree_nav import (
@@ -120,6 +125,29 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
                 sn, scan_decls, attached, source_bytes, unparseable
             ),
         })
+
+    # Fallback: tree-sitter found no scope node, which happens when an
+    # unparseable statement collapses the whole routine into an ``ERROR``
+    # node. Recover the enclosing scopes line-based from the surviving
+    # header statements so the Scope section still lists the routine's
+    # declarations instead of blanking. See docs/design/panel-info.md.
+    if not scopes:
+        recovered = recover_scopes(tree, source_bytes)
+        chain = [
+            idx for idx, (_k, _n, s, e) in enumerate(recovered)
+            if s <= line_1based <= e
+        ]
+        chain.sort(key=lambda idx: (recovered[idx][2], -recovered[idx][3]))
+        for idx in chain:
+            kind, name, _s, _e = recovered[idx]
+            scopes.append({
+                "name": name,
+                "kind": kind,
+                "vars": build_scope_vars_by_span(
+                    idx, recovered, scan_decls, attached,
+                    source_bytes, unparseable,
+                ),
+            })
 
     # Innermost scope, surfaced as the back-compat ``scope`` /
     # ``scopeVars`` / ``routine`` / ``routineVars`` fields for any

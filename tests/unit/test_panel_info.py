@@ -761,3 +761,89 @@ def test_build_scope_vars_program_level(tmp_path: Path):
     by_name = {row["name"]: row for row in vars_list}
     assert set(by_name) == {"t"}
     assert by_name["t"]["unit"] == "s"
+
+
+def test_recover_scopes_when_routine_error_wrapped(tmp_path: Path):
+    """An unparseable statement collapses the whole routine into an
+    ``ERROR`` node, so ``_enclosing_scopes`` finds nothing and the panel's
+    Scope section would blank. ``recover_scopes`` reconstructs the scope
+    from the surviving header so the declarations still list."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.annotations import scan_file
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.expr_tree import build_scope_vars_by_span, recover_scopes
+    from dimfort.lsp.tree_nav import _enclosing_scopes
+
+    src = tmp_path / "broken.f90"
+    src.write_text(
+        "subroutine driver\n"          # 1
+        "  real :: t  !< @unit{s}\n"    # 2
+        "  real :: d  !< @unit{m}\n"    # 3
+        "  t = 2.0\n"                   # 4
+        "  d = t * t\n"                 # 5
+        "  10 format (1x, 'broken'\n"   # 6 — unparseable last statement
+        "end subroutine\n"             # 7
+    )
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    attached = result.attachments[src.resolve()]
+    scan_decls = scan_file(src).declarations
+
+    # Precondition: the bug — tree-sitter wraps the routine in ERROR, so
+    # there is no scope node at the cursor (line 5).
+    assert _enclosing_scopes(tree, 5, 5) == []
+
+    recovered = recover_scopes(tree, source)
+    assert recovered == [("subroutine", "driver", 1, 7)]
+
+    vars_list = build_scope_vars_by_span(0, recovered, scan_decls, attached, source)
+    by_name = {row["name"]: row for row in vars_list}
+    assert set(by_name) == {"t", "d"}
+    assert by_name["t"]["unit"] == "s"
+    assert by_name["t"]["kind"] == "annotated"
+    assert by_name["d"]["unit"] == "m"
+
+
+def test_recover_scopes_nested_module_excludes_routine_locals(tmp_path: Path):
+    """When recovery kicks in for a module-contained routine, the module
+    section lists only module-level declarations and the routine section
+    only its locals — a declaration belongs to its innermost scope."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.annotations import scan_file
+    from dimfort.lsp.expr_tree import build_scope_vars_by_span, recover_scopes
+
+    src = tmp_path / "mod.f90"
+    src.write_text(
+        "module physics\n"                 # 1
+        "  real :: g  !< @unit{m/s^2}\n"    # 2
+        "contains\n"                        # 3
+        "  subroutine fall(h)\n"            # 4
+        "    real :: h   !< @unit{m}\n"     # 5
+        "    real :: tt  !< @unit{s}\n"     # 6
+        "    tt = 1.0\n"                     # 7
+        "    20 format (1x, 'broken'\n"     # 8 — unparseable
+        "  end subroutine\n"                # 9
+        "end module\n"                       # 10
+    )
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    scan_decls = scan_file(src).declarations
+
+    recovered = recover_scopes(tree, source)
+    by_kind = {kind: (name, s, e) for (kind, name, s, e) in recovered}
+    assert by_kind["module"][0] == "physics"
+    assert by_kind["subroutine"][0] == "fall"
+
+    mod_idx = next(i for i, r in enumerate(recovered) if r[0] == "module")
+    sub_idx = next(i for i, r in enumerate(recovered) if r[0] == "subroutine")
+    mod_vars = {
+        row["name"]
+        for row in build_scope_vars_by_span(mod_idx, recovered, scan_decls, None, source)
+    }
+    sub_vars = {
+        row["name"]
+        for row in build_scope_vars_by_span(sub_idx, recovered, scan_decls, None, source)
+    }
+    assert mod_vars == {"g"}            # routine locals excluded
+    assert sub_vars == {"h", "tt"}
