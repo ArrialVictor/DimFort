@@ -117,8 +117,12 @@ interface ImportVar {
   // For a procedure: a function with a return unit (or any subroutine) is
   // "annotated"; a function lacking a return @unit{} is "unannotated".
   kind: "annotated" | "unannotated";
-  // True for an imported function/subroutine (renderers append "()").
+  // True for an imported function/subroutine (renderers append the
+  // signature). For a callable, ``signature`` is the parenthesised
+  // argument units, e.g. "(kg, m)" or "()" ("?" for an un-annotated arg);
+  // absent for a variable.
   callable: boolean;
+  signature?: string;
   // Navigation target: the imported variable's DECLARATION in the source
   // module (cross-file), resolved via the workspace module exports + trees.
   // Falls back to the `use` clause's own line in this file when the source

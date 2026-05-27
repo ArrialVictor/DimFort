@@ -984,8 +984,10 @@ def test_imports_include_procedures(tmp_path: Path):
     assert by_name["pressure"]["callable"] is True
     assert by_name["pressure"]["unit"] == "kg/(m×s²)"
     assert by_name["pressure"]["line"] == 4
+    assert by_name["pressure"]["signature"] == "(m)"   # arg unit
     # Subroutine — callable, no unit, not flagged as a missing annotation.
     assert by_name["reset"]["callable"] is True
     assert by_name["reset"]["unit"] is None
     assert by_name["reset"]["kind"] == "annotated"
     assert by_name["reset"]["line"] == 9
+    assert by_name["reset"]["signature"] == "()"
