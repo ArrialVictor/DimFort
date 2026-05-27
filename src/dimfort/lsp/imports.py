@@ -35,16 +35,21 @@ if TYPE_CHECKING:
 
 
 def _resolve_decl_location(
-    result: WorksetResult, module_lc: str, remote_name: str
+    result: WorksetResult,
+    module_lc: str,
+    remote_name: str,
+    *,
+    want_procedure: bool = False,
 ) -> dict[str, Any] | None:
     """Locate where ``remote_name`` is declared in module ``module_lc``.
 
     Searches the workset's loaded trees for the module's defining file,
-    then for the variable's declaration identifier inside it — the same
-    two-step walk go-to-definition uses. Returns a 1-based ``{file, line,
-    column}`` (for the panel wire format) or ``None`` when the module or
-    the declaration can't be located (the caller then falls back to the
-    ``use`` site)."""
+    then for the declaration site inside it — a variable's declaration
+    identifier, or (``want_procedure``) the function/subroutine
+    definition's name — the same walks go-to-definition uses. Returns a
+    1-based ``{file, line, column}`` or ``None`` when the module or the
+    declaration can't be located (the caller falls back to the ``use``
+    site)."""
     remote_lc = remote_name.lower()
     for tree_path, (other_tree, other_source) in result.trees.items():
         if not any(
@@ -54,10 +59,17 @@ def _resolve_decl_location(
         ):
             continue
         # The module's file — find the declaration of ``remote_name``.
-        for _decl, name_node in _ts_h.walk_decl_identifiers(other_tree):
-            if _ts.node_text(name_node, other_source).lower() == remote_lc:
-                sr, sc = name_node.start_point  # 0-based
-                return {"file": str(tree_path), "line": sr + 1, "column": sc + 1}
+        if want_procedure:
+            for fn in _ts_h.walk_function_definitions(other_tree):
+                fnm = _ts_h.function_definition_name(fn, other_source)
+                if fnm is not None and fnm[0].lower() == remote_lc:
+                    sr, sc = fnm[1].start_point  # 0-based
+                    return {"file": str(tree_path), "line": sr + 1, "column": sc + 1}
+        else:
+            for _decl, name_node in _ts_h.walk_decl_identifiers(other_tree):
+                if _ts.node_text(name_node, other_source).lower() == remote_lc:
+                    sr, sc = name_node.start_point  # 0-based
+                    return {"file": str(tree_path), "line": sr + 1, "column": sc + 1}
         return None  # module found, declaration not located
     return None
 
@@ -114,13 +126,20 @@ def build_imports(
         if exports is None:
             continue  # external / unresolved module — nothing to list
 
-        # (local, remote) name pairs brought into scope.
+        # Case-insensitive index of the module's exports: annotated vars
+        # (with their unit), every declared var name (annotated or not),
+        # and procedure signatures.
+        var_by_lc = {k.lower(): v for k, v in exports.var_units.items()}
+        allvar_lc = {n.lower() for n in (exports.all_var_names or ())}
+        sig_by_lc = {k.lower(): v for k, v in exports.signatures.items()}
+
+        # (local, remote) pairs brought into scope. A whole-module import
+        # lists every declared variable AND every procedure; an ``only:``
+        # list names a subset (each resolved as var-or-procedure below).
         if ref is None or ref.only is None:
-            # Whole-module import: every declared variable (annotated or
-            # not). ``all_var_names`` is the full set; fall back to the
-            # annotated keys for older export records.
             names = exports.all_var_names or tuple(exports.var_units)
             pairs = [(n, n) for n in names]
+            pairs += [(n, n) for n in exports.signatures]
         else:
             rename_map = {local: remote for local, remote in ref.renames}
             pairs = [(local, rename_map.get(local, local)) for local in ref.only]
@@ -129,27 +148,45 @@ def build_imports(
             local_lc = local.lower()
             if local_lc in local_names_lc or local_lc in seen:
                 continue  # local declaration shadows it / already listed
+            remote_lc = remote.lower()
+            is_var = remote_lc in var_by_lc or remote_lc in allvar_lc
+            sig = sig_by_lc.get(remote_lc)
+            if not is_var and sig is None:
+                continue  # not an exported var or procedure (type, …) — skip
             seen.add(local_lc)
-            unit = exports.var_units.get(remote)
-            if unit is None:  # case-insensitive fallback (scanner verbatim)
-                for k, v in exports.var_units.items():
-                    if k.lower() == remote.lower():
-                        unit = v
-                        break
-            unit_text = format_unit(unit) if unit is not None else None
-            row: dict[str, Any] = {
-                "name": local,
-                "unit": unit_text,
-                "unitNormalized": (
-                    _normalized_unit(unit_text) if unit_text else None
-                ),
-                "module": module_lc,
-                "kind": "annotated" if unit_text else "unannotated",
-            }
-            loc = _resolve_decl_location(result, module_lc, remote)
+            if sig is not None and not is_var:
+                # Imported procedure: a function shows its return unit; a
+                # subroutine has none (and isn't "missing" one). ``()``
+                # marks it callable in the renderers.
+                ret = format_unit(sig.return_unit) if sig.return_unit else None
+                row: dict[str, Any] = {
+                    "name": local,
+                    "unit": ret,
+                    "unitNormalized": _normalized_unit(ret) if ret else None,
+                    "module": module_lc,
+                    "kind": ("annotated"
+                             if (ret or sig.is_subroutine) else "unannotated"),
+                    "callable": True,
+                }
+                loc = _resolve_decl_location(
+                    result, module_lc, remote, want_procedure=True
+                )
+            else:
+                unit = var_by_lc.get(remote_lc)
+                unit_text = format_unit(unit) if unit is not None else None
+                row = {
+                    "name": local,
+                    "unit": unit_text,
+                    "unitNormalized": (
+                        _normalized_unit(unit_text) if unit_text else None
+                    ),
+                    "module": module_lc,
+                    "kind": "annotated" if unit_text else "unannotated",
+                    "callable": False,
+                }
+                loc = _resolve_decl_location(result, module_lc, remote)
             if loc is None:
-                # Fall back to the ``use`` site in this file.
-                loc = {"line": use_line, "column": 1}
+                loc = {"line": use_line, "column": 1}  # fall back to use site
             row.update(loc)
             out.append(row)
     return out

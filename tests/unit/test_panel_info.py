@@ -937,3 +937,55 @@ def test_imports_excludes_sibling_routine_and_shadow(tmp_path: Path):
     # must not leak (solver only-imports play).
     rows = build_imports(tree, source, 11, result, frozenset({"play_local"}))
     assert "grav" not in {r["name"] for r in rows}
+
+
+def test_imports_include_procedures(tmp_path: Path):
+    """A `use` brings in the module's procedures too: a function shows its
+    return unit, a subroutine shows none, both flagged callable with nav to
+    the definition."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.imports import build_imports
+
+    src = tmp_path / "proc.f90"
+    src.write_text(
+        "module phys\n"                              # 1
+        "  real :: grav   !< @unit{m/s^2}\n"         # 2
+        "contains\n"                                  # 3
+        "  function pressure(h) result(p)\n"         # 4
+        "    real, intent(in) :: h   !< @unit{m}\n"  # 5
+        "    real             :: p   !< @unit{Pa}\n" # 6
+        "    p = grav * h\n"                          # 7
+        "  end function pressure\n"                  # 8
+        "  subroutine reset()\n"                     # 9
+        "  end subroutine reset\n"                   # 10
+        "end module phys\n"                          # 11
+        "\n"                                          # 12
+        "module app\n"                               # 13
+        "  use phys\n"                               # 14
+        "contains\n"                                  # 15
+        "  subroutine run()\n"                       # 16
+        "    real :: x  !< @unit{Pa}\n"              # 17
+        "    x = pressure(1.0)\n"                    # 18
+        "  end subroutine run\n"                     # 19
+        "end module app\n"                           # 20
+    )
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+
+    rows = build_imports(tree, source, 18, result, frozenset({"x"}))
+    by_name = {r["name"]: r for r in rows}
+    assert set(by_name) == {"grav", "pressure", "reset"}
+    # Variable.
+    assert by_name["grav"]["callable"] is False
+    assert by_name["grav"]["unit"] == "m/s²"
+    # Function — return unit + callable + nav to its definition (line 4).
+    assert by_name["pressure"]["callable"] is True
+    assert by_name["pressure"]["unit"] == "kg/(m×s²)"
+    assert by_name["pressure"]["line"] == 4
+    # Subroutine — callable, no unit, not flagged as a missing annotation.
+    assert by_name["reset"]["callable"] is True
+    assert by_name["reset"]["unit"] is None
+    assert by_name["reset"]["kind"] == "annotated"
+    assert by_name["reset"]["line"] == 9

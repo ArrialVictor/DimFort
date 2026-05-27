@@ -111,10 +111,14 @@ interface PanelInfo {
 
 interface ImportVar {
   name: string;          // the local name (after any `=>` rename)
-  unit: string | null;   // the source declaration's @unit{}, or null
+  unit: string | null;   // var: the source @unit{}; procedure: its return unit; else null
   unitNormalized: string | null;  // base-SI form when it differs (as ScopeVar)
   module: string;        // the module it was imported from (lower-cased)
-  kind: "annotated" | "unannotated";  // whether the source @unit{} is present
+  // For a procedure: a function with a return unit (or any subroutine) is
+  // "annotated"; a function lacking a return @unit{} is "unannotated".
+  kind: "annotated" | "unannotated";
+  // True for an imported function/subroutine (renderers append "()").
+  callable: boolean;
   // Navigation target: the imported variable's DECLARATION in the source
   // module (cross-file), resolved via the workspace module exports + trees.
   // Falls back to the `use` clause's own line in this file when the source
