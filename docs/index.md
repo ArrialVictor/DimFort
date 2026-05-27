@@ -9,4 +9,4 @@ Static unit-consistency checker for Fortran, with LSP integration.
 
 Internals (for contributors): [core architecture](design/core-architecture.md) — the check pipeline (parse → annotate → attach → check) and the `core/` module map; [LSP architecture](design/lsp-architecture.md) — the editor layer on top.
 
-> Status: pre-alpha. CLI, LSP, and diagnostic pipeline are working end-to-end on tree-sitter; see [Usage](usage.md) for the current feature list.
+> Status: beta. CLI, LSP, and diagnostic pipeline are working end-to-end on tree-sitter; the `@unit{}` format, diagnostic codes, and LSP protocol may still shift between `0.x` releases. See [Usage](usage.md) for the current feature list.
