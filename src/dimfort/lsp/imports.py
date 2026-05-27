@@ -156,9 +156,14 @@ def build_imports(
             seen.add(local_lc)
             if sig is not None and not is_var:
                 # Imported procedure: a function shows its return unit; a
-                # subroutine has none (and isn't "missing" one). ``()``
-                # marks it callable in the renderers.
+                # subroutine has none (and isn't "missing" one). ``callable``
+                # + ``signature`` (the parenthesised argument units, ``?``
+                # for an un-annotated arg) let renderers show the contract,
+                # e.g. ``force(kg, m)``.
                 ret = format_unit(sig.return_unit) if sig.return_unit else None
+                arg_units = ", ".join(
+                    format_unit(u) if u is not None else "?" for u in sig.arg_units
+                )
                 row: dict[str, Any] = {
                     "name": local,
                     "unit": ret,
@@ -167,6 +172,7 @@ def build_imports(
                     "kind": ("annotated"
                              if (ret or sig.is_subroutine) else "unannotated"),
                     "callable": True,
+                    "signature": "(" + arg_units + ")",
                 }
                 loc = _resolve_decl_location(
                     result, module_lc, remote, want_procedure=True
