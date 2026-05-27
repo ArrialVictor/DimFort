@@ -202,6 +202,55 @@ def _build_expression_tree(
 _ROUTINE_SCOPE_TYPES = ("subroutine", "function")
 
 
+def _name_on_first_line(decl: DeclarationSite, source_lines: list[str]) -> bool:
+    """Robustness guard: tree-sitter error recovery on a half-typed
+    declaration (``real ::`` before a name is typed) scavenges an
+    identifier from the *following* statement into ``decl.names``, with
+    a span that runs into that next line. Such a decl has none of its
+    names on its own first physical line — drop it so the panel doesn't
+    flash a bogus row mid-typing. Valid multi-line continuations always
+    have at least the first name on the type-spec line, so they survive
+    this check."""
+    idx = decl.line_start - 1
+    if not (0 <= idx < len(source_lines)):
+        return True  # can't verify — keep
+    line_text = source_lines[idx]
+    return any(
+        re.search(rf"(?<![A-Za-z0-9_]){re.escape(n)}(?![A-Za-z0-9_])", line_text)
+        for n in decl.names
+    )
+
+
+def _decl_rows(
+    decl: DeclarationSite,
+    var_units: dict[str, str],
+    unparseable: frozenset[str],
+) -> list[dict[str, Any]]:
+    """One ScopeVar row per name on a declaration, tagged annotated /
+    error / unannotated. Shared by the node-based and span-based scope
+    builders so both emit identical row shapes."""
+    rows: list[dict[str, Any]] = []
+    for vname in decl.names:
+        unit_text = var_units.get(vname)
+        if not unit_text:
+            kind = "unannotated"
+        elif vname.lower() in unparseable:
+            kind = "error"
+        else:
+            kind = "annotated"
+        rows.append({
+            "name": vname,
+            "unit": unit_text if unit_text else None,
+            "unitNormalized": (
+                _normalized_unit(unit_text)
+                if unit_text and kind == "annotated" else None
+            ),
+            "line": decl.line_start,
+            "kind": kind,
+        })
+    return rows
+
+
 def _build_scope_vars(
     scope_node: Node | None,
     scan_decls: Iterable[DeclarationSite] | None,
@@ -240,25 +289,6 @@ def _build_scope_vars(
     ep = _ts.end_position_for(scope_node).line
     source_lines = source.decode("utf-8", "replace").splitlines()
 
-    def _name_on_first_line(decl: DeclarationSite) -> bool:
-        """Robustness guard: tree-sitter error recovery on a half-typed
-        declaration (``real ::`` before a name is typed) scavenges an
-        identifier from the *following* statement into ``decl.names``,
-        with a span that runs into that next line. Such a decl has none
-        of its names on its own first physical line — drop it so the
-        panel doesn't flash a bogus row mid-typing. Valid multi-line
-        continuations always have at least the first name on the
-        type-spec line, so they survive this check."""
-        idx = decl.line_start - 1
-        if not (0 <= idx < len(source_lines)):
-            return True  # can't verify — keep
-        line_text = source_lines[idx]
-        return any(
-            re.search(rf"(?<![A-Za-z0-9_]){re.escape(n)}(?![A-Za-z0-9_])",
-                      line_text)
-            for n in decl.names
-        )
-
     out: list[dict[str, Any]] = []
     for decl in scan_decls:
         if decl.enclosing_type is not None:
@@ -273,23 +303,118 @@ def _build_scope_vars(
                 continue
             if not (sp <= decl.line_start <= ep):
                 continue
-        if decl.names and not _name_on_first_line(decl):
+        if decl.names and not _name_on_first_line(decl, source_lines):
             continue
-        for vname in decl.names:
-            unit_text = var_units.get(vname)
-            if not unit_text:
-                kind = "unannotated"
-            elif vname.lower() in unparseable:
-                kind = "error"
-            else:
-                kind = "annotated"
-            out.append({
-                "name": vname,
-                "unit": unit_text if unit_text else None,
-                "unitNormalized": (
-                    _normalized_unit(unit_text) if unit_text and kind == "annotated" else None
-                ),
-                "line": decl.line_start,
-                "kind": kind,
-            })
+        out.extend(_decl_rows(decl, var_units, unparseable))
+    return out
+
+
+# Scope-opening header statement nodes that survive tree-sitter error
+# recovery even when the enclosing routine collapses into an ``ERROR``
+# node (the full ``subroutine`` / ``function`` node is gone, but its
+# header statement is still emitted inside the ERROR). Maps the
+# ``*_statement`` node type to the scope ``kind`` the panel reports.
+_SCOPE_HEADER_TYPES = {
+    "subroutine_statement": "subroutine",
+    "function_statement": "function",
+    "module_statement": "module",
+    "program_statement": "program",
+}
+
+# A line that closes a program unit: bare ``end`` or ``end <kind>``.
+# Deliberately excludes block ends (``end do`` / ``end if`` / ``end
+# type`` / ``end select`` / …) so they don't pop a routine scope.
+_SCOPE_END_RE = re.compile(
+    r"^\s*end"
+    r"(?:"
+    r"\s*(?:!.*)?$"  # bare end (optional trailing comment)
+    r"|\s*(?:subroutine|function|module|submodule|program)\b"  # end <kind>
+    r")",
+    re.IGNORECASE,
+)
+
+
+def recover_scopes(tree: Any, source: bytes) -> list[tuple[str, str, int, int]]:
+    """Reconstruct enclosing scopes when tree-sitter has no scope node.
+
+    A single unparseable statement makes tree-sitter wrap the whole
+    routine in an ``ERROR`` node, so ``_enclosing_scopes`` finds nothing
+    and the panel's Scope section would blank. But the routine's *header*
+    statement still survives inside the ERROR, so we recover each scope's
+    name + kind from the surviving headers and pair them with the closing
+    ``end`` lines (line-based, since the ``end`` may have been absorbed by
+    the error region). Returns ``(kind, name, start_line, end_line)``
+    tuples (1-based, inclusive), one per recovered scope.
+    """
+    headers: dict[int, tuple[str, str]] = {}  # start_line -> (kind, name)
+    for n in _ts.walk(tree.root_node):
+        kind = _SCOPE_HEADER_TYPES.get(n.type)
+        if kind is None:
+            continue
+        name_node = next((c for c in n.children if c.type == "name"), None)
+        name = (
+            (name_node.text or b"").decode("utf-8", "replace")
+            if name_node is not None else "?"
+        )
+        headers[_ts.position_for(n).line] = (kind, name)
+
+    source_lines = source.decode("utf-8", "replace").splitlines()
+    out: list[tuple[str, str, int, int]] = []
+    stack: list[tuple[str, str, int]] = []  # (kind, name, start_line)
+    for line_no in range(1, len(source_lines) + 1):
+        hdr = headers.get(line_no)
+        if hdr is not None:
+            stack.append((hdr[0], hdr[1], line_no))
+            continue
+        if stack and _SCOPE_END_RE.match(source_lines[line_no - 1]):
+            kind, name, start = stack.pop()
+            out.append((kind, name, start, line_no))
+    # Any scope left open (no matching end found) runs to end of file.
+    last_line = len(source_lines)
+    for kind, name, start in stack:
+        out.append((kind, name, start, last_line))
+    return out
+
+
+def _innermost_scope_idx(
+    line: int, scopes: list[tuple[str, str, int, int]]
+) -> int | None:
+    """Index of the smallest recovered scope containing ``line``, or None."""
+    best: int | None = None
+    best_size: int | None = None
+    for idx, (_kind, _name, s, e) in enumerate(scopes):
+        if s <= line <= e:
+            size = e - s
+            if best is None or best_size is None or size < best_size:
+                best, best_size = idx, size
+    return best
+
+
+def build_scope_vars_by_span(
+    scope_idx: int,
+    recovered: list[tuple[str, str, int, int]],
+    scan_decls: Iterable[DeclarationSite] | None,
+    attached: AttachmentResult | None,
+    source: bytes,
+    unparseable: frozenset[str] = frozenset(),
+) -> list[dict[str, Any]]:
+    """Span-based scope variables for a recovered scope (the ERROR-node
+    fallback). A declaration belongs to the recovered scope that most
+    tightly encloses it, so a module section excludes its contained
+    routines' locals (and sibling routines don't bleed into each other).
+    Matches by line span because the ERROR collapse strips
+    ``DeclarationSite.scope`` to ``None``."""
+    if scan_decls is None:
+        return []
+    var_units = attached.var_units if attached is not None else {}
+    source_lines = source.decode("utf-8", "replace").splitlines()
+    out: list[dict[str, Any]] = []
+    for decl in scan_decls:
+        if decl.enclosing_type is not None:
+            continue
+        if _innermost_scope_idx(decl.line_start, recovered) != scope_idx:
+            continue
+        if decl.names and not _name_on_first_line(decl, source_lines):
+            continue
+        out.extend(_decl_rows(decl, var_units, unparseable))
     return out
