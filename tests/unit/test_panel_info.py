@@ -847,3 +847,93 @@ def test_recover_scopes_nested_module_excludes_routine_locals(tmp_path: Path):
     }
     assert mod_vars == {"g"}            # routine locals excluded
     assert sub_vars == {"h", "tt"}
+
+
+def _imports_scene(tmp_path: Path) -> Path:
+    """Two modules in one file: `solver` `use`s `phys_constants` with an
+    only-list; `viewer` whole-module-imports it."""
+    src = tmp_path / "imp.f90"
+    src.write_text(
+        "module phys_constants\n"               # 1
+        "  real :: play   !< @unit{Pa}\n"        # 2
+        "  real :: grav   !< @unit{m/s^2}\n"     # 3
+        "end module phys_constants\n"            # 4
+        "\n"                                      # 5
+        "module solver\n"                        # 6
+        "  use phys_constants, only: play\n"     # 7
+        "  real :: play_local  !< @unit{Pa}\n"   # 8
+        "contains\n"                              # 9
+        "  subroutine step()\n"                  # 10
+        "    play_local = play\n"                # 11
+        "  end subroutine step\n"                # 12
+        "end module solver\n"                    # 13
+        "\n"                                      # 14
+        "module viewer\n"                        # 15
+        "  use phys_constants\n"                 # 16
+        "contains\n"                              # 17
+        "  subroutine show()\n"                  # 18
+        "    grav = 9.8\n"                        # 19
+        "  end subroutine show\n"                # 20
+        "end module viewer\n"                    # 21
+    )
+    return src
+
+
+def test_imports_only_list(tmp_path: Path):
+    """An `only:` import lists exactly the named symbols, with their unit
+    and a cross-file nav location at the source declaration."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.imports import build_imports
+
+    src = _imports_scene(tmp_path)
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+
+    # Cursor in solver.step() (line 11). play_local is a local decl (shadow set).
+    rows = build_imports(tree, source, 11, result, frozenset({"play_local"}))
+    by_name = {r["name"]: r for r in rows}
+    assert set(by_name) == {"play"}              # only-list = just play
+    assert by_name["play"]["unit"] == "kg/(m×s²)"
+    assert by_name["play"]["module"] == "phys_constants"
+    assert by_name["play"]["kind"] == "annotated"
+    assert by_name["play"]["line"] == 2          # source declaration line
+
+
+def test_imports_whole_module(tmp_path: Path):
+    """A whole-module `use` lists every exported variable."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.imports import build_imports
+
+    src = _imports_scene(tmp_path)
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+
+    # Cursor in viewer.show() (line 19) — `use phys_constants` (no only-list).
+    rows = build_imports(tree, source, 19, result, frozenset())
+    assert {r["name"] for r in rows} == {"play", "grav"}
+
+
+def test_imports_excludes_sibling_routine_and_shadow(tmp_path: Path):
+    """A name declared locally in the cursor's scope shadows the import
+    (excluded); a sibling module's import does not leak."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.imports import build_imports
+
+    src = _imports_scene(tmp_path)
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+
+    # Shadow: if `play` were locally declared in scope, it must not appear.
+    rows = build_imports(tree, source, 11, result, frozenset({"play", "play_local"}))
+    assert {r["name"] for r in rows} == set()
+
+    # Sibling scope: in solver.step(), viewer's whole-module import of grav
+    # must not leak (solver only-imports play).
+    rows = build_imports(tree, source, 11, result, frozenset({"play_local"}))
+    assert "grav" not in {r["name"] for r in rows}
