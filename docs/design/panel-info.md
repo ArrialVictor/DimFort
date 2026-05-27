@@ -160,6 +160,23 @@ matched by ``DeclarationSite.scope`` (the routine name); for module /
 program scopes, top-level declarations (``scope is None``) are matched
 by line span so nested routines' locals are excluded.
 
+**Error-recovery fallback.** A single unparseable statement makes
+tree-sitter wrap the whole enclosing routine in an ``ERROR`` node, so the
+``subroutine`` / ``function`` node disappears and the scope lookup finds
+nothing — the Scope section would blank for that routine even though its
+declarations are still recoverable. When the scope lookup yields no node,
+the server reconstructs the enclosing scopes line-based
+(``recover_scopes``): the routine *header* statement survives inside the
+``ERROR``, so each scope's name + kind comes from the surviving headers,
+and each scope's extent comes from pairing headers with the closing
+``end`` / ``end <kind>`` lines. Declarations are then matched to the
+recovered scope that most tightly encloses them (by line span, since the
+``ERROR`` collapse strips ``DeclarationSite.scope`` to ``None``), so a
+module section still excludes its contained routines' locals and sibling
+routines don't bleed into one another. The Expression section is
+unaffected — it stays empty inside an unparsed region (see the
+``has_error`` guard in ``_find_expression_root``).
+
 The `marker` field on `ExpressionNode` carries the worst-of-children
 aggregation already done by the Detailed-hover renderer. Clients
 don't need to re-derive it.
