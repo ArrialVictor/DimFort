@@ -432,11 +432,12 @@ def _expression_hover_for(
     # assignment's aggregated marker already folds in H001/S001/S002 and any
     # nested RHS mismatch, so no separate row re-aggregation is needed.
     match_tag = _node_marker(asn, ctx, source)
-    # Root (assignment) row carries no unit column, but it shows the
-    # verdict marker on the row too — matching the side panel's root row —
-    # in addition to the same marker in the bold header above. ``None``
-    # unit selects the renderer's label-plus-marker branch.
-    rows.append((_node_label(asn, source), None, match_tag, ""))
+    # Root (assignment) row: structural-no-unit, so its unit column
+    # renders ``-`` (matching the panel and the unified renderer at
+    # ``_render_ast_tree``). The marker still sits in the rightmost
+    # column alongside the children's markers.
+    from dimfort.lsp.expr_tree import _NO_UNIT_GLYPH
+    rows.append((_node_label(asn, source), _NO_UNIT_GLYPH, match_tag, ""))
     # LHS leaf: variable + annotated unit, with its own diagnostic-driven
     # marker (resolution axis, since the LHS rarely owns a diagnostic).
     lhs_mark = _node_marker(lhs, ctx, source)
@@ -461,26 +462,10 @@ def _expression_hover_for(
     )
     if not rows:
         return None
-    max_label = max(len(r[0]) for r in rows)
-    max_unit = max(len(r[1]) for r in rows if r[1] is not None)
-    lines: list[str] = []
-    for label, unit, mark, rule in rows:
-        if unit is None:
-            # Root (assignment) row: no unit column, but show the marker
-            # padded to the child rows' marker column so every 🟢/🔴 lines
-            # up. A child's prefix after the label is ``  :  `` (5) + unit
-            # (max_unit) + ``  `` (2) = max_unit + 7 columns.
-            pad = " " * (max_unit + 7)
-            lines.append(f"{label.ljust(max_label)}{pad}{mark}  {rule}".rstrip())
-        elif rule:
-            lines.append(
-                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}  {rule}"
-            )
-        else:
-            lines.append(
-                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}".rstrip()
-            )
-    body = "\n".join(lines)
+    # Now that every row carries a unit string (``-`` for structural-
+    # no-unit, ``?`` for unresolved, formatted unit otherwise), the
+    # rendering loop is uniform and matches ``_format_tree_rows``.
+    body = _format_tree_rows(rows)
     # No horizontal rule between header and code fence: VSCode places a
     # natural paragraph margin between a bold paragraph and a code
     # block already, and every markdown spacer we tried beneath ``---``
