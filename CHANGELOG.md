@@ -2,7 +2,12 @@
 
 All notable changes to DimFort are documented here. Format inspired by [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.2.0] — 2026-05-27
+
+First **beta**. Usable, tested, and proven against a real-world climate
+model (LMDZ-class). The `@unit{}` annotation format, the diagnostic
+codes, and the LSP protocol are deliberately **not** frozen yet — expect
+they may still shift between `0.x` releases.
 
 ### Change: SI-style unit display + parser-safe `@unit{}` serializer
 
@@ -29,6 +34,30 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
   🟢/🟡/🔴 marker on the row itself, matching the side panel, instead of
   only in the bold `DimFort` header. The header keeps its marker too.
 
+### Feature: `panelInfo.imports` — use-imported symbols visible at the cursor
+
+- The `dimfort/panelInfo` response now carries a structured **`imports`**
+  list: every `use`-imported symbol visible at the cursor, grouped by
+  source module, with each variable's `@unit{}` and each procedure's
+  full **signature** (`name(arg-units) → return unit`; subroutines render
+  with `—` for the return slot). Scoped by Fortran visibility — honours
+  `only:` lists and `=>` renames, walks the enclosing scope chain, and
+  carries the source location so the editor companion can click-navigate
+  cross-file to where the symbol is declared. Implementation in
+  `src/dimfort/lsp/imports.py`.
+
+### Feature: `scaleMode` LSP initialization option
+
+- New `scaleMode` initializationOption lets the editor companion override
+  the project's `.dimfort.toml` `[scale] enabled` setting for the
+  session: `"auto"` defers to the toml (default), `true`/`false` forces
+  the magnitude layer (S001/S002) on or off. Surfaces in each companion
+  as a setting + cycle command: VSCode `dimfort.scale.mode` /
+  `DimFort: Cycle Scale Mode`; Nvim `scale_mode` setup arg +
+  `:DimFortCycleScale`; Emacs `dimfort-scale-mode` +
+  `M-x dimfort-cycle-scale-mode`. Reflected in `:DimFortStatus` (Nvim) and
+  the companions' status surfaces.
+
 ### Feature: `P001` — "unparsed region" marker
 
 - A new **info-level** diagnostic that flags regions tree-sitter couldn't parse.
@@ -40,6 +69,20 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
   remapping. On by default; silence project-wide with `[diagnostics]`
   `P001 = "off"` (DimFort targets F90+, so a known-F77 file can opt out).
 - Spec: `docs/design/unparsed-regions.md`.
+
+### Fix: panel Scope section recovers under error-wrapped routines
+
+- A single unparseable statement makes tree-sitter wrap the whole
+  enclosing routine in an `ERROR` node, so the scope lookup found no
+  `subroutine` / `function` node and the side panel's **Scope** section
+  blanked for that routine — even though its declarations were still
+  recoverable. The server now reconstructs the enclosing scopes
+  line-based (`recover_scopes`) from the surviving header statements and
+  matches each declaration to its innermost recovered scope, so the
+  Scope section keeps listing the routine's variables (a module section
+  still excludes its contained routines' locals; sibling routines don't
+  bleed). The Expression section stays empty inside the unparsed region.
+  Spec: `docs/design/panel-info.md`.
 
 ### Feature: `dimfort interactions <symbol>` — cross-site unit analysis + X001
 
@@ -396,10 +439,29 @@ longer fire D1.4. Spec:
   R5.4 with `k = -1` and types as `LOG(1/Pa)` rather than the
   pre-fix `LOG(Pa)`.
 
+### Internals — LSP modularisation, public API, strict typing
+
+- **LSP server split.** The `lsp/server.py` monolith (~3,900 lines) is
+  now a ~1,200-line registration spine delegating to focused handler
+  modules (`hover`, `panel`, `interactions`, `tree_access`, `tree_nav`,
+  `expr_tree`, `decl_scan`, `markers`, …). Shared mutable state moved
+  behind a single `lsp.state` singleton; cached-tree handlers serialise
+  on `state.ts_handler_lock`. No behavioural change.
+- **Public `ts_checker` API.** The checker's expression-resolution and
+  assignment-verdict entry points (`resolve_unit`, `assignment_
+  homogeneity`, `Ctx`, `build_ctx`) are now a documented, stable surface
+  shared by the CLI, every LSP render path, and the `interactions`
+  query — one source of truth so markers can't disagree with the
+  diagnostic stream.
+- **Strict typing end-to-end.** `mypy --strict` now runs clean over the
+  whole `src/dimfort` package with zero per-module exemptions (the
+  `ignore_errors` ratchet is gone) and is enforced in CI. The
+  unit-value model is `UnitExpr = Unit | LogWrap | ExpWrap` throughout.
+
 ### Tooling
 
-- **Per-push CI**: ruff + pytest on `ubuntu-latest` / Python 3.12
-  for every push to `main` and every PR. Full 3 × 3 OS × Python
+- **Per-push CI**: ruff + pytest (+ mypy) on `ubuntu-latest` / Python
+  3.12 for every push to `main` and every PR. Full 3 × 3 OS × Python
   matrix still runs on tag push from `release.yml`.
 
 ## [0.1.2] — 2026-05-19

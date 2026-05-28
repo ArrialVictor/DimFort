@@ -1,6 +1,6 @@
 # Contributing to DimFort
 
-Thanks for considering a contribution. DimFort is pre-alpha; the
+Thanks for considering a contribution. DimFort is beta; the
 contribution surface and expectations below will evolve as the
 project stabilises.
 
