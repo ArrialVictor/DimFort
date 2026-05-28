@@ -34,12 +34,27 @@ still succeed, which is useful for testing the pipeline.
 1. Bump `version` in [`pyproject.toml`](../pyproject.toml).
 2. Add a new section to [`CHANGELOG.md`](../CHANGELOG.md).
 3. Commit; PR; merge to `main` once CI is green.
-4. Tag the merge commit:
+4. **README image-paths preflight.** PyPI renders the README's long-description
+   but **does not resolve relative paths** the way GitHub does — relative
+   `src="docs/img/..."` / `srcset="docs/img/..."` references render as broken
+   images on the project's PyPI page. GitHub renders them fine, so the issue
+   only surfaces post-publish. Every image in `README.md` must use the
+   absolute `raw.githubusercontent.com` URL (same shape as the social-preview
+   line at the top). Quick check, expects no output:
+   ```bash
+   grep -nE 'src="[^h]|srcset="[^h]' README.md
+   ```
+   PyPI's README is **frozen** once the version is published — a broken-image
+   fix only lands for users on the next release; you can't edit a published
+   release's long-description.
+5. Tag the merge commit:
    ```bash
    git tag v0.2.0
    git push origin v0.2.0
    ```
-5. Watch the `release` workflow on GitHub Actions.
+6. Watch the `release` workflow on GitHub Actions. The `publish-pypi` job
+   pauses for manual approval (the `pypi` environment has required reviewers
+   set) — approve once the test + build jobs go green.
 
 ## Branch protection (recommended)
 
