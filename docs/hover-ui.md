@@ -1,9 +1,13 @@
 # DimFort hover UI
 
-Specification of the markdown DimFort renders in LSP hovers. Six layouts
-total: three *surfaces* (function call, subroutine call, expression),
-each with a *Short* and *Detailed* variant chosen per-surface in the
-extension settings.
+Specification of the markdown DimFort renders in LSP hovers.
+
+**One shape across every hover.** Every short hover is a single tree
+rendering: a root row for whatever the cursor is on (a call, an
+assignment, a binary operator, a relational, an identifier), followed
+by one row per immediate child. Detailed adds the full sub-tree under
+each computed child. The same renderer powers the panel's Expression
+section, so hover and panel are guaranteed to agree by construction.
 
 This document covers presentation only — the rules behind the rendered
 units live in [unit-algebra.md](unit-algebra.md).
@@ -17,8 +21,7 @@ units live in [unit-algebra.md](unit-algebra.md).
 | `-` | unit-column glyph for **structural-no-unit** rows (assignment statement, relational expression, subroutine call) — the row has no unit *by design*, not because we couldn't resolve one. See [design/markers.md](design/markers.md) §4.5 |
 | `?` | unit-column glyph for **unknown** units — unannotated identifier, unsupported intrinsic, partial resolution |
 | `→` | in the **pure-signature** hover (cursor on a function/subroutine definition header), separates the formal argument tuple from the return unit, e.g. `(kg·m⁻³, m·s⁻¹) → kg·m⁻¹·s⁻²` |
-| `◂` | in assignment / relational hovers, separates a target slot (LHS) from the value flowing into it (RHS) — points from value to target |
-| `(expected …)` | trailing annotation on a call-argument row whose actual unit differs from the formal — names the expected unit |
+| `(expected …)` | trailing annotation on a row whose actual unit doesn't satisfy what its container demanded — call argument vs formal, or RHS vs LHS unit in an assignment. Names the expected unit |
 | `🟢` | known and consistent |
 | `🟡` | known partially / contains an unannotated leaf |
 | `🔴` | known but inconsistent (unit mismatch) |
@@ -214,21 +217,6 @@ Header marker: 🟢 if annotated, 🟡 if unannotated.
 
 **Binary operator** (cursor on `+`, `-`, `*`, `/`, `**`)
 
-For `+` and `-` — one-line homogeneity check on the operator's two
-operands (the same shape as the assignment hover, since both rules
-require unit equality):
-
-```
-🟢 DimFort
-
-a : K   ◂   b : K
-```
-
-For `*`, `/`, `**` — there's no homogeneity requirement; the hover
-reports the resolved unit of the sub-expression and adds one row per
-immediate operand so the algebra is visible at a glance. Same shape
-as the call hover.
-
 ```
 🟢 DimFort
 
@@ -237,6 +225,14 @@ a * b  :  K·m  🟢
 └── b  :  m    🟢
 ```
 
+Same root-plus-immediate-children tree shape as every other short
+hover. For `+` and `-`, the homogeneity rule is enforced by the
+checker via `H002`, so a violation paints the root row 🔴 (worst-of
+diagnostics + children); the operand rows show their resolved units
+so the reader sees *which* operand is wrong. For `*`, `/`, `**`,
+there's no homogeneity requirement — the root just composes the
+operand units.
+
 **Assignment** (cursor on `=` or whitespace inside the statement)
 
 <picture>
@@ -244,8 +240,23 @@ a * b  :  K·m  🟢
   <img width="640" src="img/hover-expression-short-assignment_light.png" alt="Short assignment hover">
 </picture>
 
-A homogeneity violation in the same shape — Pa²/s² vs m/s² (real finding
-from a reference workspace trial):
+```
+🟢 DimFort
+
+r = a + b   :  -  🟢
+├── r       :  K  🟢
+└── a + b   :  K  🟢
+```
+
+Same shape. The assignment root carries `-` (structural-no-unit — a
+statement has no unit of its own); the marker is diagnostic-driven
+from `H001`/`S001`/`S002` on the assignment node and from
+worst-of-children.
+
+A homogeneity violation surfaces as `(expected <lhs_unit>)` on the
+RHS row (same mechanism as a call-arg mismatch — the LHS unit is the
+"formal" the RHS must satisfy), and the RHS row paints 🟡 from the
+expected-override:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="img/hover-expression-short-mismatch_dark.png">
@@ -253,46 +264,51 @@ from a reference workspace trial):
 </picture>
 
 ```
-🟢 DimFort
+🔴 DimFort
 
-x : K   ◂   a + b : K
+bogus = c_sound * t   :  -   🔴
+├── bogus             :  kg  🟢
+└── c_sound * t       :  m   🟡  (expected kg)
 ```
 
-One-line homogeneity check. Marker: 🟢 equal, 🔴 mismatch, 🟡 either
-side unresolved.
+The 🔴 on the root comes from `H001` owning the assignment node. The
+🟡 on the RHS row is the **🟡-on-`expected` override**
+(see [design/markers.md](design/markers.md) §4.4): the expression
+itself resolved cleanly to `m`, but its consumer (the LHS) demanded
+`kg` — flag it without painting a hard 🔴 that would redundantly
+re-derive H001's verdict.
 
 **Initialization autocast (R4.4).** When the entire RHS is a numeric
 literal (or unary-minus literal, or arithmetic of literals), it's an
 initialization — the literal takes on the LHS's unit and the hover
-shows 🟢, e.g. `t : s   ◂   2.0 : s`. No diagnostic fires. This differs
-from a literal *inside* a compound expression (`t = c + 2.0`), which
-still triggers the D1.5 implicit-cast warning. The assignment marker,
-like every marker, is **diagnostic-driven** — read from the file's
-diagnostics by range ([design/markers.md](design/markers.md)) — so the
-hover and the Problems panel never disagree.
-
-In the detailed-tree view and the side panel, the assignment row's
-unit column shows `-` (the **structural-no-unit** glyph — see
-[design/markers.md](design/markers.md) §4.5). An assignment is a
-statement, not an expression, so it has no unit of its own; the row
-exists only to carry the homogeneity marker.
+shows 🟢, e.g. `t = 2.0` renders with RHS row `2.0 : s 🟢` (no
+`(expected …)` annotation because the autocast resolves the RHS to
+`s`, matching the LHS). No diagnostic fires. This differs from a
+literal *inside* a compound expression (`t = c + 2.0`), which still
+triggers the D1.5 implicit-cast warning. The assignment marker, like
+every marker, is **diagnostic-driven** — read from the file's
+diagnostics by range ([design/markers.md](design/markers.md)) — so
+the hover and the Problems panel never disagree.
 
 **Relational expression** (cursor on `<`, `<=`, `==`, `/=`, `>`, `>=`)
 
 ```
-🟢 DimFort
+🟡 DimFort
 
-p : Pa   ◂   0.0 : 1
+p > 0.0   :  -  🟡
+├── p     :  Pa 🟢
+└── 0.0   :  1  🟢
 ```
 
-Same homogeneity-check shape as the assignment hover. The relation
-itself has no unit; only its two operands' agreement matters. The
-checker does **not** currently emit a diagnostic for relational operand
-mismatches (it is not an emission site — see
-[design/markers.md](design/markers.md) §6.1), so the diagnostic-driven
-marker is 🟡 (no consistency diagnostic / no unit), not a re-derived 🔴.
-Emitting at relational sites — which would restore a backed 🔴 — is a
-documented future enhancement.
+Same shape again — relational root is structural-no-unit, with one
+row per operand. The relation itself has no unit; only its two
+operands' agreement matters. The checker does **not** currently emit
+a diagnostic for relational operand mismatches (it is not an
+emission site — see [design/markers.md](design/markers.md) §6.1), so
+even though Pa and dim'less disagree, the diagnostic-driven marker
+on the relational node stays 🟡 (no consistency diagnostic + no
+unit), not a re-derived 🔴. Emitting at relational sites — which
+would restore a backed 🔴 — is a documented future enhancement.
 
 **Computed sub-expression**
 
@@ -407,8 +423,8 @@ These ground the rules above with concrete cursor placements.
 | Cursor on | Surface | Short body | Detailed body |
 |---|---|---|---|
 | `r` | identifier | `r : LOG(Pa²)` | (same as Short) |
-| `=` | assignment | `r : LOG(Pa²)   ◂   log(p1) + log(p2) : LOG(Pa²)` | tree |
-| `+` | binary operator | `log(p1) : LOG(Pa)   ◂   log(p2) : LOG(Pa)` (homogeneity check on the operands of `+`) | tree |
+| `=` | assignment | root row `r = log(p1) + log(p2) : -` (structural-no-unit) + child rows for `r` and `log(p1) + log(p2)`; mismatch surfaces as `(expected …)` on the RHS row | tree |
+| `+` | binary operator | root row `log(p1) + log(p2) : LOG(Pa²)` + child rows for each operand (`H002` paints the root 🔴 on a homogeneity violation) | tree |
 | `log` (first) | function call | root row `log(p1) : LOG(Pa)` + one child row per actual (`p1 : Pa 🟢`) | + sub-tree under any computed actual |
 | `p1` | identifier | `p1 : Pa` | (same as Short) |
 | `(`, `)`, spaces | assignment | (same as on `=`) | tree |
@@ -419,7 +435,7 @@ These ground the rules above with concrete cursor placements.
 | Cursor on | Surface | Short body | Detailed body |
 |---|---|---|---|
 | `p` | identifier | `p : Pa` | (same as Short) |
-| `>` | relational | `p : Pa   ◂   0.0 : 1   🟡` (relational is not an emission site, so no consistency diagnostic → 🟡, not a re-derived 🔴) | tree |
+| `>` | relational | root row `p > 0.0 : -` (structural-no-unit, 🟡 from resolution) + child rows for `p` and `0.0` (relational is not an emission site, so no consistency diagnostic → 🟡 on the root, not a re-derived 🔴) | tree |
 | `0.0` | numeric literal | `0.0 : 1` | (same as Short) |
 | `if`, `then`, `(`, `)` | (no hover) | — | — |
 
@@ -431,6 +447,6 @@ These ground the rules above with concrete cursor placements.
 | `update_winds` | subroutine call | root row `call update_winds(…) : -` (structural-no-unit) + one child row per actual (see Subroutine call above) |
 | `p1` | identifier | `p1 : Pa` |
 | `p2` | identifier | `p2 : Pa` |
-| `+` | binary operator | `p2 : Pa   ◂   1.0 : 1   🟢` (a bare literal added to Pa is an implicit cast — `H010`/`D1.5`, a *smell* not an inconsistency; it still squiggles but the consistency marker stays 🟢, decision B) |
+| `+` | binary operator | root row `p2 + 1.0 : Pa 🟢` + child rows `p2 : Pa 🟢` and `1.0 : 1 🟢` (a bare literal added to Pa is an implicit cast — `H010`/`D1.5`, a *smell* not an inconsistency; it still squiggles but the consistency marker stays 🟢, decision B) |
 | `1.0` | numeric literal | `1.0 : 1` |
 | `t_local` | identifier | `t_local : ?` (unannotated) |
