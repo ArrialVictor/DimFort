@@ -422,9 +422,11 @@ def _expression_hover_for(
     # assignment's aggregated marker already folds in H001/S001/S002 and any
     # nested RHS mismatch, so no separate row re-aggregation is needed.
     match_tag = _node_marker(asn, ctx, source)
-    # Root row has no unit / mark column — the verdict lives in the
-    # bold header above. Pass ``None`` so the renderer omits the row.
-    rows.append((_node_label(asn, source), None, "", ""))
+    # Root (assignment) row carries no unit column, but it shows the
+    # verdict marker on the row too — matching the side panel's root row —
+    # in addition to the same marker in the bold header above. ``None``
+    # unit selects the renderer's label-plus-marker branch.
+    rows.append((_node_label(asn, source), None, match_tag, ""))
     # LHS leaf: variable + annotated unit, with its own diagnostic-driven
     # marker (resolution axis, since the LHS rarely owns a diagnostic).
     lhs_mark = _node_marker(lhs, ctx, source)
@@ -445,8 +447,12 @@ def _expression_hover_for(
     lines: list[str] = []
     for label, unit, mark, rule in rows:
         if unit is None:
-            # Root row: no unit / mark column.
-            lines.append(f"{label.ljust(max_label)}  {rule}".rstrip())
+            # Root (assignment) row: no unit column, but show the marker
+            # padded to the child rows' marker column so every 🟢/🔴 lines
+            # up. A child's prefix after the label is ``  :  `` (5) + unit
+            # (max_unit) + ``  `` (2) = max_unit + 7 columns.
+            pad = " " * (max_unit + 7)
+            lines.append(f"{label.ljust(max_label)}{pad}{mark}  {rule}".rstrip())
         elif rule:
             lines.append(
                 f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}  {rule}"

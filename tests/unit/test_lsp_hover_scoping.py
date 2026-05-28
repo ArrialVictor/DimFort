@@ -61,7 +61,7 @@ def test_hover_picks_per_routine_unit(tmp_path: Path):
     res_m = _drive_hover(f, line_1based=3, col_1based=3)
     assert res_m is not None
     text_m, _ = res_m
-    assert "m / s" in text_m or "m/s" in text_m or "ᐟs" in text_m, text_m
+    assert "m·s⁻¹" in text_m, text_m
     assert "K" not in text_m, text_m
 
     # Hover the ``pte`` on line 7 (inside orolift).
@@ -177,7 +177,7 @@ def test_h010_extract_to_parameter_action(tmp_path: Path):
     assert len(actions) == 1
     action = actions[0]
     assert "Extract literal '1.'" in action.title
-    assert "m/s" in action.title
+    assert "m·s⁻¹" in action.title
     # The action is delegated to the extension as a Command so VSCode
     # can prompt the user for the parameter name before applying the
     # edits. The args carry everything needed for the two-edit refactor.
@@ -374,6 +374,35 @@ def test_call_hover_detailed_expands_computed_args(tmp_path: Path):
         # The computed arg `p2 + p1` should have a sub-tree underneath.
         assert "p2 + p1" in text
         assert "├──" in text or "└──" in text
+    finally:
+        _server._features.hover = "short"
+
+
+def test_expression_detailed_assignment_marks_root_row(tmp_path: Path):
+    """Detailed mode: the root (assignment) row carries its verdict marker
+    on the row itself — matching the side panel — not only in the header."""
+    src = (
+        "subroutine demo\n"
+        "  real :: c_sound  !< @unit{m/s}\n"
+        "  real :: t        !< @unit{s}\n"
+        "  real :: bogus    !< @unit{kg}\n"
+        "  bogus = c_sound * t\n"
+        "end subroutine\n"
+    )
+    f = tmp_path / "asn_detailed.f90"
+    f.write_text(src)
+    _server._features.hover = "detailed"
+    try:
+        hit = _drive_hover(f, 5, 9)  # on `=`
+        assert hit is not None
+        text, _ = hit
+        # The root row (assignment label, not a ├──/└── child and not the
+        # bold header) must carry the 🔴 marker on the row.
+        root_rows = [
+            ln for ln in text.splitlines()
+            if "bogus = c_sound * t" in ln and "DimFort" not in ln
+        ]
+        assert root_rows and "🔴" in root_rows[0], text
     finally:
         _server._features.hover = "short"
 

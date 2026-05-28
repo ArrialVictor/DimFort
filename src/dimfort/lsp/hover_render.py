@@ -9,62 +9,17 @@ share one rendering definition.
 from __future__ import annotations
 
 from dimfort.core.symbols import FuncSig, ModuleExports
-from dimfort.core.units import UnitExpr
-from dimfort.core.units import base_symbols as _base_symbols
-
-_SUPERSCRIPTS = {
-    "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴",
-    "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
-    "-": "⁻", "(": "⁽", ")": "⁾", "/": "ᐟ",
-}
-
-
-def _to_superscript(s: str) -> str:
-    return "".join(_SUPERSCRIPTS.get(c, c) for c in s)
+from dimfort.core.units import UnitExpr, format_unit
 
 
 def _unit_pretty(u: UnitExpr | None) -> str:
-    """Render a Unit using Unicode (× for product, ⁿ superscripts, /
-    for division). KaTeX isn't enabled in VSCode's default hover, so
-    we keep everything in plain text.
-
-    ``LogWrap`` / ``ExpWrap`` recursively print as ``LOG(...)`` /
-    ``EXP(...)`` per spec §9.
+    """Render a unit for the hover surfaces, delegating to the shared
+    display formatter (:func:`format_unit`) so hovers, diagnostics, and
+    the side panel all read identically — Unicode superscripts, ``·``
+    products, signed-exponent powers (``kg·m·s⁻²``), and ``LOG(...)`` /
+    ``EXP(...)`` per spec §9. ``None`` renders as ``"?"``.
     """
-    if u is None:
-        return "?"
-    from dimfort.core.units import ExpWrap as _ExpWrap
-    from dimfort.core.units import LogWrap as _LogWrap
-    if isinstance(u, _LogWrap):
-        return f"LOG({_unit_pretty(u.inner)})"
-    if isinstance(u, _ExpWrap):
-        return f"EXP({_unit_pretty(u.inner)})"
-    names = _base_symbols()
-    pos: list[str] = []
-    neg: list[str] = []
-    for sym, exp in zip(names, u.dimension, strict=False):
-        if exp.is_zero():
-            continue
-        q = exp.as_fraction()
-        if q is not None:
-            mag = abs(q)
-            if mag == 1:
-                term = sym
-            elif mag.denominator == 1:
-                term = sym + _to_superscript(str(int(mag)))
-            else:
-                term = f"{sym}^({mag})"
-            (pos if q > 0 else neg).append(term)
-        else:
-            term = f"{sym}^({exp})"
-            pos.append(term)
-    body = " × ".join(pos) if pos else "1"
-    if neg:
-        denom = " × ".join(neg)
-        if len(neg) > 1:
-            denom = f"({denom})"
-        body = f"{body} / {denom}"
-    return body
+    return "?" if u is None else format_unit(u)
 
 
 def _hover_text(
