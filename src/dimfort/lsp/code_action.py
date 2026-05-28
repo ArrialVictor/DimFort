@@ -107,8 +107,12 @@ def resolve(ls: LanguageServer, params: lsp.CodeActionParams) -> list[lsp.CodeAc
     return actions or None
 
 
+# group 1: the literal text; group 2: the *display* target unit (pretty
+# ``·``/superscript form, shown in the action title); group 3: the
+# *parseable* target unit pulled from the message's ``@unit{...}`` example
+# (ASCII form, written back into source — the pretty form does not parse).
 _H010_CAST_RE = re.compile(
-    r"^Implicit cast: literal '([^']+)' to (.+?) \(prefer"
+    r"^Implicit cast: literal '([^']+)' to (.+?) \(prefer.*@unit\{(.+?)\}"
 )
 
 
@@ -133,7 +137,8 @@ def _h010_extract_to_parameter_actions(
         if m is None:
             continue  # D1.6 untag — separate action below if/when added
         literal_text = m.group(1)
-        target_unit = m.group(2)
+        target_unit_display = m.group(2)  # pretty, for the action title
+        target_unit = m.group(3)          # parseable, written into @unit{}
         # Locate the enclosing routine via tree-sitter so the new
         # PARAMETER declaration lands in a syntactically valid spot.
         found = _trees_for(params.text_document.uri)
@@ -162,7 +167,7 @@ def _h010_extract_to_parameter_actions(
         action = lsp.CodeAction(
             title=(
                 f"DimFort: Extract literal {literal_text!r} into a named "
-                f"PARAMETER ({target_unit})"
+                f"PARAMETER ({target_unit_display})"
             ),
             kind=lsp.CodeActionKind.QuickFix,
             diagnostics=[diag],
