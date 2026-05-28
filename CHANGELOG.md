@@ -4,6 +4,18 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### Change: short hover for `*` / `/` / `**` and sub-expressions now shows root + immediate children
+
+Brings these surfaces into line with the call hover: every short
+hover means "this expression's unit, with one level of how it got
+there". The cursor-on-`*` / `/` / `**` short hover and the generic
+computed-sub-expression short hover both now render a root row +
+one child per operand, using the same tree renderer as the call
+hover (`_render_ast_tree` with `max_depth=1`). The `+` / `-`
+homogeneity short hover, the assignment short hover, and the
+relational short hover keep their `◂` one-liner shape — those are
+homogeneity-check surfaces where `◂` carries direction semantics.
+
 ### Change: three glyphs, three meanings, for "no unit" — `-` vs `?` vs `(none)`
 
 The hover trace, panel expression tree, and panel scope/import
