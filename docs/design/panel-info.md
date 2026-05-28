@@ -247,8 +247,8 @@ ASCII mock-up — the panel sits as a vertical split on the right
 │  3    use physics_mod,   only: ...  │   bogus = c_sound * t       │
 │  4                                  │   ├─ c_sound : m/s       🟢 │
 │  5    real :: t          !< @unit{s}│   ├─ t       : s         🟢 │
-│  6    real :: d          !< @unit{m}│   ├─ * (R1.1): m         🟢 │
-│  7    real :: v          !< @unit{m │   └─ ◂ kg ≠ m            🔴 │
+│  6    real :: d          !< @unit{m}│   ├─ c_sound * t : m     🟢 │
+│  7    real :: v          !< @unit{m │   └─ assignment       🔴    │
 │  8    real :: bogus      !< @unit{kg│                          H001│
 │  9    real :: t_celsius             │                             │
 │ 10                                  │ Routine: driver             │

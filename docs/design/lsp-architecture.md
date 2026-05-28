@@ -56,7 +56,7 @@ Registered in `server.py`, logic delegated here:
 | `interactions.py` | `dimfort/interactions` (cross-site unit analysis + X001 conflicts). |
 | `code_action.py` | `textDocument/codeAction` — Add `@unit{}`, Extract literal to PARAMETER. |
 | `panel.py` | `dimfort/panelInfo` (cursor-following side-panel payload). |
-| `hover.py` | `textDocument/hover` — unit resolution + the short/detailed renderers, call-pairing layouts, and the unit-algebra trace tree. The `_hover` wrapper reads the verbosity toggle and threads it in as `hover_mode` (the module never imports `server`). |
+| `hover.py` | `textDocument/hover` — unit resolution + the short/detailed renderers, dimensional-signature call hover (header `name: (…) → ret` + per-actual-argument rows, `(expected …)` on mismatch), and the unit-algebra trace tree. The `_hover` wrapper reads the verbosity toggle and threads it in as `hover_mode` (the module never imports `server`). |
 
 ## Three load-bearing patterns
 
