@@ -36,8 +36,8 @@ still succeed, which is useful for testing the pipeline.
 3. Commit; PR; merge to `main` once CI is green.
 4. Tag the merge commit:
    ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
+   git tag v0.2.0
+   git push origin v0.2.0
    ```
 5. Watch the `release` workflow on GitHub Actions.
 

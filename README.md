@@ -20,7 +20,10 @@ real :: force     !< @unit{kg*m/s^2}
 force = mass * velocity            ! diagnosed: force unit is kg, expected kg*m/s^2
 ```
 
-> Status: **pre-alpha**. End-to-end, these work today: the annotation
+> Status: **beta**. Usable, tested, and proven against real-world
+> Fortran — but the `@unit{}` format, diagnostic codes, and LSP
+> protocol are not frozen yet and may still shift between `0.x`
+> releases. End-to-end, these work today: the annotation
 > scanner, attachment pass, the full H-series checker (H001–H004 +
 > H010), the unit-algebra wrapper rules for `LOG` / `EXP`-tagged
 > quantities (D1.2 – D1.6), per-rule provenance traces, intrinsics,
