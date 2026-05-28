@@ -163,7 +163,10 @@ interface ExpressionNode {
   // this node is a positional argument of a call whose callee
   // signature is known AND the resolved unit dimensionally differs
   // from the formal. Renderers append `(expected <expected>)` to the
-  // row. Null otherwise.
+  // row. When a node carries `expected`, the server-side derivation
+  // demotes `marker` from `ok` to `warn` (the 🟡-on-`expected`
+  // override — see design/markers.md §4.4); a row with
+  // `expected: <unit>` therefore never reads `marker: "ok"`.
   expected: string | null;
   // Sub-expressions whose units feed into this one.
   children: ExpressionNode[];

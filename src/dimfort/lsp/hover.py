@@ -17,7 +17,6 @@ tree built by :func:`_render_ast_tree`. All markers are diagnostic-driven via
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -46,7 +45,6 @@ from dimfort.lsp.tree_nav import (
 
 if TYPE_CHECKING:
     from dimfort.core.multifile import WorksetResult
-    from dimfort.core.symbols import FuncSig
     from dimfort.core.units import UnitExpr
 
 # A rendered unit-algebra tree row: (label, unit-or-None, marker, extra).
@@ -197,14 +195,10 @@ def _resolve_hover(
                     rctx.type_field_types.update(
                         ts_checker.collect_type_field_types(tree, source)
                     )
-                    if level == "detailed":
-                        text = _render_call_detailed(
-                            callee_nm, call_hit, sig, rctx, source,
-                        )
-                    else:
-                        text = _render_call_short(
-                            callee_nm, call_hit, sig, rctx, source,
-                        )
+                    max_depth = None if level == "detailed" else 1
+                    text = _render_call_tree(
+                        call_hit, rctx, source, max_depth=max_depth,
+                    )
                     if text is None:
                         text = _hover_signature(callee_nm, sig)
                     return text, _node_lsp_range(callee)
@@ -689,193 +683,37 @@ def _render_subexpr_short(
     return text, _node_lsp_range(expr)
 
 
-def _call_actual_args(call_node: Node) -> list[Node]:
-    """Return the actual argument expression nodes of a call, in order."""
-    arglist = next(
-        (c for c in call_node.children if c.type == "argument_list"), None,
-    )
-    if arglist is None:
-        return []
-    out = []
-    for c in arglist.children:
-        if c.type in _SKIP_TOKEN_TYPES:
-            continue
-        if c.type == "keyword_argument":
-            continue
-        out.append(c)
-    return out
+def _render_call_tree(
+    call_node: Node, rctx: ts_checker.Ctx, source: bytes,
+    *, max_depth: int | None,
+) -> str | None:
+    """Render a call hover as a tree rooted at the call node.
 
+    Same shape and renderer as the side panel's Expression section, so
+    the two surfaces are guaranteed to agree. The root row reads
+    ``name(arg1, arg2, …) : ret  🟢/🟡/🔴`` (subroutines have no unit
+    column on the root) and each immediate child is one actual
+    argument; computed actuals expand under their row when
+    ``max_depth`` permits.
 
-def _format_sig_header(callee_name: str, sig: FuncSig) -> str:
-    """Build the dimensional-signature header line for a call hover.
-
-    ``name: (u1, u2, …) → ret`` for functions; subroutines drop the
-    ``→ ret`` tail. Unannotated slots render as ``?``. No trailing
-    verdict circle — the per-arg circle column carries that.
+    ``max_depth=1`` gives the short call hover (call + immediate
+    arguments only); ``max_depth=None`` gives the detailed view (full
+    sub-tree under each computed actual). The per-arg `(expected …)`
+    annotation and the 🟡-on-expected marker override both come from
+    :func:`_render_ast_tree`; nothing call-specific lives in this
+    function beyond depth selection and outer markdown wrapping.
     """
-    from dimfort.core.units import format_unit
-    arg_units_s = ", ".join(
-        format_unit(u) if u is not None else "?" for u in sig.arg_units
+    rows: list[_TreeRow] = []
+    _render_ast_tree(
+        call_node, rctx, source,
+        prefix="", is_last=True, is_root=True, rows=rows,
+        max_depth=max_depth,
     )
-    if sig.is_subroutine:
-        return f"{callee_name}: ({arg_units_s})"
-    ret_s = format_unit(sig.return_unit) if sig.return_unit is not None else "?"
-    return f"{callee_name}: ({arg_units_s}) → {ret_s}"
-
-
-@dataclass
-class _CallRow:
-    """One actual-argument row in the call hover."""
-    mark: str
-    actual_text: str
-    actual_unit_s: str
-    expected: str  # empty, or "(expected <formal_unit>)"
-    sub_lines: list[str]  # detailed-mode tree under a computed arg; [] otherwise
-
-
-def _build_call_rows(
-    call_node: Node, sig: FuncSig, rctx: ts_checker.Ctx, source: bytes,
-    *, detailed: bool,
-) -> tuple[list[_CallRow], bool, bool] | None:
-    """Resolve each actual argument and pair it against the formal unit.
-
-    Returns ``(rows, any_unknown, any_mismatch)`` or ``None`` if the call
-    has no actuals and no formals (nothing to render). Per-arg marker is a
-    local dimension comparison (``equal_dim``), matching what H004 checks
-    on the call as a whole; using :func:`ts_checker.compare` would paint
-    scale/offset mismatches with no backing squiggle (orphan-marker
-    anti-pattern — see docs/design/markers.md).
-    """
-    from dimfort.core.units import format_unit
-    actuals = _call_actual_args(call_node)
-    formal_units = list(sig.arg_units)
-    n = max(len(formal_units), len(actuals))
-    if n == 0:
+    if not rows:
         return None
-    rows: list[_CallRow] = []
-    any_unknown = False
-    any_mismatch = False
-    for i in range(n):
-        funit = formal_units[i] if i < len(formal_units) else None
-        funit_s = format_unit(funit) if funit is not None else "?"
-        if i < len(actuals):
-            an = actuals[i]
-            atext = _node_label(an, source)
-            aunit = ts_checker.resolve_unit(an, rctx, source)
-            aunit_s = format_unit(aunit) if aunit is not None else "?"
-        else:
-            an, aunit, atext, aunit_s = None, None, "—", "—"
-        if funit is None or aunit is None:
-            mark = "🟡"
-            any_unknown = True
-            expected = ""
-        elif _checker_equal(funit, aunit):
-            mark = "🟢"
-            expected = ""
-        else:
-            mark = "🔴"
-            any_mismatch = True
-            expected = f"(expected {funit_s})"
-        sub_lines: list[str] = []
-        # Detailed mode: drop a sub-tree under any *computed* actual —
-        # bare identifiers / number literals would just restate the row.
-        if (
-            detailed
-            and an is not None
-            and an.type not in ("identifier", "number_literal")
-        ):
-            sub_rows: list[_TreeRow] = []
-            _render_ast_tree(
-                an, rctx, source,
-                prefix="", is_last=True, is_root=True, rows=sub_rows,
-            )
-            # Drop the root row (it's the actual we already render); keep
-            # its descendants. Re-indent so the tree slots under the row.
-            if len(sub_rows) > 1:
-                max_l = max(len(r[0]) for r in sub_rows[1:])
-                max_u = max(len(r[1] or "") for r in sub_rows[1:])
-                for label, unit, mk, rule in sub_rows[1:]:
-                    us = (unit or "").ljust(max_u)
-                    if rule:
-                        sub_lines.append(
-                            f"    {label.ljust(max_l)}  :  {us}  {mk}  {rule}"
-                        )
-                    else:
-                        sub_lines.append(
-                            f"    {label.ljust(max_l)}  :  {us}  {mk}".rstrip()
-                        )
-        rows.append(_CallRow(mark, atext, aunit_s, expected, sub_lines))
-    return rows, any_unknown, any_mismatch
-
-
-def _render_call_rows(
-    callee_name: str, sig: FuncSig, rows: list[_CallRow],
-    *, any_unknown: bool, any_mismatch: bool,
-) -> str:
-    """Assemble the call hover markdown from prebuilt rows.
-
-    Header line is the dimensional signature; one row per actual
-    argument labelled by the source expression, then resolved unit,
-    then 🟢 / 🟡 / 🔴 (and ``(expected …)`` on mismatch). Tree rows for
-    computed args are emitted directly below their argument row.
-    """
-    header = _format_sig_header(callee_name, sig)
-    text_w = max(len(r.actual_text) for r in rows)
-    unit_w = max(len(r.actual_unit_s) for r in rows)
-    lines: list[str] = [header]
-    for r in rows:
-        line = (
-            f"  {r.actual_text.ljust(text_w)} : {r.actual_unit_s.ljust(unit_w)}"
-            f"  {r.mark}"
-        )
-        if r.expected:
-            line += f"  {r.expected}"
-        lines.append(line)
-        lines.extend(r.sub_lines)
-    body = "\n".join(lines)
-    if any_mismatch:
-        marker = "🔴"
-    elif any_unknown:
-        marker = "🟡"
-    else:
-        marker = "🟢"
+    body = _format_tree_rows(rows)
+    marker = _worst_marker(rows)
     return f"**{marker} DimFort**\n\n```\n{body}\n```"
-
-
-def _render_call_short(
-    callee_name: str, call_node: Node, sig: FuncSig, rctx: ts_checker.Ctx, source: bytes,
-) -> str | None:
-    """Short call hover: signature header + one row per actual argument."""
-    built = _build_call_rows(call_node, sig, rctx, source, detailed=False)
-    if built is None:
-        return None
-    rows, any_unknown, any_mismatch = built
-    return _render_call_rows(
-        callee_name, sig, rows,
-        any_unknown=any_unknown, any_mismatch=any_mismatch,
-    )
-
-
-def _render_call_detailed(
-    callee_name: str, call_node: Node, sig: FuncSig, rctx: ts_checker.Ctx, source: bytes,
-) -> str | None:
-    """Detailed call hover: short layout + sub-tree under each *computed*
-    actual so the reader can see how its unit was derived.
-    """
-    built = _build_call_rows(call_node, sig, rctx, source, detailed=True)
-    if built is None:
-        return None
-    rows, any_unknown, any_mismatch = built
-    return _render_call_rows(
-        callee_name, sig, rows,
-        any_unknown=any_unknown, any_mismatch=any_mismatch,
-    )
-
-
-def _checker_equal(a: UnitExpr, b: UnitExpr) -> bool:
-    """Wrapper-aware dimension equality (delegates to units.equal_dim)."""
-    from dimfort.core.units import equal_dim
-    return equal_dim(a, b)
 
 
 def _trace_section_for(uri: str, line_1based: int, col_1based: int) -> str | None:
@@ -918,27 +756,50 @@ def _trace_section_for(uri: str, line_1based: int, col_1based: int) -> str | Non
     ctx.var_types.update(ts_checker.collect_var_types(tree, source))
     ctx.parameter_values.update(ts_checker.collect_parameter_values(tree, source))
     ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
-    rows: list[_TreeRow] = []  # (label, unit, mark, rule)
+    rows: list[_TreeRow] = []  # (label, unit, mark, extra)
     _render_ast_tree(rhs, ctx, source, prefix="", is_last=True, is_root=True, rows=rows)
     if not rows:
         return None
+    body = _format_tree_rows(rows)
+    return "**Unit-algebra trace**\n\n```\n" + body + "\n```"
+
+
+def _format_tree_rows(rows: list[_TreeRow]) -> str:
+    """Render tree rows with global column alignment.
+
+    Shared between the call hover and the unit-algebra trace section so
+    both render with identical width math — same source of truth as the
+    panel companions, just rendered server-side as markdown for the
+    hover surfaces.
+
+    ``unit`` of ``""`` marks a row that should not display a unit at all
+    (e.g. the assignment_statement row — a statement, not an
+    expression). Column widths are computed only over rows that DO show
+    a unit; unit-less rows skip the ``: unit`` block entirely so the
+    marker still aligns.
+    """
     max_label = max(len(r[0]) for r in rows)
-    # ``unit`` of ``""`` marks a row that should not display a unit at
-    # all (e.g. the assignment_statement row — a statement, not an
-    # expression). Compute column width only over rows that DO show
-    # a unit; unit-less rows skip the ``: unit`` block entirely.
     units_present = [r[1] for r in rows if r[1]]
     max_unit = max((len(u) for u in units_present), default=0)
     lines: list[str] = []
-    for label, unit, mark, rule in rows:
+    for label, unit, mark, extra in rows:
         head = label.ljust(max_label)
         mid = f"  :  {unit.ljust(max_unit)}" if unit else ""
-        if rule:
-            lines.append(f"{head}{mid}  {mark}  {rule}")
+        if extra:
+            lines.append(f"{head}{mid}  {mark}  {extra}")
         else:
             lines.append(f"{head}{mid}  {mark}".rstrip())
-    body = "\n".join(lines)
-    return "**Unit-algebra trace**\n\n```\n" + body + "\n```"
+    return "\n".join(lines)
+
+
+def _worst_marker(rows: list[_TreeRow]) -> str:
+    """Header marker for a tree: worst-of all row markers."""
+    found = {r[2] for r in rows}
+    if "🔴" in found:
+        return "🔴"
+    if "🟡" in found:
+        return "🟡"
+    return "🟢"
 
 
 # Beyond bare assignments, the trace hover also fires inside these
@@ -1026,6 +887,8 @@ def _render_ast_tree(
     rows: list[_TreeRow],
     target_unit_for_literal: UnitExpr | None = None,
     expected_unit: UnitExpr | None = None,
+    max_depth: int | None = None,
+    _depth: int = 0,
 ) -> None:
     """Recursively collect ``(label, unit, mark, extra)`` rows for the tree.
 
@@ -1055,6 +918,7 @@ def _render_ast_tree(
                 prefix=prefix, is_last=is_last, is_root=is_root, rows=rows,
                 target_unit_for_literal=target_unit_for_literal,
                 expected_unit=expected_unit,
+                max_depth=max_depth, _depth=_depth,
             )
             return
 
@@ -1103,6 +967,14 @@ def _render_ast_tree(
     # worst-of its descendants. An R4.4 autocast leaf emits nothing and
     # resolves cleanly, so it falls out 🟢 without a special case.
     mark = _node_marker(node, ctx, source)
+    # Call-arg-formal disagreement override: when this row carries an
+    # ``(expected …)`` annotation, demote 🟢 → 🟡. Rationale: the
+    # expression resolved cleanly here, but its caller disagrees with the
+    # formal it's flowing into — worth flagging without painting a hard
+    # 🔴 (which is reserved for diagnostic-owned mismatches). The 🔴
+    # already sits on the enclosing call node via H004's diagnostic.
+    if extra_str and mark == "🟢":
+        mark = "🟡"
     # Mark is a separate column so the unit can be ljust-padded
     # independently; markers then align vertically on the right.
     rows.append((prefix + connector + label, unit_str, mark, extra_str))
@@ -1110,15 +982,12 @@ def _render_ast_tree(
     # Leaves stop here. Identifiers / numeric literals are atomic.
     if node.type in ("identifier", "number_literal", "string_literal", "complex_literal"):
         return
+    # Depth cap: short call hover renders only call + immediate children
+    # (no recursion into computed arguments). ``None`` = unbounded.
+    if max_depth is not None and _depth >= max_depth:
+        return
 
     children = _interesting_children(node)
-    # call_expression: drop the callee identifier from the child list —
-    # the parent line already reads ``log(p)`` etc., so re-rendering the
-    # bare ``log`` identifier is noise.
-    if node.type == "call_expression" and children:
-        first = children[0]
-        if first.type == "identifier":
-            children = children[1:]
     # Compute the autocast target to propagate into children.
     # - Assignment: ask ``ts_checker.assignment_homogeneity`` for the effective
     #   RHS unit; pass it to the last child (the RHS) when the verdict
@@ -1161,4 +1030,5 @@ def _render_ast_tree(
             is_root=False, rows=rows,
             target_unit_for_literal=per_child_target,
             expected_unit=per_child_expected,
+            max_depth=max_depth, _depth=_depth + 1,
         )

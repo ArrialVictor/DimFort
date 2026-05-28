@@ -14,7 +14,7 @@ units live in [unit-algebra.md](unit-algebra.md).
 | Glyph | Meaning |
 |---|---|
 | `:` | separates an expression (name / source text) from its unit |
-| `→` | in a call signature header, separates the formal argument tuple from the function's return unit (e.g. `(kg·m⁻³, m·s⁻¹) → kg·m⁻¹·s⁻²`) |
+| `→` | in the **pure-signature** hover (cursor on a function/subroutine definition header), separates the formal argument tuple from the return unit, e.g. `(kg·m⁻³, m·s⁻¹) → kg·m⁻¹·s⁻²` |
 | `◂` | in assignment / relational hovers, separates a target slot (LHS) from the value flowing into it (RHS) — points from value to target |
 | `(expected …)` | trailing annotation on a call-argument row whose actual unit differs from the formal — names the expected unit |
 | `🟢` | known and consistent |
@@ -79,6 +79,13 @@ When multiple surfaces would fire at the same cursor position, the
 
 ## Layout: function call
 
+Call hovers share the panel's Expression-tree renderer, so the two
+surfaces are guaranteed to read identically. The root row is the
+**whole call expression as written** (`name(args) : ret`), followed by
+one child row per actual argument. The dimensional signature still
+appears — on the pure-signature hover for cursor-on-definition (see
+below) — it just isn't repeated on call sites.
+
 ### Short
 
 <picture>
@@ -87,24 +94,21 @@ When multiple surfaces would fire at the same cursor position, the
 </picture>
 
 ```
-dynamic_pressure: (kg·m⁻³, m·s⁻¹) → kg·m⁻¹·s⁻²
-  rho         : kg·m⁻³      🟢
-  c_sound * t : m           🔴  (expected m·s⁻¹)
+dynamic_pressure(rho, c_sound * t) : kg·m⁻¹·s⁻²  🔴
+├── rho                            : kg·m⁻³      🟢
+└── c_sound * t                    : m           🟡  (expected m·s⁻¹)
 ```
 
-Header is the **dimensional signature**: `name: (u1, u2, …) → ret`.
-Each formal slot renders its unit (or `?` if unannotated); the return
-follows `→`. The return is checked at the *enclosing expression* (the
-slot the call result flows into), not here — this layout reports
-what the callable promises.
-
-One row per **actual argument**, labelled by the source expression as
-written (no formal param names — the caller doesn't see them). Each
-row shows the resolved unit and a 🟢/🟡/🔴 marker; on a dimensional
-mismatch the row appends `(expected <formal>)`. Header marker
-aggregates: 🔴 if any row is 🔴; else 🟡 if any row is 🟡; else 🟢. The
-header itself carries no per-line circle — the per-row column makes
-that information redundant.
+Root row carries the function's return unit and the overall verdict
+marker (worst-of: own diagnostics ∨ children). Each child row
+shows the actual argument's source text, its resolved unit, a
+diagnostic-driven 🟢/🟡/🔴 marker, and — when its unit dimensionally
+differs from the formal — an `(expected <formal>)` tail. The
+mismatching row paints 🟡 (not 🔴) by the **🟡-on-`expected` override**
+documented in [design/markers.md](design/markers.md): the
+expression itself resolved cleanly, but its consumer disagrees with
+the formal it's flowing into. The 🔴 belongs on the enclosing call,
+where H004 fires.
 
 
 ### Detailed
@@ -116,33 +120,33 @@ that information redundant.
 
 Same as Short, plus a sub-tree under any **computed** actual argument
 showing how its unit was derived. Bare identifiers and literals do not
-expand (the row already shows everything). Sub-tree rows carry their
-own 🟢/🟡/🔴 marker, right-aligned after the resolved unit.
+expand (the row already shows everything).
 
 ```
-dynamic_pressure: (kg·m⁻³, m·s⁻¹) → kg·m⁻¹·s⁻²
-  rho         : kg·m⁻³  🟢
-  c_sound * t : m       🔴  (expected m·s⁻¹)
-    ├── c_sound : m·s⁻¹  🟢
-    └── t       : s      🟢
+dynamic_pressure(rho, c_sound * t) : kg·m⁻¹·s⁻²  🔴
+├── rho                            : kg·m⁻³      🟢
+└── c_sound * t                    : m           🟡  (expected m·s⁻¹)
+    ├── c_sound                    : m·s⁻¹       🟢
+    └── t                          : s           🟢
 ```
 
 
 ## Layout: subroutine call
 
-Identical to function call, with one difference:
-
-- Header drops the `→ ret` tail (subroutines have no return unit).
+Identical to function call, with one difference: subroutines have no
+return unit, so the root row's unit column shows `?` and its
+resolution-axis marker paints 🟡 (no consistency diagnostic
+disagreement — just no unit to report).
 
 ### Short
 
 ```
-update_winds: (1, 1, K, m·s⁻¹, K)
-  klon    : 1       🟢
-  klev    : 1       🟢
-  t_local : ?       🟡
-  u_local : ?       🟡
-  dt_out  : K       🟢
+call update_winds(klon, klev, t_local, u_local, dt_out)  :  ?  🟡
+├── klon    : 1   🟢
+├── klev    : 1   🟢
+├── t_local : ?   🟡
+├── u_local : ?   🟡
+└── dt_out  : K   🟢
 ```
 
 ### Detailed
@@ -387,7 +391,7 @@ These ground the rules above with concrete cursor placements.
 | `r` | identifier | `r : LOG(Pa²)` | (same as Short) |
 | `=` | assignment | `r : LOG(Pa²)   ◂   log(p1) + log(p2) : LOG(Pa²)` | tree |
 | `+` | binary operator | `log(p1) : LOG(Pa)   ◂   log(p2) : LOG(Pa)` (homogeneity check on the operands of `+`) | tree |
-| `log` (first) | function call | signature header + one row per actual (`log: (Pa) → LOG(Pa)`, `p1 : Pa 🟢`) | + sub-tree under any computed actual |
+| `log` (first) | function call | root row `log(p1) : LOG(Pa)` + one child row per actual (`p1 : Pa 🟢`) | + sub-tree under any computed actual |
 | `p1` | identifier | `p1 : Pa` | (same as Short) |
 | `(`, `)`, spaces | assignment | (same as on `=`) | tree |
 
@@ -406,7 +410,7 @@ These ground the rules above with concrete cursor placements.
 
 | Cursor on | Surface | Short body |
 |---|---|---|
-| `update_winds` | subroutine call | signature header + one actual-arg row each (see Subroutine call above) |
+| `update_winds` | subroutine call | root row `call update_winds(…) : ?` + one child row per actual (see Subroutine call above) |
 | `p1` | identifier | `p1 : Pa` |
 | `p2` | identifier | `p2 : Pa` |
 | `+` | binary operator | `p2 : Pa   ◂   1.0 : 1   🟢` (a bare literal added to Pa is an implicit cast — `H010`/`D1.5`, a *smell* not an inconsistency; it still squiggles but the consistency marker stays 🟢, decision B) |

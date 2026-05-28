@@ -318,10 +318,12 @@ def test_trace_hover_inside_do_bound(tmp_path: Path):
         _server._features.hover = "short"
 
 
-def test_call_hover_short_renders_signature_and_arg_rows(tmp_path: Path):
-    """Short mode call hover: dimensional-signature header + one row per
-    actual argument labelled by the source expression (param names
-    dropped). All matching args → header is 🟢."""
+def test_call_hover_short_renders_root_and_arg_rows(tmp_path: Path):
+    """Short call hover: root row is the whole call expression
+    (`name(args)` for subroutines, `name(args) : ret` for functions)
+    with the overall verdict marker; one child row per actual argument
+    labelled by the source expression. Layout matches the side panel's
+    Expression tree — both surfaces share :func:`_render_ast_tree`."""
     src = (
         "module m\n"
         "contains\n"
@@ -344,28 +346,28 @@ def test_call_hover_short_renders_signature_and_arg_rows(tmp_path: Path):
         hit = _drive_hover(f, 10, 10)
         assert hit is not None
         text, _ = hit
-        # New format — dimensional-signature header (subroutine: no `→`).
-        # Pa renders SI-form (`kg·m⁻¹·s⁻²`).
-        assert "foo: (kg·m⁻¹·s⁻², kg·m⁻¹·s⁻²)" in text
-        # Subroutine header has no return arrow.
-        assert "→" not in text
-        # Rows labelled by the *actual argument expression*, not by
-        # the formal param name.
+        # Root row: full call as written. Subroutine — no `: ret` block.
+        assert "call foo(p1, p2 + p1)" in text
+        # Both positional args render as child rows.
         assert "p1" in text
         assert "p2 + p1" in text
-        # The old "Signature ◂ Call" column-header layout is gone, and
-        # the formal param names (`a`, `b`) no longer appear in the row
-        # labels.
+        # Old "Signature ◂ Call" two-column layout is gone, and the
+        # earlier `name: (…) → ret` header line is too.
         assert "Signature" not in text
         assert "◂" not in text
-        # All args resolve to Pa → 🟢.
-        assert "🟢 DimFort" in text
+        assert "foo: (" not in text
+        # Subroutine calls have no return unit, so the root row's unit
+        # is `?` and the resolution-axis marker is 🟡 — matching the
+        # side panel's behavior for subroutine calls.
+        assert "🟡 DimFort" in text
     finally:
         _server._features.hover = "short"
 
 
-def test_call_hover_function_signature_has_return_arrow(tmp_path: Path):
-    """Function call hover: header ends with `→ ret`. Subroutines don't."""
+def test_call_hover_function_root_carries_return_unit(tmp_path: Path):
+    """Function call root row carries `name(args) : ret`; subroutines
+    drop the `: ret` block. Regression guard for the defensive
+    callee-strip that used to swallow the first argument."""
     src = (
         "module m\n"
         "contains\n"
@@ -391,16 +393,27 @@ def test_call_hover_function_signature_has_return_arrow(tmp_path: Path):
         hit = _drive_hover(f, 13, 9)
         assert hit is not None
         text, _ = hit
-        assert "→" in text
-        assert "dynamic_pressure: (" in text
+        # Root row carries the return unit attached to the call expression.
+        assert "dynamic_pressure(rho, v)" in text
+        assert "kg·m⁻¹·s⁻²" in text
+        # Both positional args show up as children (regression guard).
+        assert "rho" in text
+        # Find a child-row line for `v` specifically (avoid matching `v`
+        # inside `rho` etc.).
+        assert any(
+            line.lstrip().startswith(("├── v", "└── v"))
+            for line in text.splitlines()
+        )
         assert "🟢 DimFort" in text
     finally:
         _server._features.hover = "short"
 
 
-def test_call_hover_mismatch_annotates_row_with_expected(tmp_path: Path):
-    """Mismatched actual: row marked 🔴 with `(expected …)` appended,
-    header marker rolls up to 🔴."""
+def test_call_hover_mismatch_paints_arg_yellow_and_call_red(tmp_path: Path):
+    """Mismatched actual: the arg row carries `(expected …)` and gets
+    the 🟡-on-expected marker override (the expression itself resolved
+    cleanly), while the enclosing call row paints 🔴 because H004 fires
+    on it. Header marker rolls up to 🔴."""
     src = (
         "module m\n"
         "contains\n"
@@ -420,9 +433,18 @@ def test_call_hover_mismatch_annotates_row_with_expected(tmp_path: Path):
         hit = _drive_hover(f, 8, 10)
         assert hit is not None
         text, _ = hit
+        # Header marker is 🔴 (call row owns H004).
         assert "🔴 DimFort" in text
-        # Pa renders SI-form.
+        # Arg row carries `(expected …)` with Pa rendered SI-form.
         assert "(expected kg·m⁻¹·s⁻²)" in text
+        # Arg row is 🟡 (resolved cleanly to `s` here, but disagrees
+        # with the formal). The 🔴 sits on the call row above it.
+        arg_line = next(
+            line for line in text.splitlines()
+            if "(expected kg·m⁻¹·s⁻²)" in line
+        )
+        assert "🟡" in arg_line
+        assert "🔴" not in arg_line
     finally:
         _server._features.hover = "short"
 
