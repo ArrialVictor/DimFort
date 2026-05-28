@@ -446,9 +446,18 @@ def _expression_hover_for(
         lhs_mark,
         "",
     ))
+    # Detailed-mode assembly assembles the root + LHS rows manually
+    # and then calls _render_ast_tree on the RHS — bypassing the
+    # assignment node's iteration loop where ``assumed_overlay`` is
+    # normally set. Compute the overlay here and pass it explicitly so
+    # the RHS row picks up its 🔵 + asserted-unit + (assumed: …) row
+    # tail when the assignment carries @unit_assume.
+    from dimfort.lsp.expr_tree import _assumed_for
+    rhs_assumed_overlay = _assumed_for(asn, ctx)
     _render_ast_tree(
         rhs, ctx, source,
         prefix="", is_last=True, is_root=False, rows=rows,
+        assumed_overlay=rhs_assumed_overlay,
     )
     if not rows:
         return None
@@ -700,7 +709,16 @@ def _trace_section_for(uri: str, line_1based: int, col_1based: int) -> str | Non
     ctx.parameter_values.update(ts_checker.collect_parameter_values(tree, source))
     ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
     rows: list[_TreeRow] = []  # (label, unit, mark, extra)
-    _render_ast_tree(rhs, ctx, source, prefix="", is_last=True, is_root=True, rows=rows)
+    # Same plumbing as the detailed-mode assignment path: when the
+    # enclosing assignment carries @unit_assume, the RHS tree's root
+    # row picks up the 🔵 + asserted-unit + (assumed: …) overlay.
+    from dimfort.lsp.expr_tree import _assumed_for
+    rhs_assumed_overlay = _assumed_for(asn, ctx)
+    _render_ast_tree(
+        rhs, ctx, source,
+        prefix="", is_last=True, is_root=True, rows=rows,
+        assumed_overlay=rhs_assumed_overlay,
+    )
     if not rows:
         return None
     body = _format_tree_rows(rows)
