@@ -40,7 +40,7 @@ It speaks LSP over stdio, the wire format every common editor expects.
   node carries its resolved unit and the unit-algebra rule that
   produced it (`R3.1`, `R5.6`, …). The header reads
   `🟢 / 🔴 / 🟡 DimFort` for OK / mismatch / unresolved respectively.
-- **Inlay hints**, **go-to-definition**, **code lens**, **code actions**
+- **Inlay hints**, **go-to-definition**, **code actions**
   (insert `!< @unit{}` skeletons; extract H010-D1.5 literals to a
   named PARAMETER), and **unit-name completion** are all live; each
   is toggleable through its respective `DimFort: Toggle …` palette

@@ -105,7 +105,7 @@ Pre-alpha. Working pipeline pieces:
   consumer's scope
 - a working LSP server (`dimfort lsp`) — workspace-aware (cross-file
   diagnostics in the editor), debounced live editing on every
-  keystroke, hover / inlay hints / go-to-definition / code lens / code
+  keystroke, hover / inlay hints / go-to-definition / code
   action for inserting `!< @unit{}` skeletons. Wire it up in your
   editor following [docs/lsp.md](lsp.md); a VSCode extension scaffold
   lives next to the repo at `Homogeneity/DimFort-VSCompanion/` (its
