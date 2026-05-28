@@ -32,9 +32,8 @@ force = mass * velocity            ! diagnosed: force unit is kg, expected kg*m/
 > aware LSP server with live-edit diagnostics, per-surface hover
 > (call / subroutine / expression, each Short or Detailed with a
 > formal-vs-actual pairing or full unit-algebra trace), inlay
-> hints, go-to-definition, code lens,
-> code actions, completion, and a CLI that accepts files or
-> directories.
+> hints, go-to-definition, code actions, completion, and a CLI that
+> accepts files or directories.
 
 ## Install
 
