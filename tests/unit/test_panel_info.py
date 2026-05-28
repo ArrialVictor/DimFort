@@ -211,6 +211,58 @@ def test_call_arg_mismatch_carries_expected_unit(tmp_path: Path):
     assert payload["expected"] is None
 
 
+def test_unit_assume_row_paints_assumed_with_reason(tmp_path: Path):
+    """An assignment carrying ``@unit_assume{<unit> : <reason>}`` paints
+    the new ``assumed`` marker (🔵 on the panel) and surfaces the
+    mandatory reason in the ``assumed`` payload field. Child markers
+    don't propagate up — the directive's contract is "trust me on the
+    unit, ignore the inside" — so the assignment row stays "assumed"
+    even when its RHS has unresolved leaves.
+    """
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp import server
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
+
+    src = tmp_path / "assumed.f90"
+    src.write_text(
+        "subroutine s\n"
+        "  real :: r  !< @unit{m}\n"
+        "  real :: rho   !< @unit{kg/m^3}\n"
+        # Non-rational exponent on a length: not derivable from first
+        # principles, so the assumption is the only path to a unit.
+        "  rho = 1.e3 * 0.178 * (r * 2.0 * 1000.0)**(-0.922)"
+        "   !< @unit_assume{kg/m^3 : empirical-fit Brandes2007}\n"
+        "end subroutine\n"
+    )
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    with server.state.last_result_lock:
+        saved = server.state.last_result
+        server.state.last_result = result
+    try:
+        ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+        asn = next(n for n in _ts.walk(tree.root_node)
+                   if n.type == "assignment_statement")
+        payload = _build_expression_tree(asn, ctx, source)
+    finally:
+        with server.state.last_result_lock:
+            server.state.last_result = saved
+    assert payload is not None
+    assert payload["marker"] == "assumed"
+    assert payload["assumed"] == "empirical-fit Brandes2007"
+    # Children stay on their own merits — only the assigned-row
+    # propagation is short-circuited. The RHS computed sub-tree has
+    # `?` leaves (the (-0.922) exponent makes the inner unit
+    # unresolvable), which would normally bubble 🟡 up — here the
+    # assumption suppresses that bubble at the assignment row.
+    rhs_child = payload["children"][-1]
+    assert rhs_child["marker"] in ("warn", "ok")  # internal state
+
+
 def test_call_arg_match_has_no_expected(tmp_path: Path):
     """A call argument whose unit matches the formal carries no
     ``expected`` annotation — the panel should only highlight gaps."""
