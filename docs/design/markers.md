@@ -267,6 +267,37 @@ surface folds into the model then.
      Never used inside a tree row or for an individual variable; for
      unannotated declarations in scope/import sections, companions
      render `?`.
+6. **🔵 — accepted via `@unit_assume`.** A statement-level
+   `@unit_assume{<unit> : <reason>}` directive asserts a unit that
+   the algebra can't derive (typically a non-rational exponent on a
+   dimensioned base — empirical fits like Tetens, Magnus, Buck,
+   Brandes2007). The checker emits a U020 INFO acknowledging the
+   assumption; the row paints **🔵** and surfaces the mandatory
+   reason as `(assumed: <reason>)` on the row tail (same column as
+   `(expected …)`). The semantics:
+   - **🔵 sits between 🟢 and 🟡** in the worst-of aggregation order
+     (`error > warn > assumed > ok`). A 🔵 child propagates 🔵 to its
+     parent unless a 🟡/🔴 sibling beats it; siblings on their own
+     merits aren't suppressed.
+   - **The directive short-circuits worst-of-children at the
+     assumed node itself** (the assignment_statement carrying the
+     `@unit_assume`). The whole point of the directive is "trust me
+     on the unit; don't worry about the inside" — child markers
+     (which often show 🟡 from unresolved leaves like `(-0.922)`)
+     are not propagated up through that row. The assumption owns
+     that row's verdict.
+   - **Ownership is line-based**, not span-based: the U020
+     diagnostic position sits at the `@unit_assume` token in the
+     trailing comment, which is *outside* the assignment's
+     tree-sitter span. The ownership rule matches a U020 against
+     the smallest `assignment_statement` on the same line. Only
+     `assignment_statement` nodes can own a U020 — the directive is
+     statement-level.
+   - **🔵 doesn't compete with 🟡/🔴.** If a consistency-family
+     diagnostic also owns the node (e.g., the assumed unit
+     disagrees with a *declared* LHS unit and H001 fires), worst-of
+     paints 🔴/🟡 instead. The assumption never masks a declared-
+     unit conflict.
 
 ## 5. Reconciliation with the existing docs
 

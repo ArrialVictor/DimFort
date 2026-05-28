@@ -37,7 +37,10 @@ if TYPE_CHECKING:
     from dimfort.core.attach import AttachmentResult
     from dimfort.core.units import UnitExpr
 
-# The unit-consistency family — the only codes that colour a marker.
+# The unit-consistency family — the only codes that colour a marker
+# along the severity axis (🟢/🟡/🔴). U020 is handled separately and
+# paints 🔵 ("accepted via @unit_assume") — see docs/design/markers.md
+# §4.6.
 _MARKER_DIAG_CODES = frozenset(
     {"H001", "H002", "H003", "H004", "S001", "S002", "S003"}
 )
@@ -48,6 +51,11 @@ _SEVERITY_EMOJI = {
     Severity.INFO: "🟢",
     Severity.HINT: "🟢",
 }
+
+# Pull the reason out of a U020 diagnostic message. The checker emits
+# ``f"RHS unit assumed {format_unit(au)} ({reason})"``; the parenthesised
+# tail is the user-supplied reason.
+_U020_REASON_RE = re.compile(r"\(([^)]+)\)\s*$")
 
 # Node types with no unit of their own *by structure* (not because we
 # couldn't resolve one). Their resolution-axis base is 🟢 (a clean
@@ -97,12 +105,47 @@ def _diags_for_ctx(ctx: ts_checker.Ctx) -> tuple[Diagnostic, ...]:
     return tuple(result.diagnostics.get(p, ()))
 
 
+def _assumed_reason_for(
+    node: Node, ctx: ts_checker.Ctx,
+) -> str | None:
+    """Return the ``@unit_assume`` reason for the U020 diagnostic owning
+    ``node``, or ``None`` if no U020 owns it.
+
+    ``@unit_assume`` is a **statement-level** directive — only
+    ``assignment_statement`` nodes can own a U020. The diagnostic's
+    source position is the ``@unit_assume`` token in the trailing
+    comment, which sits *outside* the assignment's tree-sitter span,
+    so we can't use :func:`_span_within` here. Match by line instead:
+    a U020 on the assignment's line range owns it.
+    """
+    if node.type != "assignment_statement":
+        return None
+    diags = _diags_for_ctx(ctx)
+    if not diags:
+        return None
+    # Tree-sitter `start_point`/`end_point` are 0-based; Diagnostic
+    # `Position` is 1-based (matching LSP), so convert via
+    # ``_node_span_lc``.
+    (nline_s, _), (nline_e, _) = _node_span_lc(node)
+    for d in diags:
+        if d.code != "U020":
+            continue
+        if nline_s <= d.start.line <= nline_e:
+            m = _U020_REASON_RE.search(d.message)
+            return m.group(1) if m else ""
+    return None
+
+
 def _self_marker(node: Node, kid_nodes: list[Node], ctx: ts_checker.Ctx, source: bytes) -> str:
     """The node's own marker (pre-aggregation): resolution-axis base worst-of
     the consistency-family diagnostics that *own* this node. A diagnostic owns
     the node when its range sits within the node's span but not within any
     child's span (tightest-enclosing); upward propagation is the caller's
-    worst-of-children. See docs/design/markers.md §2–§4."""
+    worst-of-children. See docs/design/markers.md §2–§4.
+
+    U020 is a special non-severity provenance code: when one owns the node
+    (and no consistency-family diagnostic does), the marker paints 🔵 —
+    "accepted via @unit_assume" (§4.6)."""
     if node.type in _NO_UNIT_NODE_TYPES:
         base = "🟢"  # statement/relation: no unit of its own
     else:
@@ -113,6 +156,16 @@ def _self_marker(node: Node, kid_nodes: list[Node], ctx: ts_checker.Ctx, source:
     nspan = _node_span_lc(node)
     kid_spans = [_node_span_lc(k) for k in kid_nodes]
     worst = base
+    # Promote 🟢 → 🔵 if a U020 owns this node — the assumption is what
+    # accepted the line, and the reader should see that explicitly.
+    # U020 only ever owns ``assignment_statement`` nodes (the directive
+    # is statement-level), and ownership is line-based since the
+    # directive's source position sits in a trailing comment outside
+    # the statement's tree-sitter span (see ``_assumed_reason_for``).
+    # U020 doesn't compete with 🟡/🔴; if a consistency diagnostic also
+    # owns the node, that wins via worst-of below.
+    if _assumed_reason_for(node, ctx) is not None:
+        worst = _worst_emoji(worst, "🔵")
     for d in diags:
         if d.code not in _MARKER_DIAG_CODES:
             continue
@@ -129,9 +182,18 @@ def _node_marker(node: Node, ctx: ts_checker.Ctx, source: bytes) -> str:
     recursively. Used where rows are emitted top-down (the detailed-hover
     tree, the short hovers) and built child payloads aren't on hand.
     ``_build_expression_tree`` aggregates inline from child payloads
-    instead, but both reduce to the same §2 model."""
+    instead, but both reduce to the same §2 model.
+
+    ``@unit_assume`` short-circuits the recursion: the directive's
+    contract is "trust me on the unit, don't worry about what's
+    inside," so child markers don't propagate up through an assumed
+    assignment. The row paints 🔵 from ``_self_marker`` and stays
+    there unless a *diagnostic-owned* worse marker (🟡/🔴) lives on
+    the node itself — handled by ``_self_marker``'s own worst-of."""
     kids = _interesting_children(node)
     m = _self_marker(node, kids, ctx, source)
+    if _assumed_reason_for(node, ctx) is not None:
+        return m
     for k in kids:
         m = _worst_emoji(m, _node_marker(k, ctx, source))
     return m
@@ -223,11 +285,17 @@ def _build_expression_tree(
     else:
         unit_render = "?"
 
+    # `@unit_assume` provenance: if a U020 owns this node, capture the
+    # mandatory reason so the panel can surface it as
+    # ``(assumed: <reason>)`` and the marker can paint 🔵.
+    assumed_reason = _assumed_reason_for(node, ctx)
+
     payload: dict[str, Any] = {
         "label": _node_label(node, source),
         "unit": unit_render,
         "marker": "ok",  # set below
         "expected": expected_render,
+        "assumed": assumed_reason,
         "children": child_nodes,
     }
 
@@ -253,7 +321,13 @@ def _build_expression_tree(
     # children. Single source of truth = the diagnostic stream — S001/S002
     # and dimension mismatches all flow through here, no per-check overlay.
     self_token = _marker_token(_self_marker(node, kids, ctx, source))
-    payload["marker"] = _worst_token(self_token, *(c["marker"] for c in child_nodes))
+    if assumed_reason is not None:
+        # `@unit_assume` short-circuits the worst-of-children: the
+        # directive said "trust me on the unit"; child markers
+        # shouldn't bubble up.
+        payload["marker"] = self_token
+    else:
+        payload["marker"] = _worst_token(self_token, *(c["marker"] for c in child_nodes))
 
     # Call-arg-formal disagreement override: when this row carries an
     # ``expected`` annotation (its actual unit dimensionally differs from

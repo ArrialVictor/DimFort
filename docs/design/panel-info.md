@@ -164,8 +164,9 @@ interface ExpressionNode {
   // — pre-0.2.1 — will treat the string as a unit and pad accordingly;
   // it's a render-only regression, not a crash.)
   unit: string;
-  // 🟢 ok, 🟡 warning/unresolved, 🔴 mismatch.
-  marker: "ok" | "warn" | "error";
+  // 🟢 ok, 🔵 accepted via @unit_assume, 🟡 warning/unresolved,
+  // 🔴 mismatch. Worst-of order: error > warn > assumed > ok.
+  marker: "ok" | "assumed" | "warn" | "error";
   // The formal unit this node is expected to satisfy, only set when
   // this node is a positional argument of a call whose callee
   // signature is known AND the resolved unit dimensionally differs
@@ -175,6 +176,14 @@ interface ExpressionNode {
   // override — see design/markers.md §4.4); a row with
   // `expected: <unit>` therefore never reads `marker: "ok"`.
   expected: string | null;
+  // The mandatory reason supplied with `@unit_assume{<unit> : <reason>}`,
+  // only set when the U020 diagnostic for that directive owns this
+  // node (always an `assignment_statement`). Renderers append
+  // `(assumed: <reason>)` to the row, and `marker` reads `"assumed"`
+  // (🔵). Child markers are NOT propagated up through this row — the
+  // directive's contract is "trust me on the unit, ignore the inside."
+  // See design/markers.md §4.6.
+  assumed: string | null;
   // Sub-expressions whose units feed into this one.
   children: ExpressionNode[];
 }

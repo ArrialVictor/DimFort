@@ -911,18 +911,31 @@ def _render_ast_tree(
         and not equal_dim(unit, expected_unit)
     ):
         extra_str = f"(expected {format_unit(expected_unit)})"
+    # `@unit_assume` provenance: if a U020 owns this node, surface its
+    # reason as ``(assumed: <reason>)`` and let the marker paint 🔵
+    # (the marker is set by ``_node_marker`` below, which delegates to
+    # ``_self_marker``, which already returns 🔵 on U020-owned nodes).
+    from dimfort.lsp.expr_tree import _assumed_reason_for
+    assumed = _assumed_reason_for(node, ctx)
+    if assumed is not None:
+        assumed_tail = (
+            f"(assumed: {assumed})" if assumed else "(assumed)"
+        )
+        extra_str = assumed_tail if not extra_str else f"{extra_str}  {assumed_tail}"
     # Marker (docs/design/markers.md): the diagnostic-driven aggregated
     # marker — this node's own (resolution ∨ owned consistency diagnostics)
     # worst-of its descendants. An R4.4 autocast leaf emits nothing and
     # resolves cleanly, so it falls out 🟢 without a special case.
     mark = _node_marker(node, ctx, source)
     # Call-arg-formal disagreement override: when this row carries an
-    # ``(expected …)`` annotation, demote 🟢 → 🟡. Rationale: the
-    # expression resolved cleanly here, but its caller disagrees with the
-    # formal it's flowing into — worth flagging without painting a hard
-    # 🔴 (which is reserved for diagnostic-owned mismatches). The 🔴
-    # already sits on the enclosing call node via H004's diagnostic.
-    if extra_str and mark == "🟢":
+    # ``(expected …)`` annotation AND would otherwise paint 🟢, demote
+    # to 🟡. Skips rows already painted 🔵 (assumed), since 🔵 is the
+    # principled signal there. Rationale: the expression resolved
+    # cleanly, but its caller disagrees with the formal — worth
+    # flagging without painting a hard 🔴 (reserved for diagnostic-
+    # owned mismatches). The 🔴 already sits on the enclosing call via
+    # H004's diagnostic.
+    if extra_str and mark == "🟢" and assumed is None:
         mark = "🟡"
     # Mark is a separate column so the unit can be ljust-padded
     # independently; markers then align vertically on the right.

@@ -22,7 +22,9 @@ units live in [unit-algebra.md](unit-algebra.md).
 | `?` | unit-column glyph for **unknown** units — unannotated identifier, unsupported intrinsic, partial resolution |
 | `→` | in the **pure-signature** hover (cursor on a function/subroutine definition header), separates the formal argument tuple from the return unit, e.g. `(kg·m⁻³, m·s⁻¹) → kg·m⁻¹·s⁻²` |
 | `(expected …)` | trailing annotation on a row whose actual unit doesn't satisfy what its container demanded — call argument vs formal, or RHS vs LHS unit in an assignment. Names the expected unit |
+| `(assumed: <reason>)` | trailing annotation on a row carrying `@unit_assume{<unit> : <reason>}`. Surfaces the mandatory reason; the row paints 🔵 and child markers don't propagate up. See [design/markers.md](design/markers.md) §4.6 |
 | `🟢` | known and consistent |
+| `🔵` | accepted via `@unit_assume` (see [design/markers.md](design/markers.md) §4.6) |
 | `🟡` | known partially / contains an unannotated leaf |
 | `🔴` | known but inconsistent (unit mismatch) |
 
