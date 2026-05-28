@@ -895,7 +895,7 @@ def test_imports_only_list(tmp_path: Path):
     rows = build_imports(tree, source, 11, result, frozenset({"play_local"}))
     by_name = {r["name"]: r for r in rows}
     assert set(by_name) == {"play"}              # only-list = just play
-    assert by_name["play"]["unit"] == "kg/(m×s²)"
+    assert by_name["play"]["unit"] == "kg·m⁻¹·s⁻²"
     assert by_name["play"]["module"] == "phys_constants"
     assert by_name["play"]["kind"] == "annotated"
     assert by_name["play"]["line"] == 2          # source declaration line
@@ -979,10 +979,10 @@ def test_imports_include_procedures(tmp_path: Path):
     assert set(by_name) == {"grav", "pressure", "reset"}
     # Variable.
     assert by_name["grav"]["callable"] is False
-    assert by_name["grav"]["unit"] == "m/s²"
+    assert by_name["grav"]["unit"] == "m·s⁻²"
     # Function — return unit + callable + nav to its definition (line 4).
     assert by_name["pressure"]["callable"] is True
-    assert by_name["pressure"]["unit"] == "kg/(m×s²)"
+    assert by_name["pressure"]["unit"] == "kg·m⁻¹·s⁻²"
     assert by_name["pressure"]["line"] == 4
     assert by_name["pressure"]["signature"] == "(m)"   # arg unit
     # Subroutine — callable, no unit, not flagged as a missing annotation.

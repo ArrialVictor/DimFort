@@ -53,7 +53,7 @@ def test_additive_sibling_pins_required_unit(tmp_path):
     )
     report = _report(tmp_path, src, "x")
     assert REQUIRES in _kinds_at(report, 5)
-    assert _unit_at(report, 5) == "1/s"
+    assert _unit_at(report, 5) == "s⁻¹"
 
 
 def test_additive_term_with_coefficient_pins_through_product(tmp_path):
@@ -83,14 +83,14 @@ def test_literal_anchors_sum_without_lhs_annotation(tmp_path):
         "end subroutine\n"
     )
     report = _report(tmp_path, src, "dzfice")
-    assert _unit_at(report, 5) == "1/K"
+    assert _unit_at(report, 5) == "K⁻¹"
 
 
 def test_literal_anchor_survives_unresolvable_sibling_term(tmp_path):
     # `1.0 + junk - lcp*x`: the literal pins the whole sum to {1} even though
     # the sibling term `junk` is unannotated. Before the additive-flatten fix,
     # _resolve of the entire sibling `(1.0 + junk)` failed on `junk` and `x`
-    # fell through to Unconstrained; now `x` is pinned to {1}/{K} = {1/K}.
+    # fell through to Unconstrained; now `x` is pinned to {1}/{K} = {K⁻¹}.
     src = (
         "subroutine s(x, lcp, junk, denom)\n"
         "  real :: x\n"
@@ -102,7 +102,7 @@ def test_literal_anchor_survives_unresolvable_sibling_term(tmp_path):
     )
     report = _report(tmp_path, src, "x")
     reqs = [p for p in report.points if p.kind == REQUIRES]
-    assert reqs and reqs[0].unit_str == "1/K"
+    assert reqs and reqs[0].unit_str == "K⁻¹"
 
 
 def test_assignment_lhs_is_contributes(tmp_path):
@@ -116,7 +116,7 @@ def test_assignment_lhs_is_contributes(tmp_path):
     )
     report = _report(tmp_path, src, "x")
     assert CONTRIBUTES in _kinds_at(report, 5)
-    assert _unit_at(report, 5) == "m/s"
+    assert _unit_at(report, 5) == "m·s⁻¹"
 
 
 def test_call_argument_requires_param_unit(tmp_path):
@@ -135,7 +135,7 @@ def test_call_argument_requires_param_unit(tmp_path):
     report = _report(tmp_path, src, "v")
     line = 8  # `call consume(v)`
     assert REQUIRES in _kinds_at(report, line)
-    assert _unit_at(report, line) == "m/s"
+    assert _unit_at(report, line) == "m·s⁻¹"
 
 
 def test_array_element_access_is_an_occurrence(tmp_path):
@@ -151,7 +151,7 @@ def test_array_element_access_is_an_occurrence(tmp_path):
     )
     report = _report(tmp_path, src, "x")
     assert REQUIRES in _kinds_at(report, 6)
-    assert _unit_at(report, 6) == "1/s"
+    assert _unit_at(report, 6) == "s⁻¹"
 
 
 def test_bare_multiplicative_read_is_uses_not_requires(tmp_path):
@@ -224,7 +224,7 @@ def test_literal_init_write_adopts_declared_unit_no_conflict(tmp_path):
     report = _report(tmp_path, src, "x")
     assert report.conflicts == ()
     writes = [p for p in report.points if p.kind == CONTRIBUTES]
-    assert writes and writes[0].unit_str == "1/K"
+    assert writes and writes[0].unit_str == "K⁻¹"
 
 
 def test_literal_init_to_unannotated_var_makes_no_claim(tmp_path):
@@ -343,4 +343,4 @@ def test_declares_point_present_for_annotated_symbol(tmp_path):
     report = _report(tmp_path, src, "x")
     decls = [p for p in report.points if p.kind == DECLARES]
     assert len(decls) == 1
-    assert decls[0].unit_str == "m/s"
+    assert decls[0].unit_str == "m·s⁻¹"

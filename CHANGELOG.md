@@ -4,6 +4,31 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### Change: SI-style unit display + parser-safe `@unit{}` serializer
+
+- Units now render in **SI style** everywhere they are displayed — a middle
+  dot `·` between symbols and **signed-exponent superscripts** instead of a
+  `/` denominator: `1/K` → `K⁻¹`, `m/s` → `m·s⁻¹`, `kg×m/s²` → `kg·m·s⁻²`. The
+  `×` is now reserved for the numeric **scale factor** (`hPa` →
+  `100×kg·m⁻¹·s⁻²`), so the separator distinguishes a factor from another base
+  unit. Rational and symbolic exponents still fall back to `^(p/q)` /
+  `^(<linear form>)`.
+- The display is now produced by a **single** formatter shared by diagnostics,
+  hover, and the side panel (the hover path previously had its own divergent
+  renderer), so all three read identically.
+- New `format_unit_source` serializer emits the ASCII `@unit{}` DSL
+  (`kg*m/s^2`) that round-trips through the parser. The H010 *extract literal
+  to a named PARAMETER* quick-fix now inserts a **parseable** annotation for
+  compound units — previously the pretty form (`@unit{kg×m/s²}`) was not valid
+  `@unit{}` syntax. The parser and the `@unit{}` grammar are unchanged; all
+  existing annotations parse exactly as before.
+
+### Change: detailed hover shows the assignment verdict on the root row
+
+- In detailed-tree mode, the root (assignment) row now carries its
+  🟢/🟡/🔴 marker on the row itself, matching the side panel, instead of
+  only in the bold `DimFort` header. The header keeps its marker too.
+
 ### Feature: `P001` — "unparsed region" marker
 
 - A new **info-level** diagnostic that flags regions tree-sitter couldn't parse.

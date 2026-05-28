@@ -171,7 +171,7 @@ interface ScopeVar {
   // declarations. For kind "error" this is the raw (unparseable) text.
   unit: string | null;
   // The base-SI normalized form (factor AND affine offset included), e.g.
-  // "hPa" → "100×kg/(m×s²)" (hidden scale factor) and "degC" → "K + 273.15"
+  // "hPa" → "100×kg·m⁻¹·s⁻²" (hidden scale factor) and "degC" → "K + 273.15"
   // (affine zero-point), so scale factors, derived-unit expansions, and
   // offsets are all visible. Equals `unit` for base-SI annotations; null
   // when the annotation doesn't parse or is absent. Renderers show
