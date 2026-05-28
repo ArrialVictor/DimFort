@@ -97,8 +97,39 @@ interface PanelInfo {
   // renderers omit the section entirely in that case.
   diagnostics: PanelDiagnostic[];
 
+  // Symbols brought into the cursor's scope by `use` clauses — usable
+  // here but not declared in any enclosing scope, so the scopes[] tables
+  // don't cover them. Scoped like Fortran visibility: a module-level
+  // `use` shows for any cursor in the module; a routine-level `use` only
+  // in that routine. A name declared locally in an enclosing scope
+  // shadows the import and is omitted. Empty when nothing is in scope.
+  imports: ImportVar[];
+
   // Whole-file diagnostic counts, for a panel footer / mini-dashboard.
   fileDiagnosticCounts: { error: number; warning: number };
+}
+
+interface ImportVar {
+  name: string;          // the local name (after any `=>` rename)
+  unit: string | null;   // var: the source @unit{}; procedure: its return unit; else null
+  unitNormalized: string | null;  // base-SI form when it differs (as ScopeVar)
+  module: string;        // the module it was imported from (lower-cased)
+  // For a procedure: a function with a return unit (or any subroutine) is
+  // "annotated"; a function lacking a return @unit{} is "unannotated".
+  kind: "annotated" | "unannotated";
+  // True for an imported function/subroutine (renderers append the
+  // signature). For a callable, ``signature`` is the parenthesised
+  // argument units, e.g. "(kg, m)" or "()" ("?" for an un-annotated arg);
+  // absent for a variable.
+  callable: boolean;
+  signature?: string;
+  // Navigation target: the imported variable's DECLARATION in the source
+  // module (cross-file), resolved via the workspace module exports + trees.
+  // Falls back to the `use` clause's own line in this file when the source
+  // declaration can't be located; `file` is then absent (same file).
+  file?: string;
+  line: number;
+  column: number;
 }
 
 interface PanelDiagnostic {
