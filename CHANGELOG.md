@@ -4,22 +4,32 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
-### Change: dimensional-signature call hovers + pure-signature collapse
+### Change: call hover unified with the side panel's Expression tree
 
-- Function / subroutine **call hovers** are redesigned around a
-  dimensional-signature header: `name: (u1, u2, …) → ret` (subroutines
-  drop the `→ ret` tail). Underneath, one row per **actual argument**
-  labelled by the source expression as written (formal param names are
-  no longer shown — they're callee-internal and don't help the
-  reader). On a dimensional mismatch the row gains `(expected
-  <formal>)`. Detailed mode keeps the per-argument AST sub-tree but
-  indents it under its argument row so ownership is unambiguous.
-- The **pure-signature hover** (cursor on a function/subroutine
-  *definition* header — no call site) collapses to just the header
-  line. Unannotated formal slots and unannotated returns render as
-  `?`, and the header marker flips to 🟡 so gaps still flag
-  positionally. The "which params are unannotated, by name" view
-  remains on the module hover.
+- The **call hover** (function or subroutine, on the callee
+  identifier) now renders through the same tree renderer as the side
+  panel's Expression section. Root row reads `name(args) : ret` —
+  full call as written, with the return unit attached and the overall
+  verdict marker. Child rows are one per actual argument labelled by
+  source text, with `(expected <formal>)` on a dimensional mismatch.
+  Subroutines have no return unit so the root shows `?` and paints
+  🟡 from the resolution axis (no consistency disagreement to report).
+  Short mode renders root + children only; Detailed expands the
+  per-argument sub-tree.
+- The earlier intermediate `name: (u1, u2, …) → ret` header line on
+  call sites is gone — it lives on now in the **pure-signature
+  hover** (cursor on a function/subroutine *definition* header — no
+  call site), which still collapses to that one-line signature with
+  `?` slots flagging unannotated formals/return.
+- **🟡-on-`expected` override.** On a call-arg mismatch the
+  argument row paints 🟡 + `(expected <formal>)`, not 🟢. Rationale:
+  the expression resolved cleanly here, but the caller disagrees with
+  the formal it's flowing into — flagging silently with 🟢 would
+  contradict the 🔴 painted on the enclosing call by H004. The
+  override is bounded to "would otherwise paint 🟢 AND carries
+  `expected`" so it never overrides a diagnostic-owned 🔴 or a 🟡 from
+  resolution. Applies symmetrically in the trace hover and the panel
+  payload — see [docs/design/markers.md](docs/design/markers.md) §4.4.
 - The old "Signature ◂ Call" two-column pairing layout and the typed-
   language-style `name(arg: unit, …) : ret` signature line are gone.
 

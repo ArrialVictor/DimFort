@@ -203,6 +203,10 @@ def test_call_arg_mismatch_carries_expected_unit(tmp_path: Path):
     assert len(payload["children"]) == 1
     child = payload["children"][0]
     assert child["expected"] == "kg·m⁻¹·s⁻²"
+    # 🟡-on-expected marker override: the child resolved cleanly (no
+    # diagnostic owns it) but its caller disagrees with the formal, so
+    # the panel marker demotes from ``ok`` to ``warn``.
+    assert child["marker"] == "warn"
     # The call's own node has no `expected` (it's not itself an arg).
     assert payload["expected"] is None
 

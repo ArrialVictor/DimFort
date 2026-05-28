@@ -226,6 +226,18 @@ def _build_expression_tree(
     self_token = _marker_token(_self_marker(node, kids, ctx, source))
     payload["marker"] = _worst_token(self_token, *(c["marker"] for c in child_nodes))
 
+    # Call-arg-formal disagreement override: when this row carries an
+    # ``expected`` annotation (its actual unit dimensionally differs from
+    # the call's formal) AND no diagnostic painted it worse, demote the
+    # marker from ``ok`` to ``warn``. The expression itself resolved
+    # cleanly here, but its caller disagrees with the formal it's
+    # flowing into — worth flagging without painting a hard ``error``
+    # (which is reserved for diagnostic-owned mismatches; the enclosing
+    # call carries H004's ``error`` already). Mirrors the hover-side
+    # override in :func:`_render_ast_tree`.
+    if expected_render and payload["marker"] == "ok":
+        payload["marker"] = "warn"
+
     return payload
 
 

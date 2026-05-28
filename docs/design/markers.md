@@ -234,6 +234,22 @@ surface folds into the model then.
    the refactor is provably behaviour-preserving.
 3. **Severity → glyph.** Only error/warning escalate. INFO (e.g. a future
    autocast-info, U020 `@unit_assume`) stays 🟢 so the panel isn't noisy.
+4. **🟡-on-`expected` override (call-arg rows).** A call-argument node
+   whose actual unit dimensionally differs from the callee's formal
+   carries an `expected` annotation in both the trace hover and the
+   panel payload. When that row would otherwise paint 🟢 — its own
+   expression resolved cleanly and no diagnostic owns it — the marker
+   demotes to 🟡. Rationale: the expression *is* clean here, but its
+   consumer (the call signature) disagrees; flagging silently with
+   `(expected …)` plus an unchanged 🟢 reads as "all fine here", which
+   contradicts the `🔴` painted on the enclosing call by H004. The
+   demotion is bounded — it only acts on rows that already paint 🟢
+   AND carry an `expected` annotation — so it never overrides a
+   diagnostic-owned 🔴 or a 🟡 from resolution. The hover-side rule
+   lives in `_render_ast_tree` (`if extra_str and mark == "🟢": mark = "🟡"`);
+   the panel-side rule lives in `_build_expression_tree` (`if expected
+   and marker == "ok": marker = "warn"`). Both sites pull from the
+   same call-signature lookup, so they can't disagree.
 
 ## 5. Reconciliation with the existing docs
 
