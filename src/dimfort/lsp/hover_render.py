@@ -52,15 +52,20 @@ def _hover_text(
 
 
 def _sig_render_md(name: str, sig: FuncSig) -> str:
-    """Markdown rendering of a call signature."""
-    args = ", ".join(
-        f"{arg_name}: {_unit_pretty(arg_unit) if arg_unit is not None else '?'}"
-        for arg_name, arg_unit in zip(sig.arg_names, sig.arg_units, strict=False)
+    """Markdown rendering of a dimensional signature.
+
+    Format: ``name: (u1, u2, …) → ret`` (functions) or ``name: (u1, u2, …)``
+    (subroutines). Unannotated formal slots render as ``?``. Param names
+    are intentionally omitted — physicists reading a call site want the
+    dimensional interface, not the callee-internal naming.
+    """
+    arg_units = ", ".join(
+        _unit_pretty(u) if u is not None else "?" for u in sig.arg_units
     )
     if sig.is_subroutine:
-        return f"`{name}({args})`"
+        return f"`{name}: ({arg_units})`"
     ret = _unit_pretty(sig.return_unit) if sig.return_unit is not None else "?"
-    return f"`{name}({args})` : {ret}"
+    return f"`{name}: ({arg_units}) → {ret}`"
 
 
 def _hover_signature(name: str, sig: FuncSig) -> str:

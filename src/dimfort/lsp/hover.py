@@ -196,11 +196,11 @@ def _resolve_hover(
                         ts_checker.collect_type_field_types(tree, source)
                     )
                     if level == "detailed":
-                        text = _render_call_pairing_c(
+                        text = _render_call_detailed(
                             callee_nm, call_hit, sig, rctx, source,
                         )
                     else:
-                        text = _render_call_pairing_a(
+                        text = _render_call_short(
                             callee_nm, call_hit, sig, rctx, source,
                         )
                     if text is None:
@@ -704,127 +704,58 @@ def _call_actual_args(call_node: Node) -> list[Node]:
     return out
 
 
-def _render_call_pairing_a(
-    callee_name: str, call_node: Node, sig: FuncSig, rctx: ts_checker.Ctx, source: bytes,
-) -> str | None:
-    """Layout B: one row per argument, vertical pairing.
+def _format_sig_header(callee_name: str, sig: FuncSig) -> str:
+    """Build the dimensional-signature header line for a call hover.
 
-    Each row shows ``marker  formal_name : formal_unit  ←  actual_text : actual_unit``.
-    Per-arg marker: ✓ match, ✗ mismatch, ? unknown (either side missing).
-    Header marker aggregates: 🟢 all match, 🟡 any unknown, 🔴 any mismatch.
+    ``name: (u1, u2, …) → ret`` for functions; subroutines drop the
+    ``→ ret`` tail. Unannotated slots render as ``?``. No trailing
+    verdict circle — the per-arg circle column carries that.
     """
     from dimfort.core.units import format_unit
-    actuals = _call_actual_args(call_node)
-    formal_names = list(sig.arg_names)
-    formal_units = list(sig.arg_units)
-    n = max(len(formal_names), len(actuals))
-    if n == 0:
-        return None
-    rows: list[tuple[str, str, str, str]] = []  # (mark, formal_lhs, formal_unit, actual)
-    any_unknown = False
-    any_mismatch = False
-    for i in range(n):
-        if i < len(formal_names):
-            fname = formal_names[i]
-            funit = formal_units[i]
-            funit_s = format_unit(funit) if funit is not None else "?"
-        else:
-            fname, funit, funit_s = "—", None, "—"
-        if i < len(actuals):
-            an = actuals[i]
-            atext = _node_label(an, source)
-            aunit = ts_checker.resolve_unit(an, rctx, source)
-            aunit_s = format_unit(aunit) if aunit is not None else "?"
-            actual = f"{atext} : {aunit_s}"
-        else:
-            an, aunit, actual = None, None, "—"
-        # Per-arg marker is intentionally NOT diagnostic-driven (cf.
-        # docs/design/markers.md): H004 is emitted on the *whole call*, not
-        # per argument, and the checker emits no scale/offset diagnostic at
-        # call-arg sites — so there is no per-arg diagnostic to read. A local
-        # dimension comparison (matching exactly what H004 checks,
-        # ``equal_dim``) is the right tool here; using ``compare()`` would
-        # paint scale/offset mismatches with no backing squiggle (the orphan-
-        # marker anti-pattern). So this surface stays a local per-arg check.
-        if funit is None or aunit is None:
-            mark = "🟡"
-            any_unknown = True
-        elif _checker_equal(funit, aunit):
-            mark = "🟢"
-        else:
-            mark = "🔴"
-            any_mismatch = True
-        rows.append((mark, fname, funit_s, actual))
-    fname_w = max(len(r[1]) for r in rows)
-    funit_w = max(len(r[2]) for r in rows)
-    if sig.is_subroutine:
-        header = f"{callee_name}:"
-    else:
-        ret_s = format_unit(sig.return_unit) if sig.return_unit is not None else "?"
-        header = f"{callee_name}: {ret_s}"
-    # Column labels — Unicode mathematical-italic glyphs render italic
-    # inside the monospace fence. Each glyph is one codepoint, so
-    # ``str.ljust`` width math stays correct.
-    sig_label = "Signature"
-    call_label = "Call"
-    sig_cell_w = max(fname_w + 3 + funit_w, len(sig_label))  # "name : unit"
-    col_header = (
-        "     "
-        + sig_label.ljust(sig_cell_w)
-        + "    "
-        + call_label
+    arg_units_s = ", ".join(
+        format_unit(u) if u is not None else "?" for u in sig.arg_units
     )
-    lines: list[str] = [header, col_header]
-    for mark, fname, funit_s, actual in rows:
-        lines.append(
-            f"  {mark}  {fname.ljust(fname_w)} : {funit_s.ljust(funit_w)}  ◂  {actual}"
-        )
-    body = "\n".join(lines)
-    if any_mismatch:
-        marker = "🔴"
-    elif any_unknown:
-        marker = "🟡"
-    else:
-        marker = "🟢"
-    return f"**{marker} DimFort**\n\n```\n{body}\n```"
+    if sig.is_subroutine:
+        return f"{callee_name}: ({arg_units_s})"
+    ret_s = format_unit(sig.return_unit) if sig.return_unit is not None else "?"
+    return f"{callee_name}: ({arg_units_s}) → {ret_s}"
 
 
-def _render_call_pairing_c(
-    callee_name: str, call_node: Node, sig: FuncSig, rctx: ts_checker.Ctx, source: bytes,
-) -> str | None:
-    """Layout C: B's row layout, plus sub-trees expanded under any
-    computed argument so the reader can see how each non-trivial actual
-    unit was derived.
+@dataclass
+class _CallRow:
+    """One actual-argument row in the call hover."""
+    mark: str
+    actual_text: str
+    actual_unit_s: str
+    expected: str  # empty, or "(expected <formal_unit>)"
+    sub_lines: list[str]  # detailed-mode tree under a computed arg; [] otherwise
+
+
+def _build_call_rows(
+    call_node: Node, sig: FuncSig, rctx: ts_checker.Ctx, source: bytes,
+    *, detailed: bool,
+) -> tuple[list[_CallRow], bool, bool] | None:
+    """Resolve each actual argument and pair it against the formal unit.
+
+    Returns ``(rows, any_unknown, any_mismatch)`` or ``None`` if the call
+    has no actuals and no formals (nothing to render). Per-arg marker is a
+    local dimension comparison (``equal_dim``), matching what H004 checks
+    on the call as a whole; using :func:`ts_checker.compare` would paint
+    scale/offset mismatches with no backing squiggle (orphan-marker
+    anti-pattern — see docs/design/markers.md).
     """
     from dimfort.core.units import format_unit
     actuals = _call_actual_args(call_node)
-    formal_names = list(sig.arg_names)
     formal_units = list(sig.arg_units)
-    n = max(len(formal_names), len(actuals))
+    n = max(len(formal_units), len(actuals))
     if n == 0:
         return None
-
-    # Pre-compute the row triples so we can width-align before emitting,
-    # then attach per-arg sub-trees underneath.
-    @dataclass
-    class _Row:
-        mark: str
-        fname: str
-        funit_s: str
-        actual_text: str
-        actual_unit_s: str
-        sub_lines: list[str]  # indented sub-tree lines (already prefixed)
-
-    rows: list[_Row] = []
+    rows: list[_CallRow] = []
     any_unknown = False
     any_mismatch = False
     for i in range(n):
-        if i < len(formal_names):
-            fname = formal_names[i]
-            funit = formal_units[i]
-            funit_s = format_unit(funit) if funit is not None else "?"
-        else:
-            fname, funit, funit_s = "—", None, "—"
+        funit = formal_units[i] if i < len(formal_units) else None
+        funit_s = format_unit(funit) if funit is not None else "?"
         if i < len(actuals):
             an = actuals[i]
             atext = _node_label(an, source)
@@ -835,22 +766,29 @@ def _render_call_pairing_c(
         if funit is None or aunit is None:
             mark = "🟡"
             any_unknown = True
+            expected = ""
         elif _checker_equal(funit, aunit):
             mark = "🟢"
+            expected = ""
         else:
             mark = "🔴"
             any_mismatch = True
+            expected = f"(expected {funit_s})"
         sub_lines: list[str] = []
-        # Expand sub-tree for computed args only — a bare identifier or
-        # literal would just repeat what the actual cell already says.
-        if an is not None and an.type not in ("identifier", "number_literal"):
+        # Detailed mode: drop a sub-tree under any *computed* actual —
+        # bare identifiers / number literals would just restate the row.
+        if (
+            detailed
+            and an is not None
+            and an.type not in ("identifier", "number_literal")
+        ):
             sub_rows: list[_TreeRow] = []
             _render_ast_tree(
                 an, rctx, source,
                 prefix="", is_last=True, is_root=True, rows=sub_rows,
             )
-            # Drop the root row (== the actual cell we already render);
-            # keep only the descendants.
+            # Drop the root row (it's the actual we already render); keep
+            # its descendants. Re-indent so the tree slots under the row.
             if len(sub_rows) > 1:
                 max_l = max(len(r[0]) for r in sub_rows[1:])
                 max_u = max(len(r[1] or "") for r in sub_rows[1:])
@@ -858,36 +796,39 @@ def _render_call_pairing_c(
                     us = (unit or "").ljust(max_u)
                     if rule:
                         sub_lines.append(
-                            f"      {label.ljust(max_l)}  :  {us}  {mk}  {rule}"
+                            f"    {label.ljust(max_l)}  :  {us}  {mk}  {rule}"
                         )
                     else:
                         sub_lines.append(
-                            f"      {label.ljust(max_l)}  :  {us}  {mk}".rstrip()
+                            f"    {label.ljust(max_l)}  :  {us}  {mk}".rstrip()
                         )
-        rows.append(_Row(mark, fname, funit_s, atext, aunit_s, sub_lines))
+        rows.append(_CallRow(mark, atext, aunit_s, expected, sub_lines))
+    return rows, any_unknown, any_mismatch
 
-    fname_w = max(len(r.fname) for r in rows)
-    funit_w = max(len(r.funit_s) for r in rows)
-    if sig.is_subroutine:
-        header = f"{callee_name}:"
-    else:
-        ret_s = format_unit(sig.return_unit) if sig.return_unit is not None else "?"
-        header = f"{callee_name}: {ret_s}"
-    sig_label = "Signature"
-    call_label = "Call"
-    sig_cell_w = max(fname_w + 3 + funit_w, len(sig_label))
-    col_header = (
-        "     "
-        + sig_label.ljust(sig_cell_w)
-        + "    "
-        + call_label
-    )
-    lines: list[str] = [header, col_header]
+
+def _render_call_rows(
+    callee_name: str, sig: FuncSig, rows: list[_CallRow],
+    *, any_unknown: bool, any_mismatch: bool,
+) -> str:
+    """Assemble the call hover markdown from prebuilt rows.
+
+    Header line is the dimensional signature; one row per actual
+    argument labelled by the source expression, then resolved unit,
+    then 🟢 / 🟡 / 🔴 (and ``(expected …)`` on mismatch). Tree rows for
+    computed args are emitted directly below their argument row.
+    """
+    header = _format_sig_header(callee_name, sig)
+    text_w = max(len(r.actual_text) for r in rows)
+    unit_w = max(len(r.actual_unit_s) for r in rows)
+    lines: list[str] = [header]
     for r in rows:
-        lines.append(
-            f"  {r.mark}  {r.fname.ljust(fname_w)} : {r.funit_s.ljust(funit_w)}  ◂  "
-            f"{r.actual_text} : {r.actual_unit_s}"
+        line = (
+            f"  {r.actual_text.ljust(text_w)} : {r.actual_unit_s.ljust(unit_w)}"
+            f"  {r.mark}"
         )
+        if r.expected:
+            line += f"  {r.expected}"
+        lines.append(line)
         lines.extend(r.sub_lines)
     body = "\n".join(lines)
     if any_mismatch:
@@ -897,6 +838,36 @@ def _render_call_pairing_c(
     else:
         marker = "🟢"
     return f"**{marker} DimFort**\n\n```\n{body}\n```"
+
+
+def _render_call_short(
+    callee_name: str, call_node: Node, sig: FuncSig, rctx: ts_checker.Ctx, source: bytes,
+) -> str | None:
+    """Short call hover: signature header + one row per actual argument."""
+    built = _build_call_rows(call_node, sig, rctx, source, detailed=False)
+    if built is None:
+        return None
+    rows, any_unknown, any_mismatch = built
+    return _render_call_rows(
+        callee_name, sig, rows,
+        any_unknown=any_unknown, any_mismatch=any_mismatch,
+    )
+
+
+def _render_call_detailed(
+    callee_name: str, call_node: Node, sig: FuncSig, rctx: ts_checker.Ctx, source: bytes,
+) -> str | None:
+    """Detailed call hover: short layout + sub-tree under each *computed*
+    actual so the reader can see how its unit was derived.
+    """
+    built = _build_call_rows(call_node, sig, rctx, source, detailed=True)
+    if built is None:
+        return None
+    rows, any_unknown, any_mismatch = built
+    return _render_call_rows(
+        callee_name, sig, rows,
+        any_unknown=any_unknown, any_mismatch=any_mismatch,
+    )
 
 
 def _checker_equal(a: UnitExpr, b: UnitExpr) -> bool:
