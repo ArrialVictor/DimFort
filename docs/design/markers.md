@@ -250,6 +250,23 @@ surface folds into the model then.
    the panel-side rule lives in `_build_expression_tree` (`if expected
    and marker == "ok": marker = "warn"`). Both sites pull from the
    same call-signature lookup, so they can't disagree.
+5. **Three glyphs for "no unit" — one meaning each.**
+   - `?` — **unknown unit**. Reserved for nodes that *could* have a
+     unit but don't yet: unannotated identifier, unsupported intrinsic
+     return, partial resolution. Paints 🟡 on the resolution axis.
+   - `-` — **no unit by structure**. Reserved for nodes that have no
+     unit by design: assignment statements, relational expressions,
+     subroutine calls (no return value). The
+     `_NO_UNIT_NODE_TYPES` set in `expr_tree.py` is authoritative.
+     Resolution-axis base is 🟢 (a clean assignment / subroutine call
+     is not "unresolved"); markers come from the diagnostic axis +
+     children. Surfaced identically by hover (`_render_ast_tree`) and
+     panel (`_build_expression_tree`).
+   - `(none)` — **empty section / sub-section header** only (e.g.
+     `Scope: (none)`, `Imports: (none)`, "no declarations" body).
+     Never used inside a tree row or for an individual variable; for
+     unannotated declarations in scope/import sections, companions
+     render `?`.
 
 ## 5. Reconciliation with the existing docs
 

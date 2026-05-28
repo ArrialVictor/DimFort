@@ -356,10 +356,15 @@ def test_call_hover_short_renders_root_and_arg_rows(tmp_path: Path):
         assert "Signature" not in text
         assert "◂" not in text
         assert "foo: (" not in text
-        # Subroutine calls have no return unit, so the root row's unit
-        # is `?` and the resolution-axis marker is 🟡 — matching the
-        # side panel's behavior for subroutine calls.
-        assert "🟡 DimFort" in text
+        # Subroutine calls have no return unit by structure, so the
+        # root row's unit column renders `-` (the structural-no-unit
+        # glyph) — distinct from `?` which is reserved for *unknown*
+        # units. All args matching → header 🟢. Subroutine_call is in
+        # _NO_UNIT_NODE_TYPES, so its resolution-axis base is 🟢 (a
+        # clean subroutine is not "unresolved").
+        assert "🟢 DimFort" in text
+        assert " : -" in text or "  -  " in text  # the structural-no-unit glyph
+        assert " : ?" not in text  # never `?` for subroutine roots
     finally:
         _server._features.hover = "short"
 
