@@ -847,3 +847,147 @@ def test_recover_scopes_nested_module_excludes_routine_locals(tmp_path: Path):
     }
     assert mod_vars == {"g"}            # routine locals excluded
     assert sub_vars == {"h", "tt"}
+
+
+def _imports_scene(tmp_path: Path) -> Path:
+    """Two modules in one file: `solver` `use`s `phys_constants` with an
+    only-list; `viewer` whole-module-imports it."""
+    src = tmp_path / "imp.f90"
+    src.write_text(
+        "module phys_constants\n"               # 1
+        "  real :: play   !< @unit{Pa}\n"        # 2
+        "  real :: grav   !< @unit{m/s^2}\n"     # 3
+        "end module phys_constants\n"            # 4
+        "\n"                                      # 5
+        "module solver\n"                        # 6
+        "  use phys_constants, only: play\n"     # 7
+        "  real :: play_local  !< @unit{Pa}\n"   # 8
+        "contains\n"                              # 9
+        "  subroutine step()\n"                  # 10
+        "    play_local = play\n"                # 11
+        "  end subroutine step\n"                # 12
+        "end module solver\n"                    # 13
+        "\n"                                      # 14
+        "module viewer\n"                        # 15
+        "  use phys_constants\n"                 # 16
+        "contains\n"                              # 17
+        "  subroutine show()\n"                  # 18
+        "    grav = 9.8\n"                        # 19
+        "  end subroutine show\n"                # 20
+        "end module viewer\n"                    # 21
+    )
+    return src
+
+
+def test_imports_only_list(tmp_path: Path):
+    """An `only:` import lists exactly the named symbols, with their unit
+    and a cross-file nav location at the source declaration."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.imports import build_imports
+
+    src = _imports_scene(tmp_path)
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+
+    # Cursor in solver.step() (line 11). play_local is a local decl (shadow set).
+    rows = build_imports(tree, source, 11, result, frozenset({"play_local"}))
+    by_name = {r["name"]: r for r in rows}
+    assert set(by_name) == {"play"}              # only-list = just play
+    assert by_name["play"]["unit"] == "kg/(m×s²)"
+    assert by_name["play"]["module"] == "phys_constants"
+    assert by_name["play"]["kind"] == "annotated"
+    assert by_name["play"]["line"] == 2          # source declaration line
+
+
+def test_imports_whole_module(tmp_path: Path):
+    """A whole-module `use` lists every exported variable."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.imports import build_imports
+
+    src = _imports_scene(tmp_path)
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+
+    # Cursor in viewer.show() (line 19) — `use phys_constants` (no only-list).
+    rows = build_imports(tree, source, 19, result, frozenset())
+    assert {r["name"] for r in rows} == {"play", "grav"}
+
+
+def test_imports_excludes_sibling_routine_and_shadow(tmp_path: Path):
+    """A name declared locally in the cursor's scope shadows the import
+    (excluded); a sibling module's import does not leak."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.imports import build_imports
+
+    src = _imports_scene(tmp_path)
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+
+    # Shadow: if `play` were locally declared in scope, it must not appear.
+    rows = build_imports(tree, source, 11, result, frozenset({"play", "play_local"}))
+    assert {r["name"] for r in rows} == set()
+
+    # Sibling scope: in solver.step(), viewer's whole-module import of grav
+    # must not leak (solver only-imports play).
+    rows = build_imports(tree, source, 11, result, frozenset({"play_local"}))
+    assert "grav" not in {r["name"] for r in rows}
+
+
+def test_imports_include_procedures(tmp_path: Path):
+    """A `use` brings in the module's procedures too: a function shows its
+    return unit, a subroutine shows none, both flagged callable with nav to
+    the definition."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.imports import build_imports
+
+    src = tmp_path / "proc.f90"
+    src.write_text(
+        "module phys\n"                              # 1
+        "  real :: grav   !< @unit{m/s^2}\n"         # 2
+        "contains\n"                                  # 3
+        "  function pressure(h) result(p)\n"         # 4
+        "    real, intent(in) :: h   !< @unit{m}\n"  # 5
+        "    real             :: p   !< @unit{Pa}\n" # 6
+        "    p = grav * h\n"                          # 7
+        "  end function pressure\n"                  # 8
+        "  subroutine reset()\n"                     # 9
+        "  end subroutine reset\n"                   # 10
+        "end module phys\n"                          # 11
+        "\n"                                          # 12
+        "module app\n"                               # 13
+        "  use phys\n"                               # 14
+        "contains\n"                                  # 15
+        "  subroutine run()\n"                       # 16
+        "    real :: x  !< @unit{Pa}\n"              # 17
+        "    x = pressure(1.0)\n"                    # 18
+        "  end subroutine run\n"                     # 19
+        "end module app\n"                           # 20
+    )
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+
+    rows = build_imports(tree, source, 18, result, frozenset({"x"}))
+    by_name = {r["name"]: r for r in rows}
+    assert set(by_name) == {"grav", "pressure", "reset"}
+    # Variable.
+    assert by_name["grav"]["callable"] is False
+    assert by_name["grav"]["unit"] == "m/s²"
+    # Function — return unit + callable + nav to its definition (line 4).
+    assert by_name["pressure"]["callable"] is True
+    assert by_name["pressure"]["unit"] == "kg/(m×s²)"
+    assert by_name["pressure"]["line"] == 4
+    assert by_name["pressure"]["signature"] == "(m)"   # arg unit
+    # Subroutine — callable, no unit, not flagged as a missing annotation.
+    assert by_name["reset"]["callable"] is True
+    assert by_name["reset"]["unit"] is None
+    assert by_name["reset"]["kind"] == "annotated"
+    assert by_name["reset"]["line"] == 9
+    assert by_name["reset"]["signature"] == "()"

@@ -24,6 +24,7 @@ from dimfort.lsp.expr_tree import (
     build_scope_vars_by_span,
     recover_scopes,
 )
+from dimfort.lsp.imports import build_imports
 from dimfort.lsp.state import state
 from dimfort.lsp.tree_access import _build_ts_ctx, _trees_for, _uri_to_path
 from dimfort.lsp.tree_nav import (
@@ -185,9 +186,21 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
         "warning": sum(1 for d in file_diags if d.severity == Severity.WARNING),
     }
 
+    # Imported symbols visible at the cursor (``use`` clauses): names that
+    # are usable here but not declared in an enclosing scope, so the scope
+    # tables don't cover them. A local declaration *in the cursor's
+    # enclosing scopes* shadows an import (it's already shown under Scope),
+    # so exclude those — but not same-named declarations in sibling scopes
+    # / other modules in the file, which don't shadow here.
+    local_names_lc = frozenset(
+        v["name"].lower() for sc in scopes for v in sc["vars"]
+    )
+    imports = build_imports(tree, source_bytes, line_1based, result, local_names_lc)
+
     return {
         "expression": expression,
         "scopes": scopes,
+        "imports": imports,
         "scope": innermost_header,
         "scopeVars": innermost_vars,
         "routine": innermost_header,
