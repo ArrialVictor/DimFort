@@ -32,9 +32,8 @@ force = mass * velocity            ! diagnosed: force unit is kg, expected kg*m/
 > aware LSP server with live-edit diagnostics, per-surface hover
 > (call / subroutine / expression, each Short or Detailed with a
 > formal-vs-actual pairing or full unit-algebra trace), inlay
-> hints, go-to-definition, code lens,
-> code actions, completion, and a CLI that accepts files or
-> directories.
+> hints, go-to-definition, code actions, completion, and a CLI that
+> accepts files or directories.
 
 ## Install
 
@@ -165,8 +164,8 @@ one-line summary, `Detailed` for the full unit-algebra tree with
 per-row 🟢/🟡/🔴 markers).
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/hover-expression-detailed-violation_dark.png">
-  <img width="640" src="docs/img/hover-expression-detailed-violation_light.png" alt="Detailed expression hover showing a homogeneity violation propagating up the unit-algebra tree">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ArrialVictor/DimFort/main/docs/img/hover-expression-detailed-violation_dark.png">
+  <img width="640" src="https://raw.githubusercontent.com/ArrialVictor/DimFort/main/docs/img/hover-expression-detailed-violation_light.png" alt="Detailed expression hover showing a homogeneity violation propagating up the unit-algebra tree">
 </picture>
 
 See [docs/hover-ui.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/hover-ui.md)
