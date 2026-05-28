@@ -2,6 +2,43 @@
 
 All notable changes to DimFort are documented here. Format inspired by [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Change: dimensional-signature call hovers + pure-signature collapse
+
+- Function / subroutine **call hovers** are redesigned around a
+  dimensional-signature header: `name: (u1, u2, …) → ret` (subroutines
+  drop the `→ ret` tail). Underneath, one row per **actual argument**
+  labelled by the source expression as written (formal param names are
+  no longer shown — they're callee-internal and don't help the
+  reader). On a dimensional mismatch the row gains `(expected
+  <formal>)`. Detailed mode keeps the per-argument AST sub-tree but
+  indents it under its argument row so ownership is unambiguous.
+- The **pure-signature hover** (cursor on a function/subroutine
+  *definition* header — no call site) collapses to just the header
+  line. Unannotated formal slots and unannotated returns render as
+  `?`, and the header marker flips to 🟡 so gaps still flag
+  positionally. The "which params are unannotated, by name" view
+  remains on the module hover.
+- The old "Signature ◂ Call" two-column pairing layout and the typed-
+  language-style `name(arg: unit, …) : ret` signature line are gone.
+
+### Change: rule IDs dropped from expression tree; `(expected …)` surfaces on call-arg rows
+
+- The shared expression-tree renderer (powering both the in-buffer
+  trace hover and the side panel's Expression section) used to append
+  the unit-algebra rule ID (e.g. `(R4.1)`, `(R5.6)`) to every row.
+  Removed — debug noise for the target audience; the information is
+  reachable from logs and pytest when needed for checker triage.
+- Replaced with the more useful `(expected <formal>)` annotation on
+  call-argument rows whose actual unit dimensionally differs from the
+  callee's formal. Closes the prior information gap between the call
+  hover (which now surfaces the expected unit) and the panel tree
+  (which only marked the row 🔴 with no context).
+- Wire-format: `ExpressionNode.ruleId` → `ExpressionNode.expected`
+  (see [docs/design/panel-info.md](docs/design/panel-info.md)). All
+  three companions consume the new field.
+
 ## [0.2.0] — 2026-05-27
 
 First **beta**. Usable, tested, and proven against a real-world climate

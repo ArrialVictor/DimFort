@@ -14,7 +14,9 @@ units live in [unit-algebra.md](unit-algebra.md).
 | Glyph | Meaning |
 |---|---|
 | `:` | separates an expression (name / source text) from its unit |
-| `◂` | separates a target slot (formal param / assignment LHS) from a value flowing into it (actual arg / RHS) — points from value to target |
+| `→` | in a call signature header, separates the formal argument tuple from the function's return unit (e.g. `(kg·m⁻³, m·s⁻¹) → kg·m⁻¹·s⁻²`) |
+| `◂` | in assignment / relational hovers, separates a target slot (LHS) from the value flowing into it (RHS) — points from value to target |
+| `(expected …)` | trailing annotation on a call-argument row whose actual unit differs from the formal — names the expected unit |
 | `🟢` | known and consistent |
 | `🟡` | known partially / contains an unannotated leaf |
 | `🔴` | known but inconsistent (unit mismatch) |
@@ -77,7 +79,7 @@ When multiple surfaces would fire at the same cursor position, the
 
 ## Layout: function call
 
-### Short (`functionCalls = "Short"`)
+### Short
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="img/hover-call-short_dark.png">
@@ -85,68 +87,88 @@ When multiple surfaces would fire at the same cursor position, the
 </picture>
 
 ```
-log : ?
-
-     Signature      Call
-  🟢  x : Pa    ◂  p1 : Pa
+dynamic_pressure: (kg·m⁻³, m·s⁻¹) → kg·m⁻¹·s⁻²
+  rho         : kg·m⁻³      🟢
+  c_sound * t : m           🔴  (expected m·s⁻¹)
 ```
 
-Header `log : <ret>` shows the function name and the formal return unit.
-The return is checked at the *enclosing expression* (the slot the call
-result flows into), not here — this layout reports what the callable
-promises.
+Header is the **dimensional signature**: `name: (u1, u2, …) → ret`.
+Each formal slot renders its unit (or `?` if unannotated); the return
+follows `→`. The return is checked at the *enclosing expression* (the
+slot the call result flows into), not here — this layout reports
+what the callable promises.
 
-Each row: 🟢/🟡/🔴 marker, formal name and unit, `◂`, actual expression
-text and resolved unit. Header marker aggregates: 🔴 if any row is 🔴;
-else 🟡 if any row is 🟡; else 🟢.
+One row per **actual argument**, labelled by the source expression as
+written (no formal param names — the caller doesn't see them). Each
+row shows the resolved unit and a 🟢/🟡/🔴 marker; on a dimensional
+mismatch the row appends `(expected <formal>)`. Header marker
+aggregates: 🔴 if any row is 🔴; else 🟡 if any row is 🟡; else 🟢. The
+header itself carries no per-line circle — the per-row column makes
+that information redundant.
 
 
-### Detailed (`functionCalls = "Detailed"`)
+### Detailed
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="img/hover-call-detailed_dark.png">
   <img width="640" src="img/hover-call-detailed_light.png" alt="Detailed call hover with sub-trees">
 </picture>
 
-Same as Short, plus a sub-tree under any non-trivial actual argument
+Same as Short, plus a sub-tree under any **computed** actual argument
 showing how its unit was derived. Bare identifiers and literals do not
 expand (the row already shows everything). Sub-tree rows carry their
 own 🟢/🟡/🔴 marker, right-aligned after the resolved unit.
 
 ```
-foo : Pa
-
-     Signature      Call
-  🟢  a : Pa    ◂  p1 : Pa
-  🟢  b : Pa    ◂  p2 + p1 : Pa
-      ├── p2  :  Pa   🟢
-      └── p1  :  Pa   🟢
+dynamic_pressure: (kg·m⁻³, m·s⁻¹) → kg·m⁻¹·s⁻²
+  rho         : kg·m⁻³  🟢
+  c_sound * t : m       🔴  (expected m·s⁻¹)
+    ├── c_sound : m·s⁻¹  🟢
+    └── t       : s      🟢
 ```
 
 
 ## Layout: subroutine call
 
-Identical to function call, with two differences:
+Identical to function call, with one difference:
 
-- Header is `name:` with no return unit (subroutines have none).
-- The aggregate marker reflects only the arg pairing.
+- Header drops the `→ ret` tail (subroutines have no return unit).
 
 ### Short
 
 ```
-update_winds:
-
-     Signature      Call
-  🟢  klon : 1   ◂  klon : 1
-  🟢  klev : 1   ◂  klev : 1
-  🟡  t    : K   ◂  t_local : ?
-  🟡  u    : m/s ◂  u_local : ?
-  🟢  d_t  : K   ◂  dt_out  : K
+update_winds: (1, 1, K, m·s⁻¹, K)
+  klon    : 1       🟢
+  klev    : 1       🟢
+  t_local : ?       🟡
+  u_local : ?       🟡
+  dt_out  : K       🟢
 ```
 
 ### Detailed
 
 As above, with sub-trees under any computed actual.
+
+
+## Layout: pure signature
+
+Cursor on a **function / subroutine definition header** (not a call site)
+collapses to just the dimensional-signature line — no per-row table.
+Unannotated formal or return slots render as `?`, and the header
+marker flips to 🟡 so the line still flags gaps positionally.
+
+```
+**🟡 DimFort**
+
+`dynamic_pressure: (kg·m⁻³, ?) → kg·m⁻¹·s⁻²`
+```
+
+Rationale: with no call there's no actual argument to compare against,
+so a row would only restate the header's units plus a formal param
+name — and param names are low-value (physicists' naming conventions
+don't reliably say what an arg means). The header alone carries the
+full dimensional interface; the "which params lack annotations, by
+name" view lives on the module hover.
 
 
 ## Layout: expression
@@ -296,10 +318,10 @@ a right-aligned column so the reader can scan vertically for trouble:
 
 x = log(p1) + log(p2)
 ├── x                  :  LOG(Pa²)   🟢
-└── log(p1) + log(p2)  :  LOG(Pa²)   🟢   (R4.1)
-    ├── log(p1)        :  LOG(Pa)    🟢   (R5.1)
+└── log(p1) + log(p2)  :  LOG(Pa²)   🟢
+    ├── log(p1)        :  LOG(Pa)    🟢
     │   └── p1         :  Pa         🟢
-    └── log(p2)        :  LOG(Pa)    🟢   (R5.1)
+    └── log(p2)        :  LOG(Pa)    🟢
         └── p2         :  Pa         🟢
 ```
 
@@ -316,16 +338,21 @@ spine:
 
 0.5 * (a + b) * c  :  ?  🔴
 ├── 0.5            :  1  🟢
-├── a + b          :  ?  🔴   (R4.1)
+├── a + b          :  ?  🔴
 │   ├── a          :  m²·s⁻²  🟢
 │   └── b          :  m·s⁻²   🟢
 └── c              :  ?  🟡
 ```
 
 Root row is the whole assignment / condition / argument. Each branch is
-a sub-expression; rule IDs (R3.1, R4.1, R5.1, …) annotate each rule
-fire so the reader can map the trace to
-[unit-algebra.md](unit-algebra.md).
+a sub-expression.
+
+**Call-argument annotation.** When a tree row is a call argument whose
+resolved unit dimensionally differs from the callee's formal, the row
+gains an `(expected <formal>)` tail — the same annotation the call
+hover surfaces. Matching rows carry no extra tail. (Earlier versions
+displayed the unit-algebra rule ID on every row; that was debug noise
+for the target audience and has been removed.)
 
 **Per-row marker semantics.** Markers are **diagnostic-driven** — a
 node's marker is its resolution state worst-of the unit-*consistency*
@@ -360,7 +387,7 @@ These ground the rules above with concrete cursor placements.
 | `r` | identifier | `r : LOG(Pa²)` | (same as Short) |
 | `=` | assignment | `r : LOG(Pa²)   ◂   log(p1) + log(p2) : LOG(Pa²)` | tree |
 | `+` | binary operator | `log(p1) : LOG(Pa)   ◂   log(p2) : LOG(Pa)` (homogeneity check on the operands of `+`) | tree |
-| `log` (first) | function call | `log : ?` + pairing | + sub-trees |
+| `log` (first) | function call | signature header + one row per actual (`log: (Pa) → LOG(Pa)`, `p1 : Pa 🟢`) | + sub-tree under any computed actual |
 | `p1` | identifier | `p1 : Pa` | (same as Short) |
 | `(`, `)`, spaces | assignment | (same as on `=`) | tree |
 
@@ -379,7 +406,7 @@ These ground the rules above with concrete cursor placements.
 
 | Cursor on | Surface | Short body |
 |---|---|---|
-| `update_winds` | subroutine call | pairing layout (see above) |
+| `update_winds` | subroutine call | signature header + one actual-arg row each (see Subroutine call above) |
 | `p1` | identifier | `p1 : Pa` |
 | `p2` | identifier | `p2 : Pa` |
 | `+` | binary operator | `p2 : Pa   ◂   1.0 : 1   🟢` (a bare literal added to Pa is an implicit cast — `H010`/`D1.5`, a *smell* not an inconsistency; it still squiggles but the consistency marker stays 🟢, decision B) |
