@@ -830,6 +830,7 @@ def _render_ast_tree(
     rows: list[_TreeRow],
     target_unit_for_literal: UnitExpr | None = None,
     expected_unit: UnitExpr | None = None,
+    assumed_overlay: tuple[str, str] | None = None,
     max_depth: int | None = None,
     _depth: int = 0,
 ) -> None:
@@ -849,6 +850,14 @@ def _render_ast_tree(
     gets an ``(expected <formal>)`` annotation so the reader can see
     what the call-site demanded without round-tripping through the
     diagnostic message.
+
+    ``assumed_overlay`` is the ``(asserted_unit_str, reason)`` pair
+    from the ``@unit_assume`` directive on this node's parent
+    assignment. Only the **RHS child** of an assumed assignment
+    receives it; the row displays the asserted unit, paints 🔵 (the
+    overlay tier — markers.md §4.6), and gets a
+    ``(assumed: <reason>)`` row tail. The assignment row itself
+    never carries the overlay.
     """
     # Skip wrapper-only nodes (parenthesised exprs) so the tree doesn't
     # explode with structural-only intermediate nodes — descend straight
@@ -861,6 +870,7 @@ def _render_ast_tree(
                 prefix=prefix, is_last=is_last, is_root=is_root, rows=rows,
                 target_unit_for_literal=target_unit_for_literal,
                 expected_unit=expected_unit,
+                assumed_overlay=assumed_overlay,
                 max_depth=max_depth, _depth=_depth,
             )
             return
@@ -911,17 +921,23 @@ def _render_ast_tree(
         and not equal_dim(unit, expected_unit)
     ):
         extra_str = f"(expected {format_unit(expected_unit)})"
-    # `@unit_assume` provenance: if a U020 owns this node, surface its
-    # reason as ``(assumed: <reason>)`` and let the marker paint 🔵
-    # (the marker is set by ``_node_marker`` below, which delegates to
-    # ``_self_marker``, which already returns 🔵 on U020-owned nodes).
-    from dimfort.lsp.expr_tree import _assumed_reason_for
-    assumed = _assumed_reason_for(node, ctx)
-    if assumed is not None:
-        assumed_tail = (
-            f"(assumed: {assumed})" if assumed else "(assumed)"
+    # `@unit_assume` overlay — applied to the RHS row of an assumed
+    # assignment (the parent's loop passes ``assumed_overlay`` to that
+    # one child; this node itself never carries the overlay because
+    # the directive applies to the RHS expression, not the assignment
+    # statement). When set:
+    #   * Override the unit column to the *asserted* unit, not the
+    #     computed one (typically ``?`` for empirical fits).
+    #   * Paint the marker 🔵 unless an honest diagnostic (🔴) owns
+    #     this node — declared-unit conflicts aren't masked.
+    #   * Append ``(assumed: <reason>)`` to the row tail.
+    if assumed_overlay is not None:
+        asserted_unit_str, reason = assumed_overlay
+        unit_str = asserted_unit_str
+        extra_str = (
+            f"{extra_str}  (assumed: {reason})" if extra_str
+            else f"(assumed: {reason})"
         )
-        extra_str = assumed_tail if not extra_str else f"{extra_str}  {assumed_tail}"
     # Marker (docs/design/markers.md): the diagnostic-driven aggregated
     # marker — this node's own (resolution ∨ owned consistency diagnostics)
     # worst-of its descendants. An R4.4 autocast leaf emits nothing and
@@ -929,14 +945,18 @@ def _render_ast_tree(
     mark = _node_marker(node, ctx, source)
     # Call-arg-formal disagreement override: when this row carries an
     # ``(expected …)`` annotation AND would otherwise paint 🟢, demote
-    # to 🟡. Skips rows already painted 🔵 (assumed), since 🔵 is the
-    # principled signal there. Rationale: the expression resolved
-    # cleanly, but its caller disagrees with the formal — worth
-    # flagging without painting a hard 🔴 (reserved for diagnostic-
-    # owned mismatches). The 🔴 already sits on the enclosing call via
-    # H004's diagnostic.
-    if extra_str and mark == "🟢" and assumed is None:
+    # to 🟡. Rationale: the expression resolved cleanly, but its caller
+    # disagrees with the formal — worth flagging without painting a
+    # hard 🔴 (reserved for diagnostic-owned mismatches). The 🔴 already
+    # sits on the enclosing call via H004's diagnostic.
+    if extra_str and mark == "🟢" and assumed_overlay is None:
         mark = "🟡"
+    # `@unit_assume` overlay wins the marker column (after the
+    # 🟡-on-expected step above) on 🟢/🟡 rows — the assumption is
+    # the headline at this row. A 🔴 from a diagnostic owning *this*
+    # node still wins.
+    if assumed_overlay is not None and mark in ("🟢", "🟡"):
+        mark = "🔵"
     # Mark is a separate column so the unit can be ljust-padded
     # independently; markers then align vertically on the right.
     rows.append((prefix + connector + label, unit_str, mark, extra_str))
@@ -995,6 +1015,14 @@ def _render_ast_tree(
         )
         if lhs_for_expected is not None:
             arg_expected = [None] * (len(children) - 1) + [lhs_for_expected]
+    # ``@unit_assume`` propagation: if THIS node is an assumed
+    # assignment_statement, the RHS child gets the overlay (asserted
+    # unit + reason). The assignment row itself stays clean — the
+    # directive's syntactic subject is the RHS expression.
+    rhs_assumed_overlay: tuple[str, str] | None = None
+    if node.type == "assignment_statement":
+        from dimfort.lsp.expr_tree import _assumed_for
+        rhs_assumed_overlay = _assumed_for(node, ctx)
     for i, c in enumerate(children):
         is_last_child = (i == len(children) - 1)
         # For assignments, only the last child (RHS) gets the target.
@@ -1006,11 +1034,15 @@ def _render_ast_tree(
         per_child_expected: UnitExpr | None = None
         if arg_expected and i < len(arg_expected):
             per_child_expected = arg_expected[i]
+        per_child_assumed: tuple[str, str] | None = None
+        if rhs_assumed_overlay is not None and is_last_child:
+            per_child_assumed = rhs_assumed_overlay
         _render_ast_tree(
             c, ctx, source,
             prefix=next_prefix, is_last=(i == len(children) - 1),
             is_root=False, rows=rows,
             target_unit_for_literal=per_child_target,
             expected_unit=per_child_expected,
+            assumed_overlay=per_child_assumed,
             max_depth=max_depth, _depth=_depth + 1,
         )

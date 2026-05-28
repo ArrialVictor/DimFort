@@ -212,12 +212,13 @@ def test_call_arg_mismatch_carries_expected_unit(tmp_path: Path):
 
 
 def test_unit_assume_row_paints_assumed_with_reason(tmp_path: Path):
-    """An assignment carrying ``@unit_assume{<unit> : <reason>}`` paints
-    the new ``assumed`` marker (🔵 on the panel) and surfaces the
-    mandatory reason in the ``assumed`` payload field. Child markers
-    don't propagate up — the directive's contract is "trust me on the
-    unit, ignore the inside" — so the assignment row stays "assumed"
-    even when its RHS has unresolved leaves.
+    """An assignment carrying ``@unit_assume{<unit> : <reason>}`` overlays
+    the new ``assumed`` marker (🔵) **on its RHS child** — the
+    directive's syntactic subject — not on the assignment itself. The
+    RHS row shows the *asserted* unit (not the unresolved ``?``) plus
+    the mandatory reason. The assignment row stays ``ok`` (clean
+    homogeneity check), and its marker doesn't aggregate the RHS's
+    underlying severity (the directive accepted the RHS).
     """
     from dimfort.core import ts_parser as _ts
     from dimfort.core.multifile import check_files
@@ -252,15 +253,16 @@ def test_unit_assume_row_paints_assumed_with_reason(tmp_path: Path):
         with server.state.last_result_lock:
             server.state.last_result = saved
     assert payload is not None
-    assert payload["marker"] == "assumed"
-    assert payload["assumed"] == "empirical-fit Brandes2007"
-    # Children stay on their own merits — only the assigned-row
-    # propagation is short-circuited. The RHS computed sub-tree has
-    # `?` leaves (the (-0.922) exponent makes the inner unit
-    # unresolvable), which would normally bubble 🟡 up — here the
-    # assumption suppresses that bubble at the assignment row.
+    # Assignment row: clean homogeneity check (LHS kg·m⁻³ matches
+    # asserted RHS kg·m⁻³), and no overlay on the assignment itself.
+    assert payload["marker"] == "ok"
+    assert payload["assumed"] is None
+    # RHS row carries the overlay: asserted unit + reason + 🔵.
     rhs_child = payload["children"][-1]
-    assert rhs_child["marker"] in ("warn", "ok")  # internal state
+    assert rhs_child["marker"] == "assumed"
+    assert rhs_child["assumed"] == "empirical-fit Brandes2007"
+    # Asserted unit (kg·m⁻³ in SI form), not the computed `?`.
+    assert rhs_child["unit"] == "kg·m⁻³"
 
 
 def test_call_arg_match_has_no_expected(tmp_path: Path):

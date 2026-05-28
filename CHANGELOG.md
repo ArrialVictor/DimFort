@@ -4,43 +4,51 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
-### Change: 🔵 marker + `(assumed: <reason>)` row tail for `@unit_assume`
+### Change: 🔵 overlay + `(assumed: <reason>)` on the RHS row of `@unit_assume` assignments
 
 `@unit_assume{<unit> : <reason>}` lines now carry a positive visual
-signal in both the panel's Expression tree and the hover. Previously
-the U020 INFO acknowledgment surfaced *only* in the diagnostic list;
-the tree itself gave no indication that a row was accepted via the
-escape hatch (as opposed to being algebra-clean).
+signal in both the panel's Expression tree and the hover.
+Previously the U020 INFO acknowledgment surfaced only in the
+diagnostic list; the tree gave no indication that a row was
+accepted via the escape hatch.
 
-- **Marker**: new `🔵` tier — "accepted via `@unit_assume`". Sits
-  between 🟢 and 🟡 in the worst-of aggregation order
-  (`error > warn > assumed > ok`). A 🔵 child propagates 🔵 up
-  unless a 🟡/🔴 sibling beats it. Wire-format adds
-  `ExpressionNode.marker = "assumed"`.
-- **Row tail**: `(assumed: <reason>)` — the mandatory reason from
-  the directive, in the same column as `(expected …)`. Both can
-  apply in theory and concatenate cleanly.
-- **Short-circuit**: the directive's contract is "trust me on the
-  unit, ignore the inside." Child markers don't propagate up
-  through the assumed row, so `(d * 2.0 * 1000.0)**(-0.922)` (with
-  its unresolved leaves) doesn't paint the assignment row 🟡 — the
-  assumption owns the verdict. The short-circuit applies only to
-  the assumed row itself; descendants and ancestors keep their own
-  merits.
+The overlay lives on the **RHS row** — the directive's syntactic
+subject — not on the assignment itself:
+
+- The RHS row carries the **asserted** unit (e.g. `kg·m⁻³`), not
+  the computed `?`, so the reader sees what unit DimFort is using
+  for the LHS homogeneity check.
+- The RHS row paints **🔵** — a per-row overlay, **NOT a severity
+  tier**. It doesn't participate in worst-of aggregation, doesn't
+  propagate to ancestors, and doesn't compete with 🟡/🔴 elsewhere.
+  The severity model stays a clean three-tier `error > warn > ok`.
+- The RHS row's tail reads `(assumed: <reason>)` — same column as
+  `(expected …)`; both can coexist (a declared-unit conflict
+  shows both).
+- The **assignment row stays 🟢** when the homogeneity check
+  passes (LHS unit matches the asserted RHS unit). The hover
+  header is the root row's marker, so a clean assumed line reads
+  with a 🟢 header and 🔵 in the body — the assertion is visible
+  where it lives.
+- **A declared-unit conflict still fires H001**, painting the
+  assignment row 🔴 (and the header). The RHS row then carries
+  🔵 + `(expected <lhs_unit>) (assumed: <reason>)`. The assumption
+  never masks a declared-unit conflict.
 - **Ownership rule**: line-based, restricted to
   `assignment_statement` nodes (the directive is statement-level).
   U020's source position lives at the `@unit_assume` token in the
-  trailing comment — *outside* the assignment's tree-sitter span —
+  trailing comment — outside the assignment's tree-sitter span —
   so span-based ownership wouldn't match.
-- **Conflict precedence preserved**: 🔵 doesn't compete with 🟡/🔴.
-  If the assumed unit disagrees with a *declared* LHS unit (H001),
-  the row paints 🔴 — the assumption never masks a declared-unit
-  conflict.
+
+Wire-format:
+- `ExpressionNode.marker` adds the value `"assumed"` (companions
+  render 🔵). Other markers stay `"ok"`/`"warn"`/`"error"`.
+- `ExpressionNode.assumed: string | null` — the mandatory reason,
+  set on the **RHS row** when assumed. `null` everywhere else.
 
 Documented at [docs/design/markers.md](docs/design/markers.md) §4.6;
-panel-info.md adds the `assumed: string | null` field on
-`ExpressionNode`; hover-ui.md adds the `🔵` and `(assumed: …)` glyph
-rows to the notation table.
+[panel-info.md](docs/design/panel-info.md) details the wire field;
+hover-ui.md adds the `🔵` and `(assumed: …)` glyph rows.
 
 ### Change: every hover is the same tree shape — `◂` retired, intrinsics join the tree path
 
