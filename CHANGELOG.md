@@ -4,6 +4,38 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### Change: three glyphs, three meanings, for "no unit" — `-` vs `?` vs `(none)`
+
+The hover trace, panel expression tree, and panel scope/import
+sections previously rendered "no unit" three different ways
+(hover used `?`, panel hid the column, scope/import used `(none)`).
+Unified so each glyph has exactly one meaning:
+
+- `-` — **structural-no-unit**: the row has no unit by design
+  (assignment statements, relational expressions, subroutine calls).
+  Rendered identically by hover and panel.
+- `?` — **unknown unit**: the row could have a unit but doesn't yet
+  (unannotated identifier, unsupported intrinsic, partial
+  resolution). Used inside expression trees AND for unannotated
+  declarations in the panel's scope / import sections (previously
+  `(none)`).
+- `(none)` — **empty (sub-)section header only** (e.g. `Scope:
+  (none)`, `Imports: (none)`). Never used inside a row or for an
+  individual variable.
+
+Side effect on subroutine-call rows: a clean subroutine call now
+paints 🟢 (it's in `_NO_UNIT_NODE_TYPES`, so its resolution-axis
+base is 🟢), instead of the previous 🟡 from "unresolved unit". The
+marker still rolls up worst-of-children, so 🟡/🔴 inside args still
+propagates to the root. Spec at
+[docs/design/markers.md](docs/design/markers.md) §4.5.
+
+Wire-format: `ExpressionNode.unit` is now always a string (`"-"` /
+`"?"` / a unit), never null. Companions that still treat null as
+"hide the unit column" will silently render the string instead — no
+crash, just a small visual change for pre-0.2.1 companions on
+post-0.2.1 servers.
+
 ### Change: call hover unified with the side panel's Expression tree
 
 - The **call hover** (function or subroutine, on the callee

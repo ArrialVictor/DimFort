@@ -49,10 +49,24 @@ _SEVERITY_EMOJI = {
     Severity.HINT: "🟢",
 }
 
-# Node types that are statements/relations, not expressions: they carry no
-# unit of their own, so their resolution-axis base is 🟢 (a clean assignment
-# is not "unresolved"). Their marker comes from the diagnostic axis + children.
-_NO_UNIT_NODE_TYPES = frozenset({"assignment_statement", "relational_expression"})
+# Node types with no unit of their own *by structure* (not because we
+# couldn't resolve one). Their resolution-axis base is 🟢 (a clean
+# assignment / subroutine call is not "unresolved"); the marker comes
+# from the diagnostic axis + children. Both hover and panel render
+# their unit column as ``-`` so the row stays visually distinct from
+# truly unknown / unannotated nodes (which render ``?``).
+_NO_UNIT_NODE_TYPES = frozenset({
+    "assignment_statement",
+    "relational_expression",
+    "subroutine_call",
+})
+
+# The glyph rendered in the unit column for structural-no-unit nodes.
+# Picked over ``"?"`` (reserved for *unknown* units — unannotated
+# identifier, unsupported intrinsic, partial resolution) and over
+# blank/hidden (reserved for ``(none)``-style empty sub-sections). See
+# docs/design/markers.md §4.5.
+_NO_UNIT_GLYPH = "-"
 
 
 def _diags_for_ctx(ctx: ts_checker.Ctx) -> tuple[Diagnostic, ...]:
@@ -196,28 +210,43 @@ def _build_expression_tree(
     ):
         expected_render = format_unit(expected_unit)
 
+    # Unit-column rendering. Three states, three glyphs:
+    #   * structural-no-unit nodes (statement / relation / subroutine
+    #     call) → ``-`` (intentional gap, not knowledge missing).
+    #   * resolved unit → the formatted unit string.
+    #   * unresolved expression → ``?`` (unknown — unannotated leaf,
+    #     unsupported intrinsic, partial resolution).
+    if node.type in _NO_UNIT_NODE_TYPES:
+        unit_render: str = _NO_UNIT_GLYPH
+    elif unit is not None:
+        unit_render = format_unit(unit)
+    else:
+        unit_render = "?"
+
     payload: dict[str, Any] = {
         "label": _node_label(node, source),
-        "unit": format_unit(unit) if unit is not None else None,
+        "unit": unit_render,
         "marker": "ok",  # set below
         "expected": expected_render,
         "children": child_nodes,
     }
 
-    # Assignments are statements, not expressions — they carry no unit of
-    # their own; clear it so renderers omit the ``: ?`` column. For an
-    # initialization autocast (R4.4) show the LHS unit on the RHS subtree
-    # root (the literal takes the LHS's unit). The *marker* is left entirely
-    # to the diagnostic model below — autocast emits nothing, so it resolves
-    # 🟢 on its own; a real mismatch fires H001 and the model paints it 🔴.
-    if node.type == "assignment_statement":
-        payload["unit"] = None
-        if len(kids) >= 2 and child_nodes:
-            verdict, lhs_u, _rhs_u = ts_checker.assignment_homogeneity(
-                kids[0], kids[-1], ctx, source,
-            )
-            if verdict == "autocast" and lhs_u is not None:
-                child_nodes[-1]["unit"] = format_unit(lhs_u)
+    # Assignment-specific propagation: for an initialization autocast
+    # (R4.4) show the LHS unit on the RHS subtree root (the literal
+    # takes the LHS's unit). The *marker* is left entirely to the
+    # diagnostic model below — autocast emits nothing, so it resolves
+    # 🟢 on its own; a real mismatch fires H001 and the model paints
+    # it 🔴.
+    if (
+        node.type == "assignment_statement"
+        and len(kids) >= 2
+        and child_nodes
+    ):
+        verdict, lhs_u, _rhs_u = ts_checker.assignment_homogeneity(
+            kids[0], kids[-1], ctx, source,
+        )
+        if verdict == "autocast" and lhs_u is not None:
+            child_nodes[-1]["unit"] = format_unit(lhs_u)
 
     # Marker (docs/design/markers.md): this node's own marker (resolution
     # axis worst-of the consistency-family diagnostics it owns) worst-of its

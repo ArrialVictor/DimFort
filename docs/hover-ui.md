@@ -14,6 +14,8 @@ units live in [unit-algebra.md](unit-algebra.md).
 | Glyph | Meaning |
 |---|---|
 | `:` | separates an expression (name / source text) from its unit |
+| `-` | unit-column glyph for **structural-no-unit** rows (assignment statement, relational expression, subroutine call) — the row has no unit *by design*, not because we couldn't resolve one. See [design/markers.md](design/markers.md) §4.5 |
+| `?` | unit-column glyph for **unknown** units — unannotated identifier, unsupported intrinsic, partial resolution |
 | `→` | in the **pure-signature** hover (cursor on a function/subroutine definition header), separates the formal argument tuple from the return unit, e.g. `(kg·m⁻³, m·s⁻¹) → kg·m⁻¹·s⁻²` |
 | `◂` | in assignment / relational hovers, separates a target slot (LHS) from the value flowing into it (RHS) — points from value to target |
 | `(expected …)` | trailing annotation on a call-argument row whose actual unit differs from the formal — names the expected unit |
@@ -134,20 +136,26 @@ dynamic_pressure(rho, c_sound * t) : kg·m⁻¹·s⁻²  🔴
 ## Layout: subroutine call
 
 Identical to function call, with one difference: subroutines have no
-return unit, so the root row's unit column shows `?` and its
-resolution-axis marker paints 🟡 (no consistency diagnostic
-disagreement — just no unit to report).
+return unit, so the root row's unit column shows `-` (the
+**structural-no-unit** glyph — distinct from `?` which is reserved
+for *unknown* units). A clean subroutine call paints 🟢 (its
+resolution-axis base is 🟢; `subroutine_call` is in
+`_NO_UNIT_NODE_TYPES`); the marker still rolls up worst-of-children,
+so a 🟡 or 🔴 inside the args propagates to the root.
 
 ### Short
 
 ```
-call update_winds(klon, klev, t_local, u_local, dt_out)  :  ?  🟡
+call update_winds(klon, klev, t_local, u_local, dt_out)  :  -  🟡
 ├── klon    : 1   🟢
 ├── klev    : 1   🟢
 ├── t_local : ?   🟡
 ├── u_local : ?   🟡
 └── dt_out  : K   🟢
 ```
+
+(Header marker is 🟡 because two args are unannotated — the root
+itself is structurally fine, but worst-of-children propagates.)
 
 ### Detailed
 
@@ -259,10 +267,11 @@ like every marker, is **diagnostic-driven** — read from the file's
 diagnostics by range ([design/markers.md](design/markers.md)) — so the
 hover and the Problems panel never disagree.
 
-In the detailed-tree view and the side panel, the assignment row shows
-**no unit column** (`label  marker`, not `label : unit  marker`) — an
-assignment is a statement, not an expression, so it has no unit of its
-own; only the homogeneity marker is meaningful.
+In the detailed-tree view and the side panel, the assignment row's
+unit column shows `-` (the **structural-no-unit** glyph — see
+[design/markers.md](design/markers.md) §4.5). An assignment is a
+statement, not an expression, so it has no unit of its own; the row
+exists only to carry the homogeneity marker.
 
 **Relational expression** (cursor on `<`, `<=`, `==`, `/=`, `>`, `>=`)
 
@@ -410,7 +419,7 @@ These ground the rules above with concrete cursor placements.
 
 | Cursor on | Surface | Short body |
 |---|---|---|
-| `update_winds` | subroutine call | root row `call update_winds(…) : ?` + one child row per actual (see Subroutine call above) |
+| `update_winds` | subroutine call | root row `call update_winds(…) : -` (structural-no-unit) + one child row per actual (see Subroutine call above) |
 | `p1` | identifier | `p1 : Pa` |
 | `p2` | identifier | `p2 : Pa` |
 | `+` | binary operator | `p2 : Pa   ◂   1.0 : 1   🟢` (a bare literal added to Pa is an implicit cast — `H010`/`D1.5`, a *smell* not an inconsistency; it still squiggles but the consistency marker stays 🟢, decision B) |

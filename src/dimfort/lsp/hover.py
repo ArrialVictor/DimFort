@@ -945,16 +945,22 @@ def _render_ast_tree(
         next_prefix = prefix + ("    " if is_last else "│   ")
 
     label = _node_label(node, source)
-    # Assignments are statements, not expressions — render no unit
-    # column for them (only the marker matters). Other unit-less
-    # nodes show ``?``.
+    # Unit-column rendering — three glyphs, three meanings (see
+    # docs/design/markers.md §4.5):
+    #   ``-`` — structural-no-unit (assignment / relation / subroutine
+    #           call); the row has no unit *by design*, not because we
+    #           couldn't resolve one.
+    #   <fmt> — resolved unit, formatted.
+    #   ``?`` — unknown (unannotated identifier, unsupported intrinsic,
+    #           partial resolution).
     from dimfort.core.units import equal_dim, format_unit
-    if node.type == "assignment_statement":
-        unit_str = ""
-    elif unit is None:
-        unit_str = "?"
-    else:
+    from dimfort.lsp.expr_tree import _NO_UNIT_GLYPH, _NO_UNIT_NODE_TYPES
+    if node.type in _NO_UNIT_NODE_TYPES:
+        unit_str = _NO_UNIT_GLYPH
+    elif unit is not None:
         unit_str = format_unit(unit)
+    else:
+        unit_str = "?"
     extra_str = ""
     if (
         expected_unit is not None

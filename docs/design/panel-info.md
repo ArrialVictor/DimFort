@@ -153,10 +153,17 @@ interface ScopeSection {
 interface ExpressionNode {
   // Human-readable label (the source slice, lightly normalised).
   label: string;
-  // Resolved unit string, or null if unresolved / not applicable
-  // (e.g. an assignment statement, which has no unit of its own —
-  // renderers omit the unit column for such nodes).
-  unit: string | null;
+  // Unit string — always present (never null) since the server
+  // resolves all three "no unit" cases to a concrete glyph:
+  //   * "-" — structural-no-unit (assignment statement, relational
+  //           expression, subroutine call — no unit by design).
+  //   * "?" — unknown unit (unannotated identifier, unsupported
+  //           intrinsic, partial resolution).
+  //   * <formatted> — resolved unit (e.g. "kg·m⁻¹·s⁻²").
+  // See design/markers.md §4.5. (Companions that still expect `null`
+  // — pre-0.2.1 — will treat the string as a unit and pad accordingly;
+  // it's a render-only regression, not a crash.)
+  unit: string;
   // 🟢 ok, 🟡 warning/unresolved, 🔴 mismatch.
   marker: "ok" | "warn" | "error";
   // The formal unit this node is expected to satisfy, only set when
