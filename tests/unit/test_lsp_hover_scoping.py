@@ -656,6 +656,49 @@ def test_expression_short_relational(tmp_path: Path):
     assert " : -" in text or "  -  " in text
 
 
+def test_detailed_hover_assignment_with_unit_assume(tmp_path: Path):
+    """Cursor on `=` of an assumed assignment, detailed mode: the
+    detailed-mode path renders the assignment row + LHS leaf
+    manually and then calls _render_ast_tree on the RHS. It must
+    pass the assumed_overlay through so the RHS row shows the
+    asserted unit + 🔵 + `(assumed: …)`, not the unresolved `?` 🟡
+    (regression guard for the detailed/trace plumbing)."""
+    src = (
+        "subroutine s\n"
+        "  real :: r       !< @unit{m}\n"
+        "  real :: rho     !< @unit{kg/m^3}\n"
+        "  rho = 1.e3 * 0.178 * (r * 2.0 * 1000.0)**(-0.922)"
+        "   !< @unit_assume{kg/m^3 : empirical-fit Brandes2007}\n"
+        "end subroutine\n"
+    )
+    f = tmp_path / "assumed_detailed.f90"
+    f.write_text(src)
+    _server._features.hover = "detailed"
+    try:
+        # Cursor on `=` (column 7 of line 4).
+        hit = _drive_hover(f, 4, 7)
+        assert hit is not None
+        text, _ = hit
+        # Assignment row stays clean (LHS unit matches asserted RHS).
+        assert "🟢 DimFort" in text
+        # RHS row carries the asserted unit, 🔵 marker, and the reason.
+        assert "kg·m⁻³" in text
+        assert "🔵" in text
+        assert "(assumed: empirical-fit Brandes2007)" in text
+        # The pre-fix bug: RHS row showed `?` 🟡 instead of the overlay.
+        # The unresolved `?` may still appear DEEP inside the sub-tree
+        # (on the (-0.922) leaf), but the RHS root itself must carry
+        # the asserted unit.
+        rhs_root_line = next(
+            (line for line in text.splitlines()
+             if line.lstrip().startswith("└── 1.e3 * 0.178")),
+            "",
+        )
+        assert "kg·m⁻³" in rhs_root_line and "🔵" in rhs_root_line, rhs_root_line
+    finally:
+        _server._features.hover = "short"
+
+
 def test_intrinsic_call_hover_uses_same_tree_shape_as_user_call(tmp_path: Path):
     """Hovering on an intrinsic callee (e.g. `log`) renders the same
     root-plus-immediate-children tree shape as a user-defined call,
