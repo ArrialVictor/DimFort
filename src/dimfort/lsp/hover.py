@@ -49,9 +49,11 @@ if TYPE_CHECKING:
     from dimfort.core.symbols import FuncSig
     from dimfort.core.units import UnitExpr
 
-# A rendered unit-algebra tree row: (label, unit-or-None, marker, rule-tag).
+# A rendered unit-algebra tree row: (label, unit-or-None, marker, extra).
 # ``unit`` is ``None`` only for the synthetic assignment root row (a statement,
-# which has no unit of its own).
+# which has no unit of its own). ``extra`` is an optional trailing annotation
+# — currently the ``(expected <formal_unit>)`` tag on a mismatching
+# call-argument row; empty string otherwise.
 _TreeRow = tuple[str, str | None, str, str]
 
 
@@ -1023,16 +1025,24 @@ def _render_ast_tree(
     prefix: str, is_last: bool, is_root: bool,
     rows: list[_TreeRow],
     target_unit_for_literal: UnitExpr | None = None,
+    expected_unit: UnitExpr | None = None,
 ) -> None:
-    """Recursively collect ``(label, unit, rule)`` rows for the tree.
+    """Recursively collect ``(label, unit, mark, extra)`` rows for the tree.
 
-    The caller pads each column to the global max so ``⇒`` and the
-    rule tag align vertically across nodes.
+    The caller pads each column to the global max so the marker and the
+    trailing annotation align vertically across nodes.
 
     ``target_unit_for_literal`` carries the initialization-autocast
     target down the recursion: when we recurse into the RHS of an
     assignment whose RHS is a bare literal, the literal node uses
     this unit and a 🟢 marker (matching the checker's leniency rule).
+
+    ``expected_unit`` is the formal unit this node is expected to satisfy
+    (only set when this node is an argument of a call whose callee
+    signature is known). When the resolved unit doesn't match, the row
+    gets an ``(expected <formal>)`` annotation so the reader can see
+    what the call-site demanded without round-tripping through the
+    diagnostic message.
     """
     # Skip wrapper-only nodes (parenthesised exprs) so the tree doesn't
     # explode with structural-only intermediate nodes — descend straight
@@ -1044,14 +1054,11 @@ def _render_ast_tree(
                 inner[0], ctx, source,
                 prefix=prefix, is_last=is_last, is_root=is_root, rows=rows,
                 target_unit_for_literal=target_unit_for_literal,
+                expected_unit=expected_unit,
             )
             return
 
-    from dimfort.core.trace import with_trace
-    with with_trace() as trace:
-        unit = ts_checker.resolve_unit(node, ctx, source)
-    snap = trace.snapshot()
-    rule_id = snap[-1].rule_id if snap else None
+    unit = ts_checker.resolve_unit(node, ctx, source)
 
     # Initialization autocast: a pure-numeric-constant subtree (literal,
     # unary-minus literal, math of literals) in a propagated target
@@ -1077,14 +1084,20 @@ def _render_ast_tree(
     # Assignments are statements, not expressions — render no unit
     # column for them (only the marker matters). Other unit-less
     # nodes show ``?``.
+    from dimfort.core.units import equal_dim, format_unit
     if node.type == "assignment_statement":
         unit_str = ""
     elif unit is None:
         unit_str = "?"
     else:
-        from dimfort.core.units import format_unit
         unit_str = format_unit(unit)
-    rule_str = f"({rule_id})" if rule_id else ""
+    extra_str = ""
+    if (
+        expected_unit is not None
+        and unit is not None
+        and not equal_dim(unit, expected_unit)
+    ):
+        extra_str = f"(expected {format_unit(expected_unit)})"
     # Marker (docs/design/markers.md): the diagnostic-driven aggregated
     # marker — this node's own (resolution ∨ owned consistency diagnostics)
     # worst-of its descendants. An R4.4 autocast leaf emits nothing and
@@ -1092,7 +1105,7 @@ def _render_ast_tree(
     mark = _node_marker(node, ctx, source)
     # Mark is a separate column so the unit can be ljust-padded
     # independently; markers then align vertically on the right.
-    rows.append((prefix + connector + label, unit_str, mark, rule_str))
+    rows.append((prefix + connector + label, unit_str, mark, extra_str))
 
     # Leaves stop here. Identifiers / numeric literals are atomic.
     if node.type in ("identifier", "number_literal", "string_literal", "complex_literal"):
@@ -1122,6 +1135,15 @@ def _render_ast_tree(
             child_target = lhs_u
     elif apply_autocast and node.type == "unary_expression":
         child_target = target_unit_for_literal
+    # Call expression: look up the callee's signature so each positional
+    # argument child can carry the formal unit it's expected to satisfy.
+    arg_expected: list[UnitExpr | None] = []
+    if node.type in ("call_expression", "subroutine_call"):
+        callee_nm = _ts_h.call_name(node, source)
+        if callee_nm is not None:
+            sig = ctx.signatures.get(callee_nm.lower())
+            if sig is not None:
+                arg_expected = list(sig.arg_units)
     for i, c in enumerate(children):
         is_last_child = (i == len(children) - 1)
         # For assignments, only the last child (RHS) gets the target.
@@ -1130,9 +1152,13 @@ def _render_ast_tree(
         is_asn_rhs = node.type == "assignment_statement" and is_last_child
         if is_asn_rhs or node.type == "unary_expression":
             per_child_target = child_target
+        per_child_expected: UnitExpr | None = None
+        if arg_expected and i < len(arg_expected):
+            per_child_expected = arg_expected[i]
         _render_ast_tree(
             c, ctx, source,
             prefix=next_prefix, is_last=(i == len(children) - 1),
             is_root=False, rows=rows,
             target_unit_for_literal=per_child_target,
+            expected_unit=per_child_expected,
         )

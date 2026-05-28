@@ -101,10 +101,13 @@ def test_hover_trace_section_when_enabled(tmp_path: Path):
                 _server.state.last_result = None
         assert extra is not None
         assert "Unit-algebra trace" in extra
-        assert "R3.1" in extra  # LOG fires
-        assert "R5.1" in extra  # log homomorphism
         # ASCII tree connectors signal the new tree layout
         assert "├──" in extra or "└──" in extra
+        # The trace shows each subexpression's resolved unit; rule IDs
+        # were dropped (debug-only; not useful to physicists).
+        assert "log(p1)" in extra
+        assert "LOG(kg·m⁻¹·s⁻²)" in extra  # log(Pa) → LOG(SI(Pa))
+        assert "R3." not in extra and "R5." not in extra
     finally:
         _server._features.hover = "short"
 
@@ -256,7 +259,8 @@ def test_trace_hover_inside_call_argument(tmp_path: Path):
         # Header now reflects the worst row — all clean → 🟢.
         assert "🟢 DimFort" in text
         assert "p1 + p2" in text
-        assert "R4.1" in text  # addition homogeneity rule fired
+        # Rule IDs are no longer rendered in tree rows.
+        assert "R4." not in text
     finally:
         _server._features.hover = "short"
 

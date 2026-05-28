@@ -117,7 +117,7 @@ def test_build_expression_tree_shape(tmp_path: Path):
     assert "label" in payload
     assert "unit" in payload
     assert "marker" in payload
-    assert "ruleId" in payload
+    assert "expected" in payload
     assert "children" in payload
     # The assignment must have at least two children (lhs + rhs).
     assert len(payload["children"]) >= 2
@@ -158,6 +158,88 @@ def test_assignment_with_matching_units_marks_ok(tmp_path: Path):
     payload = _build_expression_tree(target_asn, ctx, source)
     assert payload is not None
     assert payload["marker"] == "ok"
+
+
+def test_call_arg_mismatch_carries_expected_unit(tmp_path: Path):
+    """When a call passes an argument whose unit dimensionally differs
+    from the callee's formal, the corresponding panel-tree child node
+    carries ``expected = <formal_unit>`` so the panel can render
+    ``(expected …)`` on the row. Matching args carry ``expected = None``.
+    """
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
+
+    src = tmp_path / "call_expected.f90"
+    src.write_text(
+        "module m\n"
+        "contains\n"
+        "  subroutine foo(a)\n"
+        "    real, intent(in) :: a   !< @unit{Pa}\n"
+        "  end subroutine\n"
+        "  subroutine demo\n"
+        "    real :: t   !< @unit{s}\n"
+        "    call foo(t)\n"
+        "  end subroutine\n"
+        "end module\n"
+    )
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+
+    # The subroutine call inside `demo` is the second one in source
+    # order; `_interesting_children` lays out its single positional arg
+    # `t` as the only child node.
+    calls = [
+        n for n in _ts.walk(tree.root_node) if n.type == "subroutine_call"
+    ]
+    payload = _build_expression_tree(calls[0], ctx, source)
+    assert payload is not None
+    # The actual `t` resolves to s; the formal expects Pa — mismatch, so
+    # the child carries `expected = "kg·m⁻¹·s⁻²"` (Pa rendered SI-form).
+    assert len(payload["children"]) == 1
+    child = payload["children"][0]
+    assert child["expected"] == "kg·m⁻¹·s⁻²"
+    # The call's own node has no `expected` (it's not itself an arg).
+    assert payload["expected"] is None
+
+
+def test_call_arg_match_has_no_expected(tmp_path: Path):
+    """A call argument whose unit matches the formal carries no
+    ``expected`` annotation — the panel should only highlight gaps."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
+
+    src = tmp_path / "call_match.f90"
+    src.write_text(
+        "module m\n"
+        "contains\n"
+        "  subroutine foo(a)\n"
+        "    real, intent(in) :: a   !< @unit{Pa}\n"
+        "  end subroutine\n"
+        "  subroutine demo\n"
+        "    real :: p   !< @unit{Pa}\n"
+        "    call foo(p)\n"
+        "  end subroutine\n"
+        "end module\n"
+    )
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+    calls = [
+        n for n in _ts.walk(tree.root_node) if n.type == "subroutine_call"
+    ]
+    payload = _build_expression_tree(calls[0], ctx, source)
+    assert payload is not None
+    assert len(payload["children"]) == 1
+    assert payload["children"][0]["expected"] is None
 
 
 def test_panel_scale_marker_reflects_s001(tmp_path: Path):
