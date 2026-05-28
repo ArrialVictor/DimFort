@@ -446,9 +446,8 @@ def test_assignment_short_hover_reflects_nested_scale(tmp_path: Path):
     from dimfort.core import ts_parser as _ts
     from dimfort.core.multifile import check_files
     from dimfort.lsp import server
-    from dimfort.lsp.hover import _render_assignment_short
+    from dimfort.lsp.hover import _render_subexpr_short
     from dimfort.lsp.tree_access import _build_ts_ctx
-    from dimfort.lsp.tree_nav import _interesting_children
 
     src = tmp_path / "scale_short.f90"
     src.write_text(
@@ -464,8 +463,6 @@ def test_assignment_short_hover_reflects_nested_scale(tmp_path: Path):
     resolved = src.resolve()
     asn = next(n for n in _ts.walk(tree.root_node)
                if n.type == "assignment_statement")
-    kids = _interesting_children(asn)
-    lhs, rhs = kids[0], kids[-1]
 
     def _marker(scale_on: bool) -> str:
         result = check_files([src], scale_mode=scale_on)
@@ -478,7 +475,7 @@ def test_assignment_short_hover_reflects_nested_scale(tmp_path: Path):
         try:
             ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
             ctx.var_types.update(ts_checker.collect_var_types(tree, source))
-            text, _ = _render_assignment_short(asn, lhs, rhs, ctx, source)
+            text, _ = _render_subexpr_short(asn, ctx, source)
         finally:
             server.state.scale_mode = saved
             with server.state.last_result_lock:

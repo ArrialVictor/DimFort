@@ -4,6 +4,39 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### Change: every hover is the same tree shape — `◂` retired, intrinsics join the tree path
+
+All short hovers — including `+`/`-`, assignment, and relational —
+now render the same root-plus-immediate-children tree shape used by
+the call hover. The `◂` notation (value flowing into target) is
+retired: it was a learnable glyph that needed explanation, and the
+density advantage was small (`a : K ◂ b : K` vs three short rows).
+One shape across every hover wins on legibility and on mental
+model.
+
+- **Assignment short** carries `(expected <lhs_unit>)` on the RHS row
+  when the homogeneity check fails — same mechanism as a call-arg
+  mismatch, and the RHS row paints 🟡 from the 🟡-on-`expected`
+  override. The directional information `◂` used to carry ("RHS
+  flows into LHS") is now explicit in the annotation.
+- **`+` / `-` short** lose the `◂` operand-pair form in favour of
+  root row + operand child rows. A homogeneity violation paints the
+  root 🔴 via `H002` (worst-of), and the operand rows show their
+  resolved units so the reader sees *which* operand is wrong.
+- **Relational short** loses the `◂` form too. Relational expressions
+  are structural-no-unit (root row carries `-`), and the checker
+  doesn't emit on operand mismatches at relational sites, so the
+  root stays 🟡 (no consistency diagnostic) regardless of operand
+  agreement — unchanged semantically; just the layout shifts.
+- **Intrinsic call hovers** (`log(p)`, `exp(t)`, `sqrt(x)`, etc.)
+  switch from the bare-identifier-fallback one-liner to the full
+  call-tree renderer (`_render_call_tree`). User-defined calls and
+  intrinsic calls now look structurally identical — same root row,
+  same child rows, same alignment. Intrinsics have no `(expected …)`
+  annotation on args (we don't track formal-arg units for them) and
+  no associated diagnostic, but the unit resolution still works
+  because the checker's `resolve_unit` handles intrinsics natively.
+
 ### Change: short hover for `*` / `/` / `**` and sub-expressions now shows root + immediate children
 
 Brings these surfaces into line with the call hover: every short
