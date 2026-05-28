@@ -670,15 +670,23 @@ def _render_relational_short(
 def _render_subexpr_short(
     expr: Node, ctx: ts_checker.Ctx, source: bytes
 ) -> tuple[str, lsp.Range] | None:
-    """One-line resolved-unit hover for a computed sub-expression or
-    a numeric literal. Marker uses propagated-mark logic so a nested
-    homogeneity violation surfaces as 🔴 even though the wrapping
-    operator has no unit either."""
-    from dimfort.core.units import format_unit
-    u = ts_checker.resolve_unit(expr, ctx, source)
-    marker = _node_marker(expr, ctx, source)
-    u_s = format_unit(u) if u is not None else "?"
-    body = f"{_node_label(expr, source)} : {u_s}"
+    """Short hover for a computed sub-expression or a numeric literal:
+    render the same root-plus-immediate-children tree shape as the
+    call hover, so every short hover means "root unit, with one level
+    of how it got there". Bare leaves (identifiers, literals) collapse
+    to a single row naturally because `_render_ast_tree` returns early
+    on those node types — no children to enumerate.
+    """
+    rows: list[_TreeRow] = []
+    _render_ast_tree(
+        expr, ctx, source,
+        prefix="", is_last=True, is_root=True, rows=rows,
+        max_depth=1,
+    )
+    if not rows:
+        return None
+    body = _format_tree_rows(rows)
+    marker = _worst_marker(rows)
     text = f"**{marker} DimFort**\n\n```\n{body}\n```"
     return text, _node_lsp_range(expr)
 

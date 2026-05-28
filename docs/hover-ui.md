@@ -224,13 +224,17 @@ require unit equality):
 a : K   ◂   b : K
 ```
 
-For `*`, `/`, `**` — there's no homogeneity requirement, so the
-hover just reports the resolved unit of the whole sub-expression:
+For `*`, `/`, `**` — there's no homogeneity requirement; the hover
+reports the resolved unit of the sub-expression and adds one row per
+immediate operand so the algebra is visible at a glance. Same shape
+as the call hover.
 
 ```
 🟢 DimFort
 
-a * b : K·m
+a * b  :  K·m  🟢
+├── a  :  K    🟢
+└── b  :  m    🟢
 ```
 
 **Assignment** (cursor on `=` or whitespace inside the statement)
@@ -295,11 +299,16 @@ documented future enhancement.
 ```
 🟢 DimFort
 
-p1 + p2 : kg·m⁻¹·s⁻²
+p1 + p2   :  kg·m⁻¹·s⁻²  🟢
+├── p1    :  kg·m⁻¹·s⁻²  🟢
+└── p2    :  kg·m⁻¹·s⁻²  🟢
 ```
 
-Just the resolved unit of the enclosing expression. Marker: 🟢 fully
-resolved, 🟡 any leaf unknown.
+Same root-plus-immediate-children shape as the binary-operator and
+call hovers — every short hover means "this expression's unit, with
+one level of how it got there". Marker rolls up worst-of-children
+(🟢 fully resolved, 🟡 any leaf unknown, 🔴 a nested mismatch
+propagates up).
 
 **Numeric literal**
 
