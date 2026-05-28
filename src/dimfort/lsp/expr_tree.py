@@ -20,6 +20,7 @@ from tree_sitter import Node
 from dimfort.core import ts_checker
 from dimfort.core import ts_parser as _ts
 from dimfort.core.diagnostics import Diagnostic, Severity
+from dimfort.lsp import ts_helpers as _ts_h
 from dimfort.lsp.markers import _marker_token, _worst_emoji, _worst_token
 from dimfort.lsp.state import state
 from dimfort.lsp.tree_nav import (
@@ -34,6 +35,7 @@ from dimfort.lsp.tree_nav import (
 if TYPE_CHECKING:
     from dimfort.core.annotations import DeclarationSite
     from dimfort.core.attach import AttachmentResult
+    from dimfort.core.units import UnitExpr
 
 # The unit-consistency family — the only codes that colour a marker.
 _MARKER_DIAG_CODES = frozenset(
@@ -122,13 +124,18 @@ def _node_marker(node: Node, ctx: ts_checker.Ctx, source: bytes) -> str:
 
 
 def _build_expression_tree(
-    node: Node | None, ctx: ts_checker.Ctx, source: bytes
+    node: Node | None, ctx: ts_checker.Ctx, source: bytes,
+    *, expected_unit: UnitExpr | None = None,
 ) -> dict[str, Any] | None:
     """Build a structured ExpressionNode for the panel.
 
-    Recursive: each node carries its resolved unit, the rule ID that
-    produced it (if any), a marker token, and its children. Leaf
-    nodes (identifiers, literals) have an empty ``children`` list.
+    Recursive: each node carries its resolved unit, a marker token, and
+    its children. Leaf nodes (identifiers, literals) have an empty
+    ``children`` list. When this node is a positional argument of a
+    call whose callee signature is known, ``expected_unit`` carries the
+    formal's :class:`UnitExpr`; on a dimensional mismatch the payload's
+    ``expected`` field renders it pretty so the panel can append
+    ``(expected …)`` to the row.
 
     Defers all assignment-specific logic (verdict, autocast detection)
     to :func:`ts_checker.assignment_homogeneity` — the single source
@@ -139,15 +146,13 @@ def _build_expression_tree(
     if node.type == "parenthesized_expression":
         inner = _interesting_children(node)
         if len(inner) == 1:
-            return _build_expression_tree(inner[0], ctx, source)
+            return _build_expression_tree(
+                inner[0], ctx, source, expected_unit=expected_unit,
+            )
 
-    from dimfort.core.trace import with_trace
-    from dimfort.core.units import format_unit
+    from dimfort.core.units import equal_dim, format_unit
 
-    with with_trace() as trace:
-        unit = ts_checker.resolve_unit(node, ctx, source)
-    snap = trace.snapshot()
-    rule_id = snap[-1].rule_id if snap else None
+    unit = ts_checker.resolve_unit(node, ctx, source)
 
     if node.type in ("identifier", "number_literal", "string_literal", "complex_literal"):
         kids: list[Node] = []
@@ -159,14 +164,43 @@ def _build_expression_tree(
         # first child: that used to remove the leading *argument* when it
         # was a bare identifier, collapsing calls to a childless leaf.
         kids = _interesting_children(node)
-        built = [_build_expression_tree(c, ctx, source) for c in kids]
+        # Look up the callee signature so positional args get their
+        # formal expected unit propagated. Subroutine_call and
+        # call_expression both share this path.
+        arg_expected: list[UnitExpr | None] = []
+        if node.type in ("call_expression", "subroutine_call"):
+            callee_nm = _ts_h.call_name(node, source)
+            if callee_nm is not None:
+                sig = ctx.signatures.get(callee_nm.lower())
+                if sig is not None:
+                    arg_expected = list(sig.arg_units)
+        built = [
+            _build_expression_tree(
+                c, ctx, source,
+                expected_unit=(
+                    arg_expected[i]
+                    if arg_expected and i < len(arg_expected) else None
+                ),
+            )
+            for i, c in enumerate(kids)
+        ]
         child_nodes = [c for c in built if c is not None]
+
+    # Render the `(expected …)` annotation only when actual and formal
+    # disagree dimensionally — matching the call-hover rule.
+    expected_render: str | None = None
+    if (
+        expected_unit is not None
+        and unit is not None
+        and not equal_dim(unit, expected_unit)
+    ):
+        expected_render = format_unit(expected_unit)
 
     payload: dict[str, Any] = {
         "label": _node_label(node, source),
         "unit": format_unit(unit) if unit is not None else None,
         "marker": "ok",  # set below
-        "ruleId": rule_id,
+        "expected": expected_render,
         "children": child_nodes,
     }
 

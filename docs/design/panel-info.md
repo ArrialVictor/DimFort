@@ -159,8 +159,12 @@ interface ExpressionNode {
   unit: string | null;
   // 🟢 ok, 🟡 warning/unresolved, 🔴 mismatch.
   marker: "ok" | "warn" | "error";
-  // Rule ID that produced this node's unit (e.g. "R5.6"), if any.
-  ruleId: string | null;
+  // The formal unit this node is expected to satisfy, only set when
+  // this node is a positional argument of a call whose callee
+  // signature is known AND the resolved unit dimensionally differs
+  // from the formal. Renderers append `(expected <expected>)` to the
+  // row. Null otherwise.
+  expected: string | null;
   // Sub-expressions whose units feed into this one.
   children: ExpressionNode[];
 }
