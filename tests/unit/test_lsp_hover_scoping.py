@@ -314,9 +314,10 @@ def test_trace_hover_inside_do_bound(tmp_path: Path):
         _server._features.hover = "short"
 
 
-def test_call_hover_short_renders_pairing_b(tmp_path: Path):
-    """In short mode, hovering on the callee of a known subroutine
-    renders the B-style pairing (one row per arg, formal ◂ actual)."""
+def test_call_hover_short_renders_signature_and_arg_rows(tmp_path: Path):
+    """Short mode call hover: dimensional-signature header + one row per
+    actual argument labelled by the source expression (param names
+    dropped). All matching args → header is 🟢."""
     src = (
         "module m\n"
         "contains\n"
@@ -339,17 +340,92 @@ def test_call_hover_short_renders_pairing_b(tmp_path: Path):
         hit = _drive_hover(f, 10, 10)
         assert hit is not None
         text, _ = hit
-        assert "Signature" in text and "Call" in text
-        assert "◂" in text
+        # New format — dimensional-signature header (subroutine: no `→`).
+        # Pa renders SI-form (`kg·m⁻¹·s⁻²`).
+        assert "foo: (kg·m⁻¹·s⁻², kg·m⁻¹·s⁻²)" in text
+        # Subroutine header has no return arrow.
+        assert "→" not in text
+        # Rows labelled by the *actual argument expression*, not by
+        # the formal param name.
+        assert "p1" in text
+        assert "p2 + p1" in text
+        # The old "Signature ◂ Call" column-header layout is gone, and
+        # the formal param names (`a`, `b`) no longer appear in the row
+        # labels.
+        assert "Signature" not in text
+        assert "◂" not in text
         # All args resolve to Pa → 🟢.
         assert "🟢 DimFort" in text
     finally:
         _server._features.hover = "short"
 
 
+def test_call_hover_function_signature_has_return_arrow(tmp_path: Path):
+    """Function call hover: header ends with `→ ret`. Subroutines don't."""
+    src = (
+        "module m\n"
+        "contains\n"
+        "  function dynamic_pressure(rho, v) result(p)\n"
+        "    real, intent(in) :: rho   !< @unit{kg/m^3}\n"
+        "    real, intent(in) :: v     !< @unit{m/s}\n"
+        "    real :: p                 !< @unit{kg/(m*s^2)}\n"
+        "    p = 0.5 * rho * v * v\n"
+        "  end function\n"
+        "  subroutine demo\n"
+        "    real :: rho   !< @unit{kg/m^3}\n"
+        "    real :: v     !< @unit{m/s}\n"
+        "    real :: p     !< @unit{kg/(m*s^2)}\n"
+        "    p = dynamic_pressure(rho, v)\n"
+        "  end subroutine\n"
+        "end module\n"
+    )
+    f = tmp_path / "call_func.f90"
+    f.write_text(src)
+    _server._features.hover = "short"
+    try:
+        # `dynamic_pressure` on line 13 starts at column 9.
+        hit = _drive_hover(f, 13, 9)
+        assert hit is not None
+        text, _ = hit
+        assert "→" in text
+        assert "dynamic_pressure: (" in text
+        assert "🟢 DimFort" in text
+    finally:
+        _server._features.hover = "short"
+
+
+def test_call_hover_mismatch_annotates_row_with_expected(tmp_path: Path):
+    """Mismatched actual: row marked 🔴 with `(expected …)` appended,
+    header marker rolls up to 🔴."""
+    src = (
+        "module m\n"
+        "contains\n"
+        "  subroutine foo(a)\n"
+        "    real, intent(in) :: a   !< @unit{Pa}\n"
+        "  end subroutine\n"
+        "  subroutine demo\n"
+        "    real :: t   !< @unit{s}\n"
+        "    call foo(t)\n"
+        "  end subroutine\n"
+        "end module\n"
+    )
+    f = tmp_path / "call_mismatch.f90"
+    f.write_text(src)
+    _server._features.hover = "short"
+    try:
+        hit = _drive_hover(f, 8, 10)
+        assert hit is not None
+        text, _ = hit
+        assert "🔴 DimFort" in text
+        # Pa renders SI-form.
+        assert "(expected kg·m⁻¹·s⁻²)" in text
+    finally:
+        _server._features.hover = "short"
+
+
 def test_call_hover_detailed_expands_computed_args(tmp_path: Path):
-    """In detailed mode (layout C), a computed actual arg expands a
-    sub-tree showing its operand chain."""
+    """Detailed mode: a computed actual arg expands a sub-tree under
+    its row showing the operand chain."""
     src = (
         "module m\n"
         "contains\n"
@@ -371,9 +447,46 @@ def test_call_hover_detailed_expands_computed_args(tmp_path: Path):
         hit = _drive_hover(f, 10, 10)
         assert hit is not None
         text, _ = hit
-        # The computed arg `p2 + p1` should have a sub-tree underneath.
+        # The computed arg `p2 + p1` shows up as a row, and its tree of
+        # operands is rendered underneath.
         assert "p2 + p1" in text
         assert "├──" in text or "└──" in text
+    finally:
+        _server._features.hover = "short"
+
+
+def test_signature_hover_collapses_to_header_with_unannotated_slot(
+    tmp_path: Path,
+):
+    """Cursor on a *definition* header (no call) renders ONLY the
+    dimensional signature line. Unannotated formal slots render as `?`
+    and trigger the 🟡 header marker."""
+    src = (
+        "module m\n"
+        "contains\n"
+        "  function ek(v) result(e)\n"
+        "    real, intent(in) :: v          !< @unit{m/s}\n"
+        "    real :: e\n"  # unannotated return
+        "    e = 0.5 * v * v\n"
+        "  end function\n"
+        "end module\n"
+    )
+    f = tmp_path / "sig_hover.f90"
+    f.write_text(src)
+    _server._features.hover = "short"
+    try:
+        # `ek` on line 3 starts at column 12.
+        hit = _drive_hover(f, 3, 12)
+        assert hit is not None
+        text, _ = hit
+        # Single-line signature header, with `?` flagging the unannotated
+        # return slot.
+        assert "ek: (m·s⁻¹) → ?" in text
+        assert "🟡 DimFort" in text
+        # No per-arg row table — the pure-signature hover collapses to
+        # just the header.
+        assert "├──" not in text and "└──" not in text
+        assert "◂" not in text
     finally:
         _server._features.hover = "short"
 
