@@ -173,7 +173,7 @@ The expression surface covers six cursor positions:
 ```
 🟢 DimFort
 
-paprs : kg/(m×s²)
+paprs : kg·m⁻¹·s⁻²
 ```
 
 Header marker: 🟢 if annotated, 🟡 if unannotated.
@@ -196,7 +196,7 @@ hover just reports the resolved unit of the whole sub-expression:
 ```
 🟢 DimFort
 
-a * b : K×m
+a * b : K·m
 ```
 
 **Assignment** (cursor on `=` or whitespace inside the statement)
@@ -260,7 +260,7 @@ documented future enhancement.
 ```
 🟢 DimFort
 
-p1 + p2 : kg/(m×s²)
+p1 + p2 : kg·m⁻¹·s⁻²
 ```
 
 Just the resolved unit of the enclosing expression. Marker: 🟢 fully

@@ -247,7 +247,7 @@ def _normalized_unit(unit_text: str) -> str | None:
 
     The panel shows the *input* unit as written (``hPa``); the normalized
     form makes the otherwise-invisible scale factor visible (``hPa`` →
-    ``100×kg/(m×s²)``, ``g/kg`` → ``1/1000``). ``None`` if it doesn't parse.
+    ``100×kg·m⁻¹·s⁻²``, ``g/kg`` → ``1/1000``). ``None`` if it doesn't parse.
     Uses the installed default unit table (project units already loaded at
     initialize), so prefixes/derived units resolve as in checking.
     """

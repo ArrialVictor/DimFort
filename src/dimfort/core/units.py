@@ -1024,10 +1024,15 @@ def format_unit(
 ) -> str:
     """Render ``u`` as a human-readable expression.
 
-    Uses Unicode superscripts (``²``, ``³``, …) for integer exponents
-    and ``×`` for multiplication. Rational exponents fall back to
-    ``^(p/q)`` since superscript fractions look messy. ``LogWrap`` /
-    ``ExpWrap`` print as ``LOG(...)`` / ``EXP(...)`` per spec §9.
+    Uses Unicode superscripts (``²``, ``³``, …) for integer exponents.
+    Unit symbols are joined by the SI middle dot ``·``; the numeric
+    ``factor`` (when shown) is joined to the body by ``×`` so the
+    separator distinguishes a scale factor from another base unit.
+    Negative exponents render as signed superscripts (``K⁻¹``,
+    ``kg·m·s⁻²``) rather than a ``/`` denominator.
+    Rational exponents fall back to ``^(p/q)`` since superscript fractions
+    look messy. ``LogWrap`` / ``ExpWrap`` print as ``LOG(...)`` /
+    ``EXP(...)`` per spec §9.
 
     An **affine** unit (``offset != 0``, e.g. ``degC``) appends its
     zero-point shift — ``degC`` → ``K + 273.15`` — so it is distinguishable
@@ -1051,38 +1056,29 @@ def format_unit(
         )
         return f"EXP({inner})"
     names = base_symbols(table)
-    pos_terms: list[str] = []
-    neg_terms: list[str] = []
+    terms: list[str] = []
     for sym, exp in zip(names, u.dimension, strict=False):
         if exp.is_zero():
             continue
-        # Pure-constant exponents render through the legacy
-        # superscript / fraction path. Symbolic exponents render with
-        # the bracketed form ``sym^(2/7·kappa + 1)`` since superscripts
+        # Each factor renders as ``sym`` raised to its *signed* exponent,
+        # SI-style: a negative exponent becomes a superscript ``⁻n`` rather
+        # than moving the factor into a ``/`` denominator (``1/K`` → ``K⁻¹``,
+        # ``kg m/s²`` → ``kg·m·s⁻²``). Rational exponents fall back to the
+        # bracketed ``^(p/q)`` form since superscript fractions look messy,
+        # and symbolic exponents to ``^(<linear form>)`` since superscripts
         # can't express linear combinations.
         q = exp.as_fraction()
         if q is not None:
-            mag = abs(q)
-            sign_positive = q > 0
-            if mag == 1:
+            if q == 1:
                 term = sym
-            elif mag.denominator == 1:
-                term = sym + _to_super(str(int(mag)))
+            elif q.denominator == 1:
+                term = sym + _to_super(str(int(q)))
             else:
-                term = f"{sym}^({mag})"
-            (pos_terms if sign_positive else neg_terms).append(term)
+                term = f"{sym}^({q})"
         else:
-            # Symbolic: print as sym^(<linear form>). Never collapse to
-            # the denominator side — we don't know the sign of a symbolic
-            # exponent in general.
             term = f"{sym}^({exp})"
-            pos_terms.append(term)
-    body = "×".join(pos_terms) if pos_terms else "1"
-    if neg_terms:
-        denom = "×".join(neg_terms)
-        if len(neg_terms) > 1:
-            denom = f"({denom})"
-        body = f"{body}/{denom}"
+        terms.append(term)
+    body = "·".join(terms) if terms else "1"
     if show_factor and u.factor != 1:
         rendered = f"{u.factor}×{body}" if body != "1" else f"{u.factor}"
     else:
@@ -1095,6 +1091,50 @@ def format_unit(
         sign = "+" if off >= 0 else "-"
         rendered = f"{rendered} {sign} {abs(off):g}"
     return rendered
+
+
+def format_unit_source(u: UnitExpr, *, table: UnitTable | None = None) -> str:
+    """Serialize ``u`` as a parseable ``@unit{}`` string.
+
+    :func:`format_unit` is for *display* — Unicode superscripts, ``·``
+    products, signed-exponent powers (``kg·m·s⁻²``) — and its output does
+    **not** round-trip through :func:`parse`. This function emits the ASCII
+    DSL the parser accepts (``*`` products, ``^`` powers, a ``/``
+    denominator: ``kg*m/s^2``) so the result can be written back into source
+    as a ``@unit{...}`` annotation (e.g. the H010 extract-to-PARAMETER
+    quick-fix). The affine ``offset`` is dropped — an absolute unit's
+    zero-point shift is not expressible in annotation syntax — so ``degC``
+    serializes to ``K``.
+    """
+    if isinstance(u, LogWrap):
+        return f"LOG({format_unit_source(u.inner, table=table)})"
+    if isinstance(u, ExpWrap):
+        return f"EXP({format_unit_source(u.inner, table=table)})"
+    names = base_symbols(table)
+    pos_terms: list[str] = []
+    neg_terms: list[str] = []
+    for sym, exp in zip(names, u.dimension, strict=False):
+        if exp.is_zero():
+            continue
+        q = exp.as_fraction()
+        if q is not None:
+            mag = abs(q)
+            if mag == 1:
+                term = sym
+            elif mag.denominator == 1:
+                term = f"{sym}^{int(mag)}"
+            else:
+                term = f"{sym}^({mag})"
+            (pos_terms if q > 0 else neg_terms).append(term)
+        else:
+            pos_terms.append(f"{sym}^({exp})")
+    body = "*".join(pos_terms) if pos_terms else "1"
+    if neg_terms:
+        denom = "*".join(neg_terms)
+        if len(neg_terms) > 1:
+            denom = f"({denom})"
+        body = f"{body}/{denom}"
+    return body
 
 
 def parse(expr: str, table: UnitTable | None = None) -> UnitExpr:
