@@ -52,10 +52,14 @@ _SEVERITY_EMOJI = {
     Severity.HINT: "🟢",
 }
 
-# Pull the reason out of a U020 diagnostic message. The checker emits
-# ``f"RHS unit assumed {format_unit(au)} ({reason})"``; the parenthesised
-# tail is the user-supplied reason.
-_U020_REASON_RE = re.compile(r"\(([^)]+)\)\s*$")
+# Pull (asserted_unit, reason) out of a U020 diagnostic message. The
+# checker emits ``f"RHS unit assumed {format_unit(au)} ({reason})"``:
+# everything between ``assumed `` and the trailing `` (…)`` is the
+# pretty-formatted asserted unit; the parenthesised tail is the
+# user-supplied reason. Greedy `.+` on the unit copes with
+# ``LOG(Pa)``-style internal parens — the trailing-paren reason is
+# matched last.
+_U020_PARSE_RE = re.compile(r"^RHS unit assumed (.+) \(([^)]+)\)\s*$")
 
 # Node types with no unit of their own *by structure* (not because we
 # couldn't resolve one). Their resolution-axis base is 🟢 (a clean
@@ -105,18 +109,26 @@ def _diags_for_ctx(ctx: ts_checker.Ctx) -> tuple[Diagnostic, ...]:
     return tuple(result.diagnostics.get(p, ()))
 
 
-def _assumed_reason_for(
+def _assumed_for(
     node: Node, ctx: ts_checker.Ctx,
-) -> str | None:
-    """Return the ``@unit_assume`` reason for the U020 diagnostic owning
-    ``node``, or ``None`` if no U020 owns it.
+) -> tuple[str, str] | None:
+    """Return ``(asserted_unit_str, reason)`` for the ``@unit_assume``
+    on ``node`` (an ``assignment_statement``), or ``None`` if none.
 
     ``@unit_assume`` is a **statement-level** directive — only
-    ``assignment_statement`` nodes can own a U020. The diagnostic's
-    source position is the ``@unit_assume`` token in the trailing
-    comment, which sits *outside* the assignment's tree-sitter span,
-    so we can't use :func:`_span_within` here. Match by line instead:
-    a U020 on the assignment's line range owns it.
+    ``assignment_statement`` nodes can own its U020 diagnostic. The
+    diagnostic's source position is the ``@unit_assume`` token in
+    the trailing comment, which sits *outside* the assignment's
+    tree-sitter span, so we can't use :func:`_span_within` here.
+    Match by line instead: a U020 on the assignment's line range
+    owns it.
+
+    The 🔵 overlay and the ``(assumed: <reason>)`` row tail then
+    surface on the assignment's **RHS** child — the directive's
+    syntactic subject — not on the assignment itself. The
+    assignment's homogeneity check (LHS vs the asserted RHS unit)
+    runs in :mod:`ts_checker`; if it fails, H001 fires on the
+    assignment node and shows 🔴 there independently.
     """
     if node.type != "assignment_statement":
         return None
@@ -131,8 +143,10 @@ def _assumed_reason_for(
         if d.code != "U020":
             continue
         if nline_s <= d.start.line <= nline_e:
-            m = _U020_REASON_RE.search(d.message)
-            return m.group(1) if m else ""
+            m = _U020_PARSE_RE.search(d.message)
+            if m is not None:
+                return m.group(1), m.group(2)
+            return "?", ""  # malformed diagnostic — degrade gracefully
     return None
 
 
@@ -143,9 +157,10 @@ def _self_marker(node: Node, kid_nodes: list[Node], ctx: ts_checker.Ctx, source:
     child's span (tightest-enclosing); upward propagation is the caller's
     worst-of-children. See docs/design/markers.md §2–§4.
 
-    U020 is a special non-severity provenance code: when one owns the node
-    (and no consistency-family diagnostic does), the marker paints 🔵 —
-    "accepted via @unit_assume" (§4.6)."""
+    Severity-only: returns 🟢/🟡/🔴. The 🔵 ``@unit_assume`` overlay
+    is applied later, at render time on the assignment's RHS child —
+    see :func:`_assumed_for`, ``_build_expression_tree`` and
+    ``_render_ast_tree``."""
     if node.type in _NO_UNIT_NODE_TYPES:
         base = "🟢"  # statement/relation: no unit of its own
     else:
@@ -156,16 +171,6 @@ def _self_marker(node: Node, kid_nodes: list[Node], ctx: ts_checker.Ctx, source:
     nspan = _node_span_lc(node)
     kid_spans = [_node_span_lc(k) for k in kid_nodes]
     worst = base
-    # Promote 🟢 → 🔵 if a U020 owns this node — the assumption is what
-    # accepted the line, and the reader should see that explicitly.
-    # U020 only ever owns ``assignment_statement`` nodes (the directive
-    # is statement-level), and ownership is line-based since the
-    # directive's source position sits in a trailing comment outside
-    # the statement's tree-sitter span (see ``_assumed_reason_for``).
-    # U020 doesn't compete with 🟡/🔴; if a consistency diagnostic also
-    # owns the node, that wins via worst-of below.
-    if _assumed_reason_for(node, ctx) is not None:
-        worst = _worst_emoji(worst, "🔵")
     for d in diags:
         if d.code not in _MARKER_DIAG_CODES:
             continue
@@ -184,17 +189,24 @@ def _node_marker(node: Node, ctx: ts_checker.Ctx, source: bytes) -> str:
     ``_build_expression_tree`` aggregates inline from child payloads
     instead, but both reduce to the same §2 model.
 
-    ``@unit_assume`` short-circuits the recursion: the directive's
-    contract is "trust me on the unit, don't worry about what's
-    inside," so child markers don't propagate up through an assumed
-    assignment. The row paints 🔵 from ``_self_marker`` and stays
-    there unless a *diagnostic-owned* worse marker (🟡/🔴) lives on
-    the node itself — handled by ``_self_marker``'s own worst-of."""
+    Returns severity only (🟢/🟡/🔴) — 🔵 is a render-time overlay,
+    not part of aggregation (see docs/design/markers.md §4.6).
+
+    For an ``@unit_assume`` assignment, the directive's contract is
+    "trust me on the unit, ignore the inside." The **RHS** child's
+    severity therefore contributes as 🟢 (it was accepted) to the
+    parent's worst-of; the rest of the subtree (LHS, descendants of
+    the RHS) contributes normally. The assignment row still picks up
+    🔴/🟡 from H001 etc. that own the assignment node itself —
+    declared-unit conflicts with the assumed unit aren't masked."""
     kids = _interesting_children(node)
     m = _self_marker(node, kids, ctx, source)
-    if _assumed_reason_for(node, ctx) is not None:
-        return m
-    for k in kids:
+    asm = _assumed_for(node, ctx) if node.type == "assignment_statement" else None
+    for i, k in enumerate(kids):
+        if asm is not None and i == len(kids) - 1:
+            # RHS of assumed assignment: directive accepted it, so it
+            # contributes 🟢 for aggregation regardless of what's inside.
+            continue
         m = _worst_emoji(m, _node_marker(k, ctx, source))
     return m
 
@@ -285,17 +297,15 @@ def _build_expression_tree(
     else:
         unit_render = "?"
 
-    # `@unit_assume` provenance: if a U020 owns this node, capture the
-    # mandatory reason so the panel can surface it as
-    # ``(assumed: <reason>)`` and the marker can paint 🔵.
-    assumed_reason = _assumed_reason_for(node, ctx)
-
     payload: dict[str, Any] = {
         "label": _node_label(node, source),
         "unit": unit_render,
         "marker": "ok",  # set below
         "expected": expected_render,
-        "assumed": assumed_reason,
+        # `assumed` is overlaid on the RHS child of an assumed
+        # assignment, not on the assignment itself — see the
+        # post-recursion block below.
+        "assumed": None,
         "children": child_nodes,
     }
 
@@ -316,18 +326,59 @@ def _build_expression_tree(
         if verdict == "autocast" and lhs_u is not None:
             child_nodes[-1]["unit"] = format_unit(lhs_u)
 
+    # `@unit_assume` overlay on the **RHS child** of an assumed
+    # assignment. The directive's syntactic subject is the RHS
+    # expression, so the 🔵 marker and the `(assumed: <reason>)` row
+    # tail belong there, not on the assignment row. The assignment
+    # row still picks up its own H001 (🔴) if the declared LHS unit
+    # conflicts with the asserted RHS unit — the assumption never
+    # masks a declared-unit conflict (markers.md §4.6).
+    assumed_overlay = (
+        _assumed_for(node, ctx)
+        if node.type == "assignment_statement" else None
+    )
+    if assumed_overlay is not None and child_nodes:
+        asserted_unit_str, reason = assumed_overlay
+        rhs = child_nodes[-1]
+        # Show the *asserted* unit on the RHS row (instead of the
+        # computed `?`), so the reader sees what unit DimFort is
+        # using for the LHS check.
+        rhs["unit"] = asserted_unit_str
+        rhs["assumed"] = reason
+        # 🔵 overlay wins over a plain 🟢 AND over the 🟡-on-`expected`
+        # demotion (the assumption is the headline on that row). An
+        # honest 🔴 from a diagnostic *owning* the RHS still wins —
+        # but in practice the RHS expression itself is rarely owned
+        # by a consistency diagnostic; H001 owns the parent
+        # assignment instead.
+        if rhs["marker"] in ("ok", "warn"):
+            rhs["marker"] = "assumed"
+
     # Marker (docs/design/markers.md): this node's own marker (resolution
     # axis worst-of the consistency-family diagnostics it owns) worst-of its
     # children. Single source of truth = the diagnostic stream — S001/S002
     # and dimension mismatches all flow through here, no per-check overlay.
+    # `assumed` children contribute as `ok` to worst-of (markers.md §4.6:
+    # 🔵 is unranked overlay, not a tier).
     self_token = _marker_token(_self_marker(node, kids, ctx, source))
-    if assumed_reason is not None:
-        # `@unit_assume` short-circuits the worst-of-children: the
-        # directive said "trust me on the unit"; child markers
-        # shouldn't bubble up.
-        payload["marker"] = self_token
+    if assumed_overlay is not None and child_nodes:
+        # Assumed assignment: the directive accepted the RHS, so for the
+        # assignment row's marker we treat the RHS as `ok`; other
+        # children (the LHS) contribute normally.
+        agg_kids = [
+            "ok" if i == len(child_nodes) - 1 else c["marker"]
+            for i, c in enumerate(child_nodes)
+        ]
+        payload["marker"] = _worst_token(self_token, *agg_kids)
     else:
-        payload["marker"] = _worst_token(self_token, *(c["marker"] for c in child_nodes))
+        # 🔵 should never appear among siblings here — assumed only
+        # fires on the RHS of an assignment, and the case is handled
+        # above — but be defensive: map any stray `assumed` to `ok`.
+        agg_kids = [
+            ("ok" if c["marker"] == "assumed" else c["marker"])
+            for c in child_nodes
+        ]
+        payload["marker"] = _worst_token(self_token, *agg_kids)
 
     # Call-arg-formal disagreement override: when this row carries an
     # ``expected`` annotation (its actual unit dimensionally differs from

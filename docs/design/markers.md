@@ -272,32 +272,50 @@ surface folds into the model then.
    the algebra can't derive (typically a non-rational exponent on a
    dimensioned base — empirical fits like Tetens, Magnus, Buck,
    Brandes2007). The checker emits a U020 INFO acknowledging the
-   assumption; the row paints **🔵** and surfaces the mandatory
-   reason as `(assumed: <reason>)` on the row tail (same column as
-   `(expected …)`). The semantics:
-   - **🔵 sits between 🟢 and 🟡** in the worst-of aggregation order
-     (`error > warn > assumed > ok`). A 🔵 child propagates 🔵 to its
-     parent unless a 🟡/🔴 sibling beats it; siblings on their own
-     merits aren't suppressed.
-   - **The directive short-circuits worst-of-children at the
-     assumed node itself** (the assignment_statement carrying the
-     `@unit_assume`). The whole point of the directive is "trust me
-     on the unit; don't worry about the inside" — child markers
-     (which often show 🟡 from unresolved leaves like `(-0.922)`)
-     are not propagated up through that row. The assumption owns
-     that row's verdict.
-   - **Ownership is line-based**, not span-based: the U020
-     diagnostic position sits at the `@unit_assume` token in the
-     trailing comment, which is *outside* the assignment's
-     tree-sitter span. The ownership rule matches a U020 against
-     the smallest `assignment_statement` on the same line. Only
-     `assignment_statement` nodes can own a U020 — the directive is
-     statement-level.
-   - **🔵 doesn't compete with 🟡/🔴.** If a consistency-family
-     diagnostic also owns the node (e.g., the assumed unit
-     disagrees with a *declared* LHS unit and H001 fires), worst-of
-     paints 🔴/🟡 instead. The assumption never masks a declared-
-     unit conflict.
+   assumption. The 🔵 marker, the asserted unit, and the
+   `(assumed: <reason>)` row tail surface **on the assignment's
+   RHS row** — the directive's syntactic subject — not on the
+   assignment row itself. The semantics:
+   - **🔵 is a per-row overlay, NOT a severity tier.** It paints
+     only on the RHS row of an assumed assignment. It does **not**
+     participate in worst-of aggregation: 🔵 doesn't propagate to
+     ancestors, doesn't compete with 🟡/🔴 anywhere else, and
+     siblings of the RHS contribute as if it were 🟢 for the
+     assignment's marker computation. The severity model stays a
+     clean three-tier `error > warn > ok`.
+   - **What 🔵 means at the row.** "DimFort accepted this RHS
+     because the source asked me to. Here's the unit you asserted
+     and the reason." The asserted unit replaces the computed unit
+     (which would typically be `?` — the very reason the directive
+     was needed). The row tail names the reason verbatim.
+   - **The RHS subtree still renders normally.** Children of the
+     RHS show their own algebra (typically with `?` leaves under
+     the non-rational power). They're informational — the directive
+     said "ignore the inside" but readers may want to inspect what
+     the algebra produced; the 🔵 at the RHS row says "we know, we
+     accepted it anyway."
+   - **The assignment row stays clean (🟢) when the homogeneity
+     check passes.** The LHS declared unit is compared against the
+     RHS *asserted* unit (not the computational ?): if they match,
+     no diagnostic fires, the assignment row is 🟢, and the hover
+     header is 🟢. The 🔵 lives one level down on the RHS row.
+   - **A declared-unit conflict still fires H001 on the
+     assignment.** If the LHS is declared `kg` but `@unit_assume{m}`
+     asserts `m`, H001 fires on the assignment, the assignment row
+     paints 🔴 (header also 🔴), and the RHS row carries 🔵 +
+     `(expected kg)` + `(assumed: …)`. The assumption never masks a
+     declared-unit conflict.
+   - **Ownership is line-based.** The U020 diagnostic position
+     sits at the `@unit_assume` token in the trailing comment,
+     which is *outside* the assignment's tree-sitter span. The
+     ownership rule matches a U020 against the smallest
+     `assignment_statement` on the same line. Only
+     `assignment_statement` nodes can own a U020 — the directive
+     is statement-level.
+   - **Hover header = root row's marker.** The header naturally
+     reads 🟢 for a clean assumed line (the assignment, which is
+     the root, is 🟢) and 🔴 when H001 fires. The 🔵 is visible in
+     the body where the assertion lives, not in the header.
 
 ## 5. Reconciliation with the existing docs
 

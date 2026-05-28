@@ -164,8 +164,12 @@ interface ExpressionNode {
   // — pre-0.2.1 — will treat the string as a unit and pad accordingly;
   // it's a render-only regression, not a crash.)
   unit: string;
-  // 🟢 ok, 🔵 accepted via @unit_assume, 🟡 warning/unresolved,
-  // 🔴 mismatch. Worst-of order: error > warn > assumed > ok.
+  // Three-tier severity (`ok`/`warn`/`error`) plus a fourth
+  // **overlay** value `assumed` (companions render 🔵). `assumed`
+  // does NOT participate in worst-of aggregation — it appears only
+  // on the RHS row of an assumed assignment as a per-row overlay,
+  // and ancestors never inherit it. Severity worst-of stays
+  // `error > warn > ok`. See design/markers.md §4.6.
   marker: "ok" | "assumed" | "warn" | "error";
   // The formal unit this node is expected to satisfy, only set when
   // this node is a positional argument of a call whose callee
@@ -176,13 +180,20 @@ interface ExpressionNode {
   // override — see design/markers.md §4.4); a row with
   // `expected: <unit>` therefore never reads `marker: "ok"`.
   expected: string | null;
-  // The mandatory reason supplied with `@unit_assume{<unit> : <reason>}`,
-  // only set when the U020 diagnostic for that directive owns this
-  // node (always an `assignment_statement`). Renderers append
-  // `(assumed: <reason>)` to the row, and `marker` reads `"assumed"`
-  // (🔵). Child markers are NOT propagated up through this row — the
-  // directive's contract is "trust me on the unit, ignore the inside."
-  // See design/markers.md §4.6.
+  // The mandatory reason supplied with
+  // `@unit_assume{<unit> : <reason>}`, set on the **RHS row** of an
+  // assumed assignment (NOT on the assignment row itself — the
+  // directive's syntactic subject is the RHS expression). When set:
+  //   * `unit` carries the *asserted* unit (not the computed `?`).
+  //   * `marker` reads `"assumed"` (companions render 🔵), unless a
+  //     diagnostic owning this node paints 🔴.
+  //   * Renderers append `(assumed: <reason>)` to the row tail
+  //     (same column as `(expected …)`; both can coexist).
+  // The assignment row itself stays clean (`marker: "ok"`) when the
+  // homogeneity check passes (LHS unit matches the asserted RHS
+  // unit). A declared-unit conflict still fires H001 on the
+  // assignment, painting it `"error"` — the assumption never masks
+  // a declared-unit conflict. See design/markers.md §4.6.
   assumed: string | null;
   // Sub-expressions whose units feed into this one.
   children: ExpressionNode[];
