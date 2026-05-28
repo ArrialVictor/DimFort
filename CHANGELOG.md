@@ -34,6 +34,30 @@ they may still shift between `0.x` releases.
   🟢/🟡/🔴 marker on the row itself, matching the side panel, instead of
   only in the bold `DimFort` header. The header keeps its marker too.
 
+### Feature: `panelInfo.imports` — use-imported symbols visible at the cursor
+
+- The `dimfort/panelInfo` response now carries a structured **`imports`**
+  list: every `use`-imported symbol visible at the cursor, grouped by
+  source module, with each variable's `@unit{}` and each procedure's
+  full **signature** (`name(arg-units) → return unit`; subroutines render
+  with `—` for the return slot). Scoped by Fortran visibility — honours
+  `only:` lists and `=>` renames, walks the enclosing scope chain, and
+  carries the source location so the editor companion can click-navigate
+  cross-file to where the symbol is declared. Implementation in
+  `src/dimfort/lsp/imports.py`.
+
+### Feature: `scaleMode` LSP initialization option
+
+- New `scaleMode` initializationOption lets the editor companion override
+  the project's `.dimfort.toml` `[scale] enabled` setting for the
+  session: `"auto"` defers to the toml (default), `true`/`false` forces
+  the magnitude layer (S001/S002) on or off. Surfaces in each companion
+  as a setting + cycle command: VSCode `dimfort.scale.mode` /
+  `DimFort: Cycle Scale Mode`; Nvim `scale_mode` setup arg +
+  `:DimFortCycleScale`; Emacs `dimfort-scale-mode` +
+  `M-x dimfort-cycle-scale-mode`. Reflected in `:DimFortStatus` (Nvim) and
+  the companions' status surfaces.
+
 ### Feature: `P001` — "unparsed region" marker
 
 - A new **info-level** diagnostic that flags regions tree-sitter couldn't parse.
