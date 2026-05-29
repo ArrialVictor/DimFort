@@ -413,12 +413,88 @@ Feature toggles:
    default Imports section? The Imports section already lists every
    use-imported name visible at the cursor, so this would be a
    re-grouping at most.
-2. **Cross-file derived-type fields**: when the cursor is on `b%v`
-   and `b` is a `type(point)`, show the type's field table as a
-   nested section under Scope?
+
+2. **Cross-file derived-type fields.** When the cursor is on `b%v`
+   and `b` is a `type(point)`, the panel doesn't surface the type's
+   fields anywhere — go-to-def is the only path. A nested
+   `▾ TYPE: point (from <module>)` sub-section, listing fields with
+   the same `ScopeVar` shape and click-to-jump cross-file, would
+   mirror how Scope already stacks enclosing scopes. The server-side
+   field lookup is the same one `dimfort/interactions` already does
+   for plain symbols.
+
+   Once types appear in the panel, Scope and Imports start mixing
+   categories of thing (variables, procedures, types). A natural
+   follow-up is to sub-categorise each section:
+
+   ```
+   ▾ SCOPE — push
+      Variables
+         b           type(point)   🟢
+         kinetic     kg·m²·s⁻²     🟢
+      Procedures
+         helper(m)   s             🟢
+
+   ▾ IMPORTS
+      from geom
+         Types
+            point                  🟢
+         Variables
+            g0          m·s⁻²      🟢
+         Procedures
+            norm(m, m)  m          🟢
+   ```
+
+   Wire-shape unchanged — the server already tags each row's kind
+   (module-procedure rows in Scope; `callable` flag in Imports);
+   sub-bucketing is purely renderer-side. Convention: **empty
+   buckets disappear within a scope** (a routine with no types
+   shouldn't render a "Types: (none)" row), but the **top-level six
+   sections stay stable** (still rendered with a `(none)` placeholder
+   when empty) so the panel doesn't pop in/out structurally.
+
 3. **Stale marker** when the server is mid-request: dim the panel
    text via a highlight group, un-dim on response? Currently the
-   panel just keeps the last content; this has not proven jarring.
-4. **Per-window vs global panel**: today one global panel per editor
-   session. Worth revisiting if users routinely open multiple Fortran
-   files side-by-side.
+   panel just keeps the last content; the 200 ms debounce + fast
+   responses mean staleness has not proven visible in practice, and
+   dim/un-dim on every keystroke risks being jittery. Revisit only
+   if someone reports confusion.
+
+4. **Per-window vs global panel.** Today one global panel per editor
+   session, following `activeTextEditor`. A per-window panel would
+   let users compare two files' Scope tables side-by-side
+   (`:vsplit` in Nvim, split editor groups in VSCode). Tractable in
+   Nvim and Emacs — both treat windows as first-class; the panel
+   becomes a buffer pinned to a window via window-local state +
+   per-window autocmds / hooks.
+
+   **VSCode is the awkward one.** The panel today is a
+   `WebviewView` registered for `viewType: "dimfort.panel"` and
+   lives in the sidebar container — inherently singleton per
+   workbench window, no API to spawn one per editor group. Two
+   routes if we go per-window:
+
+   - **Switch to `WebviewPanel`s** (editor-area tabs created with
+     `window.createWebviewPanel`). One per editor group, the user
+     can drag them between groups / split off / pop to a new window
+     like any tab. Renderer is unchanged — same HTML/CSS/script,
+     same `webview.postMessage` plumbing, same VSCode theme
+     variables; only the container code (lifecycle, focus tracking,
+     `WebviewPanelSerializer` for reload-restore) is new. Trade-off:
+     panels live in the editor area, so they cost code real estate
+     (vs. sidebar pixels that were going to the Explorer anyway),
+     and they're closeable like any tab. Mitigation: an
+     `editor/title` menu button — a small DimFort icon on each
+     editor's title bar that opens a panel pinned to that editor's
+     `ViewColumn`, mirroring how Markdown's "Open Preview to the
+     Side" button works.
+
+   - **Keep the singleton `WebviewView`, just smarter caching** —
+     remember per-(window or editor-group) panel state and re-render
+     from cache on focus return instead of re-querying. Not really
+     "per-window," but it sharpens the impression of stability.
+
+   Likely path if this lands: ship per-window in Nvim + Emacs;
+   accept that VSCode either takes the `WebviewPanel` route (with
+   the title-bar-button discoverability fix) or stays singleton.
+   Worth documenting the divergence rather than forcing parity.
