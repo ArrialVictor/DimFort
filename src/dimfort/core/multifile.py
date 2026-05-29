@@ -800,7 +800,7 @@ def check_files(
                 routine_scopes=entry.attachment.routine_scopes,
                 out_autocast_events=file_autocasts,
                 assumes={
-                    a.line: (a.unit_text, a.reason, a.column)
+                    a.line: (a.unit_text, a.reason, a.column, a.end_column)
                     for a in getattr(entry.scan, "assumes", ())
                 },
                 affine_conversions={

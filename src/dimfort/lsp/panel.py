@@ -123,7 +123,9 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
         scopes.append({
             **header,
             "vars": _build_scope_vars(
-                sn, scan_decls, attached, source_bytes, unparseable
+                sn, scan_decls, attached, source_bytes, unparseable,
+                scale_mode=state.scale_mode,
+                tree=tree, signatures=result.signatures,
             ),
         })
 
@@ -147,6 +149,8 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
                 "vars": build_scope_vars_by_span(
                     idx, recovered, scan_decls, attached,
                     source_bytes, unparseable,
+                    scale_mode=state.scale_mode,
+                    tree=tree, signatures=result.signatures,
                 ),
             })
 
@@ -195,7 +199,10 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
     local_names_lc = frozenset(
         v["name"].lower() for sc in scopes for v in sc["vars"]
     )
-    imports = build_imports(tree, source_bytes, line_1based, result, local_names_lc)
+    imports = build_imports(
+        tree, source_bytes, line_1based, result, local_names_lc,
+        scale_mode=state.scale_mode,
+    )
 
     return {
         "expression": expression,

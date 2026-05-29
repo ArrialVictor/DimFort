@@ -512,7 +512,7 @@ def test_signature_hover_collapses_to_header_with_unannotated_slot(
         text, _ = hit
         # Single-line signature header, with `?` flagging the unannotated
         # return slot.
-        assert "ek: (m·s⁻¹) → ?" in text
+        assert "ek(m·s⁻¹) : ?" in text
         assert "🟡 DimFort" in text
         # No per-arg row table — the pure-signature hover collapses to
         # just the header.
@@ -603,6 +603,40 @@ def test_expression_short_assignment_mismatch_shows_expected(tmp_path: Path):
     assert "🔴 DimFort" in text
     # RHS row shows the expected-unit annotation (Pa → SI form would
     # apply if the LHS were Pa, but here LHS is kg).
+    assert "(expected kg)" in text
+    # The RHS row carries 🟡 from the expected-override (not 🔴).
+    rhs_line = next(
+        line for line in text.splitlines() if "(expected kg)" in line
+    )
+    assert "🟡" in rhs_line
+    assert "🔴" not in rhs_line
+
+
+def test_expression_detailed_assignment_mismatch_shows_expected(tmp_path: Path):
+    """Detailed-mode hover for an assignment mismatch surfaces the same
+    `(expected <lhs_unit>)` annotation + 🟡-on-expected demotion on
+    the RHS row as the short hover and the panel — the detailed-mode
+    manual row assembly used to skip the propagation."""
+    src = (
+        "subroutine demo\n"
+        "  real :: bogus    !< @unit{kg}\n"
+        "  real :: c_sound  !< @unit{m/s}\n"
+        "  real :: t        !< @unit{s}\n"
+        "  bogus = c_sound * t\n"
+        "end subroutine\n"
+    )
+    f = tmp_path / "asn_expected_detailed.f90"
+    f.write_text(src)
+    _server._features.hover = "detailed"
+    try:
+        hit = _drive_hover(f, 5, 9)  # on `=`
+    finally:
+        _server._features.hover = "short"
+    assert hit is not None
+    text, _ = hit
+    # Root assignment paints 🔴 because H001 owns it.
+    assert "🔴 DimFort" in text
+    # RHS row shows the expected-unit annotation.
     assert "(expected kg)" in text
     # The RHS row carries 🟡 from the expected-override (not 🔴).
     rhs_line = next(

@@ -443,22 +443,37 @@ def _expression_hover_for(
     lhs_mark = _node_marker(lhs, ctx, source)
     rows.append((
         "├── " + _node_label(lhs, source),
-        format_unit(lhs_unit) if lhs_unit is not None else "?",
+        format_unit(lhs_unit, show_factor=ctx.scale_mode)
+        if lhs_unit is not None else "?",
         lhs_mark,
         "",
     ))
     # Detailed-mode assembly assembles the root + LHS rows manually
     # and then calls _render_ast_tree on the RHS — bypassing the
-    # assignment node's iteration loop where ``assumed_overlay`` is
-    # normally set. Compute the overlay here and pass it explicitly so
-    # the RHS row picks up its 🔵 + asserted-unit + (assumed: …) row
-    # tail when the assignment carries @unit_assume.
+    # assignment node's iteration loop where ``assumed_overlay``,
+    # autocast propagation, and ``expected_unit`` propagation are
+    # normally set. Compute them here and pass explicitly so the RHS
+    # row picks up:
+    #   * 🔵 + asserted-unit + ``(assumed: …)`` when @unit_assume;
+    #   * the LHS unit on a literal RHS in autocast (R4.4);
+    #   * ``(expected <lhs_unit>)`` + 🟡-on-expected on a real
+    #     homogeneity mismatch (H001) — same shape as a call-arg
+    #     mismatch, mirroring short-hover and panel.
     from dimfort.lsp.expr_tree import _assumed_for
     rhs_assumed_overlay = _assumed_for(asn, ctx)
+    rhs_expected: UnitExpr | None = None
+    rhs_target: UnitExpr | None = None
+    verdict, vlhs, _ = ts_checker.assignment_homogeneity(lhs, rhs, ctx, source)
+    if verdict == "mismatch" and vlhs is not None:
+        rhs_expected = vlhs
+    elif verdict == "autocast" and vlhs is not None:
+        rhs_target = vlhs
     _render_ast_tree(
         rhs, ctx, source,
         prefix="", is_last=True, is_root=False, rows=rows,
         assumed_overlay=rhs_assumed_overlay,
+        expected_unit=rhs_expected,
+        target_unit_for_literal=rhs_target,
     )
     if not rows:
         return None
@@ -911,10 +926,15 @@ def _render_ast_tree(
     #           partial resolution).
     from dimfort.core.units import equal_dim, format_unit
     from dimfort.lsp.expr_tree import _NO_UNIT_GLYPH, _NO_UNIT_NODE_TYPES
+    # Surface scale factors when scale checking is on — uniform rule
+    # across every panel/hover surface (see ``_build_expression_tree``
+    # and ``_normalized_unit`` for the same gate). Off-mode hides the
+    # factor so displays don't claim significance the checker ignores.
+    sf = ctx.scale_mode
     if node.type in _NO_UNIT_NODE_TYPES:
         unit_str = _NO_UNIT_GLYPH
     elif unit is not None:
-        unit_str = format_unit(unit)
+        unit_str = format_unit(unit, show_factor=sf)
     else:
         unit_str = "?"
     extra_str = ""
@@ -923,7 +943,7 @@ def _render_ast_tree(
         and unit is not None
         and not equal_dim(unit, expected_unit)
     ):
-        extra_str = f"(expected {format_unit(expected_unit)})"
+        extra_str = f"(expected {format_unit(expected_unit, show_factor=sf)})"
     # `@unit_assume` overlay — applied to the RHS row of an assumed
     # assignment (the parent's loop passes ``assumed_overlay`` to that
     # one child; this node itself never carries the overlay because

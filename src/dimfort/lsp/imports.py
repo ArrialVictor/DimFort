@@ -80,6 +80,8 @@ def build_imports(
     cursor_line: int,
     result: WorksetResult,
     local_names_lc: frozenset[str],
+    *,
+    scale_mode: bool = False,
 ) -> list[dict[str, Any]]:
     """Build the in-scope imported-variable rows for the panel.
 
@@ -167,7 +169,10 @@ def build_imports(
                 row: dict[str, Any] = {
                     "name": local,
                     "unit": ret,
-                    "unitNormalized": _normalized_unit(ret) if ret else None,
+                    "unitNormalized": (
+                        _normalized_unit(ret, scale_mode=scale_mode)
+                        if ret else None
+                    ),
                     "module": module_lc,
                     "kind": ("annotated"
                              if (ret or sig.is_subroutine) else "unannotated"),
@@ -184,7 +189,8 @@ def build_imports(
                     "name": local,
                     "unit": unit_text,
                     "unitNormalized": (
-                        _normalized_unit(unit_text) if unit_text else None
+                        _normalized_unit(unit_text, scale_mode=scale_mode)
+                        if unit_text else None
                     ),
                     "module": module_lc,
                     "kind": "annotated" if unit_text else "unannotated",

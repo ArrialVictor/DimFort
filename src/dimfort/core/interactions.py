@@ -58,7 +58,7 @@ KIND_DISPLAY = {
     DECLARES: "declaration",
     CONTRIBUTES: "write",
     REQUIRES: "read",
-    USES: "undetermined read",
+    USES: "undetermined",
 }
 
 
