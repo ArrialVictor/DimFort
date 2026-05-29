@@ -33,8 +33,11 @@ from dimfort.lsp.tree_nav import (
 )
 
 if TYPE_CHECKING:
+    from tree_sitter import Tree
+
     from dimfort.core.annotations import DeclarationSite
     from dimfort.core.attach import AttachmentResult
+    from dimfort.core.symbols import FuncSig
     from dimfort.core.units import UnitExpr
 
 # The unit-consistency family — the only codes that colour a marker
@@ -240,6 +243,16 @@ def _build_expression_tree(
 
     from dimfort.core.units import equal_dim, format_unit
 
+    # Surface scale factors (e.g. ``100×kg·m⁻¹·s⁻²`` for ``hPa``) when
+    # scale checking is on — that's when the factor is what the user
+    # cares about (an S001 mismatch is invisible otherwise, two sides
+    # both rendering as bare ``kg·m⁻¹·s⁻²``). Off-mode keeps the bare
+    # dimensional form. Single uniform rule across every panel surface:
+    # the display matches what the checker is reasoning about (scope /
+    # imports normalized columns follow the same gate; ``_normalized_unit``
+    # receives ``scale_mode`` from the panel root).
+    sf = ctx.scale_mode
+
     unit = ts_checker.resolve_unit(node, ctx, source)
 
     if node.type in ("identifier", "number_literal", "string_literal", "complex_literal"):
@@ -282,7 +295,7 @@ def _build_expression_tree(
         and unit is not None
         and not equal_dim(unit, expected_unit)
     ):
-        expected_render = format_unit(expected_unit)
+        expected_render = format_unit(expected_unit, show_factor=sf)
 
     # Unit-column rendering. Three states, three glyphs:
     #   * structural-no-unit nodes (statement / relation / subroutine
@@ -293,7 +306,7 @@ def _build_expression_tree(
     if node.type in _NO_UNIT_NODE_TYPES:
         unit_render: str = _NO_UNIT_GLYPH
     elif unit is not None:
-        unit_render = format_unit(unit)
+        unit_render = format_unit(unit, show_factor=sf)
     else:
         unit_render = "?"
 
@@ -324,7 +337,18 @@ def _build_expression_tree(
             kids[0], kids[-1], ctx, source,
         )
         if verdict == "autocast" and lhs_u is not None:
-            child_nodes[-1]["unit"] = format_unit(lhs_u)
+            child_nodes[-1]["unit"] = format_unit(lhs_u, show_factor=sf)
+        elif verdict == "mismatch" and lhs_u is not None:
+            # Mirror the call-arg shape: paint the RHS row with the
+            # LHS unit as its ``expected`` and demote the marker
+            # ok → warn. The RHS resolved cleanly to its own unit
+            # (H001 fires on the assignment, not on the RHS), so a
+            # bare 🟢 understates the situation. Same override that
+            # already lives at the end of this function for call args.
+            rhs_payload = child_nodes[-1]
+            rhs_payload["expected"] = format_unit(lhs_u, show_factor=sf)
+            if rhs_payload["marker"] == "ok":
+                rhs_payload["marker"] = "warn"
 
     # `@unit_assume` overlay on the **RHS child** of an assumed
     # assignment. The directive's syntactic subject is the RHS
@@ -425,6 +449,8 @@ def _decl_rows(
     decl: DeclarationSite,
     var_units: dict[str, str],
     unparseable: frozenset[str],
+    *,
+    scale_mode: bool = False,
 ) -> list[dict[str, Any]]:
     """One ScopeVar row per name on a declaration, tagged annotated /
     error / unannotated. Shared by the node-based and span-based scope
@@ -442,7 +468,7 @@ def _decl_rows(
             "name": vname,
             "unit": unit_text if unit_text else None,
             "unitNormalized": (
-                _normalized_unit(unit_text)
+                _normalized_unit(unit_text, scale_mode=scale_mode)
                 if unit_text and kind == "annotated" else None
             ),
             "line": decl.line_start,
@@ -451,12 +477,74 @@ def _decl_rows(
     return rows
 
 
+def _proc_rows(
+    sp: int, ep: int,
+    tree: Tree | None,
+    signatures: dict[str, FuncSig] | None,
+    source: bytes,
+    *,
+    scale_mode: bool,
+) -> list[dict[str, Any]]:
+    """Procedure rows for a module/program scope: every function/subroutine
+    defined inside the scope's line span [sp, ep]. Same shape as a
+    scope-var row so the existing renderer needs no changes — name is
+    pre-formatted as ``gravity_at(m)``, unit is the return (or ``-`` for
+    subroutines), kind drives the marker, line jumps to the header.
+    Procedures of a module are visible from anywhere within the module
+    by Fortran scope rules (host association), so they belong in Scope
+    the same way imported procs belong in Imports.
+    """
+    if tree is None or not signatures:
+        return []
+    from dimfort.core.units import format_unit
+    out: list[dict[str, Any]] = []
+    for fn in _ts_h.walk_function_definitions(tree):
+        fn_sp = _ts.position_for(fn).line
+        if not (sp <= fn_sp <= ep):
+            continue
+        nm = _ts_h.function_definition_name(fn, source)
+        if nm is None:
+            continue
+        name, _ = nm
+        sig = signatures.get(name.lower())
+        if sig is None:
+            continue
+        ret = format_unit(sig.return_unit, show_factor=scale_mode) \
+            if sig.return_unit else None
+        arg_units = ", ".join(
+            format_unit(u, show_factor=scale_mode) if u is not None else "?"
+            for u in sig.arg_units
+        )
+        # Subroutines have no return by design — render ``-`` (matches
+        # the structural-no-unit glyph used in panel call rows + the
+        # imports section). Functions with no annotated return show ``?``.
+        unit_text = ret if ret is not None else ("-" if sig.is_subroutine else None)
+        out.append({
+            "name": f"{name}({arg_units})",
+            "unit": unit_text,
+            "unitNormalized": (
+                _normalized_unit(unit_text, scale_mode=scale_mode)
+                if unit_text and unit_text != "-" else None
+            ),
+            # ``annotated`` ⇒ 🟢 marker. Subroutines count as annotated
+            # (no return *by design*, not a missing annotation), matching
+            # the imports section's treatment.
+            "kind": "annotated" if (ret or sig.is_subroutine) else "unannotated",
+            "line": _ts_h.function_definition_header_line(fn),
+        })
+    return out
+
+
 def _build_scope_vars(
     scope_node: Node | None,
     scan_decls: Iterable[DeclarationSite] | None,
     attached: AttachmentResult | None,
     source: bytes,
     unparseable: frozenset[str] = frozenset(),
+    *,
+    scale_mode: bool = False,
+    tree: Tree | None = None,
+    signatures: dict[str, FuncSig] | None = None,
 ) -> list[dict[str, Any]]:
     """Build the declarations table for the enclosing scope.
 
@@ -505,7 +593,16 @@ def _build_scope_vars(
                 continue
         if decl.names and not _name_on_first_line(decl, source_lines):
             continue
-        out.extend(_decl_rows(decl, var_units, unparseable))
+        out.extend(_decl_rows(decl, var_units, unparseable, scale_mode=scale_mode))
+    # Module / program scopes: also list procedures defined inside, so the
+    # Scope panel mirrors what Fortran lets the cursor reach (host
+    # association). Routine scopes don't get this — a routine's own locals
+    # are vars only; the enclosing module's procs surface via the stacked
+    # module-scope row above.
+    if not is_routine:
+        out.extend(_proc_rows(
+            sp, ep, tree, signatures, source, scale_mode=scale_mode,
+        ))
     return out
 
 
@@ -597,6 +694,10 @@ def build_scope_vars_by_span(
     attached: AttachmentResult | None,
     source: bytes,
     unparseable: frozenset[str] = frozenset(),
+    *,
+    scale_mode: bool = False,
+    tree: Tree | None = None,
+    signatures: dict[str, FuncSig] | None = None,
 ) -> list[dict[str, Any]]:
     """Span-based scope variables for a recovered scope (the ERROR-node
     fallback). A declaration belongs to the recovered scope that most
@@ -616,5 +717,12 @@ def build_scope_vars_by_span(
             continue
         if decl.names and not _name_on_first_line(decl, source_lines):
             continue
-        out.extend(_decl_rows(decl, var_units, unparseable))
+        out.extend(_decl_rows(decl, var_units, unparseable, scale_mode=scale_mode))
+    # Module / program (recovered) scopes: also list procedures defined
+    # inside, matching ``_build_scope_vars``. Routine scopes don't get
+    # this — same rationale as the AST-based path.
+    kind = recovered[scope_idx][0] if 0 <= scope_idx < len(recovered) else ""
+    if kind not in _ROUTINE_SCOPE_TYPES:
+        s, e = recovered[scope_idx][2], recovered[scope_idx][3]
+        out.extend(_proc_rows(s, e, tree, signatures, source, scale_mode=scale_mode))
     return out

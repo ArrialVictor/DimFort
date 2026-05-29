@@ -68,6 +68,50 @@ def test_p001_localizes_not_whole_routine(tmp_path: Path):
     assert p[0].end.line <= 5
 
 
+def test_p001_widens_to_swallowed_neighbor(tmp_path: Path):
+    """Tree-sitter's error recovery commonly swallows the immediately-following
+    clean statement into the bad statement's parse node (the parent
+    assignment_statement spans both lines with ``has_error=True``). The panel
+    produces a degraded Expression view on the swallowed line, so P001's range
+    is widened to that statement-level ancestor — covering both lines — rather
+    than just the bad line. Otherwise users see a single blue squiggle plus a
+    silently-empty Expression panel on the (apparently clean) line below."""
+    src = tmp_path / "swallow.f90"
+    src.write_text(
+        "subroutine s\n"                 # 1
+        "  real :: v  !< @unit{m}\n"     # 2
+        "  v = * / +\n"                  # 3 (unparseable)
+        "  v = 0.0\n"                    # 4 (clean, but swallowed by tree-sitter)
+        "end subroutine\n"               # 5
+    )
+    result = check_files([src])
+    p = _p001(result, src)
+    assert len(p) == 1
+    assert p[0].start.line == 3
+    # Widened to cover line 4 — the swallowed-by-error-recovery neighbor.
+    assert p[0].end.line == 4
+
+
+def test_p001_does_not_widen_when_neighbor_is_clean(tmp_path: Path):
+    """When tree-sitter's recovery doesn't swallow the next statement (e.g.
+    two statements follow the bad line; only the first is contaminated), P001
+    widens to the swallowed one but NOT to subsequent clean lines."""
+    src = tmp_path / "two_after.f90"
+    src.write_text(
+        "subroutine s\n"                 # 1
+        "  real :: v, w  !< @unit{m}\n"  # 2
+        "  v = * / +\n"                  # 3 (unparseable)
+        "  v = 0.0\n"                    # 4 (swallowed)
+        "  w = v + 1.0\n"                # 5 (clean)
+        "end subroutine\n"               # 6
+    )
+    result = check_files([src])
+    p = _p001(result, src)
+    assert len(p) == 1
+    # P001 covers 3-4, not 3-5.
+    assert (p[0].start.line, p[0].end.line) == (3, 4)
+
+
 def test_p001_suppressible_via_override(tmp_path: Path):
     src = tmp_path / "bad.f90"
     src.write_text(_BAD)

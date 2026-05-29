@@ -211,6 +211,48 @@ def test_call_arg_mismatch_carries_expected_unit(tmp_path: Path):
     assert payload["expected"] is None
 
 
+def test_assignment_mismatch_carries_expected_unit(tmp_path: Path):
+    """An assignment whose RHS dimensionally disagrees with the LHS
+    paints the same shape as a call-arg mismatch on the panel tree:
+    the RHS child carries ``expected = <lhs_unit>`` and its marker
+    demotes ``ok → warn``."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
+
+    src = tmp_path / "asn_expected_panel.f90"
+    src.write_text(
+        "subroutine demo\n"
+        "  real :: bogus    !< @unit{kg}\n"
+        "  real :: c_sound  !< @unit{m/s}\n"
+        "  real :: t        !< @unit{s}\n"
+        "  bogus = c_sound * t\n"
+        "end subroutine\n"
+    )
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+
+    asns = [
+        n for n in _ts.walk(tree.root_node) if n.type == "assignment_statement"
+    ]
+    payload = _build_expression_tree(asns[0], ctx, source)
+    assert payload is not None
+    # Two children: LHS (bogus), RHS (c_sound * t).
+    assert len(payload["children"]) == 2
+    rhs = payload["children"][1]
+    # RHS row carries the LHS unit as `expected` and demotes ok → warn.
+    assert rhs["expected"] == "kg"
+    assert rhs["marker"] == "warn"
+    # LHS row stays clean (no expected on it, marker ok).
+    lhs = payload["children"][0]
+    assert lhs["expected"] is None
+    assert lhs["marker"] == "ok"
+
+
 def test_unit_assume_row_paints_assumed_with_reason(tmp_path: Path):
     """An assignment carrying ``@unit_assume{<unit> : <reason>}`` overlays
     the new ``assumed`` marker (🔵) **on its RHS child** — the
@@ -398,6 +440,62 @@ def test_panel_marker_matrix_diagnostic_driven(tmp_path: Path):
     assert marks == ["error", "warn", "ok"]
 
 
+def test_panel_expression_shows_scale_factor_in_scale_mode(tmp_path: Path):
+    """With scale mode on, the expression tree's unit column surfaces the
+    multiplicative scale factor (e.g. ``100×kg·m⁻¹·s⁻²`` for ``hPa``)
+    so an S001 mismatch is visible at a glance — both sides used to
+    render to a bare ``kg·m⁻¹·s⁻²``, hiding the very difference the
+    diagnostic was warning about. With scale mode off, the bare
+    dimensional form is restored."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp import server
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
+
+    src = tmp_path / "scale_factor.f90"
+    src.write_text(
+        "subroutine s()\n"
+        "  real :: play   !< @unit{Pa}\n"
+        "  real :: phpa   !< @unit{hPa}\n"
+        "  phpa = play\n"
+        "end subroutine\n"
+    )
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    asn = next(
+        n for n in _ts.walk(tree.root_node) if n.type == "assignment_statement"
+    )
+
+    def _units(scale_on: bool) -> tuple[str, str]:
+        result = check_files([src], scale_mode=scale_on)
+        saved_mode = server.state.scale_mode
+        saved_result = server.state.last_result
+        server.state.scale_mode = scale_on
+        with server.state.last_result_lock:
+            server.state.last_result = result
+        try:
+            ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+            payload = _build_expression_tree(asn, ctx, source)
+            assert payload is not None
+            lhs, rhs = payload["children"]
+            return lhs["unit"], rhs["unit"]
+        finally:
+            server.state.scale_mode = saved_mode
+            with server.state.last_result_lock:
+                server.state.last_result = saved_result
+
+    # Scale ON — LHS carries the factor, RHS is bare (factor 1).
+    lhs_on, rhs_on = _units(scale_on=True)
+    assert lhs_on == "100×kg·m⁻¹·s⁻²"
+    assert rhs_on == "kg·m⁻¹·s⁻²"
+    # Scale OFF — both sides render to the bare dimensional form.
+    lhs_off, rhs_off = _units(scale_on=False)
+    assert lhs_off == "kg·m⁻¹·s⁻²"
+    assert rhs_off == "kg·m⁻¹·s⁻²"
+
+
 def test_panel_marker_s003_is_error(tmp_path: Path):
     """An invalid ``@unit_affine_conversion`` directive (S003) colours the
     assignment 🔴; a valid one emits no diagnostic and stays 🟢."""
@@ -574,6 +672,114 @@ def test_panel_marker_matches_assignment_homogeneity(tmp_path: Path):
     panel_payload = _build_expression_tree(asn, ctx, source)
     expected_marker = _marker_token(_VERDICT_TO_MARKER[verdict])
     assert panel_payload["marker"] == expected_marker
+
+
+def test_module_scope_lists_module_procedures(tmp_path: Path):
+    """A module's procedures (defined in ``contains``) are visible from
+    anywhere within the module by Fortran scope rules (host association).
+    They surface in Scope under the module row, with the same shape an
+    imported procedure has in Imports: ``name(args)`` in the label
+    column, the return unit in the unit column (``-`` for subroutines)."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.annotations import scan_file
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.expr_tree import _build_scope_vars
+    from dimfort.lsp.tree_nav import _smallest_enclosing_scope
+
+    src = tmp_path / "module_procs.f90"
+    src.write_text(
+        "module phys_constants\n"
+        "  real :: play     !< @unit{Pa}\n"
+        "contains\n"
+        "  function gravity_at(h) result(g)\n"
+        "    real, intent(in) :: h   !< @unit{m}\n"
+        "    real             :: g   !< @unit{m/s^2}\n"
+        "    g = 9.81\n"
+        "  end function gravity_at\n"
+        "  subroutine set_play(p)\n"
+        "    real, intent(in) :: p   !< @unit{Pa}\n"
+        "    play = p\n"
+        "  end subroutine set_play\n"
+        "end module phys_constants\n"
+    )
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    attached = result.attachments[resolved]
+    scan_decls = scan_file(src).declarations
+
+    # Cursor on the module-level `play` declaration (line 2): the
+    # enclosing scope is the module itself.
+    scope = _smallest_enclosing_scope(tree, 2, 5)
+    assert scope is not None and scope.type == "module"
+
+    vars_list = _build_scope_vars(
+        scope, scan_decls, attached, source,
+        tree=tree, signatures=result.signatures,
+    )
+    by_name = {row["name"]: row for row in vars_list}
+    # Module-level variable still appears.
+    assert "play" in by_name
+    # Both procedures appear with name(args) labels and the right units.
+    assert "gravity_at(m)" in by_name
+    assert by_name["gravity_at(m)"]["unit"] == "m·s⁻²"
+    assert by_name["gravity_at(m)"]["kind"] == "annotated"
+    assert by_name["gravity_at(m)"]["line"] == 4  # the `function` header line
+    assert "set_play(kg·m⁻¹·s⁻²)" in by_name
+    # Subroutine: return rendered as `-` (structural-no-unit, same as
+    # the panel renders subroutine call rows + imported subroutines).
+    assert by_name["set_play(kg·m⁻¹·s⁻²)"]["unit"] == "-"
+    assert by_name["set_play(kg·m⁻¹·s⁻²)"]["kind"] == "annotated"
+
+
+def test_routine_scope_does_not_list_sibling_procedures(tmp_path: Path):
+    """A routine's own Scope row carries the routine's locals only, not
+    the enclosing module's procedures. (Module procedures still appear,
+    but on the stacked module-scope row above this one — the panel
+    stacks scopes; each row owns its own kind of declarations.)"""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.annotations import scan_file
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp.expr_tree import _build_scope_vars
+    from dimfort.lsp.tree_nav import _smallest_enclosing_scope
+
+    src = tmp_path / "module_procs_routine.f90"
+    src.write_text(
+        "module phys_constants\n"
+        "contains\n"
+        "  function gravity_at(h) result(g)\n"
+        "    real, intent(in) :: h   !< @unit{m}\n"
+        "    real             :: g   !< @unit{m/s^2}\n"
+        "    g = 9.81\n"
+        "  end function gravity_at\n"
+        "  subroutine set_play(p)\n"
+        "    real, intent(in) :: p   !< @unit{Pa}\n"
+        "  end subroutine set_play\n"
+        "end module phys_constants\n"
+    )
+    result = check_files([src])
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    attached = result.attachments[resolved]
+    scan_decls = scan_file(src).declarations
+
+    # Cursor inside `gravity_at`'s body.
+    scope = _smallest_enclosing_scope(tree, 6, 5)
+    assert scope is not None and scope.type == "function"
+
+    vars_list = _build_scope_vars(
+        scope, scan_decls, attached, source,
+        tree=tree, signatures=result.signatures,
+    )
+    names = {row["name"] for row in vars_list}
+    # Function's locals appear.
+    assert {"h", "g"}.issubset(names)
+    # Sibling procedure does NOT appear under this row (it appears on
+    # the stacked module-scope row).
+    assert "set_play(kg·m⁻¹·s⁻²)" not in names
+    assert "gravity_at(m)" not in names
 
 
 def test_build_scope_vars_lists_each_declared_name(tmp_path: Path):
