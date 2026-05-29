@@ -20,6 +20,7 @@ from tree_sitter import Node
 from dimfort.core import ts_checker
 from dimfort.core import ts_parser as _ts
 from dimfort.core.diagnostics import Diagnostic, Severity
+from dimfort.lsp import ts_helpers as _ts_h
 from dimfort.lsp.markers import _marker_token, _worst_emoji, _worst_token
 from dimfort.lsp.state import state
 from dimfort.lsp.tree_nav import (
@@ -32,10 +33,17 @@ from dimfort.lsp.tree_nav import (
 )
 
 if TYPE_CHECKING:
+    from tree_sitter import Tree
+
     from dimfort.core.annotations import DeclarationSite
     from dimfort.core.attach import AttachmentResult
+    from dimfort.core.symbols import FuncSig
+    from dimfort.core.units import UnitExpr
 
-# The unit-consistency family — the only codes that colour a marker.
+# The unit-consistency family — the only codes that colour a marker
+# along the severity axis (🟢/🟡/🔴). U020 is handled separately and
+# paints 🔵 ("accepted via @unit_assume") — see docs/design/markers.md
+# §4.6.
 _MARKER_DIAG_CODES = frozenset(
     {"H001", "H002", "H003", "H004", "S001", "S002", "S003"}
 )
@@ -47,10 +55,33 @@ _SEVERITY_EMOJI = {
     Severity.HINT: "🟢",
 }
 
-# Node types that are statements/relations, not expressions: they carry no
-# unit of their own, so their resolution-axis base is 🟢 (a clean assignment
-# is not "unresolved"). Their marker comes from the diagnostic axis + children.
-_NO_UNIT_NODE_TYPES = frozenset({"assignment_statement", "relational_expression"})
+# Pull (asserted_unit, reason) out of a U020 diagnostic message. The
+# checker emits ``f"RHS unit assumed {format_unit(au)} ({reason})"``:
+# everything between ``assumed `` and the trailing `` (…)`` is the
+# pretty-formatted asserted unit; the parenthesised tail is the
+# user-supplied reason. Greedy `.+` on the unit copes with
+# ``LOG(Pa)``-style internal parens — the trailing-paren reason is
+# matched last.
+_U020_PARSE_RE = re.compile(r"^RHS unit assumed (.+) \(([^)]+)\)\s*$")
+
+# Node types with no unit of their own *by structure* (not because we
+# couldn't resolve one). Their resolution-axis base is 🟢 (a clean
+# assignment / subroutine call is not "unresolved"); the marker comes
+# from the diagnostic axis + children. Both hover and panel render
+# their unit column as ``-`` so the row stays visually distinct from
+# truly unknown / unannotated nodes (which render ``?``).
+_NO_UNIT_NODE_TYPES = frozenset({
+    "assignment_statement",
+    "relational_expression",
+    "subroutine_call",
+})
+
+# The glyph rendered in the unit column for structural-no-unit nodes.
+# Picked over ``"?"`` (reserved for *unknown* units — unannotated
+# identifier, unsupported intrinsic, partial resolution) and over
+# blank/hidden (reserved for ``(none)``-style empty sub-sections). See
+# docs/design/markers.md §4.5.
+_NO_UNIT_GLYPH = "-"
 
 
 def _diags_for_ctx(ctx: ts_checker.Ctx) -> tuple[Diagnostic, ...]:
@@ -81,12 +112,58 @@ def _diags_for_ctx(ctx: ts_checker.Ctx) -> tuple[Diagnostic, ...]:
     return tuple(result.diagnostics.get(p, ()))
 
 
+def _assumed_for(
+    node: Node, ctx: ts_checker.Ctx,
+) -> tuple[str, str] | None:
+    """Return ``(asserted_unit_str, reason)`` for the ``@unit_assume``
+    on ``node`` (an ``assignment_statement``), or ``None`` if none.
+
+    ``@unit_assume`` is a **statement-level** directive — only
+    ``assignment_statement`` nodes can own its U020 diagnostic. The
+    diagnostic's source position is the ``@unit_assume`` token in
+    the trailing comment, which sits *outside* the assignment's
+    tree-sitter span, so we can't use :func:`_span_within` here.
+    Match by line instead: a U020 on the assignment's line range
+    owns it.
+
+    The 🔵 overlay and the ``(assumed: <reason>)`` row tail then
+    surface on the assignment's **RHS** child — the directive's
+    syntactic subject — not on the assignment itself. The
+    assignment's homogeneity check (LHS vs the asserted RHS unit)
+    runs in :mod:`ts_checker`; if it fails, H001 fires on the
+    assignment node and shows 🔴 there independently.
+    """
+    if node.type != "assignment_statement":
+        return None
+    diags = _diags_for_ctx(ctx)
+    if not diags:
+        return None
+    # Tree-sitter `start_point`/`end_point` are 0-based; Diagnostic
+    # `Position` is 1-based (matching LSP), so convert via
+    # ``_node_span_lc``.
+    (nline_s, _), (nline_e, _) = _node_span_lc(node)
+    for d in diags:
+        if d.code != "U020":
+            continue
+        if nline_s <= d.start.line <= nline_e:
+            m = _U020_PARSE_RE.search(d.message)
+            if m is not None:
+                return m.group(1), m.group(2)
+            return "?", ""  # malformed diagnostic — degrade gracefully
+    return None
+
+
 def _self_marker(node: Node, kid_nodes: list[Node], ctx: ts_checker.Ctx, source: bytes) -> str:
     """The node's own marker (pre-aggregation): resolution-axis base worst-of
     the consistency-family diagnostics that *own* this node. A diagnostic owns
     the node when its range sits within the node's span but not within any
     child's span (tightest-enclosing); upward propagation is the caller's
-    worst-of-children. See docs/design/markers.md §2–§4."""
+    worst-of-children. See docs/design/markers.md §2–§4.
+
+    Severity-only: returns 🟢/🟡/🔴. The 🔵 ``@unit_assume`` overlay
+    is applied later, at render time on the assignment's RHS child —
+    see :func:`_assumed_for`, ``_build_expression_tree`` and
+    ``_render_ast_tree``."""
     if node.type in _NO_UNIT_NODE_TYPES:
         base = "🟢"  # statement/relation: no unit of its own
     else:
@@ -113,22 +190,43 @@ def _node_marker(node: Node, ctx: ts_checker.Ctx, source: bytes) -> str:
     recursively. Used where rows are emitted top-down (the detailed-hover
     tree, the short hovers) and built child payloads aren't on hand.
     ``_build_expression_tree`` aggregates inline from child payloads
-    instead, but both reduce to the same §2 model."""
+    instead, but both reduce to the same §2 model.
+
+    Returns severity only (🟢/🟡/🔴) — 🔵 is a render-time overlay,
+    not part of aggregation (see docs/design/markers.md §4.6).
+
+    For an ``@unit_assume`` assignment, the directive's contract is
+    "trust me on the unit, ignore the inside." The **RHS** child's
+    severity therefore contributes as 🟢 (it was accepted) to the
+    parent's worst-of; the rest of the subtree (LHS, descendants of
+    the RHS) contributes normally. The assignment row still picks up
+    🔴/🟡 from H001 etc. that own the assignment node itself —
+    declared-unit conflicts with the assumed unit aren't masked."""
     kids = _interesting_children(node)
     m = _self_marker(node, kids, ctx, source)
-    for k in kids:
+    asm = _assumed_for(node, ctx) if node.type == "assignment_statement" else None
+    for i, k in enumerate(kids):
+        if asm is not None and i == len(kids) - 1:
+            # RHS of assumed assignment: directive accepted it, so it
+            # contributes 🟢 for aggregation regardless of what's inside.
+            continue
         m = _worst_emoji(m, _node_marker(k, ctx, source))
     return m
 
 
 def _build_expression_tree(
-    node: Node | None, ctx: ts_checker.Ctx, source: bytes
+    node: Node | None, ctx: ts_checker.Ctx, source: bytes,
+    *, expected_unit: UnitExpr | None = None,
 ) -> dict[str, Any] | None:
     """Build a structured ExpressionNode for the panel.
 
-    Recursive: each node carries its resolved unit, the rule ID that
-    produced it (if any), a marker token, and its children. Leaf
-    nodes (identifiers, literals) have an empty ``children`` list.
+    Recursive: each node carries its resolved unit, a marker token, and
+    its children. Leaf nodes (identifiers, literals) have an empty
+    ``children`` list. When this node is a positional argument of a
+    call whose callee signature is known, ``expected_unit`` carries the
+    formal's :class:`UnitExpr`; on a dimensional mismatch the payload's
+    ``expected`` field renders it pretty so the panel can append
+    ``(expected …)`` to the row.
 
     Defers all assignment-specific logic (verdict, autocast detection)
     to :func:`ts_checker.assignment_homogeneity` — the single source
@@ -139,15 +237,23 @@ def _build_expression_tree(
     if node.type == "parenthesized_expression":
         inner = _interesting_children(node)
         if len(inner) == 1:
-            return _build_expression_tree(inner[0], ctx, source)
+            return _build_expression_tree(
+                inner[0], ctx, source, expected_unit=expected_unit,
+            )
 
-    from dimfort.core.trace import with_trace
-    from dimfort.core.units import format_unit
+    from dimfort.core.units import equal_dim, format_unit
 
-    with with_trace() as trace:
-        unit = ts_checker.resolve_unit(node, ctx, source)
-    snap = trace.snapshot()
-    rule_id = snap[-1].rule_id if snap else None
+    # Surface scale factors (e.g. ``100×kg·m⁻¹·s⁻²`` for ``hPa``) when
+    # scale checking is on — that's when the factor is what the user
+    # cares about (an S001 mismatch is invisible otherwise, two sides
+    # both rendering as bare ``kg·m⁻¹·s⁻²``). Off-mode keeps the bare
+    # dimensional form. Single uniform rule across every panel surface:
+    # the display matches what the checker is reasoning about (scope /
+    # imports normalized columns follow the same gate; ``_normalized_unit``
+    # receives ``scale_mode`` from the panel root).
+    sf = ctx.scale_mode
+
+    unit = ts_checker.resolve_unit(node, ctx, source)
 
     if node.type in ("identifier", "number_literal", "string_literal", "complex_literal"):
         kids: list[Node] = []
@@ -159,38 +265,156 @@ def _build_expression_tree(
         # first child: that used to remove the leading *argument* when it
         # was a bare identifier, collapsing calls to a childless leaf.
         kids = _interesting_children(node)
-        built = [_build_expression_tree(c, ctx, source) for c in kids]
+        # Look up the callee signature so positional args get their
+        # formal expected unit propagated. Subroutine_call and
+        # call_expression both share this path.
+        arg_expected: list[UnitExpr | None] = []
+        if node.type in ("call_expression", "subroutine_call"):
+            callee_nm = _ts_h.call_name(node, source)
+            if callee_nm is not None:
+                sig = ctx.signatures.get(callee_nm.lower())
+                if sig is not None:
+                    arg_expected = list(sig.arg_units)
+        built = [
+            _build_expression_tree(
+                c, ctx, source,
+                expected_unit=(
+                    arg_expected[i]
+                    if arg_expected and i < len(arg_expected) else None
+                ),
+            )
+            for i, c in enumerate(kids)
+        ]
         child_nodes = [c for c in built if c is not None]
+
+    # Render the `(expected …)` annotation only when actual and formal
+    # disagree dimensionally — matching the call-hover rule.
+    expected_render: str | None = None
+    if (
+        expected_unit is not None
+        and unit is not None
+        and not equal_dim(unit, expected_unit)
+    ):
+        expected_render = format_unit(expected_unit, show_factor=sf)
+
+    # Unit-column rendering. Three states, three glyphs:
+    #   * structural-no-unit nodes (statement / relation / subroutine
+    #     call) → ``-`` (intentional gap, not knowledge missing).
+    #   * resolved unit → the formatted unit string.
+    #   * unresolved expression → ``?`` (unknown — unannotated leaf,
+    #     unsupported intrinsic, partial resolution).
+    if node.type in _NO_UNIT_NODE_TYPES:
+        unit_render: str = _NO_UNIT_GLYPH
+    elif unit is not None:
+        unit_render = format_unit(unit, show_factor=sf)
+    else:
+        unit_render = "?"
 
     payload: dict[str, Any] = {
         "label": _node_label(node, source),
-        "unit": format_unit(unit) if unit is not None else None,
+        "unit": unit_render,
         "marker": "ok",  # set below
-        "ruleId": rule_id,
+        "expected": expected_render,
+        # `assumed` is overlaid on the RHS child of an assumed
+        # assignment, not on the assignment itself — see the
+        # post-recursion block below.
+        "assumed": None,
         "children": child_nodes,
     }
 
-    # Assignments are statements, not expressions — they carry no unit of
-    # their own; clear it so renderers omit the ``: ?`` column. For an
-    # initialization autocast (R4.4) show the LHS unit on the RHS subtree
-    # root (the literal takes the LHS's unit). The *marker* is left entirely
-    # to the diagnostic model below — autocast emits nothing, so it resolves
-    # 🟢 on its own; a real mismatch fires H001 and the model paints it 🔴.
-    if node.type == "assignment_statement":
-        payload["unit"] = None
-        if len(kids) >= 2 and child_nodes:
-            verdict, lhs_u, _rhs_u = ts_checker.assignment_homogeneity(
-                kids[0], kids[-1], ctx, source,
-            )
-            if verdict == "autocast" and lhs_u is not None:
-                child_nodes[-1]["unit"] = format_unit(lhs_u)
+    # Assignment-specific propagation: for an initialization autocast
+    # (R4.4) show the LHS unit on the RHS subtree root (the literal
+    # takes the LHS's unit). The *marker* is left entirely to the
+    # diagnostic model below — autocast emits nothing, so it resolves
+    # 🟢 on its own; a real mismatch fires H001 and the model paints
+    # it 🔴.
+    if (
+        node.type == "assignment_statement"
+        and len(kids) >= 2
+        and child_nodes
+    ):
+        verdict, lhs_u, _rhs_u = ts_checker.assignment_homogeneity(
+            kids[0], kids[-1], ctx, source,
+        )
+        if verdict == "autocast" and lhs_u is not None:
+            child_nodes[-1]["unit"] = format_unit(lhs_u, show_factor=sf)
+        elif verdict == "mismatch" and lhs_u is not None:
+            # Mirror the call-arg shape: paint the RHS row with the
+            # LHS unit as its ``expected`` and demote the marker
+            # ok → warn. The RHS resolved cleanly to its own unit
+            # (H001 fires on the assignment, not on the RHS), so a
+            # bare 🟢 understates the situation. Same override that
+            # already lives at the end of this function for call args.
+            rhs_payload = child_nodes[-1]
+            rhs_payload["expected"] = format_unit(lhs_u, show_factor=sf)
+            if rhs_payload["marker"] == "ok":
+                rhs_payload["marker"] = "warn"
+
+    # `@unit_assume` overlay on the **RHS child** of an assumed
+    # assignment. The directive's syntactic subject is the RHS
+    # expression, so the 🔵 marker and the `(assumed: <reason>)` row
+    # tail belong there, not on the assignment row. The assignment
+    # row still picks up its own H001 (🔴) if the declared LHS unit
+    # conflicts with the asserted RHS unit — the assumption never
+    # masks a declared-unit conflict (markers.md §4.6).
+    assumed_overlay = (
+        _assumed_for(node, ctx)
+        if node.type == "assignment_statement" else None
+    )
+    if assumed_overlay is not None and child_nodes:
+        asserted_unit_str, reason = assumed_overlay
+        rhs = child_nodes[-1]
+        # Show the *asserted* unit on the RHS row (instead of the
+        # computed `?`), so the reader sees what unit DimFort is
+        # using for the LHS check.
+        rhs["unit"] = asserted_unit_str
+        rhs["assumed"] = reason
+        # 🔵 overlay wins over a plain 🟢 AND over the 🟡-on-`expected`
+        # demotion (the assumption is the headline on that row). An
+        # honest 🔴 from a diagnostic *owning* the RHS still wins —
+        # but in practice the RHS expression itself is rarely owned
+        # by a consistency diagnostic; H001 owns the parent
+        # assignment instead.
+        if rhs["marker"] in ("ok", "warn"):
+            rhs["marker"] = "assumed"
 
     # Marker (docs/design/markers.md): this node's own marker (resolution
     # axis worst-of the consistency-family diagnostics it owns) worst-of its
     # children. Single source of truth = the diagnostic stream — S001/S002
     # and dimension mismatches all flow through here, no per-check overlay.
+    # `assumed` children contribute as `ok` to worst-of (markers.md §4.6:
+    # 🔵 is unranked overlay, not a tier).
     self_token = _marker_token(_self_marker(node, kids, ctx, source))
-    payload["marker"] = _worst_token(self_token, *(c["marker"] for c in child_nodes))
+    if assumed_overlay is not None and child_nodes:
+        # Assumed assignment: the directive accepted the RHS, so for the
+        # assignment row's marker we treat the RHS as `ok`; other
+        # children (the LHS) contribute normally.
+        agg_kids = [
+            "ok" if i == len(child_nodes) - 1 else c["marker"]
+            for i, c in enumerate(child_nodes)
+        ]
+        payload["marker"] = _worst_token(self_token, *agg_kids)
+    else:
+        # 🔵 should never appear among siblings here — assumed only
+        # fires on the RHS of an assignment, and the case is handled
+        # above — but be defensive: map any stray `assumed` to `ok`.
+        agg_kids = [
+            ("ok" if c["marker"] == "assumed" else c["marker"])
+            for c in child_nodes
+        ]
+        payload["marker"] = _worst_token(self_token, *agg_kids)
+
+    # Call-arg-formal disagreement override: when this row carries an
+    # ``expected`` annotation (its actual unit dimensionally differs from
+    # the call's formal) AND no diagnostic painted it worse, demote the
+    # marker from ``ok`` to ``warn``. The expression itself resolved
+    # cleanly here, but its caller disagrees with the formal it's
+    # flowing into — worth flagging without painting a hard ``error``
+    # (which is reserved for diagnostic-owned mismatches; the enclosing
+    # call carries H004's ``error`` already). Mirrors the hover-side
+    # override in :func:`_render_ast_tree`.
+    if expected_render and payload["marker"] == "ok":
+        payload["marker"] = "warn"
 
     return payload
 
@@ -225,6 +449,8 @@ def _decl_rows(
     decl: DeclarationSite,
     var_units: dict[str, str],
     unparseable: frozenset[str],
+    *,
+    scale_mode: bool = False,
 ) -> list[dict[str, Any]]:
     """One ScopeVar row per name on a declaration, tagged annotated /
     error / unannotated. Shared by the node-based and span-based scope
@@ -242,7 +468,7 @@ def _decl_rows(
             "name": vname,
             "unit": unit_text if unit_text else None,
             "unitNormalized": (
-                _normalized_unit(unit_text)
+                _normalized_unit(unit_text, scale_mode=scale_mode)
                 if unit_text and kind == "annotated" else None
             ),
             "line": decl.line_start,
@@ -251,12 +477,74 @@ def _decl_rows(
     return rows
 
 
+def _proc_rows(
+    sp: int, ep: int,
+    tree: Tree | None,
+    signatures: dict[str, FuncSig] | None,
+    source: bytes,
+    *,
+    scale_mode: bool,
+) -> list[dict[str, Any]]:
+    """Procedure rows for a module/program scope: every function/subroutine
+    defined inside the scope's line span [sp, ep]. Same shape as a
+    scope-var row so the existing renderer needs no changes — name is
+    pre-formatted as ``gravity_at(m)``, unit is the return (or ``-`` for
+    subroutines), kind drives the marker, line jumps to the header.
+    Procedures of a module are visible from anywhere within the module
+    by Fortran scope rules (host association), so they belong in Scope
+    the same way imported procs belong in Imports.
+    """
+    if tree is None or not signatures:
+        return []
+    from dimfort.core.units import format_unit
+    out: list[dict[str, Any]] = []
+    for fn in _ts_h.walk_function_definitions(tree):
+        fn_sp = _ts.position_for(fn).line
+        if not (sp <= fn_sp <= ep):
+            continue
+        nm = _ts_h.function_definition_name(fn, source)
+        if nm is None:
+            continue
+        name, _ = nm
+        sig = signatures.get(name.lower())
+        if sig is None:
+            continue
+        ret = format_unit(sig.return_unit, show_factor=scale_mode) \
+            if sig.return_unit else None
+        arg_units = ", ".join(
+            format_unit(u, show_factor=scale_mode) if u is not None else "?"
+            for u in sig.arg_units
+        )
+        # Subroutines have no return by design — render ``-`` (matches
+        # the structural-no-unit glyph used in panel call rows + the
+        # imports section). Functions with no annotated return show ``?``.
+        unit_text = ret if ret is not None else ("-" if sig.is_subroutine else None)
+        out.append({
+            "name": f"{name}({arg_units})",
+            "unit": unit_text,
+            "unitNormalized": (
+                _normalized_unit(unit_text, scale_mode=scale_mode)
+                if unit_text and unit_text != "-" else None
+            ),
+            # ``annotated`` ⇒ 🟢 marker. Subroutines count as annotated
+            # (no return *by design*, not a missing annotation), matching
+            # the imports section's treatment.
+            "kind": "annotated" if (ret or sig.is_subroutine) else "unannotated",
+            "line": _ts_h.function_definition_header_line(fn),
+        })
+    return out
+
+
 def _build_scope_vars(
     scope_node: Node | None,
     scan_decls: Iterable[DeclarationSite] | None,
     attached: AttachmentResult | None,
     source: bytes,
     unparseable: frozenset[str] = frozenset(),
+    *,
+    scale_mode: bool = False,
+    tree: Tree | None = None,
+    signatures: dict[str, FuncSig] | None = None,
 ) -> list[dict[str, Any]]:
     """Build the declarations table for the enclosing scope.
 
@@ -305,7 +593,16 @@ def _build_scope_vars(
                 continue
         if decl.names and not _name_on_first_line(decl, source_lines):
             continue
-        out.extend(_decl_rows(decl, var_units, unparseable))
+        out.extend(_decl_rows(decl, var_units, unparseable, scale_mode=scale_mode))
+    # Module / program scopes: also list procedures defined inside, so the
+    # Scope panel mirrors what Fortran lets the cursor reach (host
+    # association). Routine scopes don't get this — a routine's own locals
+    # are vars only; the enclosing module's procs surface via the stacked
+    # module-scope row above.
+    if not is_routine:
+        out.extend(_proc_rows(
+            sp, ep, tree, signatures, source, scale_mode=scale_mode,
+        ))
     return out
 
 
@@ -397,6 +694,10 @@ def build_scope_vars_by_span(
     attached: AttachmentResult | None,
     source: bytes,
     unparseable: frozenset[str] = frozenset(),
+    *,
+    scale_mode: bool = False,
+    tree: Tree | None = None,
+    signatures: dict[str, FuncSig] | None = None,
 ) -> list[dict[str, Any]]:
     """Span-based scope variables for a recovered scope (the ERROR-node
     fallback). A declaration belongs to the recovered scope that most
@@ -416,5 +717,12 @@ def build_scope_vars_by_span(
             continue
         if decl.names and not _name_on_first_line(decl, source_lines):
             continue
-        out.extend(_decl_rows(decl, var_units, unparseable))
+        out.extend(_decl_rows(decl, var_units, unparseable, scale_mode=scale_mode))
+    # Module / program (recovered) scopes: also list procedures defined
+    # inside, matching ``_build_scope_vars``. Routine scopes don't get
+    # this — same rationale as the AST-based path.
+    kind = recovered[scope_idx][0] if 0 <= scope_idx < len(recovered) else ""
+    if kind not in _ROUTINE_SCOPE_TYPES:
+        s, e = recovered[scope_idx][2], recovered[scope_idx][3]
+        out.extend(_proc_rows(s, e, tree, signatures, source, scale_mode=scale_mode))
     return out

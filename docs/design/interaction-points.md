@@ -47,7 +47,7 @@ places on the symbol's unit:
 | `declares` | **Declaration** | the `@unit{...}` annotation on the declaration | `real :: x !< @unit{m/s}` |
 | `contributes` | **Write** | variable on the LHS of `=`; the RHS unit flows into it | `x = a*b` ⇒ `unit(a*b)` |
 | `requires` | **Read** | a read whose context fixes the symbol's unit (an equality constraint) | `x + y` ⇒ `unit(y)` |
-| `uses` | **Undetermined read** | a read for which no required unit was determined — either none exists (`z = x*w`) or one exists but a coefficient was un-annotated so it couldn't be derived | `z = x*w` |
+| `uses` | **Undetermined** | a read for which no required unit was determined — either none exists (`z = x*w`) or one exists but a coefficient was un-annotated so it couldn't be derived | `z = x*w` |
 
 User-facing labels are deliberately **structural** (what the site *is*), not
 directional ("contributes"/"requires" forced a viewpoint that read ambiguously

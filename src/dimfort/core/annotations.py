@@ -69,6 +69,7 @@ class RawAssume:
 
     line: int        # 1-based physical line of the comment
     column: int      # 1-based column where `@unit_assume{` begins
+    end_column: int  # 1-based column just past the closing `}` (exclusive end)
     unit_text: str   # the asserted unit, e.g. "kg/m^3"
     reason: str      # mandatory justification (category + text)
 
@@ -267,8 +268,14 @@ def _find_assume_invocations(
                 line_no, col, "empty reason in @unit_assume (a justification is required)",
             ))
             continue
+        # `close` is the index of `}` in `body`; the exclusive 1-based end
+        # column sits one past it.
+        end_col = body_col_offset + close + 1
         found.append(
-            RawAssume(line=line_no, column=col, unit_text=unit_text, reason=reason)
+            RawAssume(
+                line=line_no, column=col, end_column=end_col,
+                unit_text=unit_text, reason=reason,
+            )
         )
     if len(found) > 1:
         errors.extend(

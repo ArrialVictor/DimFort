@@ -2,6 +2,176 @@
 
 All notable changes to DimFort are documented here. Format inspired by [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Change: 🔵 overlay + `(assumed: <reason>)` on the RHS row of `@unit_assume` assignments
+
+`@unit_assume{<unit> : <reason>}` lines now carry a positive visual
+signal in both the panel's Expression tree and the hover.
+Previously the U020 INFO acknowledgment surfaced only in the
+diagnostic list; the tree gave no indication that a row was
+accepted via the escape hatch.
+
+The overlay lives on the **RHS row** — the directive's syntactic
+subject — not on the assignment itself:
+
+- The RHS row carries the **asserted** unit (e.g. `kg·m⁻³`), not
+  the computed `?`, so the reader sees what unit DimFort is using
+  for the LHS homogeneity check.
+- The RHS row paints **🔵** — a per-row overlay, **NOT a severity
+  tier**. It doesn't participate in worst-of aggregation, doesn't
+  propagate to ancestors, and doesn't compete with 🟡/🔴 elsewhere.
+  The severity model stays a clean three-tier `error > warn > ok`.
+- The RHS row's tail reads `(assumed: <reason>)` — same column as
+  `(expected …)`; both can coexist (a declared-unit conflict
+  shows both).
+- The **assignment row stays 🟢** when the homogeneity check
+  passes (LHS unit matches the asserted RHS unit). The hover
+  header is the root row's marker, so a clean assumed line reads
+  with a 🟢 header and 🔵 in the body — the assertion is visible
+  where it lives.
+- **A declared-unit conflict still fires H001**, painting the
+  assignment row 🔴 (and the header). The RHS row then carries
+  🔵 + `(expected <lhs_unit>) (assumed: <reason>)`. The assumption
+  never masks a declared-unit conflict.
+- **Ownership rule**: line-based, restricted to
+  `assignment_statement` nodes (the directive is statement-level).
+  U020's source position lives at the `@unit_assume` token in the
+  trailing comment — outside the assignment's tree-sitter span —
+  so span-based ownership wouldn't match.
+
+Wire-format:
+- `ExpressionNode.marker` adds the value `"assumed"` (companions
+  render 🔵). Other markers stay `"ok"`/`"warn"`/`"error"`.
+- `ExpressionNode.assumed: string | null` — the mandatory reason,
+  set on the **RHS row** when assumed. `null` everywhere else.
+
+Documented at [docs/design/markers.md](docs/design/markers.md) §4.6;
+[panel-info.md](docs/design/panel-info.md) details the wire field;
+hover-ui.md adds the `🔵` and `(assumed: …)` glyph rows.
+
+### Change: every hover is the same tree shape — `◂` retired, intrinsics join the tree path
+
+All short hovers — including `+`/`-`, assignment, and relational —
+now render the same root-plus-immediate-children tree shape used by
+the call hover. The `◂` notation (value flowing into target) is
+retired: it was a learnable glyph that needed explanation, and the
+density advantage was small (`a : K ◂ b : K` vs three short rows).
+One shape across every hover wins on legibility and on mental
+model.
+
+- **Assignment short** carries `(expected <lhs_unit>)` on the RHS row
+  when the homogeneity check fails — same mechanism as a call-arg
+  mismatch, and the RHS row paints 🟡 from the 🟡-on-`expected`
+  override. The directional information `◂` used to carry ("RHS
+  flows into LHS") is now explicit in the annotation.
+- **`+` / `-` short** lose the `◂` operand-pair form in favour of
+  root row + operand child rows. A homogeneity violation paints the
+  root 🔴 via `H002` (worst-of), and the operand rows show their
+  resolved units so the reader sees *which* operand is wrong.
+- **Relational short** loses the `◂` form too. Relational expressions
+  are structural-no-unit (root row carries `-`), and the checker
+  doesn't emit on operand mismatches at relational sites, so the
+  root stays 🟡 (no consistency diagnostic) regardless of operand
+  agreement — unchanged semantically; just the layout shifts.
+- **Intrinsic call hovers** (`log(p)`, `exp(t)`, `sqrt(x)`, etc.)
+  switch from the bare-identifier-fallback one-liner to the full
+  call-tree renderer (`_render_call_tree`). User-defined calls and
+  intrinsic calls now look structurally identical — same root row,
+  same child rows, same alignment. Intrinsics have no `(expected …)`
+  annotation on args (we don't track formal-arg units for them) and
+  no associated diagnostic, but the unit resolution still works
+  because the checker's `resolve_unit` handles intrinsics natively.
+
+### Change: short hover for `*` / `/` / `**` and sub-expressions now shows root + immediate children
+
+Brings these surfaces into line with the call hover: every short
+hover means "this expression's unit, with one level of how it got
+there". The cursor-on-`*` / `/` / `**` short hover and the generic
+computed-sub-expression short hover both now render a root row +
+one child per operand, using the same tree renderer as the call
+hover (`_render_ast_tree` with `max_depth=1`). The `+` / `-`
+homogeneity short hover, the assignment short hover, and the
+relational short hover keep their `◂` one-liner shape — those are
+homogeneity-check surfaces where `◂` carries direction semantics.
+
+### Change: three glyphs, three meanings, for "no unit" — `-` vs `?` vs `(none)`
+
+The hover trace, panel expression tree, and panel scope/import
+sections previously rendered "no unit" three different ways
+(hover used `?`, panel hid the column, scope/import used `(none)`).
+Unified so each glyph has exactly one meaning:
+
+- `-` — **structural-no-unit**: the row has no unit by design
+  (assignment statements, relational expressions, subroutine calls).
+  Rendered identically by hover and panel.
+- `?` — **unknown unit**: the row could have a unit but doesn't yet
+  (unannotated identifier, unsupported intrinsic, partial
+  resolution). Used inside expression trees AND for unannotated
+  declarations in the panel's scope / import sections (previously
+  `(none)`).
+- `(none)` — **empty (sub-)section header only** (e.g. `Scope:
+  (none)`, `Imports: (none)`). Never used inside a row or for an
+  individual variable.
+
+Side effect on subroutine-call rows: a clean subroutine call now
+paints 🟢 (it's in `_NO_UNIT_NODE_TYPES`, so its resolution-axis
+base is 🟢), instead of the previous 🟡 from "unresolved unit". The
+marker still rolls up worst-of-children, so 🟡/🔴 inside args still
+propagates to the root. Spec at
+[docs/design/markers.md](docs/design/markers.md) §4.5.
+
+Wire-format: `ExpressionNode.unit` is now always a string (`"-"` /
+`"?"` / a unit), never null. Companions that still treat null as
+"hide the unit column" will silently render the string instead — no
+crash, just a small visual change for pre-0.2.1 companions on
+post-0.2.1 servers.
+
+### Change: call hover unified with the side panel's Expression tree
+
+- The **call hover** (function or subroutine, on the callee
+  identifier) now renders through the same tree renderer as the side
+  panel's Expression section. Root row reads `name(args) : ret` —
+  full call as written, with the return unit attached and the overall
+  verdict marker. Child rows are one per actual argument labelled by
+  source text, with `(expected <formal>)` on a dimensional mismatch.
+  Subroutines have no return unit so the root shows `?` and paints
+  🟡 from the resolution axis (no consistency disagreement to report).
+  Short mode renders root + children only; Detailed expands the
+  per-argument sub-tree.
+- The earlier intermediate `name: (u1, u2, …) → ret` header line on
+  call sites is gone — it lives on now in the **pure-signature
+  hover** (cursor on a function/subroutine *definition* header — no
+  call site), which still collapses to that one-line signature with
+  `?` slots flagging unannotated formals/return.
+- **🟡-on-`expected` override.** On a call-arg mismatch the
+  argument row paints 🟡 + `(expected <formal>)`, not 🟢. Rationale:
+  the expression resolved cleanly here, but the caller disagrees with
+  the formal it's flowing into — flagging silently with 🟢 would
+  contradict the 🔴 painted on the enclosing call by H004. The
+  override is bounded to "would otherwise paint 🟢 AND carries
+  `expected`" so it never overrides a diagnostic-owned 🔴 or a 🟡 from
+  resolution. Applies symmetrically in the trace hover and the panel
+  payload — see [docs/design/markers.md](docs/design/markers.md) §4.4.
+- The old "Signature ◂ Call" two-column pairing layout and the typed-
+  language-style `name(arg: unit, …) : ret` signature line are gone.
+
+### Change: rule IDs dropped from expression tree; `(expected …)` surfaces on call-arg rows
+
+- The shared expression-tree renderer (powering both the in-buffer
+  trace hover and the side panel's Expression section) used to append
+  the unit-algebra rule ID (e.g. `(R4.1)`, `(R5.6)`) to every row.
+  Removed — debug noise for the target audience; the information is
+  reachable from logs and pytest when needed for checker triage.
+- Replaced with the more useful `(expected <formal>)` annotation on
+  call-argument rows whose actual unit dimensionally differs from the
+  callee's formal. Closes the prior information gap between the call
+  hover (which now surfaces the expected unit) and the panel tree
+  (which only marked the row 🔴 with no context).
+- Wire-format: `ExpressionNode.ruleId` → `ExpressionNode.expected`
+  (see [docs/design/panel-info.md](docs/design/panel-info.md)). All
+  three companions consume the new field.
+
 ## [0.2.0] — 2026-05-27
 
 First **beta**. Usable, tested, and proven against a real-world climate

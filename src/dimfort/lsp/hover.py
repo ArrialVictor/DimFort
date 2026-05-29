@@ -17,7 +17,6 @@ tree built by :func:`_render_ast_tree`. All markers are diagnostic-driven via
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -46,12 +45,13 @@ from dimfort.lsp.tree_nav import (
 
 if TYPE_CHECKING:
     from dimfort.core.multifile import WorksetResult
-    from dimfort.core.symbols import FuncSig
     from dimfort.core.units import UnitExpr
 
-# A rendered unit-algebra tree row: (label, unit-or-None, marker, rule-tag).
+# A rendered unit-algebra tree row: (label, unit-or-None, marker, extra).
 # ``unit`` is ``None`` only for the synthetic assignment root row (a statement,
-# which has no unit of its own).
+# which has no unit of its own). ``extra`` is an optional trailing annotation
+# — currently the ``(expected <formal_unit>)`` tag on a mismatching
+# call-argument row; empty string otherwise.
 _TreeRow = tuple[str, str | None, str, str]
 
 
@@ -195,21 +195,22 @@ def _resolve_hover(
                     rctx.type_field_types.update(
                         ts_checker.collect_type_field_types(tree, source)
                     )
-                    if level == "detailed":
-                        text = _render_call_pairing_c(
-                            callee_nm, call_hit, sig, rctx, source,
-                        )
-                    else:
-                        text = _render_call_pairing_a(
-                            callee_nm, call_hit, sig, rctx, source,
-                        )
+                    max_depth = None if level == "detailed" else 1
+                    text = _render_call_tree(
+                        call_hit, rctx, source, max_depth=max_depth,
+                    )
                     if text is None:
                         text = _hover_signature(callee_nm, sig)
                     return text, _node_lsp_range(callee)
             # No user-defined signature — but the call might be a known
-            # Fortran intrinsic (log, exp, sqrt, sin, sum, ...). Show
-            # the resolved result unit instead of falling through to the
-            # bare-identifier path which would say "no annotation".
+            # Fortran intrinsic (log, exp, sqrt, sin, sum, ...). Render
+            # it through the same call-tree path as a user call so the
+            # two surfaces look identical. Intrinsics aren't in
+            # ``ctx.signatures``, so ``_render_ast_tree`` won't attach
+            # an ``(expected …)`` annotation to any arg — that's
+            # accurate (we don't have formal-arg units for intrinsics),
+            # and unit resolution still works because the checker's
+            # ``resolve_unit`` handles intrinsics natively.
             from dimfort.core.symbols import (
                 DIMENSIONLESS_INTRINSICS,
                 EXP_INTRINSICS,
@@ -236,16 +237,21 @@ def _resolve_hover(
                     (c for c in call_hit.children if c.type == "identifier"),
                     call_hit,
                 )
-                ctx = _build_ts_ctx(
-                    result, source, str(resolved_path), path=resolved_path,
-                )
-                unit = ts_checker.resolve_unit(call_hit, ctx, source)
-                # Show the full source text of the call rather than
-                # `name(...)` — the user sees the exact expression
-                # whose unit is being reported.
-                label = _ts.node_text(call_hit, source)
-                label = " ".join(label.split())  # collapse stray whitespace
-                return _hover_text(label, _unit_pretty(unit)), _node_lsp_range(callee)
+                if _ts_h.node_contains(callee, line_1based, col_1based):
+                    rctx = _build_ts_ctx(
+                        result, source, str(resolved_path), path=resolved_path,
+                    )
+                    rctx.var_types.update(ts_checker.collect_var_types(tree, source))
+                    rctx.parameter_values.update(ts_checker.collect_parameter_values(tree, source))
+                    rctx.type_field_types.update(
+                        ts_checker.collect_type_field_types(tree, source)
+                    )
+                    max_depth = None if hover_mode == "detailed" else 1
+                    text = _render_call_tree(
+                        call_hit, rctx, source, max_depth=max_depth,
+                    )
+                    if text is not None:
+                        return text, _node_lsp_range(callee)
 
     # 4. Bare identifier — variable reference. Includes call-callee
     # identifiers as a fallback: if step 3 already returned a
@@ -374,8 +380,6 @@ def _expression_hover_for(
         ctx.parameter_values.update(ts_checker.collect_parameter_values(tree, source))
         ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
         if hover_mode == "short":
-            if op_node.type in ("+", "-"):
-                return _render_mathop_short(parent, ctx, source)
             return _render_subexpr_short(parent, ctx, source)
         # Detailed: fall through to the tree path with parent as the root.
         return _expression_hover_render_tree(
@@ -414,7 +418,13 @@ def _expression_hover_for(
     ctx.parameter_values.update(ts_checker.collect_parameter_values(tree, source))
     ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
     if hover_mode == "short":
-        return _render_assignment_short(asn, lhs, rhs, ctx, source)
+        # Assignment short hover = the same tree shape as every other
+        # hover: root row (assignment statement, structural-no-unit
+        # ``-``) + one row per immediate child (LHS, RHS). The RHS row
+        # picks up its ``(expected <lhs_unit>)`` annotation on a
+        # homogeneity violation via ``_render_ast_tree``'s assignment
+        # propagation rule.
+        return _render_subexpr_short(asn, ctx, source)
     rows: list[_TreeRow] = []
     lhs_unit = ts_checker.resolve_unit(lhs, ctx, source)
     from dimfort.core.units import format_unit
@@ -422,46 +432,55 @@ def _expression_hover_for(
     # assignment's aggregated marker already folds in H001/S001/S002 and any
     # nested RHS mismatch, so no separate row re-aggregation is needed.
     match_tag = _node_marker(asn, ctx, source)
-    # Root (assignment) row carries no unit column, but it shows the
-    # verdict marker on the row too — matching the side panel's root row —
-    # in addition to the same marker in the bold header above. ``None``
-    # unit selects the renderer's label-plus-marker branch.
-    rows.append((_node_label(asn, source), None, match_tag, ""))
+    # Root (assignment) row: structural-no-unit, so its unit column
+    # renders ``-`` (matching the panel and the unified renderer at
+    # ``_render_ast_tree``). The marker still sits in the rightmost
+    # column alongside the children's markers.
+    from dimfort.lsp.expr_tree import _NO_UNIT_GLYPH
+    rows.append((_node_label(asn, source), _NO_UNIT_GLYPH, match_tag, ""))
     # LHS leaf: variable + annotated unit, with its own diagnostic-driven
     # marker (resolution axis, since the LHS rarely owns a diagnostic).
     lhs_mark = _node_marker(lhs, ctx, source)
     rows.append((
         "├── " + _node_label(lhs, source),
-        format_unit(lhs_unit) if lhs_unit is not None else "?",
+        format_unit(lhs_unit, show_factor=ctx.scale_mode)
+        if lhs_unit is not None else "?",
         lhs_mark,
         "",
     ))
+    # Detailed-mode assembly assembles the root + LHS rows manually
+    # and then calls _render_ast_tree on the RHS — bypassing the
+    # assignment node's iteration loop where ``assumed_overlay``,
+    # autocast propagation, and ``expected_unit`` propagation are
+    # normally set. Compute them here and pass explicitly so the RHS
+    # row picks up:
+    #   * 🔵 + asserted-unit + ``(assumed: …)`` when @unit_assume;
+    #   * the LHS unit on a literal RHS in autocast (R4.4);
+    #   * ``(expected <lhs_unit>)`` + 🟡-on-expected on a real
+    #     homogeneity mismatch (H001) — same shape as a call-arg
+    #     mismatch, mirroring short-hover and panel.
+    from dimfort.lsp.expr_tree import _assumed_for
+    rhs_assumed_overlay = _assumed_for(asn, ctx)
+    rhs_expected: UnitExpr | None = None
+    rhs_target: UnitExpr | None = None
+    verdict, vlhs, _ = ts_checker.assignment_homogeneity(lhs, rhs, ctx, source)
+    if verdict == "mismatch" and vlhs is not None:
+        rhs_expected = vlhs
+    elif verdict == "autocast" and vlhs is not None:
+        rhs_target = vlhs
     _render_ast_tree(
         rhs, ctx, source,
         prefix="", is_last=True, is_root=False, rows=rows,
+        assumed_overlay=rhs_assumed_overlay,
+        expected_unit=rhs_expected,
+        target_unit_for_literal=rhs_target,
     )
     if not rows:
         return None
-    max_label = max(len(r[0]) for r in rows)
-    max_unit = max(len(r[1]) for r in rows if r[1] is not None)
-    lines: list[str] = []
-    for label, unit, mark, rule in rows:
-        if unit is None:
-            # Root (assignment) row: no unit column, but show the marker
-            # padded to the child rows' marker column so every 🟢/🔴 lines
-            # up. A child's prefix after the label is ``  :  `` (5) + unit
-            # (max_unit) + ``  `` (2) = max_unit + 7 columns.
-            pad = " " * (max_unit + 7)
-            lines.append(f"{label.ljust(max_label)}{pad}{mark}  {rule}".rstrip())
-        elif rule:
-            lines.append(
-                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}  {rule}"
-            )
-        else:
-            lines.append(
-                f"{label.ljust(max_label)}  :  {unit.ljust(max_unit)}  {mark}".rstrip()
-            )
-    body = "\n".join(lines)
+    # Now that every row carries a unit string (``-`` for structural-
+    # no-unit, ``?`` for unresolved, formatted unit otherwise), the
+    # rendering loop is uniform and matches ``_format_tree_rows``.
+    body = _format_tree_rows(rows)
     # No horizontal rule between header and code fence: VSCode places a
     # natural paragraph margin between a bold paragraph and a code
     # block already, and every markdown spacer we tried beneath ``---``
@@ -504,10 +523,10 @@ def _expression_hover_for_context(
     if expr is ctx and ctx.type in ("call_expression", "subroutine_call"):
         return None
     if hover_mode == "short":
-        # Relational expressions are a homogeneity check on their
-        # operands — the relation itself has no unit.
-        if expr.type == "relational_expression":
-            return _render_relational_short(expr, rctx, source)
+        # All short hovers — including relational expressions, which
+        # have no unit of their own — use the same root-plus-immediate-
+        # children tree shape so the user never has to learn a special
+        # case per surface.
         return _render_subexpr_short(expr, rctx, source)
     rows: list[_TreeRow] = []
     _render_ast_tree(
@@ -559,28 +578,6 @@ def _math_op_at_cursor(tree: Tree, line: int, col: int) -> tuple[Node, Node] | N
     return None
 
 
-def _render_mathop_short(
-    math_expr: Node, ctx: ts_checker.Ctx, source: bytes
-) -> tuple[str, lsp.Range] | None:
-    """One-line homogeneity hover for a ``+`` / ``-`` math expression."""
-    from dimfort.core.units import format_unit
-    operands = [c for c in math_expr.children if c.type not in _SKIP_TOKEN_TYPES]
-    if len(operands) < 2:
-        return None
-    lhs, rhs = operands[0], operands[1]
-    marker = _node_marker(math_expr, ctx, source)
-    lu = ts_checker.resolve_unit(lhs, ctx, source)
-    ru = ts_checker.resolve_unit(rhs, ctx, source)
-    lhs_s = format_unit(lu) if lu is not None else "?"
-    rhs_s = format_unit(ru) if ru is not None else "?"
-    body = (
-        f"{_node_label(lhs, source)} : {lhs_s}"
-        f"   ◂   {_node_label(rhs, source)} : {rhs_s}"
-    )
-    text = f"**{marker} DimFort**\n\n```\n{body}\n```"
-    return text, _node_lsp_range(math_expr)
-
-
 def _expression_hover_render_tree(
     root: Node, ctx: ts_checker.Ctx, source: bytes, *, range_node: Node,
 ) -> tuple[str, lsp.Range] | None:
@@ -614,295 +611,61 @@ def _expression_hover_render_tree(
     return text, _node_lsp_range(range_node)
 
 
-def _render_assignment_short(
-    asn: Node, lhs: Node, rhs: Node, ctx: ts_checker.Ctx, source: bytes
-) -> tuple[str, lsp.Range] | None:
-    """One-line homogeneity hover for an assignment cursor position.
-
-    Delegates the assignment-specific logic (autocast detection,
-    unit comparison) to ``ts_checker.assignment_homogeneity`` — the
-    single source of truth shared with the panel and the checker."""
-    from dimfort.core.units import format_unit
-    verdict, lhs_u, rhs_u = ts_checker.assignment_homogeneity(
-        lhs, rhs, ctx, source,
-    )
-    # Marker is diagnostic-driven (docs/design/markers.md): the assignment's
-    # aggregated marker reflects H001/S001/S002 (and any nested mismatch in
-    # the RHS) consistently with the panel + detailed header. ``verdict`` is
-    # kept only for the unit display below.
-    marker = _node_marker(asn, ctx, source)
-    lhs_s = format_unit(lhs_u) if lhs_u is not None else "?"
-    rhs_s = format_unit(rhs_u) if rhs_u is not None else "?"
-    body = (
-        f"{_node_label(lhs, source)} : {lhs_s}"
-        f"   ◂   {_node_label(rhs, source)} : {rhs_s}"
-    )
-    text = f"**{marker} DimFort**\n\n```\n{body}\n```"
-    return text, _node_lsp_range(asn)
-
-
-def _render_relational_short(
-    rel: Node, ctx: ts_checker.Ctx, source: bytes
-) -> tuple[str, lsp.Range] | None:
-    """One-line homogeneity hover for a relational expression
-    (``<``, ``<=``, ``==``, ``/=``, ``>``, ``>=``). The relation
-    itself has no unit; only the operands must agree."""
-    from dimfort.core.units import format_unit
-    # Operands are the non-token children, in source order.
-    operands = [c for c in rel.children if c.type not in _SKIP_TOKEN_TYPES
-                and c.type not in {"<", "<=", "==", "/=", ">", ">=",
-                                   ".lt.", ".le.", ".eq.", ".ne.", ".gt.", ".ge."}]
-    if len(operands) < 2:
-        return None
-    lhs, rhs = operands[0], operands[1]
-    # Relational is not an emission site (markers.md §6.1), so its marker is
-    # diagnostic-driven like everything else: no consistency diagnostic → 🟡
-    # (no unit / not checked), never a re-derived 🔴.
-    marker = _node_marker(rel, ctx, source)
-    lhs_u = ts_checker.resolve_unit(lhs, ctx, source)
-    rhs_u = ts_checker.resolve_unit(rhs, ctx, source)
-    lhs_s = format_unit(lhs_u) if lhs_u is not None else "?"
-    rhs_s = format_unit(rhs_u) if rhs_u is not None else "?"
-    body = (
-        f"{_node_label(lhs, source)} : {lhs_s}"
-        f"   ◂   {_node_label(rhs, source)} : {rhs_s}"
-    )
-    text = f"**{marker} DimFort**\n\n```\n{body}\n```"
-    return text, _node_lsp_range(rel)
-
-
 def _render_subexpr_short(
     expr: Node, ctx: ts_checker.Ctx, source: bytes
 ) -> tuple[str, lsp.Range] | None:
-    """One-line resolved-unit hover for a computed sub-expression or
-    a numeric literal. Marker uses propagated-mark logic so a nested
-    homogeneity violation surfaces as 🔴 even though the wrapping
-    operator has no unit either."""
-    from dimfort.core.units import format_unit
-    u = ts_checker.resolve_unit(expr, ctx, source)
-    marker = _node_marker(expr, ctx, source)
-    u_s = format_unit(u) if u is not None else "?"
-    body = f"{_node_label(expr, source)} : {u_s}"
+    """Short hover for a computed sub-expression or a numeric literal:
+    render the same root-plus-immediate-children tree shape as the
+    call hover, so every short hover means "root unit, with one level
+    of how it got there". Bare leaves (identifiers, literals) collapse
+    to a single row naturally because `_render_ast_tree` returns early
+    on those node types — no children to enumerate.
+    """
+    rows: list[_TreeRow] = []
+    _render_ast_tree(
+        expr, ctx, source,
+        prefix="", is_last=True, is_root=True, rows=rows,
+        max_depth=1,
+    )
+    if not rows:
+        return None
+    body = _format_tree_rows(rows)
+    marker = _worst_marker(rows)
     text = f"**{marker} DimFort**\n\n```\n{body}\n```"
     return text, _node_lsp_range(expr)
 
 
-def _call_actual_args(call_node: Node) -> list[Node]:
-    """Return the actual argument expression nodes of a call, in order."""
-    arglist = next(
-        (c for c in call_node.children if c.type == "argument_list"), None,
-    )
-    if arglist is None:
-        return []
-    out = []
-    for c in arglist.children:
-        if c.type in _SKIP_TOKEN_TYPES:
-            continue
-        if c.type == "keyword_argument":
-            continue
-        out.append(c)
-    return out
-
-
-def _render_call_pairing_a(
-    callee_name: str, call_node: Node, sig: FuncSig, rctx: ts_checker.Ctx, source: bytes,
+def _render_call_tree(
+    call_node: Node, rctx: ts_checker.Ctx, source: bytes,
+    *, max_depth: int | None,
 ) -> str | None:
-    """Layout B: one row per argument, vertical pairing.
+    """Render a call hover as a tree rooted at the call node.
 
-    Each row shows ``marker  formal_name : formal_unit  ←  actual_text : actual_unit``.
-    Per-arg marker: ✓ match, ✗ mismatch, ? unknown (either side missing).
-    Header marker aggregates: 🟢 all match, 🟡 any unknown, 🔴 any mismatch.
+    Same shape and renderer as the side panel's Expression section, so
+    the two surfaces are guaranteed to agree. The root row reads
+    ``name(arg1, arg2, …) : ret  🟢/🟡/🔴`` (subroutines have no unit
+    column on the root) and each immediate child is one actual
+    argument; computed actuals expand under their row when
+    ``max_depth`` permits.
+
+    ``max_depth=1`` gives the short call hover (call + immediate
+    arguments only); ``max_depth=None`` gives the detailed view (full
+    sub-tree under each computed actual). The per-arg `(expected …)`
+    annotation and the 🟡-on-expected marker override both come from
+    :func:`_render_ast_tree`; nothing call-specific lives in this
+    function beyond depth selection and outer markdown wrapping.
     """
-    from dimfort.core.units import format_unit
-    actuals = _call_actual_args(call_node)
-    formal_names = list(sig.arg_names)
-    formal_units = list(sig.arg_units)
-    n = max(len(formal_names), len(actuals))
-    if n == 0:
-        return None
-    rows: list[tuple[str, str, str, str]] = []  # (mark, formal_lhs, formal_unit, actual)
-    any_unknown = False
-    any_mismatch = False
-    for i in range(n):
-        if i < len(formal_names):
-            fname = formal_names[i]
-            funit = formal_units[i]
-            funit_s = format_unit(funit) if funit is not None else "?"
-        else:
-            fname, funit, funit_s = "—", None, "—"
-        if i < len(actuals):
-            an = actuals[i]
-            atext = _node_label(an, source)
-            aunit = ts_checker.resolve_unit(an, rctx, source)
-            aunit_s = format_unit(aunit) if aunit is not None else "?"
-            actual = f"{atext} : {aunit_s}"
-        else:
-            an, aunit, actual = None, None, "—"
-        # Per-arg marker is intentionally NOT diagnostic-driven (cf.
-        # docs/design/markers.md): H004 is emitted on the *whole call*, not
-        # per argument, and the checker emits no scale/offset diagnostic at
-        # call-arg sites — so there is no per-arg diagnostic to read. A local
-        # dimension comparison (matching exactly what H004 checks,
-        # ``equal_dim``) is the right tool here; using ``compare()`` would
-        # paint scale/offset mismatches with no backing squiggle (the orphan-
-        # marker anti-pattern). So this surface stays a local per-arg check.
-        if funit is None or aunit is None:
-            mark = "🟡"
-            any_unknown = True
-        elif _checker_equal(funit, aunit):
-            mark = "🟢"
-        else:
-            mark = "🔴"
-            any_mismatch = True
-        rows.append((mark, fname, funit_s, actual))
-    fname_w = max(len(r[1]) for r in rows)
-    funit_w = max(len(r[2]) for r in rows)
-    if sig.is_subroutine:
-        header = f"{callee_name}:"
-    else:
-        ret_s = format_unit(sig.return_unit) if sig.return_unit is not None else "?"
-        header = f"{callee_name}: {ret_s}"
-    # Column labels — Unicode mathematical-italic glyphs render italic
-    # inside the monospace fence. Each glyph is one codepoint, so
-    # ``str.ljust`` width math stays correct.
-    sig_label = "Signature"
-    call_label = "Call"
-    sig_cell_w = max(fname_w + 3 + funit_w, len(sig_label))  # "name : unit"
-    col_header = (
-        "     "
-        + sig_label.ljust(sig_cell_w)
-        + "    "
-        + call_label
+    rows: list[_TreeRow] = []
+    _render_ast_tree(
+        call_node, rctx, source,
+        prefix="", is_last=True, is_root=True, rows=rows,
+        max_depth=max_depth,
     )
-    lines: list[str] = [header, col_header]
-    for mark, fname, funit_s, actual in rows:
-        lines.append(
-            f"  {mark}  {fname.ljust(fname_w)} : {funit_s.ljust(funit_w)}  ◂  {actual}"
-        )
-    body = "\n".join(lines)
-    if any_mismatch:
-        marker = "🔴"
-    elif any_unknown:
-        marker = "🟡"
-    else:
-        marker = "🟢"
-    return f"**{marker} DimFort**\n\n```\n{body}\n```"
-
-
-def _render_call_pairing_c(
-    callee_name: str, call_node: Node, sig: FuncSig, rctx: ts_checker.Ctx, source: bytes,
-) -> str | None:
-    """Layout C: B's row layout, plus sub-trees expanded under any
-    computed argument so the reader can see how each non-trivial actual
-    unit was derived.
-    """
-    from dimfort.core.units import format_unit
-    actuals = _call_actual_args(call_node)
-    formal_names = list(sig.arg_names)
-    formal_units = list(sig.arg_units)
-    n = max(len(formal_names), len(actuals))
-    if n == 0:
+    if not rows:
         return None
-
-    # Pre-compute the row triples so we can width-align before emitting,
-    # then attach per-arg sub-trees underneath.
-    @dataclass
-    class _Row:
-        mark: str
-        fname: str
-        funit_s: str
-        actual_text: str
-        actual_unit_s: str
-        sub_lines: list[str]  # indented sub-tree lines (already prefixed)
-
-    rows: list[_Row] = []
-    any_unknown = False
-    any_mismatch = False
-    for i in range(n):
-        if i < len(formal_names):
-            fname = formal_names[i]
-            funit = formal_units[i]
-            funit_s = format_unit(funit) if funit is not None else "?"
-        else:
-            fname, funit, funit_s = "—", None, "—"
-        if i < len(actuals):
-            an = actuals[i]
-            atext = _node_label(an, source)
-            aunit = ts_checker.resolve_unit(an, rctx, source)
-            aunit_s = format_unit(aunit) if aunit is not None else "?"
-        else:
-            an, aunit, atext, aunit_s = None, None, "—", "—"
-        if funit is None or aunit is None:
-            mark = "🟡"
-            any_unknown = True
-        elif _checker_equal(funit, aunit):
-            mark = "🟢"
-        else:
-            mark = "🔴"
-            any_mismatch = True
-        sub_lines: list[str] = []
-        # Expand sub-tree for computed args only — a bare identifier or
-        # literal would just repeat what the actual cell already says.
-        if an is not None and an.type not in ("identifier", "number_literal"):
-            sub_rows: list[_TreeRow] = []
-            _render_ast_tree(
-                an, rctx, source,
-                prefix="", is_last=True, is_root=True, rows=sub_rows,
-            )
-            # Drop the root row (== the actual cell we already render);
-            # keep only the descendants.
-            if len(sub_rows) > 1:
-                max_l = max(len(r[0]) for r in sub_rows[1:])
-                max_u = max(len(r[1] or "") for r in sub_rows[1:])
-                for label, unit, mk, rule in sub_rows[1:]:
-                    us = (unit or "").ljust(max_u)
-                    if rule:
-                        sub_lines.append(
-                            f"      {label.ljust(max_l)}  :  {us}  {mk}  {rule}"
-                        )
-                    else:
-                        sub_lines.append(
-                            f"      {label.ljust(max_l)}  :  {us}  {mk}".rstrip()
-                        )
-        rows.append(_Row(mark, fname, funit_s, atext, aunit_s, sub_lines))
-
-    fname_w = max(len(r.fname) for r in rows)
-    funit_w = max(len(r.funit_s) for r in rows)
-    if sig.is_subroutine:
-        header = f"{callee_name}:"
-    else:
-        ret_s = format_unit(sig.return_unit) if sig.return_unit is not None else "?"
-        header = f"{callee_name}: {ret_s}"
-    sig_label = "Signature"
-    call_label = "Call"
-    sig_cell_w = max(fname_w + 3 + funit_w, len(sig_label))
-    col_header = (
-        "     "
-        + sig_label.ljust(sig_cell_w)
-        + "    "
-        + call_label
-    )
-    lines: list[str] = [header, col_header]
-    for r in rows:
-        lines.append(
-            f"  {r.mark}  {r.fname.ljust(fname_w)} : {r.funit_s.ljust(funit_w)}  ◂  "
-            f"{r.actual_text} : {r.actual_unit_s}"
-        )
-        lines.extend(r.sub_lines)
-    body = "\n".join(lines)
-    if any_mismatch:
-        marker = "🔴"
-    elif any_unknown:
-        marker = "🟡"
-    else:
-        marker = "🟢"
+    body = _format_tree_rows(rows)
+    marker = _worst_marker(rows)
     return f"**{marker} DimFort**\n\n```\n{body}\n```"
-
-
-def _checker_equal(a: UnitExpr, b: UnitExpr) -> bool:
-    """Wrapper-aware dimension equality (delegates to units.equal_dim)."""
-    from dimfort.core.units import equal_dim
-    return equal_dim(a, b)
 
 
 def _trace_section_for(uri: str, line_1based: int, col_1based: int) -> str | None:
@@ -945,27 +708,59 @@ def _trace_section_for(uri: str, line_1based: int, col_1based: int) -> str | Non
     ctx.var_types.update(ts_checker.collect_var_types(tree, source))
     ctx.parameter_values.update(ts_checker.collect_parameter_values(tree, source))
     ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
-    rows: list[_TreeRow] = []  # (label, unit, mark, rule)
-    _render_ast_tree(rhs, ctx, source, prefix="", is_last=True, is_root=True, rows=rows)
+    rows: list[_TreeRow] = []  # (label, unit, mark, extra)
+    # Same plumbing as the detailed-mode assignment path: when the
+    # enclosing assignment carries @unit_assume, the RHS tree's root
+    # row picks up the 🔵 + asserted-unit + (assumed: …) overlay.
+    from dimfort.lsp.expr_tree import _assumed_for
+    rhs_assumed_overlay = _assumed_for(asn, ctx)
+    _render_ast_tree(
+        rhs, ctx, source,
+        prefix="", is_last=True, is_root=True, rows=rows,
+        assumed_overlay=rhs_assumed_overlay,
+    )
     if not rows:
         return None
+    body = _format_tree_rows(rows)
+    return "**Unit-algebra trace**\n\n```\n" + body + "\n```"
+
+
+def _format_tree_rows(rows: list[_TreeRow]) -> str:
+    """Render tree rows with global column alignment.
+
+    Shared between the call hover and the unit-algebra trace section so
+    both render with identical width math — same source of truth as the
+    panel companions, just rendered server-side as markdown for the
+    hover surfaces.
+
+    ``unit`` of ``""`` marks a row that should not display a unit at all
+    (e.g. the assignment_statement row — a statement, not an
+    expression). Column widths are computed only over rows that DO show
+    a unit; unit-less rows skip the ``: unit`` block entirely so the
+    marker still aligns.
+    """
     max_label = max(len(r[0]) for r in rows)
-    # ``unit`` of ``""`` marks a row that should not display a unit at
-    # all (e.g. the assignment_statement row — a statement, not an
-    # expression). Compute column width only over rows that DO show
-    # a unit; unit-less rows skip the ``: unit`` block entirely.
     units_present = [r[1] for r in rows if r[1]]
     max_unit = max((len(u) for u in units_present), default=0)
     lines: list[str] = []
-    for label, unit, mark, rule in rows:
+    for label, unit, mark, extra in rows:
         head = label.ljust(max_label)
         mid = f"  :  {unit.ljust(max_unit)}" if unit else ""
-        if rule:
-            lines.append(f"{head}{mid}  {mark}  {rule}")
+        if extra:
+            lines.append(f"{head}{mid}  {mark}  {extra}")
         else:
             lines.append(f"{head}{mid}  {mark}".rstrip())
-    body = "\n".join(lines)
-    return "**Unit-algebra trace**\n\n```\n" + body + "\n```"
+    return "\n".join(lines)
+
+
+def _worst_marker(rows: list[_TreeRow]) -> str:
+    """Header marker for a tree: worst-of all row markers."""
+    found = {r[2] for r in rows}
+    if "🔴" in found:
+        return "🔴"
+    if "🟡" in found:
+        return "🟡"
+    return "🟢"
 
 
 # Beyond bare assignments, the trace hover also fires inside these
@@ -1052,16 +847,35 @@ def _render_ast_tree(
     prefix: str, is_last: bool, is_root: bool,
     rows: list[_TreeRow],
     target_unit_for_literal: UnitExpr | None = None,
+    expected_unit: UnitExpr | None = None,
+    assumed_overlay: tuple[str, str] | None = None,
+    max_depth: int | None = None,
+    _depth: int = 0,
 ) -> None:
-    """Recursively collect ``(label, unit, rule)`` rows for the tree.
+    """Recursively collect ``(label, unit, mark, extra)`` rows for the tree.
 
-    The caller pads each column to the global max so ``⇒`` and the
-    rule tag align vertically across nodes.
+    The caller pads each column to the global max so the marker and the
+    trailing annotation align vertically across nodes.
 
     ``target_unit_for_literal`` carries the initialization-autocast
     target down the recursion: when we recurse into the RHS of an
     assignment whose RHS is a bare literal, the literal node uses
     this unit and a 🟢 marker (matching the checker's leniency rule).
+
+    ``expected_unit`` is the formal unit this node is expected to satisfy
+    (only set when this node is an argument of a call whose callee
+    signature is known). When the resolved unit doesn't match, the row
+    gets an ``(expected <formal>)`` annotation so the reader can see
+    what the call-site demanded without round-tripping through the
+    diagnostic message.
+
+    ``assumed_overlay`` is the ``(asserted_unit_str, reason)`` pair
+    from the ``@unit_assume`` directive on this node's parent
+    assignment. Only the **RHS child** of an assumed assignment
+    receives it; the row displays the asserted unit, paints 🔵 (the
+    overlay tier — markers.md §4.6), and gets a
+    ``(assumed: <reason>)`` row tail. The assignment row itself
+    never carries the overlay.
     """
     # Skip wrapper-only nodes (parenthesised exprs) so the tree doesn't
     # explode with structural-only intermediate nodes — descend straight
@@ -1073,14 +887,13 @@ def _render_ast_tree(
                 inner[0], ctx, source,
                 prefix=prefix, is_last=is_last, is_root=is_root, rows=rows,
                 target_unit_for_literal=target_unit_for_literal,
+                expected_unit=expected_unit,
+                assumed_overlay=assumed_overlay,
+                max_depth=max_depth, _depth=_depth,
             )
             return
 
-    from dimfort.core.trace import with_trace
-    with with_trace() as trace:
-        unit = ts_checker.resolve_unit(node, ctx, source)
-    snap = trace.snapshot()
-    rule_id = snap[-1].rule_id if snap else None
+    unit = ts_checker.resolve_unit(node, ctx, source)
 
     # Initialization autocast: a pure-numeric-constant subtree (literal,
     # unary-minus literal, math of literals) in a propagated target
@@ -1103,38 +916,83 @@ def _render_ast_tree(
         next_prefix = prefix + ("    " if is_last else "│   ")
 
     label = _node_label(node, source)
-    # Assignments are statements, not expressions — render no unit
-    # column for them (only the marker matters). Other unit-less
-    # nodes show ``?``.
-    if node.type == "assignment_statement":
-        unit_str = ""
-    elif unit is None:
-        unit_str = "?"
+    # Unit-column rendering — three glyphs, three meanings (see
+    # docs/design/markers.md §4.5):
+    #   ``-`` — structural-no-unit (assignment / relation / subroutine
+    #           call); the row has no unit *by design*, not because we
+    #           couldn't resolve one.
+    #   <fmt> — resolved unit, formatted.
+    #   ``?`` — unknown (unannotated identifier, unsupported intrinsic,
+    #           partial resolution).
+    from dimfort.core.units import equal_dim, format_unit
+    from dimfort.lsp.expr_tree import _NO_UNIT_GLYPH, _NO_UNIT_NODE_TYPES
+    # Surface scale factors when scale checking is on — uniform rule
+    # across every panel/hover surface (see ``_build_expression_tree``
+    # and ``_normalized_unit`` for the same gate). Off-mode hides the
+    # factor so displays don't claim significance the checker ignores.
+    sf = ctx.scale_mode
+    if node.type in _NO_UNIT_NODE_TYPES:
+        unit_str = _NO_UNIT_GLYPH
+    elif unit is not None:
+        unit_str = format_unit(unit, show_factor=sf)
     else:
-        from dimfort.core.units import format_unit
-        unit_str = format_unit(unit)
-    rule_str = f"({rule_id})" if rule_id else ""
+        unit_str = "?"
+    extra_str = ""
+    if (
+        expected_unit is not None
+        and unit is not None
+        and not equal_dim(unit, expected_unit)
+    ):
+        extra_str = f"(expected {format_unit(expected_unit, show_factor=sf)})"
+    # `@unit_assume` overlay — applied to the RHS row of an assumed
+    # assignment (the parent's loop passes ``assumed_overlay`` to that
+    # one child; this node itself never carries the overlay because
+    # the directive applies to the RHS expression, not the assignment
+    # statement). When set:
+    #   * Override the unit column to the *asserted* unit, not the
+    #     computed one (typically ``?`` for empirical fits).
+    #   * Paint the marker 🔵 unless an honest diagnostic (🔴) owns
+    #     this node — declared-unit conflicts aren't masked.
+    #   * Append ``(assumed: <reason>)`` to the row tail.
+    if assumed_overlay is not None:
+        asserted_unit_str, reason = assumed_overlay
+        unit_str = asserted_unit_str
+        extra_str = (
+            f"{extra_str}  (assumed: {reason})" if extra_str
+            else f"(assumed: {reason})"
+        )
     # Marker (docs/design/markers.md): the diagnostic-driven aggregated
     # marker — this node's own (resolution ∨ owned consistency diagnostics)
     # worst-of its descendants. An R4.4 autocast leaf emits nothing and
     # resolves cleanly, so it falls out 🟢 without a special case.
     mark = _node_marker(node, ctx, source)
+    # Call-arg-formal disagreement override: when this row carries an
+    # ``(expected …)`` annotation AND would otherwise paint 🟢, demote
+    # to 🟡. Rationale: the expression resolved cleanly, but its caller
+    # disagrees with the formal — worth flagging without painting a
+    # hard 🔴 (reserved for diagnostic-owned mismatches). The 🔴 already
+    # sits on the enclosing call via H004's diagnostic.
+    if extra_str and mark == "🟢" and assumed_overlay is None:
+        mark = "🟡"
+    # `@unit_assume` overlay wins the marker column (after the
+    # 🟡-on-expected step above) on 🟢/🟡 rows — the assumption is
+    # the headline at this row. A 🔴 from a diagnostic owning *this*
+    # node still wins.
+    if assumed_overlay is not None and mark in ("🟢", "🟡"):
+        mark = "🔵"
     # Mark is a separate column so the unit can be ljust-padded
     # independently; markers then align vertically on the right.
-    rows.append((prefix + connector + label, unit_str, mark, rule_str))
+    rows.append((prefix + connector + label, unit_str, mark, extra_str))
 
     # Leaves stop here. Identifiers / numeric literals are atomic.
     if node.type in ("identifier", "number_literal", "string_literal", "complex_literal"):
         return
+    # Depth cap: short call hover renders only call + immediate children
+    # (no recursion into computed arguments). ``None`` = unbounded.
+    if max_depth is not None and _depth >= max_depth:
+        return
 
     children = _interesting_children(node)
-    # call_expression: drop the callee identifier from the child list —
-    # the parent line already reads ``log(p)`` etc., so re-rendering the
-    # bare ``log`` identifier is noise.
-    if node.type == "call_expression" and children:
-        first = children[0]
-        if first.type == "identifier":
-            children = children[1:]
     # Compute the autocast target to propagate into children.
     # - Assignment: ask ``ts_checker.assignment_homogeneity`` for the effective
     #   RHS unit; pass it to the last child (the RHS) when the verdict
@@ -1151,6 +1009,43 @@ def _render_ast_tree(
             child_target = lhs_u
     elif apply_autocast and node.type == "unary_expression":
         child_target = target_unit_for_literal
+    # Per-child expected_unit propagation. Two sources:
+    #   * Call: each positional arg's expected unit = the callee's
+    #     formal unit (from ``ctx.signatures``).
+    #   * Assignment: the RHS's expected unit = the LHS unit (the
+    #     declared type of what we're assigning into). The LHS itself
+    #     has no expected — it's the source of truth here.
+    # A child whose resolved unit dimensionally disagrees with its
+    # ``expected_unit`` paints 🟡 + ``(expected <formal>)`` per the
+    # override in this same function above.
+    arg_expected: list[UnitExpr | None] = []
+    if node.type in ("call_expression", "subroutine_call"):
+        callee_nm = _ts_h.call_name(node, source)
+        if callee_nm is not None:
+            sig = ctx.signatures.get(callee_nm.lower())
+            if sig is not None:
+                arg_expected = list(sig.arg_units)
+    elif node.type == "assignment_statement" and len(children) >= 2:
+        # ``assignment_homogeneity`` already does the autocast vs
+        # mismatch decision; in autocast the RHS resolves to LHS unit
+        # (via ``target_unit_for_literal`` propagation above), so the
+        # equal_dim check yields no annotation. For a real mismatch
+        # the annotation surfaces and the RHS row paints 🟡 +
+        # ``(expected <lhs_unit>)`` — same shape as a call-arg
+        # mismatch.
+        _, lhs_for_expected, _ = ts_checker.assignment_homogeneity(
+            children[0], children[-1], ctx, source,
+        )
+        if lhs_for_expected is not None:
+            arg_expected = [None] * (len(children) - 1) + [lhs_for_expected]
+    # ``@unit_assume`` propagation: if THIS node is an assumed
+    # assignment_statement, the RHS child gets the overlay (asserted
+    # unit + reason). The assignment row itself stays clean — the
+    # directive's syntactic subject is the RHS expression.
+    rhs_assumed_overlay: tuple[str, str] | None = None
+    if node.type == "assignment_statement":
+        from dimfort.lsp.expr_tree import _assumed_for
+        rhs_assumed_overlay = _assumed_for(node, ctx)
     for i, c in enumerate(children):
         is_last_child = (i == len(children) - 1)
         # For assignments, only the last child (RHS) gets the target.
@@ -1159,9 +1054,18 @@ def _render_ast_tree(
         is_asn_rhs = node.type == "assignment_statement" and is_last_child
         if is_asn_rhs or node.type == "unary_expression":
             per_child_target = child_target
+        per_child_expected: UnitExpr | None = None
+        if arg_expected and i < len(arg_expected):
+            per_child_expected = arg_expected[i]
+        per_child_assumed: tuple[str, str] | None = None
+        if rhs_assumed_overlay is not None and is_last_child:
+            per_child_assumed = rhs_assumed_overlay
         _render_ast_tree(
             c, ctx, source,
             prefix=next_prefix, is_last=(i == len(children) - 1),
             is_root=False, rows=rows,
             target_unit_for_literal=per_child_target,
+            expected_unit=per_child_expected,
+            assumed_overlay=per_child_assumed,
+            max_depth=max_depth, _depth=_depth + 1,
         )
