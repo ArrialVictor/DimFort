@@ -113,7 +113,17 @@ interface ImportVar {
   name: string;          // the local name (after any `=>` rename)
   unit: string | null;   // var: the source @unit{}; procedure: its return unit; else null
   unitNormalized: string | null;  // base-SI form when it differs (as ScopeVar)
-  module: string;        // the module it was imported from (lower-cased)
+  // The module that *originally declared* the symbol (lower-cased).
+  // For a directly-imported name this equals the module on the cursor's
+  // `use` line. For a transitively re-exported name — e.g. `g0` declared
+  // in `phys_base` and re-exported through `phys_constants` — `module`
+  // names `phys_base` (so nav jumps to the real declaration), and
+  // `viaModule` names the intermediate hop.
+  module: string;
+  // Present only for transitively re-exported names; names the module
+  // on the cursor's actual `use` line. Renderers may show "from
+  // phys_base (via phys_constants)" or similar. Absent for direct imports.
+  viaModule?: string;
   // For a procedure: a function with a return unit (or any subroutine) is
   // "annotated"; a function lacking a return @unit{} is "unannotated".
   kind: "annotated" | "unannotated";

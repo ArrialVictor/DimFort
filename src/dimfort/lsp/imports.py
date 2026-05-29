@@ -128,40 +128,63 @@ def build_imports(
         if exports is None:
             continue  # external / unresolved module — nothing to list
 
-        # Case-insensitive index of the module's exports: annotated vars
-        # (with their unit), every declared var name (annotated or not),
-        # and procedure signatures.
-        var_by_lc = {k.lower(): v for k, v in exports.var_units.items()}
-        allvar_lc = {n.lower() for n in (exports.all_var_names or ())}
-        sig_by_lc = {k.lower(): v for k, v in exports.signatures.items()}
+        # Transitive re-export closure for the used module — the panel's
+        # source of truth. ``trans_vars[name_lc] = (unit_or_None,
+        # origin_module_lc)`` includes both locally-declared and
+        # transitively re-exported names; ``origin_module_lc`` is the
+        # module that *originally* declared the symbol (so a row for a
+        # name re-exported from ``phys_base`` through ``phys_constants``
+        # navigates to ``phys_base``'s declaration site). Falls back to
+        # the direct ``exports`` view when the closure is missing
+        # (transitive-disabled test stubs).
+        trans_vars = result.module_transitive_vars.get(module_lc)
+        trans_sigs = result.module_transitive_sigs.get(module_lc)
+        if trans_vars is None:
+            trans_vars = {
+                n.lower(): (
+                    exports.var_units.get(n)
+                    or {k.lower(): v for k, v in exports.var_units.items()}.get(n.lower()),
+                    module_lc,
+                )
+                for n in (exports.all_var_names or tuple(exports.var_units))
+            }
+        if trans_sigs is None:
+            trans_sigs = {
+                k.lower(): (v, module_lc) for k, v in exports.signatures.items()
+            }
 
-        # (local, remote) pairs brought into scope. A whole-module import
-        # lists every declared variable AND every procedure; an ``only:``
-        # list names a subset (each resolved as var-or-procedure below).
+        # (local_lc, remote_lc) pairs brought into scope. A whole-module
+        # import lists every transitively-visible variable AND every
+        # procedure; an ``only:`` list names a subset.
         if ref is None or ref.only is None:
-            names = exports.all_var_names or tuple(exports.var_units)
-            pairs = [(n, n) for n in names]
-            pairs += [(n, n) for n in exports.signatures]
+            pairs = [(n, n) for n in trans_vars]
+            pairs += [(n, n) for n in trans_sigs]
         else:
             rename_map = {local: remote for local, remote in ref.renames}
-            pairs = [(local, rename_map.get(local, local)) for local in ref.only]
+            pairs = [
+                (local.lower(), rename_map.get(local, local).lower())
+                for local in ref.only
+            ]
 
-        for local, remote in pairs:
-            local_lc = local.lower()
+        for local_lc, remote_lc in pairs:
             if local_lc in local_names_lc or local_lc in seen:
                 continue  # local declaration shadows it / already listed
-            remote_lc = remote.lower()
-            is_var = remote_lc in var_by_lc or remote_lc in allvar_lc
-            sig = sig_by_lc.get(remote_lc)
-            if not is_var and sig is None:
+            var_entry = trans_vars.get(remote_lc)
+            sig_entry = trans_sigs.get(remote_lc)
+            if var_entry is None and sig_entry is None:
                 continue  # not an exported var or procedure (type, …) — skip
             seen.add(local_lc)
-            if sig is not None and not is_var:
+            # Re-derive a display name that preserves the user's casing
+            # for direct-imported names; transitive names fall back to
+            # the lower-cased form.
+            local = local_lc
+            if sig_entry is not None and var_entry is None:
                 # Imported procedure: a function shows its return unit; a
                 # subroutine has none (and isn't "missing" one). ``callable``
                 # + ``signature`` (the parenthesised argument units, ``?``
                 # for an un-annotated arg) let renderers show the contract,
                 # e.g. ``force(kg, m)``.
+                sig, origin_lc = sig_entry
                 ret = format_unit(sig.return_unit) if sig.return_unit else None
                 arg_units = ", ".join(
                     format_unit(u) if u is not None else "?" for u in sig.arg_units
@@ -173,17 +196,20 @@ def build_imports(
                         _normalized_unit(ret, scale_mode=scale_mode)
                         if ret else None
                     ),
-                    "module": module_lc,
+                    "module": origin_lc,
                     "kind": ("annotated"
                              if (ret or sig.is_subroutine) else "unannotated"),
                     "callable": True,
                     "signature": "(" + arg_units + ")",
                 }
+                if origin_lc != module_lc:
+                    row["viaModule"] = module_lc
                 loc = _resolve_decl_location(
-                    result, module_lc, remote, want_procedure=True
+                    result, origin_lc, remote_lc, want_procedure=True,
                 )
             else:
-                unit = var_by_lc.get(remote_lc)
+                assert var_entry is not None
+                unit, origin_lc = var_entry
                 unit_text = format_unit(unit) if unit is not None else None
                 row = {
                     "name": local,
@@ -192,11 +218,13 @@ def build_imports(
                         _normalized_unit(unit_text, scale_mode=scale_mode)
                         if unit_text else None
                     ),
-                    "module": module_lc,
+                    "module": origin_lc,
                     "kind": "annotated" if unit_text else "unannotated",
                     "callable": False,
                 }
-                loc = _resolve_decl_location(result, module_lc, remote)
+                if origin_lc != module_lc:
+                    row["viaModule"] = module_lc
+                loc = _resolve_decl_location(result, origin_lc, remote_lc)
             if loc is None:
                 loc = {"line": use_line, "column": 1}  # fall back to use site
             row.update(loc)
