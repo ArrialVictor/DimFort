@@ -24,6 +24,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
+from typing import Any
 
 from tree_sitter import Node, Tree
 
@@ -2208,11 +2209,19 @@ def collect_module_exports(
                             _signatures_for_subtree(grandchild, lookup, source)
                         )
 
+        inner_uses = _extract_inner_uses(n, source)
+        default_private, public_names, private_names = _extract_visibility(
+            n, source,
+        )
         out[name.lower()] = ModuleExports(
             name=name,
             var_units=export_var_units,
             signatures=signatures,
             all_var_names=tuple(all_var_names),
+            inner_uses=inner_uses,
+            default_private=default_private,
+            public_names=public_names,
+            private_names=private_names,
         )
     return out
 
@@ -2450,12 +2459,62 @@ def _module_exports_for_node(
                         _signatures_for_subtree(grandchild, lookup, source)
                     )
 
+    # Inner ``use`` clauses + visibility statements — needed for the
+    # transitive-export closure (panel's Imports section).
+    inner_uses = _extract_inner_uses(node, source)
+    default_private, public_names, private_names = _extract_visibility(
+        node, source,
+    )
+
     return name.lower(), ModuleExports(
         name=name,
         var_units=export_var_units,
         signatures=signatures,
         all_var_names=tuple(all_var_names),
+        inner_uses=inner_uses,
+        default_private=default_private,
+        public_names=public_names,
+        private_names=private_names,
     )
+
+
+def _extract_inner_uses(node: Node, source: bytes) -> tuple[Any, ...]:
+    """Return the ``UseRef`` tuple for every ``use`` directly in a module.
+
+    Reuses :func:`workspace_index.extract_uses` on the module's source
+    slice — cheaper than re-walking the tree and guarantees identical
+    parsing of ``only:`` / rename lists.
+    """
+    from dimfort.core.workspace_index import extract_uses
+    text = source[node.start_byte:node.end_byte].decode("utf-8", "replace")
+    return extract_uses(text)
+
+
+def _extract_visibility(
+    node: Node, source: bytes,
+) -> tuple[bool, frozenset[str], frozenset[str]]:
+    """Parse module-level ``private`` / ``public`` statements.
+
+    Returns ``(default_private, public_names_lc, private_names_lc)``.
+    A bare ``private`` flips the default; ``public :: a, b`` /
+    ``private :: a, b`` override individual names.
+    """
+    default_private = False
+    public_names: set[str] = set()
+    private_names: set[str] = set()
+    for child in node.children:
+        if child.type == "private_statement":
+            ids = [c for c in child.children if c.type == "identifier"]
+            if ids:
+                for c in ids:
+                    private_names.add(_text(c, source).lower())
+            else:
+                default_private = True
+        elif child.type == "public_statement":
+            ids = [c for c in child.children if c.type == "identifier"]
+            for c in ids:
+                public_names.add(_text(c, source).lower())
+    return default_private, frozenset(public_names), frozenset(private_names)
 
 
 def _signatures_for_subtree(

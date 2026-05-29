@@ -4,6 +4,30 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### Add: transitive `use`-clause resolution in the Imports panel section
+
+`use` clauses are now followed transitively when building the panel's
+**Imports** section. A symbol re-exported through a chain of modules —
+e.g. `solver use phys_constants`, which in turn `use phys_base` —
+now surfaces in the consumer's import list, attributed to the module
+that *originally declared* it (so click-to-navigate jumps to the real
+declaration, not the intermediate hop).
+
+Rules honoured (Fortran 2008 §11.2):
+
+- **Default visibility is PUBLIC.** A module without a bare `private`
+  re-exports every name it imports.
+- **`use foo, only: …`** along the chain narrows what passes through.
+- **`use foo, local => remote`** renames carry through to consumers.
+- **`private` / `public ::`** at module scope gate re-export per name.
+- **Cycles** between modules terminate (in-progress set short-circuits
+  the back-edge).
+
+The closure is memoised once per workspace pass — per-cursor calls stay
+O(direct uses). Imports rows now carry an optional `viaModule` field
+naming the intermediate hop (when origin ≠ direct use). Checker
+semantics are unchanged — only the panel surfaces transitive symbols.
+
 ### Change: 🔵 overlay + `(assumed: <reason>)` on the RHS row of `@unit_assume` assignments
 
 `@unit_assume{<unit> : <reason>}` lines now carry a positive visual
