@@ -153,19 +153,33 @@ class ModuleExports:
     """Public surface of one Fortran module, ready to splice into a
     consumer file's local scope via a ``use`` clause.
 
-    Phase 2 treats every module-level declaration as exported (no
-    ``private`` honouring yet) — refinement in a later phase.
-
     ``var_units`` lists only annotated variables. ``all_var_names``
     records every module-level variable declaration so the LSP can
     surface "this module declares X but it has no @unit{}" in hover
     summaries without re-walking the tree.
+
+    ``inner_uses`` are the ``use`` clauses *inside* the module body —
+    needed to compute the transitive re-export closure for the panel's
+    Imports section (see :func:`compute_transitive_exports`). Typed as
+    ``tuple[Any, ...]`` to avoid an import cycle with
+    ``workspace_index.UseRef``; each element duck-types to that shape
+    (``.module``, ``.only``, ``.renames``).
+
+    Visibility (Fortran's PUBLIC / PRIVATE access control):
+    ``default_private`` is ``True`` when the module body carries a bare
+    ``private`` statement (default flips to private). ``public_names``
+    and ``private_names`` are the lower-cased symbols named in
+    per-symbol ``public :: …`` / ``private :: …`` overrides.
     """
 
     name: str
     var_units: dict[str, UnitExpr]
     signatures: dict[str, FuncSig]
     all_var_names: tuple[str, ...] = ()
+    inner_uses: tuple[Any, ...] = ()
+    default_private: bool = False
+    public_names: frozenset[str] = frozenset()
+    private_names: frozenset[str] = frozenset()
 
 
 def deps_consumed_from_uses(
@@ -269,6 +283,133 @@ def apply_use_clauses(
     return var_units, signatures, frozenset(unresolved)
 
 
+# ---------------------------------------------------------------------------
+# Transitive re-export closure
+# ---------------------------------------------------------------------------
+
+
+def compute_transitive_exports(
+    module_exports: dict[str, ModuleExports],
+) -> tuple[
+    dict[str, dict[str, tuple[UnitExpr | None, str]]],
+    dict[str, dict[str, tuple[FuncSig, str]]],
+]:
+    """Resolve each module's transitive re-export surface.
+
+    Returns ``(vars_by_module, sigs_by_module)`` where:
+
+    - ``vars_by_module[mod_lc][name_lc]`` is ``(unit_or_None,
+      origin_module_lc)`` — the unit annotation (``None`` when the
+      original declaration carried no ``@unit{}``) and the module that
+      *originally* declared the symbol. A consumer of ``mod_lc`` sees
+      this map (filtered by their own ``only:`` / renames) as their
+      import surface.
+    - ``sigs_by_module[mod_lc][name_lc]`` is ``(FuncSig, origin_lc)``.
+
+    Rules honoured (Fortran 2008 §11.2):
+
+    1. **Default visibility is PUBLIC** — a module re-exports everything
+       it imports, unless a bare ``private`` flips the default.
+    2. ``use foo, only: …`` along the chain narrows what's re-exported.
+    3. ``use foo, local => remote`` renames carry through to consumers.
+    4. ``public :: name`` re-opens a single name after a bare
+       ``private``; ``private :: name`` shuts a single name.
+    5. **Cycle-safe** via an in-progress set — modules in a cycle see
+       only their own locally-declared symbols on the back-edge (the
+       forward edge fills in the rest on first visit).
+
+    Memoised: each module is resolved once. The work is O(modules ×
+    inner-uses × symbols-per-module), independent of the depth of the
+    use chain.
+    """
+    vars_out: dict[str, dict[str, tuple[UnitExpr | None, str]]] = {}
+    sigs_out: dict[str, dict[str, tuple[FuncSig, str]]] = {}
+    in_progress: set[str] = set()
+
+    def visit(mod_lc: str) -> tuple[
+        dict[str, tuple[UnitExpr | None, str]],
+        dict[str, tuple[FuncSig, str]],
+    ]:
+        if mod_lc in vars_out:
+            return vars_out[mod_lc], sigs_out[mod_lc]
+        if mod_lc in in_progress:
+            return {}, {}  # cycle break
+        exports = module_exports.get(mod_lc)
+        if exports is None:
+            vars_out[mod_lc] = {}
+            sigs_out[mod_lc] = {}
+            return vars_out[mod_lc], sigs_out[mod_lc]
+        in_progress.add(mod_lc)
+
+        v: dict[str, tuple[UnitExpr | None, str]] = {}
+        s: dict[str, tuple[FuncSig, str]] = {}
+
+        # Local declarations first — they win over transitively-imported
+        # entries on a name clash.
+        annotated_lc = {k.lower(): u for k, u in exports.var_units.items()}
+        for vn in exports.all_var_names:
+            nm = vn.lower()
+            v[nm] = (annotated_lc.get(nm), mod_lc)
+        # Defensive: include any annotated names not listed in
+        # ``all_var_names`` (shouldn't happen with the current collector,
+        # but keeps the two maps coherent).
+        for nm_orig, u in exports.var_units.items():
+            nm = nm_orig.lower()
+            if nm not in v:
+                v[nm] = (u, mod_lc)
+        for nm_orig, sig in exports.signatures.items():
+            s[nm_orig.lower()] = (sig, mod_lc)
+
+        # Pull in each transitive ``use``, filtered by its own
+        # ``only:`` / renames.
+        for use in exports.inner_uses:
+            tgt_lc = str(use.module).lower()
+            tgt_v, tgt_s = visit(tgt_lc)
+            only = getattr(use, "only", None)
+            renames = getattr(use, "renames", ())
+            if only is None:
+                for nm, v_entry in tgt_v.items():
+                    v.setdefault(nm, v_entry)
+                for nm, s_entry in tgt_s.items():
+                    s.setdefault(nm, s_entry)
+            else:
+                rename_map = {
+                    str(local).lower(): str(remote).lower()
+                    for local, remote in renames
+                }
+                for local in only:
+                    local_lc = str(local).lower()
+                    remote_lc = rename_map.get(local_lc, local_lc)
+                    if remote_lc in tgt_v:
+                        v.setdefault(local_lc, tgt_v[remote_lc])
+                    if remote_lc in tgt_s:
+                        s.setdefault(local_lc, tgt_s[remote_lc])
+
+        # Visibility filter — gate what THIS module re-exports.
+        priv = exports.private_names
+        pub = exports.public_names
+        default_private = exports.default_private
+
+        def visible(name_lc: str) -> bool:
+            if name_lc in priv:
+                return False
+            if name_lc in pub:
+                return True
+            return not default_private
+
+        v = {n: val for n, val in v.items() if visible(n)}
+        s = {n: val for n, val in s.items() if visible(n)}
+
+        vars_out[mod_lc] = v
+        sigs_out[mod_lc] = s
+        in_progress.discard(mod_lc)
+        return v, s
+
+    for mod_lc in module_exports:
+        visit(mod_lc)
+    return vars_out, sigs_out
+
+
 __all__ = [
     "CODES",
     "CodeSpec",
@@ -283,5 +424,6 @@ __all__ = [
     "TRANSFORMING_INTRINSICS",
     "TRANSPARENT_INTRINSICS",
     "apply_use_clauses",
+    "compute_transitive_exports",
     "deps_consumed_from_uses",
 ]

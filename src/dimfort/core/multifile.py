@@ -50,6 +50,7 @@ from dimfort.core.symbols import (
     FuncSig,
     ModuleExports,
     apply_use_clauses,
+    compute_transitive_exports,
     deps_consumed_from_uses,
 )
 from dimfort.core.units import UnitError, UnitExpr, UnitTable
@@ -94,6 +95,19 @@ class WorksetResult:
     # and module-name goto-definition. Keyed by lower-cased module
     # name to match ``apply_use_clauses`` lookups.
     module_exports: dict[str, ModuleExports] = field(default_factory=dict)
+    # Transitive re-export closure, indexed by module-name (lower-cased).
+    # ``module_transitive_vars[mod_lc][name_lc] = (unit_or_None,
+    # origin_module_lc)`` and similarly for signatures. Computed once at
+    # the end of Phase C (see :func:`compute_transitive_exports`) so the
+    # LSP imports panel can surface chains like ``solver use phys_constants``
+    # → ``phys_constants use phys_base`` without re-walking the graph
+    # per cursor call.
+    module_transitive_vars: dict[
+        str, dict[str, tuple[UnitExpr | None, str]]
+    ] = field(default_factory=dict)
+    module_transitive_sigs: dict[
+        str, dict[str, tuple[FuncSig, str]]
+    ] = field(default_factory=dict)
     # Wall-clock seconds spent in each pipeline phase. Populated by
     # ``check_files``; consulted by the CLI's ``--timings`` flag and by
     # ad-hoc profiling scripts. Keys: "load", "aggregate", "index",
@@ -644,6 +658,12 @@ def check_files(
             progress_cb("index", i, total, entry.path)
     result.signatures = global_signatures
     result.module_exports = module_exports
+    # Transitive closure: memoised, computed once. The LSP imports panel
+    # consults this; the per-file checker still uses direct ``use``
+    # semantics via ``apply_use_clauses`` below.
+    t_vars, t_sigs = compute_transitive_exports(module_exports)
+    result.module_transitive_vars = t_vars
+    result.module_transitive_sigs = t_sigs
     result.var_units_by_scope = per_file_var_units_by_scope
     result.phase_timings["index"] = time.perf_counter() - t_phase_start
 
