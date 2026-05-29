@@ -119,11 +119,13 @@ class _Ctx:
     # D1.4. Empty dict ⇒ behaves identically to "no PARAMETER awareness".
     parameter_values: dict[str, Fraction | int] = field(default_factory=dict)
     # ``@unit_assume`` escape hatch, keyed by 1-based source line. Value is
-    # ``(assumed_unit, reason, column)``. When an assignment statement's
-    # line span covers one of these, the checker skips deriving the RHS
-    # (suppressing D1.4 + interior fires), treats the result as
-    # ``assumed_unit`` for the LHS consistency check, and emits a U020 INFO.
-    assumes: dict[int, tuple[UnitExpr, str, int]] = field(default_factory=dict)
+    # ``(assumed_unit, reason, column, end_column)`` — the column pair spans
+    # the full ``@unit_assume{...}`` directive so the U020 squiggle covers
+    # the whole thing. When an assignment statement's line span covers one
+    # of these, the checker skips deriving the RHS (suppressing D1.4 +
+    # interior fires), treats the result as ``assumed_unit`` for the LHS
+    # consistency check, and emits a U020 INFO.
+    assumes: dict[int, tuple[UnitExpr, str, int, int]] = field(default_factory=dict)
     # ``@unit_affine_conversion`` directives (Phase 2c), keyed by 1-based
     # source line. Value is ``(src_text, tgt_text, column)`` — the raw unit
     # names are resolved at verify time (a bad name surfaces as S003 with
@@ -389,14 +391,14 @@ def _assignment_homogeneity(
 
 def _assume_for_node(
     node: Node, ctx: _Ctx
-) -> tuple[UnitExpr, str, int, int] | None:
+) -> tuple[UnitExpr, str, int, int, int] | None:
     """Return the ``@unit_assume`` covering ``node``, or ``None``.
 
     The directive is written as a trailing ``!< @unit_assume{...}`` on
     the statement (single-line: same line; continued: the last physical
     line). We scan only the node's own line span so a trailing assume on
     statement N never bleeds onto statement N+1. Returns
-    ``(unit, reason, line, column)``.
+    ``(unit, reason, line, column, end_column)``.
     """
     if not ctx.assumes:
         return None
@@ -405,8 +407,8 @@ def _assume_for_node(
     for ln in range(start_line, end_line + 1):
         hit = ctx.assumes.get(ln)
         if hit is not None:
-            unit, reason, col = hit
-            return unit, reason, ln, col
+            unit, reason, col, end_col = hit
+            return unit, reason, ln, col, end_col
     return None
 
 
@@ -998,7 +1000,26 @@ def _emit_unparsed_regions(tree: Tree, ctx: _Ctx) -> list[Diagnostic]:
     construct (e.g. the entire subroutine), so an error node that contains
     another error node is dropped — otherwise one stray line would blue-underline
     a whole routine.
+
+    Each surviving ERROR is then widened to its smallest ``*_statement`` (or
+    ``subroutine_call``) ancestor with ``has_error=True``: tree-sitter's error
+    recovery commonly swallows the immediately-following clean statement into
+    the bad statement's parse node (the parent assignment_statement spans both
+    lines with ``has_error=True``), so the panel produces degraded results on
+    the swallowed line too. Widening the P001 to that ancestor honestly marks
+    the full untrustworthy range; otherwise users see a single blue line plus
+    a silently-empty Expression panel one line below.
     """
+    def _statement_ancestor_with_error(node: Node) -> Node | None:
+        cur = node.parent
+        while cur is not None:
+            if cur.has_error and (
+                cur.type.endswith("_statement") or cur.type == "subroutine_call"
+            ):
+                return cur
+            cur = cur.parent
+        return None
+
     errs = list(_ts.error_nodes(tree))
     if not errs:
         return []
@@ -1014,7 +1035,10 @@ def _emit_unparsed_regions(tree: Tree, ctx: _Ctx) -> list[Diagnostic]:
         )
         if contains_other:
             continue
-        start, end = _node_span(n)
+        # Widen to the smallest statement-level ancestor with has_error=True,
+        # which captures any clean statement swallowed by error recovery.
+        anchor = _statement_ancestor_with_error(n) or n
+        start, end = _node_span(anchor)
         spans.append((start.line, start.column, end.line, end.column))
     if not spans:
         return []
@@ -2537,7 +2561,7 @@ def _build_ctx(
     field_units: Mapping[tuple[str, str], str | UnitExpr] | None = None,
     var_units_by_scope: Mapping[tuple[str | None, str], str | UnitExpr] | None = None,
     routine_scopes: tuple[tuple[int, int, str], ...] = (),
-    assumes: dict[int, tuple[str, str, int]] | None = None,
+    assumes: dict[int, tuple[str, str, int, int]] | None = None,
     affine_conversions: dict[int, tuple[str, str, int]] | None = None,
     scale_mode: bool = False,
 ) -> tuple[_Ctx, list[Diagnostic]]:
@@ -2594,18 +2618,18 @@ def _build_ctx(
     # Parse the @unit_assume directives (line → (unit_text, reason, col)).
     # A unit that fails to parse surfaces as U002 at its column, mirroring
     # the @unit{} parse-error path; the assume is then dropped.
-    parsed_assumes: dict[int, tuple[UnitExpr, str, int]] = {}
+    parsed_assumes: dict[int, tuple[UnitExpr, str, int, int]] = {}
     assume_diags: list[Diagnostic] = []
-    for line_no, (unit_text, reason, col) in (assumes or {}).items():
+    for line_no, (unit_text, reason, col, end_col) in (assumes or {}).items():
         try:
             parsed_assumes[line_no] = (
-                _units_mod.parse(unit_text, active_table), reason, col,
+                _units_mod.parse(unit_text, active_table), reason, col, end_col,
             )
         except UnitError as exc:
             assume_diags.append(Diagnostic(
                 file=str(file),
                 start=Position(line_no, col),
-                end=Position(line_no, col),
+                end=Position(line_no, end_col),
                 severity=Severity.ERROR,
                 code="U002",
                 message=f"@unit_assume unit {unit_text!r}: {exc}",
@@ -2652,7 +2676,7 @@ def check(
     var_units_by_scope: Mapping[tuple[str | None, str], str | UnitExpr] | None = None,
     routine_scopes: tuple[tuple[int, int, str], ...] = (),
     out_autocast_events: list[AutocastEvent] | None = None,
-    assumes: dict[int, tuple[str, str, int]] | None = None,
+    assumes: dict[int, tuple[str, str, int, int]] | None = None,
     affine_conversions: dict[int, tuple[str, str, int]] | None = None,
     scale_mode: bool = False,
 ) -> list[Diagnostic]:
@@ -2714,7 +2738,7 @@ def check(
                     _affine_conv_for_node(node, ctx) if ctx.scale_mode else None
                 )
                 if assume is not None:
-                    au, reason, aline, acol = assume
+                    au, reason, aline, acol, aend = assume
                     # Escape hatch: do NOT walk the RHS — that suppresses
                     # D1.4 and any interior fire. Record an audit note, then
                     # still check the assumption against a declared LHS unit
@@ -2722,7 +2746,7 @@ def check(
                     out.append(Diagnostic(
                         file=str(ctx.file),
                         start=Position(aline, acol),
-                        end=Position(aline, acol),
+                        end=Position(aline, aend),
                         severity=Severity.INFO,
                         code="U020",
                         message=f"RHS unit assumed {format_unit(au)} ({reason})",

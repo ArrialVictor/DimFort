@@ -234,6 +234,88 @@ surface folds into the model then.
    the refactor is provably behaviour-preserving.
 3. **Severity → glyph.** Only error/warning escalate. INFO (e.g. a future
    autocast-info, U020 `@unit_assume`) stays 🟢 so the panel isn't noisy.
+4. **🟡-on-`expected` override (call-arg rows).** A call-argument node
+   whose actual unit dimensionally differs from the callee's formal
+   carries an `expected` annotation in both the trace hover and the
+   panel payload. When that row would otherwise paint 🟢 — its own
+   expression resolved cleanly and no diagnostic owns it — the marker
+   demotes to 🟡. Rationale: the expression *is* clean here, but its
+   consumer (the call signature) disagrees; flagging silently with
+   `(expected …)` plus an unchanged 🟢 reads as "all fine here", which
+   contradicts the `🔴` painted on the enclosing call by H004. The
+   demotion is bounded — it only acts on rows that already paint 🟢
+   AND carry an `expected` annotation — so it never overrides a
+   diagnostic-owned 🔴 or a 🟡 from resolution. The hover-side rule
+   lives in `_render_ast_tree` (`if extra_str and mark == "🟢": mark = "🟡"`);
+   the panel-side rule lives in `_build_expression_tree` (`if expected
+   and marker == "ok": marker = "warn"`). Both sites pull from the
+   same call-signature lookup, so they can't disagree.
+5. **Three glyphs for "no unit" — one meaning each.**
+   - `?` — **unknown unit**. Reserved for nodes that *could* have a
+     unit but don't yet: unannotated identifier, unsupported intrinsic
+     return, partial resolution. Paints 🟡 on the resolution axis.
+   - `-` — **no unit by structure**. Reserved for nodes that have no
+     unit by design: assignment statements, relational expressions,
+     subroutine calls (no return value). The
+     `_NO_UNIT_NODE_TYPES` set in `expr_tree.py` is authoritative.
+     Resolution-axis base is 🟢 (a clean assignment / subroutine call
+     is not "unresolved"); markers come from the diagnostic axis +
+     children. Surfaced identically by hover (`_render_ast_tree`) and
+     panel (`_build_expression_tree`).
+   - `(none)` — **empty section / sub-section header** only (e.g.
+     `Scope: (none)`, `Imports: (none)`, "no declarations" body).
+     Never used inside a tree row or for an individual variable; for
+     unannotated declarations in scope/import sections, companions
+     render `?`.
+6. **🔵 — accepted via `@unit_assume`.** A statement-level
+   `@unit_assume{<unit> : <reason>}` directive asserts a unit that
+   the algebra can't derive (typically a non-rational exponent on a
+   dimensioned base — empirical fits like Tetens, Magnus, Buck,
+   Brandes2007). The checker emits a U020 INFO acknowledging the
+   assumption. The 🔵 marker, the asserted unit, and the
+   `(assumed: <reason>)` row tail surface **on the assignment's
+   RHS row** — the directive's syntactic subject — not on the
+   assignment row itself. The semantics:
+   - **🔵 is a per-row overlay, NOT a severity tier.** It paints
+     only on the RHS row of an assumed assignment. It does **not**
+     participate in worst-of aggregation: 🔵 doesn't propagate to
+     ancestors, doesn't compete with 🟡/🔴 anywhere else, and
+     siblings of the RHS contribute as if it were 🟢 for the
+     assignment's marker computation. The severity model stays a
+     clean three-tier `error > warn > ok`.
+   - **What 🔵 means at the row.** "DimFort accepted this RHS
+     because the source asked me to. Here's the unit you asserted
+     and the reason." The asserted unit replaces the computed unit
+     (which would typically be `?` — the very reason the directive
+     was needed). The row tail names the reason verbatim.
+   - **The RHS subtree still renders normally.** Children of the
+     RHS show their own algebra (typically with `?` leaves under
+     the non-rational power). They're informational — the directive
+     said "ignore the inside" but readers may want to inspect what
+     the algebra produced; the 🔵 at the RHS row says "we know, we
+     accepted it anyway."
+   - **The assignment row stays clean (🟢) when the homogeneity
+     check passes.** The LHS declared unit is compared against the
+     RHS *asserted* unit (not the computational ?): if they match,
+     no diagnostic fires, the assignment row is 🟢, and the hover
+     header is 🟢. The 🔵 lives one level down on the RHS row.
+   - **A declared-unit conflict still fires H001 on the
+     assignment.** If the LHS is declared `kg` but `@unit_assume{m}`
+     asserts `m`, H001 fires on the assignment, the assignment row
+     paints 🔴 (header also 🔴), and the RHS row carries 🔵 +
+     `(expected kg)` + `(assumed: …)`. The assumption never masks a
+     declared-unit conflict.
+   - **Ownership is line-based.** The U020 diagnostic position
+     sits at the `@unit_assume` token in the trailing comment,
+     which is *outside* the assignment's tree-sitter span. The
+     ownership rule matches a U020 against the smallest
+     `assignment_statement` on the same line. Only
+     `assignment_statement` nodes can own a U020 — the directive
+     is statement-level.
+   - **Hover header = root row's marker.** The header naturally
+     reads 🟢 for a clean assumed line (the assignment, which is
+     the root, is 🟢) and 🔴 when H001 fires. The 🔵 is visible in
+     the body where the assertion lives, not in the header.
 
 ## 5. Reconciliation with the existing docs
 

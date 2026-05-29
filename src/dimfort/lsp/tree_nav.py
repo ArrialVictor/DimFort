@@ -242,18 +242,23 @@ def _find_expression_root(tree: Tree, line_1based: int, col_1based: int) -> Node
     return best
 
 
-def _normalized_unit(unit_text: str) -> str | None:
-    """Render the base-SI normalized form of an annotation, factor included.
+def _normalized_unit(unit_text: str, *, scale_mode: bool = False) -> str | None:
+    """Render the base-SI normalized form of an annotation.
 
     The panel shows the *input* unit as written (``hPa``); the normalized
-    form makes the otherwise-invisible scale factor visible (``hPa`` →
-    ``100×kg·m⁻¹·s⁻²``, ``g/kg`` → ``1/1000``). ``None`` if it doesn't parse.
-    Uses the installed default unit table (project units already loaded at
-    initialize), so prefixes/derived units resolve as in checking.
+    form is its base-SI expansion (``hPa`` → ``kg·m⁻¹·s⁻²``). With
+    ``scale_mode`` on, the multiplicative scale factor is included
+    (``hPa`` → ``100×kg·m⁻¹·s⁻²``) — that's when the factor is what the
+    checker is reasoning about. With scale mode off, the factor is hidden
+    so the rendered units match what the checker considers significant
+    (a linter shouldn't display information it's actively ignoring).
+    ``None`` if it doesn't parse. Uses the installed default unit table
+    (project units already loaded at initialize), so prefixes/derived
+    units resolve as in checking.
     """
     from dimfort.core.units import format_unit
     from dimfort.core.units import parse as parse_unit
     try:
-        return format_unit(parse_unit(unit_text), show_factor=True)
+        return format_unit(parse_unit(unit_text), show_factor=scale_mode)
     except Exception:
         return None

@@ -101,10 +101,13 @@ def test_hover_trace_section_when_enabled(tmp_path: Path):
                 _server.state.last_result = None
         assert extra is not None
         assert "Unit-algebra trace" in extra
-        assert "R3.1" in extra  # LOG fires
-        assert "R5.1" in extra  # log homomorphism
         # ASCII tree connectors signal the new tree layout
         assert "├──" in extra or "└──" in extra
+        # The trace shows each subexpression's resolved unit; rule IDs
+        # were dropped (debug-only; not useful to physicists).
+        assert "log(p1)" in extra
+        assert "LOG(kg·m⁻¹·s⁻²)" in extra  # log(Pa) → LOG(SI(Pa))
+        assert "R3." not in extra and "R5." not in extra
     finally:
         _server._features.hover = "short"
 
@@ -256,7 +259,8 @@ def test_trace_hover_inside_call_argument(tmp_path: Path):
         # Header now reflects the worst row — all clean → 🟢.
         assert "🟢 DimFort" in text
         assert "p1 + p2" in text
-        assert "R4.1" in text  # addition homogeneity rule fired
+        # Rule IDs are no longer rendered in tree rows.
+        assert "R4." not in text
     finally:
         _server._features.hover = "short"
 
@@ -314,9 +318,12 @@ def test_trace_hover_inside_do_bound(tmp_path: Path):
         _server._features.hover = "short"
 
 
-def test_call_hover_short_renders_pairing_b(tmp_path: Path):
-    """In short mode, hovering on the callee of a known subroutine
-    renders the B-style pairing (one row per arg, formal ◂ actual)."""
+def test_call_hover_short_renders_root_and_arg_rows(tmp_path: Path):
+    """Short call hover: root row is the whole call expression
+    (`name(args)` for subroutines, `name(args) : ret` for functions)
+    with the overall verdict marker; one child row per actual argument
+    labelled by the source expression. Layout matches the side panel's
+    Expression tree — both surfaces share :func:`_render_ast_tree`."""
     src = (
         "module m\n"
         "contains\n"
@@ -339,17 +346,117 @@ def test_call_hover_short_renders_pairing_b(tmp_path: Path):
         hit = _drive_hover(f, 10, 10)
         assert hit is not None
         text, _ = hit
-        assert "Signature" in text and "Call" in text
-        assert "◂" in text
-        # All args resolve to Pa → 🟢.
+        # Root row: full call as written. Subroutine — no `: ret` block.
+        assert "call foo(p1, p2 + p1)" in text
+        # Both positional args render as child rows.
+        assert "p1" in text
+        assert "p2 + p1" in text
+        # Old "Signature ◂ Call" two-column layout is gone, and the
+        # earlier `name: (…) → ret` header line is too.
+        assert "Signature" not in text
+        assert "◂" not in text
+        assert "foo: (" not in text
+        # Subroutine calls have no return unit by structure, so the
+        # root row's unit column renders `-` (the structural-no-unit
+        # glyph) — distinct from `?` which is reserved for *unknown*
+        # units. All args matching → header 🟢. Subroutine_call is in
+        # _NO_UNIT_NODE_TYPES, so its resolution-axis base is 🟢 (a
+        # clean subroutine is not "unresolved").
+        assert "🟢 DimFort" in text
+        assert " : -" in text or "  -  " in text  # the structural-no-unit glyph
+        assert " : ?" not in text  # never `?` for subroutine roots
+    finally:
+        _server._features.hover = "short"
+
+
+def test_call_hover_function_root_carries_return_unit(tmp_path: Path):
+    """Function call root row carries `name(args) : ret`; subroutines
+    drop the `: ret` block. Regression guard for the defensive
+    callee-strip that used to swallow the first argument."""
+    src = (
+        "module m\n"
+        "contains\n"
+        "  function dynamic_pressure(rho, v) result(p)\n"
+        "    real, intent(in) :: rho   !< @unit{kg/m^3}\n"
+        "    real, intent(in) :: v     !< @unit{m/s}\n"
+        "    real :: p                 !< @unit{kg/(m*s^2)}\n"
+        "    p = 0.5 * rho * v * v\n"
+        "  end function\n"
+        "  subroutine demo\n"
+        "    real :: rho   !< @unit{kg/m^3}\n"
+        "    real :: v     !< @unit{m/s}\n"
+        "    real :: p     !< @unit{kg/(m*s^2)}\n"
+        "    p = dynamic_pressure(rho, v)\n"
+        "  end subroutine\n"
+        "end module\n"
+    )
+    f = tmp_path / "call_func.f90"
+    f.write_text(src)
+    _server._features.hover = "short"
+    try:
+        # `dynamic_pressure` on line 13 starts at column 9.
+        hit = _drive_hover(f, 13, 9)
+        assert hit is not None
+        text, _ = hit
+        # Root row carries the return unit attached to the call expression.
+        assert "dynamic_pressure(rho, v)" in text
+        assert "kg·m⁻¹·s⁻²" in text
+        # Both positional args show up as children (regression guard).
+        assert "rho" in text
+        # Find a child-row line for `v` specifically (avoid matching `v`
+        # inside `rho` etc.).
+        assert any(
+            line.lstrip().startswith(("├── v", "└── v"))
+            for line in text.splitlines()
+        )
         assert "🟢 DimFort" in text
     finally:
         _server._features.hover = "short"
 
 
+def test_call_hover_mismatch_paints_arg_yellow_and_call_red(tmp_path: Path):
+    """Mismatched actual: the arg row carries `(expected …)` and gets
+    the 🟡-on-expected marker override (the expression itself resolved
+    cleanly), while the enclosing call row paints 🔴 because H004 fires
+    on it. Header marker rolls up to 🔴."""
+    src = (
+        "module m\n"
+        "contains\n"
+        "  subroutine foo(a)\n"
+        "    real, intent(in) :: a   !< @unit{Pa}\n"
+        "  end subroutine\n"
+        "  subroutine demo\n"
+        "    real :: t   !< @unit{s}\n"
+        "    call foo(t)\n"
+        "  end subroutine\n"
+        "end module\n"
+    )
+    f = tmp_path / "call_mismatch.f90"
+    f.write_text(src)
+    _server._features.hover = "short"
+    try:
+        hit = _drive_hover(f, 8, 10)
+        assert hit is not None
+        text, _ = hit
+        # Header marker is 🔴 (call row owns H004).
+        assert "🔴 DimFort" in text
+        # Arg row carries `(expected …)` with Pa rendered SI-form.
+        assert "(expected kg·m⁻¹·s⁻²)" in text
+        # Arg row is 🟡 (resolved cleanly to `s` here, but disagrees
+        # with the formal). The 🔴 sits on the call row above it.
+        arg_line = next(
+            line for line in text.splitlines()
+            if "(expected kg·m⁻¹·s⁻²)" in line
+        )
+        assert "🟡" in arg_line
+        assert "🔴" not in arg_line
+    finally:
+        _server._features.hover = "short"
+
+
 def test_call_hover_detailed_expands_computed_args(tmp_path: Path):
-    """In detailed mode (layout C), a computed actual arg expands a
-    sub-tree showing its operand chain."""
+    """Detailed mode: a computed actual arg expands a sub-tree under
+    its row showing the operand chain."""
     src = (
         "module m\n"
         "contains\n"
@@ -371,9 +478,46 @@ def test_call_hover_detailed_expands_computed_args(tmp_path: Path):
         hit = _drive_hover(f, 10, 10)
         assert hit is not None
         text, _ = hit
-        # The computed arg `p2 + p1` should have a sub-tree underneath.
+        # The computed arg `p2 + p1` shows up as a row, and its tree of
+        # operands is rendered underneath.
         assert "p2 + p1" in text
         assert "├──" in text or "└──" in text
+    finally:
+        _server._features.hover = "short"
+
+
+def test_signature_hover_collapses_to_header_with_unannotated_slot(
+    tmp_path: Path,
+):
+    """Cursor on a *definition* header (no call) renders ONLY the
+    dimensional signature line. Unannotated formal slots render as `?`
+    and trigger the 🟡 header marker."""
+    src = (
+        "module m\n"
+        "contains\n"
+        "  function ek(v) result(e)\n"
+        "    real, intent(in) :: v          !< @unit{m/s}\n"
+        "    real :: e\n"  # unannotated return
+        "    e = 0.5 * v * v\n"
+        "  end function\n"
+        "end module\n"
+    )
+    f = tmp_path / "sig_hover.f90"
+    f.write_text(src)
+    _server._features.hover = "short"
+    try:
+        # `ek` on line 3 starts at column 12.
+        hit = _drive_hover(f, 3, 12)
+        assert hit is not None
+        text, _ = hit
+        # Single-line signature header, with `?` flagging the unannotated
+        # return slot.
+        assert "ek(m·s⁻¹) : ?" in text
+        assert "🟡 DimFort" in text
+        # No per-arg row table — the pure-signature hover collapses to
+        # just the header.
+        assert "├──" not in text and "└──" not in text
+        assert "◂" not in text
     finally:
         _server._features.hover = "short"
 
@@ -409,7 +553,9 @@ def test_expression_detailed_assignment_marks_root_row(tmp_path: Path):
 
 def test_expression_short_assignment(tmp_path: Path):
     """Short mode: cursor on `=` inside `r = a + b` renders the
-    one-line homogeneity check `r : K  ◂  a + b : K  🟢/🔴/🟡`."""
+    root-plus-immediate-children tree shape — same as every other
+    short hover. Assignment is structural-no-unit on the root, with
+    `-` in the unit column."""
     src = (
         "subroutine demo\n"
         "  real :: a   !< @unit{Pa}\n"
@@ -426,8 +572,78 @@ def test_expression_short_assignment(tmp_path: Path):
     assert hit is not None
     text, _ = hit
     assert "🟢 DimFort" in text
-    assert "◂" in text
+    # `◂` is gone — all short hovers use the tree shape now.
+    assert "◂" not in text
+    # Both LHS and RHS are immediate children of the assignment.
     assert "r" in text and "a + b" in text
+    # Root row is the assignment itself (structural-no-unit `-`).
+    assert " : -" in text or "  -  " in text
+
+
+def test_expression_short_assignment_mismatch_shows_expected(tmp_path: Path):
+    """Assignment short hover with a homogeneity violation: the RHS row
+    surfaces `(expected <lhs_unit>)` (same as a call-arg mismatch) and
+    paints 🟡 from the expected-override; the root assignment row paints
+    🔴 because H001 owns it."""
+    src = (
+        "subroutine demo\n"
+        "  real :: bogus    !< @unit{kg}\n"
+        "  real :: c_sound  !< @unit{m/s}\n"
+        "  real :: t        !< @unit{s}\n"
+        "  bogus = c_sound * t\n"
+        "end subroutine\n"
+    )
+    f = tmp_path / "asn_expected.f90"
+    f.write_text(src)
+    _server._features.hover = "short"
+    hit = _drive_hover(f, 5, 9)  # on `=`
+    assert hit is not None
+    text, _ = hit
+    # Root assignment paints 🔴 because H001 owns it.
+    assert "🔴 DimFort" in text
+    # RHS row shows the expected-unit annotation (Pa → SI form would
+    # apply if the LHS were Pa, but here LHS is kg).
+    assert "(expected kg)" in text
+    # The RHS row carries 🟡 from the expected-override (not 🔴).
+    rhs_line = next(
+        line for line in text.splitlines() if "(expected kg)" in line
+    )
+    assert "🟡" in rhs_line
+    assert "🔴" not in rhs_line
+
+
+def test_expression_detailed_assignment_mismatch_shows_expected(tmp_path: Path):
+    """Detailed-mode hover for an assignment mismatch surfaces the same
+    `(expected <lhs_unit>)` annotation + 🟡-on-expected demotion on
+    the RHS row as the short hover and the panel — the detailed-mode
+    manual row assembly used to skip the propagation."""
+    src = (
+        "subroutine demo\n"
+        "  real :: bogus    !< @unit{kg}\n"
+        "  real :: c_sound  !< @unit{m/s}\n"
+        "  real :: t        !< @unit{s}\n"
+        "  bogus = c_sound * t\n"
+        "end subroutine\n"
+    )
+    f = tmp_path / "asn_expected_detailed.f90"
+    f.write_text(src)
+    _server._features.hover = "detailed"
+    try:
+        hit = _drive_hover(f, 5, 9)  # on `=`
+    finally:
+        _server._features.hover = "short"
+    assert hit is not None
+    text, _ = hit
+    # Root assignment paints 🔴 because H001 owns it.
+    assert "🔴 DimFort" in text
+    # RHS row shows the expected-unit annotation.
+    assert "(expected kg)" in text
+    # The RHS row carries 🟡 from the expected-override (not 🔴).
+    rhs_line = next(
+        line for line in text.splitlines() if "(expected kg)" in line
+    )
+    assert "🟡" in rhs_line
+    assert "🔴" not in rhs_line
 
 
 def test_expression_short_assignment_mismatch_marker(tmp_path: Path):
@@ -449,8 +665,9 @@ def test_expression_short_assignment_mismatch_marker(tmp_path: Path):
 
 
 def test_expression_short_relational(tmp_path: Path):
-    """Cursor on `>` inside `if (p > 0.0) then` renders a homogeneity
-    check on the two operands."""
+    """Cursor on `>` inside `if (p > 0.0) then` renders the same tree
+    shape as every other short hover — relational expressions are
+    structural-no-unit on the root, with one row per operand."""
     src = (
         "subroutine demo\n"
         "  real :: p   !< @unit{Pa}\n"
@@ -466,15 +683,91 @@ def test_expression_short_relational(tmp_path: Path):
     hit = _drive_hover(f, 3, 9)
     assert hit is not None
     text, _ = hit
-    # Pa ◂ 1 → unknown overlap, but both sides resolved → tag depends
-    # on equality of the operand units; 0.0 is dim'less so 🔴.
-    assert "◂" in text
+    # `◂` is gone — tree shape across all hovers.
+    assert "◂" not in text
     assert "p" in text and "0.0" in text
+    # Relational root is structural-no-unit `-`.
+    assert " : -" in text or "  -  " in text
+
+
+def test_detailed_hover_assignment_with_unit_assume(tmp_path: Path):
+    """Cursor on `=` of an assumed assignment, detailed mode: the
+    detailed-mode path renders the assignment row + LHS leaf
+    manually and then calls _render_ast_tree on the RHS. It must
+    pass the assumed_overlay through so the RHS row shows the
+    asserted unit + 🔵 + `(assumed: …)`, not the unresolved `?` 🟡
+    (regression guard for the detailed/trace plumbing)."""
+    src = (
+        "subroutine s\n"
+        "  real :: r       !< @unit{m}\n"
+        "  real :: rho     !< @unit{kg/m^3}\n"
+        "  rho = 1.e3 * 0.178 * (r * 2.0 * 1000.0)**(-0.922)"
+        "   !< @unit_assume{kg/m^3 : empirical-fit Brandes2007}\n"
+        "end subroutine\n"
+    )
+    f = tmp_path / "assumed_detailed.f90"
+    f.write_text(src)
+    _server._features.hover = "detailed"
+    try:
+        # Cursor on `=` (column 7 of line 4).
+        hit = _drive_hover(f, 4, 7)
+        assert hit is not None
+        text, _ = hit
+        # Assignment row stays clean (LHS unit matches asserted RHS).
+        assert "🟢 DimFort" in text
+        # RHS row carries the asserted unit, 🔵 marker, and the reason.
+        assert "kg·m⁻³" in text
+        assert "🔵" in text
+        assert "(assumed: empirical-fit Brandes2007)" in text
+        # The pre-fix bug: RHS row showed `?` 🟡 instead of the overlay.
+        # The unresolved `?` may still appear DEEP inside the sub-tree
+        # (on the (-0.922) leaf), but the RHS root itself must carry
+        # the asserted unit.
+        rhs_root_line = next(
+            (line for line in text.splitlines()
+             if line.lstrip().startswith("└── 1.e3 * 0.178")),
+            "",
+        )
+        assert "kg·m⁻³" in rhs_root_line and "🔵" in rhs_root_line, rhs_root_line
+    finally:
+        _server._features.hover = "short"
+
+
+def test_intrinsic_call_hover_uses_same_tree_shape_as_user_call(tmp_path: Path):
+    """Hovering on an intrinsic callee (e.g. `log`) renders the same
+    root-plus-immediate-children tree shape as a user-defined call,
+    so the two surfaces look identical (just no `(expected …)` since
+    intrinsics aren't in ctx.signatures)."""
+    src = (
+        "subroutine demo\n"
+        "  real :: p   !< @unit{Pa}\n"
+        "  real :: lp  !< @unit{LOG(Pa)}\n"
+        "  lp = log(p)\n"
+        "end subroutine\n"
+    )
+    f = tmp_path / "intrinsic_hover.f90"
+    f.write_text(src)
+    _server._features.hover = "short"
+    # Cursor on `log` (col 8 of line 4).
+    hit = _drive_hover(f, 4, 8)
+    assert hit is not None
+    text, _ = hit
+    # Root row shows the call expression with its resolved unit, and a
+    # child row for the actual `p` argument is rendered — matching the
+    # user-call tree shape exactly.
+    assert "log(p)" in text
+    assert "LOG(kg·m⁻¹·s⁻²)" in text  # LOG(Pa) in SI form
+    assert "├──" in text or "└──" in text
+    # The bare-identifier-fallback rendering (`**log(p)** : LOG(Pa)`)
+    # is gone — header is now `**🟢 DimFort**`, not the bare-identifier
+    # `**🟢 DimFort**\n\n**log(p)** : …` form.
+    assert "**log(p)**" not in text
 
 
 def test_expression_short_subexpr_in_call_arg(tmp_path: Path):
-    """Cursor inside a computed call argument renders the sub-expression's
-    resolved unit, not a homogeneity check."""
+    """Cursor on `+` inside a computed call argument renders the
+    `+` expression as the same root-plus-immediate-children tree
+    used everywhere else."""
     src = (
         "subroutine demo\n"
         "  real :: a   !< @unit{Pa}\n"
@@ -487,12 +780,14 @@ def test_expression_short_subexpr_in_call_arg(tmp_path: Path):
     _server._features.hover = "short"
     # Cursor on `+` inside `a + b` (col 14 of line 4). The operator
     # is more specific than the enclosing call arg, so the hover
-    # renders the homogeneity check on the two operands.
+    # renders the `a + b` tree.
     hit = _drive_hover(f, 4, 14)
     assert hit is not None
     text, _ = hit
-    assert "a" in text and "b" in text
-    assert "◂" in text
+    assert "a + b" in text  # root row label
+    assert "├──" in text or "└──" in text  # child rows present
+    # `◂` is gone.
+    assert "◂" not in text
     # Both operands are Pa → 🟢.
     assert "🟢 DimFort" in text
 

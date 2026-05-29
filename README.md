@@ -86,7 +86,7 @@ dimfort lsp                          # start the language server (stdio)
 
 `interactions` is an on-demand query: for a single variable it lists every
 site that reads or writes it across the workset — grouped into Declaration /
-Write / Read / Undetermined read, each with the unit that site implies — and
+Write / Read / Undetermined, each with the unit that site implies — and
 emits `X001` when two sites make conflicting unit *claims* (which the
 per-statement `check` can't see, since it fires even on unannotated variables).
 

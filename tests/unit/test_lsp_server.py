@@ -102,9 +102,12 @@ def test_to_lsp_diagnostic_handles_zero_lines():
 
 
 def test_normalized_unit_surfaces_scale_factor():
-    # The panel shows the input unit; the normalized form must expose the
-    # otherwise-invisible scale factor and derived-unit expansion.
-    assert _normalized_unit("hPa") == "100×kg·m⁻¹·s⁻²"  # factor surfaced
+    # The panel shows the input unit; the normalized form expands derived
+    # units to base SI and — with scale mode on — surfaces the otherwise-
+    # invisible multiplicative scale factor. Off-mode hides the factor
+    # (the linter ignores scale, so displays shouldn't claim otherwise).
+    assert _normalized_unit("hPa", scale_mode=True) == "100×kg·m⁻¹·s⁻²"
+    assert _normalized_unit("hPa", scale_mode=False) == "kg·m⁻¹·s⁻²"
     assert _normalized_unit("Pa") == "kg·m⁻¹·s⁻²"       # derived expanded
     assert _normalized_unit("kg/kg") == "1"             # dimensionless
 

@@ -34,33 +34,48 @@ def _hover_text(
     Marker convention mirrors the trace-mode hover header:
     🟢 = known unit, 🟡 = no annotation / unresolved.
 
+    The body sits inside a fenced code block so every DimFort hover
+    surface — variable, signature, tree — uses the same visual form
+    across clients. Clients that tint code blocks (e.g. Neovim) get
+    consistent coloring; clients that don't (VSCode) render it as plain
+    monospace, which still aligns nicely.
+
     ``unit_source`` (``"explicit"`` / ``"intrinsic_default"`` / ``None``)
     annotates *how* the unit was determined. ``"intrinsic_default"``
-    appends *(implicit — INTEGER default)* so the user can see the
+    appends ``(implicit — INTEGER default)`` so the user can see the
     Fortran-type-driven default at work rather than wondering why a
     bare ``integer :: i`` is showing as dim'less.
     """
     if show_unit_label:
-        body = f"**{name}** : {unit_or_message}"
+        body = f"{name} : {unit_or_message}"
         if unit_source == "intrinsic_default":
-            body += " *(implicit — INTEGER default)*"
+            body += " (implicit — INTEGER default)"
         marker = "🟢"
     else:
-        body = f"**{name}** — {unit_or_message}"
+        body = f"{name} — {unit_or_message}"
         marker = "🟡"
-    return f"**{marker} DimFort**\n\n{body}"
+    return f"**{marker} DimFort**\n\n```\n{body}\n```"
 
 
 def _sig_render_md(name: str, sig: FuncSig) -> str:
-    """Markdown rendering of a call signature."""
-    args = ", ".join(
-        f"{arg_name}: {_unit_pretty(arg_unit) if arg_unit is not None else '?'}"
-        for arg_name, arg_unit in zip(sig.arg_names, sig.arg_units, strict=False)
+    """Bare dimensional-signature text for embedding (e.g. module hover
+    list items wrap it in inline backticks themselves).
+
+    Format: ``name(u1, u2, …) : ret`` (functions) or
+    ``name(u1, u2, …) : -`` (subroutines — the ``-`` is the
+    structural-no-unit glyph, same as panel rows and call hovers, so the
+    ":" is the universal "has unit" separator across every surface).
+    Unannotated formal slots render as ``?``. Param names are
+    intentionally omitted — physicists reading a call site want the
+    dimensional interface, not the callee-internal naming.
+    """
+    arg_units = ", ".join(
+        _unit_pretty(u) if u is not None else "?" for u in sig.arg_units
     )
     if sig.is_subroutine:
-        return f"`{name}({args})`"
+        return f"{name}({arg_units}) : -"
     ret = _unit_pretty(sig.return_unit) if sig.return_unit is not None else "?"
-    return f"`{name}({args})` : {ret}"
+    return f"{name}({arg_units}) : {ret}"
 
 
 def _hover_signature(name: str, sig: FuncSig) -> str:
@@ -71,7 +86,9 @@ def _hover_signature(name: str, sig: FuncSig) -> str:
     if not sig.is_subroutine and sig.return_unit is None:
         any_unknown = True
     marker = "🟡" if any_unknown else "🟢"
-    return f"**{marker} DimFort**\n\n{_sig_render_md(name, sig)}"
+    # Fenced block keeps the standalone signature hover visually aligned
+    # with the variable + tree hovers (single rule across surfaces).
+    return f"**{marker} DimFort**\n\n```\n{_sig_render_md(name, sig)}\n```"
 
 
 # Module hover caps. VSCode's hover popup is scrollable, so we
@@ -142,7 +159,7 @@ def _module_hover_md(
         lines.append("")
         lines.append("**Procedures**:")
         for n, sig in sig_items[:_MODULE_HOVER_SIG_LIMIT]:
-            lines.append(f"- {_sig_render_md(n, sig)}")
+            lines.append(f"- `{_sig_render_md(n, sig)}`")
         if len(sig_items) > _MODULE_HOVER_SIG_LIMIT:
             extra = len(sig_items) - _MODULE_HOVER_SIG_LIMIT
             lines.append(f"- *… {extra} more*")

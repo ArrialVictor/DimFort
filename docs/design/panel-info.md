@@ -153,14 +153,48 @@ interface ScopeSection {
 interface ExpressionNode {
   // Human-readable label (the source slice, lightly normalised).
   label: string;
-  // Resolved unit string, or null if unresolved / not applicable
-  // (e.g. an assignment statement, which has no unit of its own —
-  // renderers omit the unit column for such nodes).
-  unit: string | null;
-  // 🟢 ok, 🟡 warning/unresolved, 🔴 mismatch.
-  marker: "ok" | "warn" | "error";
-  // Rule ID that produced this node's unit (e.g. "R5.6"), if any.
-  ruleId: string | null;
+  // Unit string — always present (never null) since the server
+  // resolves all three "no unit" cases to a concrete glyph:
+  //   * "-" — structural-no-unit (assignment statement, relational
+  //           expression, subroutine call — no unit by design).
+  //   * "?" — unknown unit (unannotated identifier, unsupported
+  //           intrinsic, partial resolution).
+  //   * <formatted> — resolved unit (e.g. "kg·m⁻¹·s⁻²").
+  // See design/markers.md §4.5. (Companions that still expect `null`
+  // — pre-0.2.1 — will treat the string as a unit and pad accordingly;
+  // it's a render-only regression, not a crash.)
+  unit: string;
+  // Three-tier severity (`ok`/`warn`/`error`) plus a fourth
+  // **overlay** value `assumed` (companions render 🔵). `assumed`
+  // does NOT participate in worst-of aggregation — it appears only
+  // on the RHS row of an assumed assignment as a per-row overlay,
+  // and ancestors never inherit it. Severity worst-of stays
+  // `error > warn > ok`. See design/markers.md §4.6.
+  marker: "ok" | "assumed" | "warn" | "error";
+  // The formal unit this node is expected to satisfy, only set when
+  // this node is a positional argument of a call whose callee
+  // signature is known AND the resolved unit dimensionally differs
+  // from the formal. Renderers append `(expected <expected>)` to the
+  // row. When a node carries `expected`, the server-side derivation
+  // demotes `marker` from `ok` to `warn` (the 🟡-on-`expected`
+  // override — see design/markers.md §4.4); a row with
+  // `expected: <unit>` therefore never reads `marker: "ok"`.
+  expected: string | null;
+  // The mandatory reason supplied with
+  // `@unit_assume{<unit> : <reason>}`, set on the **RHS row** of an
+  // assumed assignment (NOT on the assignment row itself — the
+  // directive's syntactic subject is the RHS expression). When set:
+  //   * `unit` carries the *asserted* unit (not the computed `?`).
+  //   * `marker` reads `"assumed"` (companions render 🔵), unless a
+  //     diagnostic owning this node paints 🔴.
+  //   * Renderers append `(assumed: <reason>)` to the row tail
+  //     (same column as `(expected …)`; both can coexist).
+  // The assignment row itself stays clean (`marker: "ok"`) when the
+  // homogeneity check passes (LHS unit matches the asserted RHS
+  // unit). A declared-unit conflict still fires H001 on the
+  // assignment, painting it `"error"` — the assumption never masks
+  // a declared-unit conflict. See design/markers.md §4.6.
+  assumed: string | null;
   // Sub-expressions whose units feed into this one.
   children: ExpressionNode[];
 }
@@ -243,8 +277,8 @@ ASCII mock-up — the panel sits as a vertical split on the right
 │  3    use physics_mod,   only: ...  │   bogus = c_sound * t       │
 │  4                                  │   ├─ c_sound : m/s       🟢 │
 │  5    real :: t          !< @unit{s}│   ├─ t       : s         🟢 │
-│  6    real :: d          !< @unit{m}│   ├─ * (R1.1): m         🟢 │
-│  7    real :: v          !< @unit{m │   └─ ◂ kg ≠ m            🔴 │
+│  6    real :: d          !< @unit{m}│   ├─ c_sound * t : m     🟢 │
+│  7    real :: v          !< @unit{m │   └─ assignment       🔴    │
 │  8    real :: bogus      !< @unit{kg│                          H001│
 │  9    real :: t_celsius             │                             │
 │ 10                                  │ Routine: driver             │
