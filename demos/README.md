@@ -22,7 +22,7 @@ A short moist-thermodynamics routine: a handful of state variables
 empirical power-law behind an `@unit_assume` escape hatch, a
 deliberate homogeneity bug, one numerically-stable log-space
 computation that exercises the `LOG(…)` / `EXP(…)` wrapper algebra
-end to end, and a tiny internal subroutine — `kinetic_energy_density`
+end to end, and a tiny internal function — `dyn_p` (dynamic pressure)
 — that's called with a mismatched argument so DimFort can catch a
 cross-procedure unit error. The variables read as textbook physics —
 `T`, `p`, `rho`, `v`, `R_d` — so you don't need to know any
@@ -40,8 +40,8 @@ particular codebase to follow along.
 | 23, 50  | `r_drop` is declared without `@unit{}` and read inside a unit-checked expression on line 50. | **U005** (warning) on the *declaration* (line 23) — DimFort points at where the annotation is missing, not where it would have been used. |
 | 50      | Empirical power-law fit: `(...)**(-0.922)` — a dimensioned quantity raised to a non-rational exponent. DimFort cannot derive a unit here (**D1.4**), so the line carries an `@unit_assume{kg/m^3 : empirical-fit power-law}` to assert the result. | **U020** (info): `RHS unit assumed kg·m⁻³ (empirical-fit power-law)`. Audit-only — never affects the exit code. The D1.4 fire is suppressed because derivation is short-circuited. |
 | 67      | `p_ratio = exp(log(p) - log(p_ref))` — the numerically-stable form of `p / p_ref`, written entirely in log space. | **Silent** — and this is the most interesting silence in the file. See below. |
-| 76      | `call kinetic_energy_density(T, rho, e_sat)` — first formal expects `m/s`, actual is `T` (`K`). | **H004** (error): `Call to 'kinetic_energy_density': argument 1 (speed) unit mismatch: expected m·s⁻¹, got K`. The kind of bug that can't be caught at the call statement by intra-statement reasoning — DimFort matches formal-to-actual unit by position. |
-| 82–87   | The subroutine body is dimensionally clean: `0.5 * density * speed**2` types to `kg·m⁻¹·s⁻² = Pa`, matching the declared `intent(out)` unit of `ked`. | **Silent** — the body is correct; the bug is at the *call site* on line 76, not in the routine. |
+| 75      | `e_sat = dyn_p(T, rho)` — first formal expects `m/s`, actual is `T` (`K`). | **H004** (error): `Call to 'dyn_p': argument 1 (spd) unit mismatch: expected m·s⁻¹, got K`. The kind of bug that can't be caught at the call statement by intra-statement reasoning — DimFort matches formal-to-actual unit by position. |
+| 79–86   | The function body is dimensionally clean: `0.5 * dens * spd**2` types to `kg·m⁻¹·s⁻² = Pa`, matching the declared return unit. | **Silent** — the body is correct; the bug is at the *call site* on line 75, not in the function. |
 
 ## The log-space round-trip (line 67)
 
@@ -75,7 +75,7 @@ demos/tour.f90:23: warning: U005 'r_drop' is used in a unit-checked expression b
 demos/tour.f90:39: warning: S001 Scale mismatch: same dimension (kg·m⁻¹·s⁻²) but the magnitudes differ by ×100. If this is a unit conversion, carry the factor on a typed PARAMETER; otherwise the units disagree in scale.
 demos/tour.f90:42: error: H001 Assignment unit mismatch: m·s⁻¹ ≠ m²·s⁻²
 demos/tour.f90:50: info: U020 RHS unit assumed kg·m⁻³ (empirical-fit power-law)
-demos/tour.f90:76: error: H004 Call to 'kinetic_energy_density': argument 1 (speed) unit mismatch: expected m·s⁻¹, got K
+demos/tour.f90:75: error: H004 Call to 'dyn_p': argument 1 (spd) unit mismatch: expected m·s⁻¹, got K
 $ echo $?
 1
 ```
@@ -146,13 +146,13 @@ with what a reader sees if they open it themselves.
 > `exp(1) → 1`, with a 🟢 marker on the assignment. This is the demo
 > shot that shows DimFort doing something other checkers can't.
 
-### Hover on the call-site mismatch (line 76)
+### Hover on the call-site mismatch (line 75)
 
-> _Placeholder — screenshot to be captured from `tour.f90` line 76._
+> _Placeholder — screenshot to be captured from `tour.f90` line 75._
 > Expected: `Detailed` hover on the call showing the formal/actual
-> pairing — `speed : m/s` (formal) vs `T : K` (actual) with a 🔴
-> marker on the offending argument, plus the green rows for `rho`
-> and `e_sat` whose units match.
+> pairing — `spd : m/s` (formal) vs `T : K` (actual) with a 🔴
+> marker on the offending argument, plus the green row for `rho`
+> whose unit matches.
 
 ## Other demo files
 
