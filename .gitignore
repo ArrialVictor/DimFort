@@ -221,6 +221,11 @@ __marimo__/
 
 # Per-project analysis cache (safe to delete; `dimfort cache clean` does the same)
 .dimfort/
+.dimfort-cache/
+
+# Optional per-project DimFort config — kept local in development checkouts
+# (a real consumer's `.dimfort.toml` belongs in their workspace, not in this repo).
+.dimfort.toml
 
 # OS files
 .DS_Store
