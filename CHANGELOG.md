@@ -198,8 +198,8 @@ post-0.2.1 servers.
 
 ## [0.2.0] — 2026-05-27
 
-First **beta**. Usable, tested, and proven against a real-world climate
-model (LMDZ-class). The `@unit{}` annotation format, the diagnostic
+First **beta**. Usable, tested, and proven against a representative
+real-world Fortran codebase. The `@unit{}` annotation format, the diagnostic
 codes, and the LSP protocol are deliberately **not** frozen yet — expect
 they may still shift between `0.x` releases.
 
@@ -382,7 +382,7 @@ they may still shift between `0.x` releases.
   per-file check phase keyed by `(source bytes, cpp closure hashes,
   per-file config, DimFort version, OUTPUT_VERSION)`. On a warm cache
   the per-file check is replayed from disk instead of recomputed.
-  LMDZ-scale measurement: cold 33 s → warm 20 s; the check phase alone
+  Real-world workspace measurement: cold 33 s → warm 20 s; the check phase alone
   drops from 15 s to ~3 s. Cold-run floor is unaffected.
 - **Per-module dependency invalidation.** Every cached entry records the
   set of workspace modules its file consumed via `use` clauses; when
@@ -414,8 +414,8 @@ they may still shift between `0.x` releases.
 
 - **Phase-C consolidation.** `collect_parameter_values` folded into the
   existing combined `variable_declaration` walk (`collect_var_types_
-  type_fields_and_parameter_values`). Recovers the ~2 s LMDZ check-
-  phase regression introduced by the OQ4 PARAMETER-aware exponents
+  type_fields_and_parameter_values`). Recovers the ~2 s real-world-workspace
+  check-phase regression introduced by the OQ4 PARAMETER-aware exponents
   work. Same pattern as the 2026-05-17 var-types + type-field-types
   merge.
 
@@ -567,9 +567,7 @@ dycores) that OQ4 couldn't reach. Full spec in
   to `Unit.pow(Exponent)`. `Exponent × Exponent` is defined only when
   one side is pure-constant — otherwise the resolver falls back to
   D1.4 (kept linear by design).
-- **Closed 3 Exner D1.4s** on LMDZ:
-  `guide_mod.f90:772`, `exner_milieu_m.f90:105`,
-  `exner_milieu_loc_m.f90:126`.
+- **Closed 3 Exner D1.4s** in the validation workspace.
 - **Rendering.** `format_unit` understands symbolic slots and prints
   `Pa^(2/7·kappa)` rather than the previous fallback.
 

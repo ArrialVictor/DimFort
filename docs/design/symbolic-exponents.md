@@ -36,7 +36,7 @@ OQ4 (already on main) partially closes this for `REAL, PARAMETER`
 declarations with literal initializers. It does **not** cover:
 
 - `REAL` declared in one module, assigned at runtime in another
-  (the Exner-kappa pattern in LMDZ-class codebases).
+  (the Exner-kappa pattern in real-world Fortran codebases).
 - Values that depend on namelists / config files / conditional
   branches at startup.
 - Function-call returns into the would-be-constant slot.
@@ -327,7 +327,7 @@ if op == "**":
 
 | Old diagnostic | New behavior |
 |---|---|
-| D1.4 (exponent not literal rational) | Fires only when even symbolic resolution fails. Most LMDZ kappa cases stop firing. |
+| D1.4 (exponent not literal rational) | Fires only when even symbolic resolution fails. Most real-world kappa cases stop firing. |
 | H001 / H002 unit mismatch | Now also fires when symbolic exponents in operands don't structurally unify. New message: "operands carry inequivalent opaque exponents: `kappa` vs `lambda`". |
 | H001 with constant-1 unverifiability | New diagnostic class: "operand carries unknown exponent `kappa`; cannot verify it equals 1 (required for homogeneity with the other operand)." |
 
@@ -379,13 +379,14 @@ practice, but the type system is ready.**
 - Tests: `p**kappa * p**(1-kappa) → Pa`; `p**kappa + p**lambda → H002`;
   `p**kappa + p → H002 with new message`.
 
-### Step 4 — LMDZ verification
+### Step 4 — Real-world verification
 
-- Run the reference workspace trial.
+- Run the validation workspace trial.
 - Expected: 3 Exner D1.4s gone; no new false positives.
 - Expected: maybe 2-3 NEW H002s in code that was previously hidden
   behind a D1.4 silence. These are honest findings — investigate each.
-- Update LMDZ_FINDINGS.md (off-branch — the log lives outside DimFort).
+- Update the internal findings log (off-branch — the log lives outside
+  DimFort).
 
 ### Step 5 — Trace tree rendering (~20 lines)
 
@@ -424,13 +425,13 @@ deeper — currently I don't expect any.
 - Falls back to D1.4 only when symbolic resolution itself fails
   (e.g. `p ** sin(kappa)`).
 
-### LMDZ regression
+### Real-world regression
 
 - The three Exner D1.4 sites convert to clean typings.
 - The Tetens family (#009) — same pattern but in LogWrap algebra; may
   or may not be covered by this work depending on whether LogWrap
   multipliers go through the same scalar path. **TBD.**
-- No new false positives anywhere in the trial workspace baseline.
+- No new false positives anywhere in the validation workspace baseline.
 
 
 ## Failure modes to plan for

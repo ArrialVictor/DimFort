@@ -7,8 +7,8 @@ Layout
     {root}/v{CHECKER_OUTPUT_VERSION}/{first2}/{rest_of_hash}.json.gz
 
 ``{first2}`` is the first two hex chars of the key. With ~2,400 files
-in LMDZ and uniformly-distributed SHA-256 keys, each shard holds <10
-entries, which is friendly to every filesystem.
+in a representative workspace and uniformly-distributed SHA-256 keys,
+each shard holds <10 entries, which is friendly to every filesystem.
 
 Concurrency
 -----------
