@@ -17,8 +17,10 @@ they already own:
 - **[hover-ui.md](../hover-ui.md)** — *presentation*: which layouts fire,
   the glyph legend, where the marker sits in each row. Owns the **look**.
 - **[panel-info.md](panel-info.md)** — *wire contract*: the
-  `marker: "ok" | "warn" | "error"` field on `ExpressionNode`, and that it
-  is pre-aggregated server-side. Owns the **protocol**.
+  `marker: "ok" | "assumed" | "warn" | "error"` field on `ExpressionNode`,
+  and that it is pre-aggregated server-side. `"assumed"` is the
+  per-row 🔵 overlay for `@unit_assume` (§4.6) — it does not participate
+  in the worst-of-children severity aggregation. Owns the **protocol**.
 - **markers.md** (this doc) — *derivation*: how the server computes a
   node's marker in the first place. Owns the **logic**.
 
@@ -319,15 +321,19 @@ surface folds into the model then.
 
 ## 5. Reconciliation with the existing docs
 
-- **panel-info.md** — wire contract is **unchanged** (`marker: ok|warn|
-  error`, pre-aggregated). Only the server-side derivation changes, so the
-  3 companions are untouched. The "worst-of-children" sentence stays true.
+- **panel-info.md** — wire contract is **unchanged** (`marker: ok|assumed|
+  warn|error`, pre-aggregated). Only the server-side derivation changes, so
+  the 3 companions are untouched. The "worst-of-children" sentence stays
+  true for `ok`/`warn`/`error`; `assumed` is a per-row overlay (§4.6) and
+  doesn't participate in worst-of aggregation.
 - **hover-ui.md** — presentation is unchanged; its marker *semantics* were
   synced when this landed: the per-row 🟢/🟡/🔴 list is now diagnostic-
   driven (consistency family incl. `S001`/`S002`), the "source of truth"
-  note points at the file's diagnostics, and the relational examples show
-  🟡 (relational is not an emission site, for dimension *or* scale — e.g.
-  `p > 0.0` no longer re-derives a 🔴).
+  note points at the file's diagnostics. Relational comparisons (along
+  with assignments and subroutine calls) are *structural-no-unit*: they
+  live in `_NO_UNIT_NODE_TYPES`, so their base marker is 🟢 — e.g.
+  `p > 0.0` no longer re-derives a 🔴, and reads as 🟢 unless a
+  diagnostic owns the row (§4.5).
 - **scale.md** — unaffected; its S001/S002 *emission* is the source these
   markers now read. The forward-compat note there (soft-units is a
   severity/provenance layer over the same diagnostics) is exactly why
