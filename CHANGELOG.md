@@ -2,7 +2,7 @@
 
 All notable changes to DimFort are documented here. Format inspired by [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.2.1] — 2026-05-30
 
 ### Add: `demos/` directory with a canonical, user-facing tour file
 
@@ -246,6 +246,70 @@ post-0.2.1 servers.
 - Wire-format: `ExpressionNode.ruleId` → `ExpressionNode.expected`
   (see [docs/design/panel-info.md](docs/design/panel-info.md)). All
   three companions consume the new field.
+
+### Change: misc polish + UX consistency
+
+Several smaller fixes landed alongside the major changes above:
+
+- **Uniform scale-mode-aware unit display.** With `--scale` (or
+  `[scale] enabled = true` in `.dimfort.toml`), the multiplicative
+  factor surfaces wherever a unit is rendered — Expression tree, the
+  scope-var and imports "normalized" columns, hovers (e.g. `hPa`
+  shows as `100×kg·m⁻¹·s⁻²`). Without scale mode the factor is
+  hidden. Single rule: displays match what the checker is reasoning
+  about, so a panel never claims more precision than the active
+  checker mode.
+- **Module procedures appear in the Scope panel** for module/program
+  scopes, per Fortran host association — procedures defined in a
+  module are visible from anywhere in that module. Pre-formatted as
+  `name(args)` rows mirroring the Imports section convention.
+- **`@unit_assume{...}` squiggle covers the full directive** (was
+  just the leading `@`). U020 and the U002 emitted on a malformed
+  `@unit_assume` unit now span the whole `@unit_assume{...}` range.
+- **`P001` blue squiggle widens to cover the neighbour swallowed by
+  error recovery.** Tree-sitter's error recovery commonly absorbs
+  the immediately-following clean statement into the bad
+  statement's parse node (the parent `assignment_statement` ends up
+  with `has_error=True` and spans both lines); `P001` now uses that
+  ancestor's span so the underline matches the actual untrustworthy
+  region, instead of leaving the swallowed line silently empty in
+  the Expression panel.
+- **Hover format unified — fenced code blocks everywhere.**
+  Variable, signature, and tree hovers all wrap their body in a
+  fenced code block so markdown clients that style code blocks
+  (VSCode, Neovim with rounded borders, etc.) get consistent
+  monospace + tinted rendering across every hover surface. Bold
+  name dropped from the variable hover.
+- **`Undetermined read` → `Undetermined`.** The CLI's `interactions`
+  group label, the panel's Interactions section header, and the
+  `X001` conflict-message text all use the shorter form. The
+  internal `KIND` value (`USES`) is unchanged.
+
+### Docs: design-doc folder refreshed to match shipped behaviour
+
+Several design docs in `docs/design/` had accumulated stale "draft /
+not implemented yet" banners while their content had shipped.
+Refreshed:
+
+- `panel-info.md` — rewritten to reflect the shipped panel (six
+  sections in order, including the new `viaModule` provenance field
+  from the transitive-imports work).
+- `content-hash-cache.md`, `interaction-points.md`, `scale.md` —
+  each rewritten to match shipped behaviour (keys + wire format for
+  the cache; the `dimfort/interactions` wire shape and `Undetermined`
+  rename; the per-phase scale-mode status table and the uniform
+  display rule).
+- `markers.md` — wire enum updated to include `"assumed"`; the
+  relational example corrected (relational is structural-no-unit,
+  base marker 🟢 rather than the previously-described 🟡).
+- `symbolic-exponents.md`, `symbolic-logwrap.md` — status banners
+  flipped from "in design, no implementation yet" to "shipped
+  2026-05-22". Algebraic rule tables remain authoritative; the
+  step-by-step implementation plans are now historical.
+
+This is a contributor / beta-tester quality-of-life pass, not user-
+facing behaviour. The design-doc folder now matches what the code
+actually does.
 
 ## [0.2.0] — 2026-05-27
 
