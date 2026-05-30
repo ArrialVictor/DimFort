@@ -126,33 +126,48 @@ with what a reader sees if they open it themselves.
 
 ### Hover on the homogeneity error (line 42)
 
-> _Placeholder — screenshot to be captured from `tour.f90` line 42._
-> Expected: `Detailed` hover on the `=` of `v = p / rho`, showing the
-> unit-algebra tree with `m·s⁻¹` on the LHS row, `m²·s⁻²` on the RHS
-> row, and a 🔴 marker on the assignment.
+Detailed hover on the `=` of `v = p / rho`: the unit-algebra tree
+carries `m·s⁻¹` on the LHS row, `m²·s⁻²` on the RHS row, and a 🔴
+marker propagates up to the assignment.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ArrialVictor/DimFort/main/docs/img/tour-hover-h001-line42_dark.png">
+  <img width="640" src="https://raw.githubusercontent.com/ArrialVictor/DimFort/main/docs/img/tour-hover-h001-line42_light.png" alt="Detailed hover on tour.f90 line 42 — H001 assignment mismatch m·s⁻¹ ≠ m²·s⁻²">
+</picture>
 
 ### Hover on the `@unit_assume` row (line 50)
 
-> _Placeholder — screenshot to be captured from `tour.f90` line 50._
-> Expected: RHS row carries the `(assumed: empirical-fit power-law)`
-> annotation and a 🔵 overlay; the assignment row itself stays 🟢
-> because homogeneity passes against the declared LHS unit.
+The RHS row carries the `(assumed: empirical-fit power-law)`
+annotation and a 🔵 overlay; the assignment row itself stays 🟢
+because homogeneity passes against the declared LHS unit.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ArrialVictor/DimFort/main/docs/img/tour-hover-assume-line50_dark.png">
+  <img width="640" src="https://raw.githubusercontent.com/ArrialVictor/DimFort/main/docs/img/tour-hover-assume-line50_light.png" alt="Detailed hover on tour.f90 line 50 — U020 RHS unit assumed kg·m⁻³ with the assignment row still 🟢">
+</picture>
 
 ### Hover on the log-space round-trip (line 67)
 
-> _Placeholder — screenshot to be captured from `tour.f90` line 67._
-> Expected: `Detailed` hover showing the full rewrite chain
-> `log(Pa) → LOG(Pa)`, `LOG(Pa) − LOG(Pa) → LOG(Pa/Pa) → LOG(1) → 1`,
-> `exp(1) → 1`, with a 🟢 marker on the assignment. This is the demo
-> shot that shows DimFort doing something other checkers can't.
+Detailed hover showing the full rewrite chain
+`log(Pa) → LOG(Pa)`, `LOG(Pa) − LOG(Pa) → LOG(Pa/Pa) → LOG(1) → 1`,
+`exp(1) → 1`, with a 🟢 marker on the assignment. The demo shot that
+shows DimFort doing something other checkers can't.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ArrialVictor/DimFort/main/docs/img/tour-hover-logexp-line67_dark.png">
+  <img width="640" src="https://raw.githubusercontent.com/ArrialVictor/DimFort/main/docs/img/tour-hover-logexp-line67_light.png" alt="Detailed hover on tour.f90 line 67 — log/exp rewrite chain collapsing to dimensionless, every row 🟢">
+</picture>
 
 ### Hover on the call-site mismatch (line 75)
 
-> _Placeholder — screenshot to be captured from `tour.f90` line 75._
-> Expected: `Detailed` hover on the call showing the formal/actual
-> pairing — `spd : m/s` (formal) vs `T : K` (actual) with a 🔴
-> marker on the offending argument, plus the green row for `rho`
-> whose unit matches.
+Detailed hover on the call showing the formal/actual pairing —
+`spd : m/s` (formal) vs `T : K` (actual) with a 🔴 marker on the
+offending argument, plus the green row for `rho` whose unit matches.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ArrialVictor/DimFort/main/docs/img/tour-hover-h004-line75_dark.png">
+  <img width="640" src="https://raw.githubusercontent.com/ArrialVictor/DimFort/main/docs/img/tour-hover-h004-line75_light.png" alt="Detailed hover on tour.f90 line 75 — H004 call-site mismatch with T:K passed where spd:m/s was expected">
+</picture>
 
 ## Other demo files
 
