@@ -12,21 +12,23 @@ point into DimFort: a short, self-contained Fortran source file
 (`demos/README.md`).
 
 The demo is a textbook moist-thermodynamics routine — `T`, `p`, `rho`,
-`v`, `R_d` — that exercises six high-impact diagnostics on a single
+`v`, `R_d` — that exercises six high-impact behaviours on a single
 page: pure-literal initialisation autocast (**R4.4**, silent), an
 ideal-gas line that balances cleanly, a scale mismatch between `Pa`
 and `hPa` (**S001**), a textbook homogeneity error (**H001**), a
 missing-annotation case (**U005**), the non-derivable power-law
-escape hatch (**D1.4** → **U020**), and a mixed empirical formula
-behind a second `@unit_assume`.
+escape hatch (**D1.4** → **U020**), and a short detour into
+`LOG(…)` / `EXP(…)` wrapper algebra — log-pressure subtraction
+collapses to dimensionless and `exp(LOG(Pa))` cancels back to `Pa`,
+both silently.
 
-`dimfort check --scale demos/tour.f90` produces the exact five-line
+`dimfort check --scale demos/tour.f90` produces the exact four-line
 output captured in `demos/README.md` (one error, exit `1`), and the
 walkthrough explains both the diagnostics that fire *and* the lines
 where DimFort is deliberately silent (R4.4 autocast, balanced
-homogeneity). README screenshots will be taken from this file going
-forward, so they stay reproducible by anyone with the repo checked
-out.
+homogeneity, LOG/EXP wrapper rewrites). README screenshots will be
+taken from this file going forward, so they stay reproducible by
+anyone with the repo checked out.
 
 The three companion repos (VSCode / Neovim / Emacs) link to the demo
 rather than duplicating the fixture.
