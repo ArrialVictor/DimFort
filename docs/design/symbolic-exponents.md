@@ -1,15 +1,18 @@
-# Symbolic exponents — design notes for the `symbolic-exponents` branch
+# Symbolic exponents — design notes
 
-Status: **in design**, no implementation yet. Branch created 2026-05-22.
+Status: **shipped** (merged to `main` 2026-05-22). The `Exponent`
+dataclass and `Unit`-carrying-`Exponent` layers (Steps 1-3 of the
+implementation plan below) are live in `src/dimfort/core/units.py`.
+Step 4 (resolver wiring for symbolic-name PARAMETERs across modules)
+is partially live — the cross-module symbolic-PARAMETER case closes
+the Exner-kappa family of D1.4s but a Tetens-multiplier annotation
+gap was surfaced (tracked in the internal findings log).
 
-This document is for me (or any future maintainer) to pick up the work
-from a cold start. It captures the *what*, the *why*, the data
-structures, the algebraic rules, the step-by-step plan, and the
-explicit open questions.
-
-If anything in here turns out wrong during implementation, **update
-this doc**, then write the code. The doc is the spec; code follows
-the doc, not the other way around.
+This doc remains the authoritative spec for the data model, the
+algebraic rules, and the failure-mode tables — those parts are
+correct as written. The "step-by-step implementation plan" near the
+end is historical (work completed); kept for context. Cross-refs to
+`scale.md` and `markers.md` are live.
 
 
 ## Problem statement

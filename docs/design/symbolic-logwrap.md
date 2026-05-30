@@ -1,13 +1,19 @@
-# Symbolic LogWrap multipliers — design notes for `symbolic-logwrap`
+# Symbolic LogWrap multipliers — design notes
 
-Status: **in design**, no implementation yet. Branch created
-2026-05-22, off main at commit `f238b76` (the symbolic-exponents
-merge).
+Status: **shipped** (merged to `main` 2026-05-22, alongside the
+`symbolic-exponents` work). The R5.4 path now accepts symbolic
+linear `Exponent` multipliers — see `_combine` in
+`src/dimfort/core/units.py` (the docstring around the rule explicitly
+references "γ · LOG(u) = LOG(u^γ)"). Closed three Tetens-family D1.4s
+in the real-world Fortran codebase tracked in the internal findings
+log; the irreducible empirical-fit cases remain pending and use the
+`@unit_assume` escape hatch.
 
-This branch extends the symbolic-exponent machinery to one more
-algebra path: the multiplier in `γ · LOG(p)` patterns. Closes the
-Tetens-family D1.4s left over after `symbolic-exponents`
-(`#009` in `LMDZ_FINDINGS.md`).
+This branch extended the symbolic-exponent machinery to one more
+algebra path: the multiplier in `γ · LOG(p)` patterns. The design
+below (problem statement + rules + tests) remains accurate as a
+spec; the "step-by-step plan" near the end is historical (work
+completed).
 
 
 ## Problem statement
