@@ -154,8 +154,45 @@ with what a reader sees if they open it themselves.
 > marker on the offending argument, plus the green rows for `rho`
 > and `e_sat` whose units match.
 
-## Want a single-page error tour?
+## Other demo files
 
-A companion `demos/broken.f90` — several failure modes side by side,
-without the prose — is a likely follow-up. Not shipped in the first
-cut; track it via the issue list.
+Two short companion files live next to this one for specific
+scenarios that don't fit the prose tour:
+
+### [`demos/affine.f90`](affine.f90) — the scale family
+
+Focused on `--scale` mode and the affine-conversion story:
+
+- **S001** — magnitude (factor) mismatch, no offset issue.
+- **S002** — un-blessed offset mismatch (`degC + K`).
+- **`@unit_affine_conversion`** — the **verified** counterpart to
+  `@unit_assume`. A small `c_to_k` conversion function whose body
+  carries the directive type-checks silently because DimFort verifies
+  the arithmetic actually performs the stated `degC → K` conversion.
+- **S003** — what happens when the directive is there but the
+  arithmetic is wrong (subtraction instead of addition). The error
+  message even shows the `a*s+b` form DimFort solved for.
+
+```
+$ dimfort check --scale --no-color demos/affine.f90
+demos/affine.f90:33: warning: S001 Scale mismatch: same dimension (kg·m⁻¹·s⁻²) but the magnitudes differ by ×1/100. …
+demos/affine.f90:38: warning: S002 Offset mismatch: same dimension and scale but a different zero-point (offsets differ by -273.15, e.g. °C vs K) — add the conversion or keep units consistent
+demos/affine.f90:64: error: S003 Affine-conversion directive does not verify: the degC -> K arithmetic is wrong: the RHS computes a*s+b with a=1, b=-273.15, but the conversion requires a=1, b=273.15
+```
+
+### [`demos/broken.f90`](broken.f90) — the bug zoo
+
+One-block-per-code lookup table. No prose, no narrative — each block
+is a single statement that fires exactly one code, with the message
+DimFort produces. Use it as a quick "what does H002 look like?"
+reference:
+
+```
+$ dimfort check --no-color demos/broken.f90
+demos/broken.f90:19: warning: U005 'r' is used in a unit-checked expression but has no @unit{} annotation (e.g. used at line 37)
+demos/broken.f90:22: error: H001 Assignment unit mismatch: m·s⁻¹ ≠ m
+demos/broken.f90:25: error: H002 Operand unit mismatch in '+'/'-': m ≠ s (D1.1)
+demos/broken.f90:28: error: H003 Intrinsic 'sin' requires a dimensionless argument; got m
+demos/broken.f90:31: error: H004 Call to 'require_seconds': argument 1 (s_arg) unit mismatch: expected s, got m
+demos/broken.f90:34: warning: H010 Implicit cast: literal '2.0' to m (prefer a named PARAMETER, e.g. `REAL, PARAMETER :: <name> = 2.0   !< @unit{m}`)
+```
