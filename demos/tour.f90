@@ -22,11 +22,8 @@ program tour
   real :: rho_drop        !< @unit{kg/m^3}       ! droplet bulk density
   real :: r_drop                                 ! droplet radius — left unannotated on purpose
 
-  ! Log-pressure coordinate: a quantity that lives in LOG(Pa) space.
-  real :: lnp             !< @unit{LOG(Pa)}      ! log of local pressure
-  real :: lnp_ref         !< @unit{LOG(Pa)}      ! log of a reference pressure
-  real :: dlnp            !< @unit{1}            ! dimensionless log-ratio
-  real :: p_back          !< @unit{Pa}           ! pressure recovered from lnp
+  real :: p_ref           !< @unit{Pa}           ! reference pressure (e.g. 1e5 Pa)
+  real :: p_ratio         !< @unit{1}            ! p / p_ref, computed in log space
 
   ! ---- R4.4 — pure-literal initialisation autocasts to the LHS unit. ----
   ! No diagnostic fires: the literal RHS adopts the declared LHS unit.
@@ -53,12 +50,20 @@ program tour
   rho_drop = 1.0e3 * 0.178 * (r_drop * 2.0 * 1000.0)**(-0.922)   !< @unit_assume{kg/m^3 : empirical-fit power-law}
 
   ! ---- LOG / EXP wrapper algebra — no diagnostic. ----
-  ! Quantities tagged LOG(Pa) live in log-pressure space. The log
-  ! homomorphism collapses a *difference* of two LOG(Pa) values to
-  ! dimensionless (LOG(a) − LOG(b) → LOG(a/b), and LOG(1) → 1), and
-  ! `exp` applied to a LOG-tagged value cancels back to the inner unit.
-  ! DimFort tracks both rewrites automatically — no escape hatch needed.
-  dlnp = lnp - lnp_ref     ! LOG(Pa) − LOG(Pa) → 1 (dimensionless)
-  p_back = exp(lnp)        ! EXP(LOG(Pa)) → Pa
+  ! Numerically stable computation of a pressure ratio:
+  !
+  !     exp(log(a) - log(b))  ≡  a / b
+  !
+  ! DimFort traces the whole chain through three rewrites:
+  !   log(p)        : Pa          →  LOG(Pa)         (log homomorphism)
+  !   LOG(p) - LOG(p_ref)        →  LOG(Pa / Pa)    (subtraction in log space)
+  !   LOG(Pa / Pa)               →  LOG(1) → 1      (dimensionless collapse)
+  !   exp(1)                     →  1               (EXP ∘ identity)
+  !
+  ! The result types as dimensionless, matching the LHS. No annotation
+  ! is needed beyond the LHS — the algebra discharges every wrapper on
+  ! the way through. Few static checkers cover this; DimFort does it as
+  ! a first-class rewrite (see docs/unit-algebra.md §R5).
+  p_ratio = exp(log(p) - log(p_ref))
 
 end program tour
