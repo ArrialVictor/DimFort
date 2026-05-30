@@ -28,8 +28,8 @@ a `REAL, SAVE` variable annotated dim'less but set at runtime (e.g.
 fires the runtime-fallback rule **R5.5** which emits D1.4 ("scalar
 multiplier of LogWrap is not a literal rational").
 
-The remaining 4 LMDZ D1.4s after the `symbolic-exponents` merge are
-all this shape:
+The remaining 4 D1.4s in the validation workspace after the
+`symbolic-exponents` merge are all this shape:
 
 ```
 modd_csts.f90:263       XALPW = LOG(XESTT) + (XBETAW/XTT) + (XGAMW * LOG(XTT))
@@ -192,19 +192,19 @@ algebra section).
   symbolic Exponent, return D1.4 (don't try `1/symbolic`).
 - Test: `LOG(p) / γ` with symbolic γ → D1.4.
 
-### Step 4 — LMDZ verification
+### Step 4 — Real-world verification
 
-- Re-run on the trial workspace.
+- Re-run on the validation workspace.
 - Expected: all 4 Tetens-family D1.4s closed.
 - Expected: no new false positives.
 
 ### Step 5 — extend R6.4 (ExpWrap) similarly if needed
 
-- Check whether any LMDZ ExpWrap case fires D1.4 today and would
+- Check whether any real-world ExpWrap case fires D1.4 today and would
   benefit. If yes, apply the same widening to the ExpWrap path.
   If no, defer.
 
-### Step 6 — update LMDZ_FINDINGS.md `#009`
+### Step 6 — update the internal findings log entry `#009`
 
 - Mark the Tetens family as closed.
 - Note that the fix shipped via this branch.
@@ -220,10 +220,10 @@ algebra section).
 - `LOG(p) / γ` with symbolic γ → D1.4.
 - `LOG(p) / 2` (literal divisor) — still works via R5.4.
 
-### LMDZ regression
+### Real-world regression
 
-Each of the 4 Tetens sites should produce no diagnostic after this
-branch. No new findings anywhere.
+Each of the 4 Tetens sites in the validation workspace should produce
+no diagnostic after this branch. No new findings anywhere.
 
 
 ## Failure modes
@@ -261,6 +261,6 @@ branch. No new findings anywhere.
 ## Branch hygiene
 
 - Each step its own commit. Push after Step 4 lands so it's visible.
-- Don't merge until the LMDZ verification (Step 4) is clean.
+- Don't merge until the validation-workspace verification (Step 4) is clean.
 - If the algebra hits a corner case we didn't anticipate, kill the
   branch — main is unchanged.

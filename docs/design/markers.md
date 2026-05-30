@@ -114,7 +114,7 @@ inconsistent), and the `U0xx` family (annotation quality / info). They
 still get squiggles; they just don't colour a circle, because a green
 circle there is *correct* ("the algebra is consistent"). This keeps
 markers meaning what they've always meant — adding S002, not turning
-every LMDZ implicit-cast yellow. (The declaration row is the one place an
+every implicit-cast in a real-world codebase yellow. (The declaration row is the one place an
 annotation-quality code drives a marker — `U002` "unparseable" → 🔴 — but
 that is the *resolution* axis for a declaration, not an expression; §2.1.)
 If H010/U0xx-in-the-panel is ever wanted, it's a deliberate later toggle,
