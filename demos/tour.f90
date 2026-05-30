@@ -67,23 +67,22 @@ program tour
   p_ratio = exp(log(p) - log(p_ref))
 
   ! ---- H004 — call-site unit checking. ----
-  ! `kinetic_energy_density` expects (speed [m/s], density [kg/m^3]) and
-  ! writes the result to its third argument [Pa]. DimFort matches actuals
-  ! to formals by position and reports the first mismatch as H004 on the
-  ! call. Here, `T` [K] is passed where a [m/s] argument is required, so
-  ! the call fires H004 — a class of bug that intra-statement homogeneity
+  ! `dyn_p` expects (speed [m/s], density [kg/m^3]) and returns [Pa].
+  ! DimFort matches actuals to formals by position and reports the first
+  ! mismatch as H004 on the call. Here, `T` [K] is passed where a [m/s]
+  ! argument is required — a class of bug intra-statement homogeneity
   ! checking can't catch.
-  call kinetic_energy_density(T, rho, e_sat)
+  e_sat = dyn_p(T, rho)
 
 contains
 
-  ! Dynamic pressure (kinetic energy density): 1/2 * rho * v^2.
+  ! Dynamic pressure: 1/2 * rho * v^2.
   ! Body is dimensionally clean — kg/m^3 * (m/s)^2 = kg/(m*s^2) = Pa.
-  subroutine kinetic_energy_density(speed, density, ked)
-    real, intent(in)  :: speed     !< @unit{m/s}
-    real, intent(in)  :: density   !< @unit{kg/m^3}
-    real, intent(out) :: ked       !< @unit{Pa}
-    ked = 0.5 * density * speed**2
-  end subroutine kinetic_energy_density
+  function dyn_p(spd, dens) result(p)
+    real, intent(in) :: spd        !< @unit{m/s}
+    real, intent(in) :: dens       !< @unit{kg/m^3}
+    real             :: p          !< @unit{Pa}
+    p = 0.5 * dens * spd**2
+  end function dyn_p
 
 end program tour

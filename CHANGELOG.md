@@ -23,7 +23,7 @@ the `LOG(…)` / `EXP(…)` wrapper algebra end to end — `log` promotes
 `Pa → LOG(Pa)`, the subtraction collapses to `LOG(1) → 1`, `exp`
 strips back to dimensionless, all silent and with no annotation
 beyond the LHS unit (a rewrite few static checkers cover). A small
-internal subroutine (`kinetic_energy_density`) with annotated
+internal function (`dyn_p`) with annotated
 formals + a deliberately-mismatched call site exercises **H004**
 (cross-procedure unit checking on call boundaries), and the
 expected-output section shows what `--trace` adds to a diagnostic
