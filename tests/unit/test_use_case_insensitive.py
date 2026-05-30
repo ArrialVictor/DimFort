@@ -8,7 +8,7 @@ apply, so a genuine mismatch fires.
 Regression for the bug where ``suphel.f90``'s ``rhoh2o = ratm/100.``
 (lowercase) silently lost the units of module ``RHOH2O`` (kg/m^3) and
 ``RATM`` (Pa) — keyed in declaration case — so the kg/m³ ≠ Pa mismatch
-(LMDZ finding #013) never fired.
+(a real-world finding) never fired.
 """
 from __future__ import annotations
 

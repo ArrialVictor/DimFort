@@ -14,7 +14,8 @@ from dimfort.core import unit_config  # noqa: F401 — installs DEFAULT_TABLE
 from dimfort.core.multifile import check_files
 
 # A self-contained module with the temperature declarations the corpus needs.
-# ``RTT`` is the canonical 273.15 K conversion constant (as in LMDZ).
+# ``RTT`` is the canonical 273.15 K conversion constant (as commonly used in
+# real-world Fortran climate codebases).
 _PREAMBLE = (
     "module m\n"
     " real, parameter :: RTT = 273.15  !< @unit{K}\n"

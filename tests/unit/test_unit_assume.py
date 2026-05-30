@@ -5,7 +5,7 @@ RHS unit (suppressing D1.4 and any interior fire) and instead treat the
 result as the asserted unit, still consistency-checked against a declared
 LHS. Each use emits a U020 INFO note for auditability.
 
-Motivated by LMDZ finding #016: empirical microphysics power-laws such as
+Motivated by a real-world finding: empirical microphysics power-laws such as
 ``rho_snow = 1.e3*0.178*(r_snow*2.*1000.)**(-0.922)`` raise a length to a
 non-rational exponent, an irreducible D1.4 that OQ4 cannot close.
 """

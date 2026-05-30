@@ -148,8 +148,9 @@ class IncludeHasher:
     """Memoised content-hash for include files.
 
     Within one workspace check, the same header may be hashed for many
-    consumers (LMDZ pulls ``netcdf.inc`` from ~hundreds of files).
-    Hashing once per (path, mtime) tuple keeps that linear.
+    consumers (real-world Fortran codebases often pull a shared header
+    like ``netcdf.inc`` from hundreds of files). Hashing once per
+    (path, mtime) tuple keeps that linear.
 
     The mtime check is a cheap invalidation signal *within a run*;
     persistent across-run caching of include hashes is left to a
