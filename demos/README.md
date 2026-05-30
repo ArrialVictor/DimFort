@@ -78,6 +78,29 @@ $ echo $?
 Four diagnostics, one error → exit code `1`. Drop `--scale` and S001
 goes away (three diagnostics, still exit `1` because H001 stands).
 
+### Explain the algebra: `--trace`
+
+Pass `--trace` to attach the firing rule chain to each diagnostic.
+For the H001 line above:
+
+```
+$ dimfort check --trace --scale --no-color demos/tour.f90
+...
+demos/tour.f90:42: error: H001 Assignment unit mismatch: m·s⁻¹ ≠ m²·s⁻²
+  trace:
+    → kg·m⁻¹·s⁻², kg·m⁻³  ⇒  m²·s⁻²   [R4.2]
+...
+```
+
+The trace says: the RHS divided a `kg·m⁻¹·s⁻²` operand by a `kg·m⁻³`
+operand, producing `m²·s⁻²` via rule **R4.2** (the quotient rule of
+unit algebra). That's enough to tell you the mismatch isn't a typo in
+an annotation — it's a real physical-units error. The same rule IDs
+surface in the editor companions on hover, with the depth selectable
+per-surface (`Short` / `Detailed`) via the `DimFort: Hover` settings.
+The full rule reference lives in
+[`docs/unit-algebra.md`](../docs/unit-algebra.md).
+
 ## In an editor
 
 The same file, opened in an editor that runs `dimfort lsp` through one
