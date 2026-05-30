@@ -17,10 +17,12 @@ page: pure-literal initialisation autocast (**R4.4**, silent), an
 ideal-gas line that balances cleanly, a scale mismatch between `Pa`
 and `hPa` (**S001**), a textbook homogeneity error (**H001**), a
 missing-annotation case (**U005**), the non-derivable power-law
-escape hatch (**D1.4** → **U020**), and a short detour into
-`LOG(…)` / `EXP(…)` wrapper algebra — log-pressure subtraction
-collapses to dimensionless and `exp(LOG(Pa))` cancels back to `Pa`,
-both silently.
+escape hatch (**D1.4** → **U020**), and a numerically-stable
+log-space pressure ratio `exp(log(p) - log(p_ref))` that exercises
+the `LOG(…)` / `EXP(…)` wrapper algebra end to end — `log` promotes
+`Pa → LOG(Pa)`, the subtraction collapses to `LOG(1) → 1`, `exp`
+strips back to dimensionless, all silent and with no annotation
+beyond the LHS unit (a rewrite few static checkers cover).
 
 `dimfort check --scale demos/tour.f90` produces the exact four-line
 output captured in `demos/README.md` (one error, exit `1`), and the
