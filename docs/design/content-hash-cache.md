@@ -1,247 +1,299 @@
 # Content-hash cache for workspace check
 
-Status: **draft / not implemented**. Doc-first per the algebra-extension precedent.
+The content-hash cache lets `dimfort check` (CLI and LSP) skip the
+per-file check phase for files whose inputs haven't changed. A warm
+run replays diagnostics from disk; a cold run is unaffected.
 
-## Motivation
+Shipped on `main` 2026-05-22 in the `content-hash-cache` merge
+(`ef3ecbc`); the stress-test harness and LSP wiring landed alongside.
+The user-facing summary lives in [CHANGELOG.md](../../CHANGELOG.md)
+under "Content-hash cache for workspace check"; the user guide is
+[docs/usage.md](../usage.md#content-hash-cache). This doc is the **wire-format and
+key-shape reference** — what bytes go into the key, what bytes go
+into a cache entry, and when an entry becomes stale.
 
-Cold workspace check on LMDZ (2,435 files) is ~31 s. The annotation cycle workflow re-runs checks frequently while editing a handful of files at a time. Most files are unchanged between runs, but every phase currently re-does all work from scratch.
+When this doc and the code disagree, the code in
+[src/dimfort/core/cache_key.py](../../src/dimfort/core/cache_key.py),
+[cache_serde.py](../../src/dimfort/core/cache_serde.py), and
+[cache_store.py](../../src/dimfort/core/cache_store.py) is the
+authoritative reference.
 
-Phase breakdown today (post-2026-05-22 consolidation):
+## What the cache stores
 
-| Phase | Cold (s) | What it does |
-|---|---|---|
-| load | ~15 | read + cpp + tree-sitter parse + annotation scan |
-| index | ~2 | aggregate per-file symbol tables into workspace index |
-| check | ~14 | per-file checker walk; emits diagnostics |
-| aggregate | ~0 | merge cross-file scopes |
+A cache entry covers exactly **one file's check-phase output** — the
+diagnostics for that file, plus a per-module digest signature used
+for cross-file invalidation. Panel data, hover trees, scope tables,
+parameter values, and unit tables are **not** cached: they're
+recomputed every run from the load/index phases (which the cache
+doesn't touch). The cache shortcuts the check phase only.
 
-For a warm run where N files changed out of 2,435:
-- load: ~(2435 − N)/2435 of work is re-readable from cache
-- index: same
-- check: per-file work is identical; diagnostics for unchanged files cannot change unless a **cross-file dependency they consume** changed
+Payload shape (see `cache_serde` for the tagged-dict encoding):
 
-Target: warm run on LMDZ in **~5 s** for a typical N=5 edit, dominated by re-checking the changed files and any files that consume their exported symbols.
+```json
+{
+  "schema": 1,
+  "deps_signature": {"<module_lc>": "<sha256-of-exports>", ...},
+  "diagnostics": [<dump_diagnostic(d)>, ...]
+}
+```
 
-## Approach
+Diagnostics are stored **already remapped to source coordinates**
+(post-cpp `line_map` applied), so replay doesn't need to redo the
+remap. The `Diagnostic.trace` field is deliberately dropped on dump
+— reattached cached traces would point at stale lines on the next
+checker change.
 
-### Cache key (per file)
+## Cache key
 
-SHA-256 over the concatenation of these byte sequences, each length-prefixed:
+`compute_file_key` in
+[cache_key.py](../../src/dimfort/core/cache_key.py) returns the hex
+SHA-256 of five length-prefixed sections:
 
-1. raw source bytes
-2. `b"CPP\0"` + the sorted list of `(include_path, sha256(include_contents))` tuples for every file in the cpp closure (see "cpp closure tracking" below)
-3. `b"CFG\0"` + canonical JSON of the per-file-affecting subset of config: `external_modules`, `extra_defines`, `extra_include_paths`, `units_file_hash` (SHA-256 of the project units table contents), `diagnostic_severities`. **Every dimension along which the checker's diagnostics can change for the same source bytes must be in this set** — `cache_key.PER_FILE_CONFIG_KEYS` is the authoritative list.
-4. `b"VER\0"` + `dimfort.__version__`
-5. `b"OUT\0"` + `CHECKER_OUTPUT_VERSION` (a hand-bumped integer in `core/cache_key.py`; bump on any change to serialized diagnostic / signature / parameter-value shape)
+| Tag | Bytes covered |
+|---|---|
+| `SRC\0` | raw source bytes of the file |
+| `CPP\0` | sorted `(abspath, sha256(contents))` of every file in the cpp closure |
+| `CFG\0` | canonical JSON of the per-file-affecting config subset (see below) |
+| `VER\0` | `dimfort.__version__` |
+| `OUT\0` | decimal `CHECKER_OUTPUT_VERSION` (currently `3`) |
 
-Hash mismatch on any input → cache miss for that file.
+Length-prefixing means concatenations are unambiguous. Any change to
+any section produces a different key, which falls outside the lookup
+path automatically — there's no "invalidate" call.
 
-The DimFort version and OUTPUT version are global. We could shard cache directories by version to make pruning trivial.
+### Per-file-affecting config
 
-### Cached artefacts (per file)
+`PER_FILE_CONFIG_KEYS` is the authoritative list of config dimensions
+that contribute to the key. Every dimension along which the checker's
+diagnostics can change for the same source bytes belongs here; if a
+dimension is missing, edits to it will silently serve stale entries.
+The current set is:
 
-Path layout:
+- `external_modules` — changes which `use foo` clauses resolve.
+- `extra_defines`, `extra_include_paths` — change cpp expansion.
+- `units_file_hash` — content hash of the project units table.
+  Caller hashes the file (`_hash_file` in `multifile.py`).
+- `diagnostic_severities` — `[diagnostics]` overrides applied inside
+  `ts_checker.check` before diagnostics are cached. v2 of
+  `CHECKER_OUTPUT_VERSION` was bumped to orphan entries written by a
+  pre-fix LSP that baked the un-overridden severity in.
+- `scale_mode` — opt-in S001 checking; toggling must invalidate.
+
+Missing keys normalise to a typed empty value (`[]`, `{}`, `""`,
+`False`) so the contributed bytes stay stable across runs where the
+user has not configured that dimension.
+
+### CHECKER_OUTPUT_VERSION
+
+Hand-bumped integer in `cache_key.py`. Bump on any change to:
+
+- the serialized payload shape in `cache_serde`, or
+- the checker's diagnostic emission semantics in a way that changes
+  what a cached file would have produced.
+
+The cache directory is sharded by `v{N}/`, so a bump orphans old
+entries — they fall outside the lookup path and get reclaimed by the
+LRU sweep. Historical bumps recorded in the source: `v2` fixed
+severity-poisoned entries written before the LSP applied severity
+overrides; `v3` covered the `@unit_affine_conversion` directive
+(which suppresses S002 / introduces S003 for identical source bytes).
+
+### cpp closure
+
+`_run_cpp` in [ts_parser.py](../../src/dimfort/core/ts_parser.py)
+parses the `# <lineno> "file"` markers emitted by the system cpp and
+returns the set of distinct files referenced (excluding `<built-in>`,
+`<command-line>`, and system headers — system headers are stripped
+so a CI image with different libc paths doesn't poison the closure).
+`.f90` files and `.F90` files with no `#` directives have an empty
+closure.
+
+`IncludeHasher` (also in `cache_key.py`) hashes each closure entry
+once per `(path, mtime)` tuple. Missing files map to the literal
+digest `"missing"` so the key still distinguishes "include was here
+last time" from "include disappeared".
+
+## Invalidation
+
+A cached entry is valid when **both** hold:
+
+1. **Self-hash matches.** The recomputed key (source + cpp closure
+   + config + versions) matches the on-disk filename.
+2. **Consumed dependencies are stable.** Every `module_lc → digest`
+   pair in the entry's `deps_signature` matches the digest of the
+   current workspace's `module_exports[module_lc]`.
+
+The self-hash covers everything intrinsic to the file. The
+`deps_signature` covers everything the checker pulled in from other
+files via `use` clauses. The two together are necessary: a file's
+diagnostics can change either because its own bytes changed or
+because a module it imports from changed shape.
+
+### Granularity: per-module
+
+`deps_consumed` records workspace modules the file pulls in via
+`use` clauses (computed by `deps_consumed_from_uses` in
+[symbols.py](../../src/dimfort/core/symbols.py)). Per-module rather
+than per-symbol: `use phys_constants, only: pi` and `use
+phys_constants` both record the module, and any change to
+`phys_constants`' exports — even one unrelated to `pi` — invalidates
+the consumer. This is strict but simple, and on real-world Fortran
+codebases the invalidation rate stays well below the threshold where
+finer granularity would pay back the bookkeeping.
+
+The module-exports digest itself comes from
+`_digest_module_exports` in `multifile.py`: it serialises the
+`ModuleExports` record via `cache_serde.dump_module_exports`, then
+SHA-256s the canonical JSON. A module that has disappeared from the
+workspace maps to the sentinel digest `"absent"` so disappearance is
+treated as "changed".
+
+### Cascade
+
+The invalidation cascade is **single-pass and breadth-first** in
+the current implementation: the check loop walks files in load order
+and validates each entry against the *current* `module_exports`
+table, which was built from the load/index phases of this run.
+Because the load + index phases always run from source (the cache
+doesn't memoise them), `module_exports` always reflects the live
+state. A file whose `use`d module's digest changed since its entry
+was written is treated as dirty and re-checked; its fresh exports
+don't feed back into `module_exports` because exports are populated
+in the index phase, before the check phase begins.
+
+In practice that's enough. The exports-vs-diagnostics path is
+one-way (diagnostics depend on exports, not vice versa), so a single
+check-phase pass converges. A future change that lets check-phase
+output influence the workspace index would need an iterate-to-fixed-
+point loop here.
+
+## On-disk layout
+
 ```
 {cache_dir}/v{CHECKER_OUTPUT_VERSION}/{first2}/{rest_of_hash}.json.gz
 ```
 
-`{first2}` is the first 2 hex chars of the hash — limits per-dir file count to ~256 for LMDZ-scale workspaces.
+- `cache_dir` defaults to `{workspace_root}/.dimfort-cache/`
+  (`DEFAULT_CACHE_DIR_NAME` in `cache_store.py`). The CLI's first
+  path argument supplies the workspace root; the LSP uses the first
+  workspace folder. Both honour an explicit override
+  (`--cache-dir` / `cacheDir` initialization option).
+- `{first2}` is the first two hex chars of the key, keeping per-dir
+  fan-out under control on large workspaces.
+- Payload format is JSON + gzip. msgpack would be ~2× more compact
+  but isn't in the stdlib; the JSON form keeps a hand-edit/inspect
+  path open and hasn't shown up as a hot spot in profiles.
+- Atomic writes: `tempfile.mkstemp` in the same directory, then
+  `os.replace` into place. Concurrent writers from CLI + LSP just
+  overwrite with byte-identical content.
+- Pruning: LRU keyed on `mtime`, triggered lazily at the end of a
+  `--cache read-write` CLI run via `CacheStore.prune()`. Drops
+  anything older than `DEFAULT_MAX_AGE_DAYS` (30), then trims
+  oldest-first until total size is under `DEFAULT_SIZE_LIMIT_BYTES`
+  (500 MB). The sweep is best-effort — permission errors and
+  concurrent removals are swallowed; a missed sweep just defers
+  reclamation. No explicit locking.
 
-Payload format: **JSON + gzip**. msgpack would be ~2× more compact and faster to load, but msgpack isn't a stdlib module — adding a binary dependency just for the cache isn't worth it for the MVP. Revisit if cache I/O becomes a measurable share of warm-run time.
+Corrupt entries (gzip truncated, JSON malformed) are unlinked on
+read and counted as a miss, so the next write fills the slot
+cleanly.
 
-Payload:
-```
-{
-  "schema": 1,
-  "file": "path/relative/to/workspace_root",
-  "mtime_ns": int,              # advisory only — hash is authoritative
-  "var_units":            {name_lc: serialized_unit},
-  "var_units_by_scope":   {[scope, name_lc]: serialized_unit},
-  "function_signatures":  {name_lc: serialized_sig},
-  "module_exports":       {module_lc: serialized_exports},
-  "parameter_values":     {name_lc: serialized_rational},
-  "var_types":            {name_lc: type_name_lc},
-  "type_field_types":     {[struct_lc, field_lc]: field_type_lc},
-  "field_units":          {[struct_lc, field_lc]: serialized_unit},
-  "diagnostics":          [serialized_diagnostic, ...],
-  "deps_consumed":        [{module_lc, symbol_lc, kind} ...],
-  "cpp_closure":          [{path, hash} ...],
-}
-```
-
-Notes:
-- Tree-sitter trees are **not** cached (fast to re-parse from text, large to serialize).
-- Source text is also not cached (we already have it on disk).
-- All units serialize via a stable JSON-able form already implemented for `--export-units`; reuse that.
-- Diagnostic serialization needs a stable structured form (severity, code, file, span, message, machine-readable payload). Currently diagnostics are dataclasses with `.to_dict()` for LSP — likely reusable.
-
-### cpp closure tracking
-
-The existing cpp invocation in `ts_parser.py:_run_cpp` already parses `# <lineno> "file"` markers. We currently record `current_file` per line but discard the set of distinct files. Cheap change: capture every distinct `current_file` value (excluding `<built-in>`, `<command-line>`) into a set, and return it alongside the expanded source.
-
-For `.F90` files where cpp is skipped (no `#` directives — already an optimisation), cpp_closure is empty.
-
-For `.f90` files where cpp is not invoked at all, cpp_closure is empty.
-
-For each captured path, we hash its contents once and memoize. A workspace-level `IncludeHasher` instance with `{abspath: (mtime_ns, hash)}` keeps this cheap — the mtime check lets us skip rehashing unchanged includes within a single run, and a persistent on-disk version of the same map could carry across runs.
-
-### Invalidation
-
-A file's cached entry is valid if **both**:
-
-1. **Self-hash matches.** Its own key (source + cpp closure + config + versions) matches the stored hash.
-2. **Consumed dependencies are stable.** For every `(module_lc, symbol_lc, kind)` in `deps_consumed`, the currently-resolved symbol's serialized form is byte-identical to what was stored when this entry was written.
-
-Condition (2) is the subtle part. A naive "any file in the workspace changed → invalidate" cascades into a full recheck on every edit. Per-symbol granularity keeps the warm-run target reachable.
-
-**`deps_consumed` capture**: during the cached run that *produces* the entry, the checker records every cross-file symbol lookup it performs:
-- `USE module, only: foo` clauses → record `(module, foo, "use_only")`
-- `USE module` without `only` → record `(module, "*", "use_all")` (forces invalidation if the module's export set changes at all)
-- function call to externally-resolved name → record `(module, name, "call")`
-
-The recorded form is **what was looked up**, not **what was returned** — that way, when a symbol disappears entirely, the consumer still notices.
-
-Validation pass at workspace startup:
-1. Hash every file (already needed for self-key).
-2. For each file, attempt to load cached entry.
-3. Compute the workspace-level index from cache-valid entries' exports.
-4. Re-validate each entry's `deps_consumed` against the index. If any dep's serialized form changed, mark the entry dirty.
-5. Re-check dirty + missing files. Their results join the index. Repeat (4) until fixed-point — bounded because each iteration only adds to the dirty set.
-
-In practice the iteration converges in 1–2 passes: edits are rare, and most consumers re-validate fine after one pass.
-
-### Storage
-
-- Default `{workspace_root}/.dimfort-cache/`; configurable via `dimfort.cache.dir` or `--cache-dir`.
-- JSON + gzip. Estimated ~3–10 KB per file × 2,435 = 7–25 MB on LMDZ.
-- Add `.dimfort-cache/` to `.gitignore` automatically on first write — the cache is build-output, not source.
-- LRU pruning at 500 MB or 30 days, whichever first; pruning runs lazily at start of each workspace check.
-
-### CLI surface
+## CLI surface
 
 ```
-dimfort check --cache off          # bypass entirely (no read, no write)
-dimfort check --cache read-only    # use cache for reads, never write
-dimfort check --cache read-write   # default
-dimfort check --clear-cache        # rm -rf the cache dir, then run
-dimfort check --timings            # additionally shows hit / miss / dirty counts
+dimfort check --cache off          # default — no read, no write
+dimfort check --cache read-only    # consult cache, never write
+dimfort check --cache read-write   # consult and update
+dimfort check --cache-dir DIR      # override cache location
+dimfort check --clear-cache        # rm -rf the cache root, then run
+dimfort check --timings            # adds hit / miss / dirty / write counts
 ```
 
-LSP: `dimfort.cache.mode` config (same vocabulary); `dimfort.cache.dir` override.
+Default is `off` so the previous behaviour is preserved bit-exact
+when the flag is not passed. `--clear-cache` works in combination
+with any mode; combined with `read-write` it repopulates from
+scratch.
 
-`--timings` output gains:
-```
-Phase timings
-  load          14.58 s    (cached: 2390/2435  fresh: 45)
-  ...
-Cache
-  hits          2390
-  misses         45         self-hash changed
-  dirty           0         dependency changed
-```
+`--timings` reports phase wall-clocks (`load` / `aggregate` /
+`index` / `check` / `total`) and a Cache section with hit / miss /
+dirty / write counters. The counters are also surfaced by the LSP
+status line when cache mode is non-`off`.
 
-### Concurrent writers
+## LSP integration
 
-CLI + LSP can run against the same cache. Strategy:
-- Reads: no lock — entries are immutable once written; if an entry doesn't exist yet, treat as miss.
-- Writes: temp-file + atomic rename (`os.replace`). A double-compute is harmless — the second writer overwrites with byte-identical content.
-- Pruning: protected by `flock` on `{cache_dir}/.lock`. If acquire fails, skip this run's pruning.
+The server reads `cacheMode` and `cacheDir` from
+`initializationOptions` on `initialize`; see
+[docs/lsp.md](../lsp.md) for the client-side shape. `cacheMode`
+takes the same `off | read-only | read-write` vocabulary as the
+CLI flag, and defaults to `off`. `cacheDir` defaults to the
+workspace-folder default if omitted.
 
-No global lock, no race on the hot path.
+Settings are written once at initialize-time today and do not
+hot-reload on `workspace/didChangeConfiguration`. Companions that
+expose a "toggle cache" UX restart the server to apply the new
+mode.
 
-## Phase wiring
+## Concurrency
 
-### load phase
-- For each input file, compute self-hash candidate.
-- Attempt cache read. On hit and entry passes self-hash: skip read+cpp+parse+annotation-scan. Stage cached artefacts.
-- On miss: full pipeline as today; produce artefacts; **defer write until check phase finishes** (we want diagnostics + deps_consumed in the same entry).
-- Tree-sitter tree is re-parsed lazily *only* for files the check phase decides are dirty (i.e., need re-checking).
+- **Reads** are lock-free. Entries are immutable once their atomic
+  rename completes; a missing entry is just a miss.
+- **Writes** go via temp file + `os.replace`. A second writer
+  racing on the same key writes byte-identical content, so the
+  result is byte-stable regardless of who wins.
+- **Pruning** is unsynchronised. If two processes prune
+  concurrently, one may `unlink` a file the other already removed
+  — that raises `OSError` and is swallowed. There is no global
+  `flock`.
 
-### aggregate phase
-- Build workspace index from staged artefacts (cached + fresh alike).
+No process-level locking is needed on the hot path. The trade is
+that two processes can pay the same compute cost simultaneously on
+a cold key; that's deliberate.
 
-### dependency validation pass (new, sub-second on 2,435 files)
-- For each cache-hit file, verify its `deps_consumed` against the just-built index.
-- Mark dirty entries; their files join the to-be-rechecked set.
-- Iterate to fixed-point (typically 1 pass).
+## Cross-references
 
-### check phase
-- Re-parse + re-check files in the to-be-rechecked set.
-- For cache-hit-and-clean files, replay cached diagnostics verbatim.
-- For freshly-checked files, write a new cache entry.
+- [docs/usage.md#content-hash-cache](../usage.md#content-hash-cache)
+  — user-facing guide: when to clear, what triggers invalidation,
+  where the cache lives.
+- [docs/lsp.md](../lsp.md) — `cacheMode` / `cacheDir` shape in
+  `initializationOptions`.
+- [docs/design/panel-info.md](panel-info.md) — panel data is **not**
+  cached; it's recomputed every run from the load/index phases.
+- [docs/design/markers.md](markers.md) — marker glyphs are derived
+  from diagnostics; cached diagnostics replay through the same
+  finalisation path, so markers stay consistent with a cold run.
+- The internal findings log captures the stress-test numbers
+  (cold/warm parity over 100+ random-edit cycles) used to gate the
+  initial merge.
 
-### serialization
-- Need a `units.to_jsonable()` / `units.from_jsonable()` pair (likely already exists for `--export-units`; verify).
-- Need diagnostic `.to_dict()` / `Diagnostic.from_dict()` (likely exists for LSP; verify).
-- A round-trip test (load → serialize → deserialize → byte-compare) per artefact type goes in the unit suite.
+## Open questions
 
-## Risks and mitigations
+1. **Per-symbol granularity.** The current per-module digest
+   invalidates a consumer on any export-set change to a module it
+   imports. On a benchmark workspace the spurious-invalidation rate
+   is low, but a master constants module touched in a refactor
+   currently cascades to every consumer regardless of which symbol
+   moved. Per-`(module, symbol)` `deps_consumed` would localise that;
+   we haven't measured the bookkeeping cost yet.
 
-| Risk | Mitigation |
-|---|---|
-| Stale cache after checker change | `CHECKER_OUTPUT_VERSION` bumped on every output-shape change; cache directory sharded by version; old shards pruned. CI test: load cached entry from a *bumped-version* fixture, confirm rejection. |
-| Cross-file invalidation bug | Stress test: scripted edit loop. Run cold → cache populated. Edit a random file. Run cached. Diff diagnostics vs a fresh cold run. **Must be empty.** Loop over 100+ random edits before shipping. |
-| cpp closure mis-capture | The marker-set approach catches `#include`, but cpp macro expansions from external `-D` flags are already in the config part of the key. Unit test: include file changes → entry invalidates. |
-| Concurrent corruption | Atomic rename for writes; no in-place mutation. Already covered by Python `os.replace` semantics on all supported OS. |
-| Cache too aggressive | `--cache off` and `--clear-cache` give the user escape hatches. LSP toast shows hit/miss counts when timings enabled, so divergence is observable. |
-| `deps_consumed` is incomplete | Bigger risk. Every cross-file lookup the checker makes must funnel through an instrumented function — if a code path looks up an external symbol without recording it, that entry will be stale-cached. Mitigation: a small audit of `_resolve_call`, `apply_use_clauses`, and `_resolve` to identify every external-lookup site; instrument once at those points. CI: instrument-coverage check that fails if a new lookup site is added without registration. |
+2. **First-run UX.** The first run after a `dimfort` upgrade or a
+   `CHECKER_OUTPUT_VERSION` bump pays the full cold cost plus
+   cache-write overhead. There's no surfaced "building cache"
+   indicator today; users see a normal cold run with no hint that
+   subsequent runs will be faster.
 
-## Estimated payoff
+3. **Settings hot-reload.** `cacheMode` and `cacheDir` are read
+   once at `initialize` time. Changing them via
+   `workspace/didChangeConfiguration` is silently ignored until
+   the server restarts. The hover-settings reload precedent from
+   2026-05-21 could extend here.
 
-| Scenario | Cold | Warm | Notes |
-|---|---|---|---|
-| N=0 (no edits) | 31 s | ~3 s | hashing + dep-validation only |
-| N=5 typical edit | 31 s | ~5 s | check 5 files + their direct consumers (estimate: 0–30 consumers per master constants module change) |
-| N=20 cross-module refactor | 31 s | ~10–15 s | wider consumer fanout |
-| N=2,435 worst case | 31 s + ~1 s cache write overhead | 31 s | no benefit, slight overhead |
+4. **Cross-run include hashing.** `IncludeHasher` memoises within a
+   single run via `(path, mtime)`. A persistent on-disk map would
+   skip re-hashing shared headers (e.g. `netcdf.inc`) across runs;
+   the per-run cost isn't large enough to have justified the work
+   yet.
 
-For the annotation cycle workflow specifically (N=1–3, the master constants modules), expected warm runtime is ~3–6 s.
-
-## What this does **not** do
-
-- Cold runs are unaffected. The floor stays at ~31 s.
-- Cross-process parallelism is a separate axis. Cache and parallelism compose; they don't substitute.
-- The Rust-extension path is also separate.
-- Per-line caching within a file. The unit is the file. Sub-file caching would require parser-state caching which we explicitly decided not to do.
-
-## Implementation plan
-
-Branch: `content-hash-cache` (scoped, design-doc-first pattern).
-
-Suggested commit sequence:
-
-1. **`cache: capture cpp include closure during preprocess`** — modify `_run_cpp` to return `(expanded, line_map, included_files)`; thread through `_load_one`. No behavior change; sets up the dep-tracking primitive. Tests: existing cpp tests + new test asserting closure set membership.
-
-2. **`cache: serialize/deserialize per-file artefacts`** — implement `to_jsonable` / `from_jsonable` for units, diagnostics, signatures, parameter values, type fields. Round-trip tests for each.
-
-3. **`cache: introduce CHECKER_OUTPUT_VERSION + key derivation`** — pure pure-function module `dimfort.core.cache_key`. Tests: deterministic key for fixed inputs; key changes on each input axis.
-
-4. **`cache: implement on-disk store with atomic writes`** — read/write/prune of `.json.gz` entries. Tests: round-trip, concurrent-write fuzz with multiprocess, prune at size limit.
-
-5. **`cache: record cross-file symbol lookups (deps_consumed)`** — instrument `_resolve_call`, `apply_use_clauses`, `_resolve`. New `RecordingCtx` wrapper around `_Ctx` that captures lookups when active. Tests: known-input file with known USE clauses produces expected deps list.
-
-6. **`cache: wire load phase to consult cache`** — read-only path first. CLI flag `--cache read-only`. Tests: cold run populates nothing; second run with stub cache produces identical output.
-
-7. **`cache: wire dependency-validation + write-back`** — full read-write path. CLI flag `--cache read-write` becomes default. Tests: the stress test described above.
-
-8. **`cache: --timings reports hit / miss / dirty counts`** — UX polish.
-
-9. **`cache: LSP wiring + config keys`** — `dimfort.cache.mode`, `dimfort.cache.dir`. Settings reload on config change (precedent: 2026-05-21 hover settings reload).
-
-10. **`docs: cache user guide`** — write a short user-facing page explaining when to clear, what triggers invalidation, where the cache lives. Cross-link from main docs.
-
-Each commit is independently testable and bisectable. Each leaves the codebase in a runnable state. The default for the cache mode flips to read-write at step 7; before that, the cache is opt-in.
-
-Stress-test gate: step 7 doesn't merge to main until 100 consecutive random-edit cycles show zero diagnostic divergence between cached and cold runs.
-
-## Decision points still open
-
-1. ~~Cache location default.~~ **Decided 2026-05-22: workspace-local `.dimfort-cache/`.** `--cache-dir` override available for users who want a different layout.
-
-2. ~~Granularity of dep tracking.~~ **Decided 2026-05-22: start per-`module`.** Simpler step 5; ship the full pipeline first, measure invalidation rate on the real annotation cycle, refine to per-`(module, symbol)` only if warm runs are dominated by spurious invalidation.
-
-3. **`USE module` without `only`.** Recorded as `(module, "*", "use_all")`. Any export-set change invalidates. Strict, but rare in modernized code. Acceptable.
-
-4. **Should we cache the tree-sitter tree?** Re-parse cost is in the load phase (~7 s on LMDZ from the profile). Caching it would save warm-run reparse for dirty files. Probably **no** — dirty files are few in the warm case, and serializing TS trees is awkward. Revisit only if profile shows it dominates.
-
-5. **First-run UX.** First run still pays cold cost + cache-write overhead. Should we surface a one-time toast / CLI line: "Building DimFort cache (~31 s) — subsequent runs will be faster"?
+5. **Tree-sitter tree caching.** Re-parse cost in the load phase
+   is in single-digit ms per file. Caching trees would shave dirty-
+   file reparse off warm runs; serializing tree-sitter trees is
+   awkward and the saving is small, so this has stayed deferred.
