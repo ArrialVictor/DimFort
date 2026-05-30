@@ -37,6 +37,21 @@ homogeneity, LOG/EXP wrapper rewrites). README screenshots will be
 taken from this file going forward, so they stay reproducible by
 anyone with the repo checked out.
 
+Two companion files ship alongside the main tour:
+
+- **`demos/affine.f90`** — scale-family focus: **S001** (factor
+  mismatch), **S002** (un-blessed offset mismatch), the verified
+  `@unit_affine_conversion{degC -> K}` directive applied to a small
+  `c_to_k` function (silent because verified, *not* trusted like
+  `@unit_assume`), and **S003** for the case where the same
+  directive is attached to arithmetic that doesn't actually perform
+  the stated conversion.
+- **`demos/broken.f90`** — a one-block-per-code lookup table for
+  **H001 / H002 / H003 / H004 / H010 / U005**, with no prose. Each
+  block is a single statement that fires exactly the one code its
+  comment promises; use it as a quick "what does H002 look like?"
+  reference.
+
 The three companion repos (VSCode / Neovim / Emacs) link to the demo
 rather than duplicating the fixture.
 
