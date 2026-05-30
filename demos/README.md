@@ -20,11 +20,13 @@ Then read on for a line-by-line walkthrough of what each diagnostic
 A short moist-thermodynamics routine: a handful of state variables
 (temperature, pressure, density, gas constant), the ideal-gas law, an
 empirical power-law behind an `@unit_assume` escape hatch, a
-deliberate homogeneity bug, and one numerically-stable log-space
+deliberate homogeneity bug, one numerically-stable log-space
 computation that exercises the `LOG(…)` / `EXP(…)` wrapper algebra
-end to end. The variables read as textbook physics — `T`, `p`, `rho`,
-`v`, `R_d` — so you don't need to know any particular codebase to
-follow along.
+end to end, and a tiny internal subroutine — `kinetic_energy_density`
+— that's called with a mismatched argument so DimFort can catch a
+cross-procedure unit error. The variables read as textbook physics —
+`T`, `p`, `rho`, `v`, `R_d` — so you don't need to know any
+particular codebase to follow along.
 
 ## Line-by-line tour
 
@@ -38,6 +40,8 @@ follow along.
 | 23, 50  | `r_drop` is declared without `@unit{}` and read inside a unit-checked expression on line 50. | **U005** (warning) on the *declaration* (line 23) — DimFort points at where the annotation is missing, not where it would have been used. |
 | 50      | Empirical power-law fit: `(...)**(-0.922)` — a dimensioned quantity raised to a non-rational exponent. DimFort cannot derive a unit here (**D1.4**), so the line carries an `@unit_assume{kg/m^3 : empirical-fit power-law}` to assert the result. | **U020** (info): `RHS unit assumed kg·m⁻³ (empirical-fit power-law)`. Audit-only — never affects the exit code. The D1.4 fire is suppressed because derivation is short-circuited. |
 | 67      | `p_ratio = exp(log(p) - log(p_ref))` — the numerically-stable form of `p / p_ref`, written entirely in log space. | **Silent** — and this is the most interesting silence in the file. See below. |
+| 76      | `call kinetic_energy_density(T, rho, e_sat)` — first formal expects `m/s`, actual is `T` (`K`). | **H004** (error): `Call to 'kinetic_energy_density': argument 1 (speed) unit mismatch: expected m·s⁻¹, got K`. The kind of bug that can't be caught at the call statement by intra-statement reasoning — DimFort matches formal-to-actual unit by position. |
+| 82–87   | The subroutine body is dimensionally clean: `0.5 * density * speed**2` types to `kg·m⁻¹·s⁻² = Pa`, matching the declared `intent(out)` unit of `ked`. | **Silent** — the body is correct; the bug is at the *call site* on line 76, not in the routine. |
 
 ## The log-space round-trip (line 67)
 
@@ -71,12 +75,14 @@ demos/tour.f90:23: warning: U005 'r_drop' is used in a unit-checked expression b
 demos/tour.f90:39: warning: S001 Scale mismatch: same dimension (kg·m⁻¹·s⁻²) but the magnitudes differ by ×100. If this is a unit conversion, carry the factor on a typed PARAMETER; otherwise the units disagree in scale.
 demos/tour.f90:42: error: H001 Assignment unit mismatch: m·s⁻¹ ≠ m²·s⁻²
 demos/tour.f90:50: info: U020 RHS unit assumed kg·m⁻³ (empirical-fit power-law)
+demos/tour.f90:76: error: H004 Call to 'kinetic_energy_density': argument 1 (speed) unit mismatch: expected m·s⁻¹, got K
 $ echo $?
 1
 ```
 
-Four diagnostics, one error → exit code `1`. Drop `--scale` and S001
-goes away (three diagnostics, still exit `1` because H001 stands).
+Five diagnostics, two errors → exit code `1`. Drop `--scale` and S001
+goes away (four diagnostics, still exit `1` because H001 and H004
+stand).
 
 ### Explain the algebra: `--trace`
 
@@ -139,6 +145,14 @@ with what a reader sees if they open it themselves.
 > `log(Pa) → LOG(Pa)`, `LOG(Pa) − LOG(Pa) → LOG(Pa/Pa) → LOG(1) → 1`,
 > `exp(1) → 1`, with a 🟢 marker on the assignment. This is the demo
 > shot that shows DimFort doing something other checkers can't.
+
+### Hover on the call-site mismatch (line 76)
+
+> _Placeholder — screenshot to be captured from `tour.f90` line 76._
+> Expected: `Detailed` hover on the call showing the formal/actual
+> pairing — `speed : m/s` (formal) vs `T : K` (actual) with a 🔴
+> marker on the offending argument, plus the green rows for `rho`
+> and `e_sat` whose units match.
 
 ## Want a single-page error tour?
 

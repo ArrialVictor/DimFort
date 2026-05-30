@@ -22,7 +22,12 @@ log-space pressure ratio `exp(log(p) - log(p_ref))` that exercises
 the `LOG(…)` / `EXP(…)` wrapper algebra end to end — `log` promotes
 `Pa → LOG(Pa)`, the subtraction collapses to `LOG(1) → 1`, `exp`
 strips back to dimensionless, all silent and with no annotation
-beyond the LHS unit (a rewrite few static checkers cover).
+beyond the LHS unit (a rewrite few static checkers cover). A small
+internal subroutine (`kinetic_energy_density`) with annotated
+formals + a deliberately-mismatched call site exercises **H004**
+(cross-procedure unit checking on call boundaries), and the
+expected-output section shows what `--trace` adds to a diagnostic
+(the firing rule chain, here `R4.2`).
 
 `dimfort check --scale demos/tour.f90` produces the exact four-line
 output captured in `demos/README.md` (one error, exit `1`), and the
