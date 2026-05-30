@@ -63,7 +63,7 @@ Opt in via `initializationOptions`:
 When the cache is active, the workspace-check completion toast
 includes `[cache: N hit / N miss / N dirty]`. On a warm cache a
 full workspace re-check skips the per-file check phase, dropping
-total time substantially (LMDZ-scale: ~33 s cold → ~20 s warm).
+total time substantially (a benchmark workspace measured ~33 s cold → ~20 s warm).
 
 ## Limitations
 

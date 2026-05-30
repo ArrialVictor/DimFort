@@ -130,7 +130,7 @@ dimfort check src/ --cache read-write --timings
 On the first run the cache directory is created and every file's
 check output is stored. Subsequent runs replay cached diagnostics
 for unchanged files. The check phase drops sharply on a warm cache
-(LMDZ-scale measurement: ~15 s → ~3 s); the rest of the pipeline
+(a benchmark workspace measured ~15 s → ~3 s); the rest of the pipeline
 (load / aggregate / index) runs as usual, so total wall time goes
 from ~33 s cold to ~20 s warm.
 
