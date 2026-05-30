@@ -4,6 +4,33 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### Add: `demos/` directory with a canonical, user-facing tour file
+
+A new top-level `demos/` directory ships the first user-facing entry
+point into DimFort: a short, self-contained Fortran source file
+(`demos/tour.f90`, ~55 lines) plus a line-by-line walkthrough
+(`demos/README.md`).
+
+The demo is a textbook moist-thermodynamics routine — `T`, `p`, `rho`,
+`v`, `R_d` — that exercises six high-impact diagnostics on a single
+page: pure-literal initialisation autocast (**R4.4**, silent), an
+ideal-gas line that balances cleanly, a scale mismatch between `Pa`
+and `hPa` (**S001**), a textbook homogeneity error (**H001**), a
+missing-annotation case (**U005**), the non-derivable power-law
+escape hatch (**D1.4** → **U020**), and a mixed empirical formula
+behind a second `@unit_assume`.
+
+`dimfort check --scale demos/tour.f90` produces the exact five-line
+output captured in `demos/README.md` (one error, exit `1`), and the
+walkthrough explains both the diagnostics that fire *and* the lines
+where DimFort is deliberately silent (R4.4 autocast, balanced
+homogeneity). README screenshots will be taken from this file going
+forward, so they stay reproducible by anyone with the repo checked
+out.
+
+The three companion repos (VSCode / Neovim / Emacs) link to the demo
+rather than duplicating the fixture.
+
 ### Add: transitive `use`-clause resolution in the Imports panel section
 
 `use` clauses are now followed transitively when building the panel's

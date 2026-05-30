@@ -35,6 +35,19 @@ force = mass * velocity            ! diagnosed: force unit is kg, expected kg*m/
 > hints, go-to-definition, code actions, completion, and a CLI that
 > accepts files or directories.
 
+## Quick tour
+
+Want a hands-on look first? [`demos/tour.f90`](https://github.com/ArrialVictor/DimFort/blob/main/demos/tour.f90)
+is a short, self-contained file that exercises the most common
+DimFort diagnostics on a textbook moist-thermodynamics routine.
+
+```bash
+dimfort check --scale demos/tour.f90
+```
+
+[`demos/README.md`](https://github.com/ArrialVictor/DimFort/blob/main/demos/README.md)
+walks through the output line by line.
+
 ## Install
 
 DimFort is published on PyPI as `dimfort`. It's a CLI tool with an
