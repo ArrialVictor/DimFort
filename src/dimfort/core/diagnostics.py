@@ -115,6 +115,13 @@ class Diagnostic:
     # tracing was enabled — the checker fills it in by snapshotting
     # the active trace at the diagnostic's emission site.
     trace: tuple[Provenance, ...] = field(default_factory=tuple)
+    # Spec §12: when a U002 fires on an unparseable unit capture and
+    # the rewrite detector finds a pipeline-transformed candidate
+    # that parses cleanly, this carries the candidate. The CLI shows
+    # it as "did you mean ...?"; the LSP turns it into a code
+    # action. ``None`` for every other diagnostic and for U002s
+    # without a suggestion.
+    suggested_rewrite: str | None = None
 
 
 @dataclass(frozen=True)

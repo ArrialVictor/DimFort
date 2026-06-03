@@ -43,7 +43,15 @@ from dimfort import __version__ as _dimfort_version
 #     one emits S003. The package version string did not change (still
 #     0.1.x), so v2 entries written by a pre-2c server would otherwise
 #     replay stale S002s (no suppression, no S003) on conversion lines.
-CHECKER_OUTPUT_VERSION = 3
+# v4: 0.2.2 added three configurable comment-delimiter lists
+#     (``unit_comment_delimiters`` / ``unit_assume_comment_delimiters`` /
+#     ``unit_affine_comment_delimiters``). Toggling a list changes which
+#     comments produce annotations for the same source bytes — e.g. a
+#     user who removes the canonical ``@unit_assume{`` entry should stop
+#     seeing assume-derived U020 / U023 fires. Without this bump, v3
+#     entries written under one pattern set would replay under another
+#     and serve stale diagnostics.
+CHECKER_OUTPUT_VERSION = 4
 
 
 # Keys from a workspace config that affect a *file's* output and
@@ -63,6 +71,12 @@ CHECKER_OUTPUT_VERSION = 3
 #   a file produces for the same bytes. Toggling it (CLI ``--scale`` /
 #   ``[scale] enabled`` / LSP ``scaleMode``) must invalidate, else a
 #   scale-on run's S001s are replayed after scale is turned off.
+# - ``unit_comment_delimiters`` /
+#   ``unit_assume_comment_delimiters`` /
+#   ``unit_affine_comment_delimiters``: 0.2.2 directive pattern lists.
+#   Changing a list changes which comments produce annotations for the
+#   same source bytes — e.g. removing the canonical ``@unit_assume{``
+#   entry should stop generating assume records on the next check.
 PER_FILE_CONFIG_KEYS: tuple[str, ...] = (
     "external_modules",
     "extra_defines",
@@ -70,6 +84,9 @@ PER_FILE_CONFIG_KEYS: tuple[str, ...] = (
     "units_file_hash",
     "diagnostic_severities",
     "scale_mode",
+    "unit_comment_delimiters",
+    "unit_assume_comment_delimiters",
+    "unit_affine_comment_delimiters",
 )
 
 
@@ -87,7 +104,11 @@ def _config_bytes(config: dict[str, object]) -> bytes:
     not configured that dimension. The canonical form sorts keys
     and uses compact separators so byte-equality is hash-stable.
     """
-    list_keys = {"external_modules", "extra_defines", "extra_include_paths"}
+    list_keys = {
+        "external_modules", "extra_defines", "extra_include_paths",
+        "unit_comment_delimiters", "unit_assume_comment_delimiters",
+        "unit_affine_comment_delimiters",
+    }
     dict_keys = {"diagnostic_severities"}
     str_keys = {"units_file_hash"}
     bool_keys = {"scale_mode"}

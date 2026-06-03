@@ -197,3 +197,153 @@ max_size = "lots"
 """)
     cfg = load_config(tmp_path)
     assert cfg.max_workset_size is None
+
+
+# ---------------------------------------------------------------------------
+# Unit comment delimiters (0.2.2)
+# ---------------------------------------------------------------------------
+
+
+def test_unit_delimiters_default_when_unset(tmp_path):
+    """No keys set → defaults preserve today's canonical forms."""
+    from dimfort.config import (
+        DEFAULT_UNIT_AFFINE_COMMENT_DELIMITERS,
+        DEFAULT_UNIT_ASSUME_COMMENT_DELIMITERS,
+        DEFAULT_UNIT_COMMENT_DELIMITERS,
+    )
+    (tmp_path / CONFIG_FILENAME).write_text("[parser]\n")
+    cfg = load_config(tmp_path)
+    assert cfg.unit_comment_delimiters == DEFAULT_UNIT_COMMENT_DELIMITERS
+    assert cfg.unit_assume_comment_delimiters == DEFAULT_UNIT_ASSUME_COMMENT_DELIMITERS
+    assert cfg.unit_affine_comment_delimiters == DEFAULT_UNIT_AFFINE_COMMENT_DELIMITERS
+
+
+def test_unit_delimiters_custom_entries(tmp_path):
+    from dimfort.config import StructuredPatternEntry, UnitPatternEntry
+    (tmp_path / CONFIG_FILENAME).write_text("""
+[parser]
+unit_comment_delimiters = [
+  { open = "@unit{", close = "}" },
+  { open = "[",      close = "]" },
+]
+unit_assume_comment_delimiters = [
+  { open = "@unit_assume{", close = "}", sep = ":" },
+  { open = "{{",           close = "}}", sep = "::" },
+]
+unit_affine_comment_delimiters = [
+  { open = "@unit_affine_conversion{", close = "}", sep = "->" },
+]
+""")
+    cfg = load_config(tmp_path)
+    assert cfg.unit_comment_delimiters == (
+        UnitPatternEntry(open="@unit{", close="}"),
+        UnitPatternEntry(open="[", close="]"),
+    )
+    assert cfg.unit_assume_comment_delimiters == (
+        StructuredPatternEntry(open="@unit_assume{", close="}", sep=":"),
+        StructuredPatternEntry(open="{{", close="}}", sep="::"),
+    )
+    assert cfg.unit_affine_comment_delimiters == (
+        StructuredPatternEntry(open="@unit_affine_conversion{", close="}", sep="->"),
+    )
+
+
+def test_unit_delimiters_explicit_empty_logs_and_defaults(tmp_path, caplog):
+    """An explicitly empty list logs an error and falls back to the default."""
+    import logging
+
+    from dimfort.config import DEFAULT_UNIT_COMMENT_DELIMITERS
+    (tmp_path / CONFIG_FILENAME).write_text("""
+[parser]
+unit_comment_delimiters = []
+""")
+    with caplog.at_level(logging.ERROR, logger="dimfort.config"):
+        cfg = load_config(tmp_path)
+    assert cfg.unit_comment_delimiters == DEFAULT_UNIT_COMMENT_DELIMITERS
+    assert any("explicitly empty" in r.message for r in caplog.records)
+
+
+def test_unit_delimiters_missing_required_field_drops_entry(tmp_path, caplog):
+    import logging
+
+    from dimfort.config import UnitPatternEntry
+    (tmp_path / CONFIG_FILENAME).write_text("""
+[parser]
+unit_comment_delimiters = [
+  { open = "@unit{", close = "}" },
+  { open = "[" },
+]
+""")
+    with caplog.at_level(logging.ERROR, logger="dimfort.config"):
+        cfg = load_config(tmp_path)
+    assert cfg.unit_comment_delimiters == (UnitPatternEntry(open="@unit{", close="}"),)
+    assert any("close" in r.message for r in caplog.records)
+
+
+def test_unit_delimiters_unknown_key_drops_entry(tmp_path, caplog):
+    import logging
+
+    from dimfort.config import UnitPatternEntry
+    (tmp_path / CONFIG_FILENAME).write_text("""
+[parser]
+unit_comment_delimiters = [
+  { open = "@unit{", close = "}" },
+  { open = "[", close = "]", sep = ":" },
+]
+""")
+    with caplog.at_level(logging.ERROR, logger="dimfort.config"):
+        cfg = load_config(tmp_path)
+    assert cfg.unit_comment_delimiters == (UnitPatternEntry(open="@unit{", close="}"),)
+    assert any("unknown key" in r.message for r in caplog.records)
+
+
+def test_unit_delimiters_duplicate_entries_dropped(tmp_path, caplog):
+    import logging
+
+    from dimfort.config import UnitPatternEntry
+    (tmp_path / CONFIG_FILENAME).write_text("""
+[parser]
+unit_comment_delimiters = [
+  { open = "@unit{", close = "}" },
+  { open = "@unit{", close = "}" },
+]
+""")
+    with caplog.at_level(logging.ERROR, logger="dimfort.config"):
+        cfg = load_config(tmp_path)
+    assert cfg.unit_comment_delimiters == (UnitPatternEntry(open="@unit{", close="}"),)
+    assert any("duplicate" in r.message for r in caplog.records)
+
+
+def test_structured_delimiters_sep_in_open_is_error(tmp_path, caplog):
+    import logging
+
+    from dimfort.config import DEFAULT_UNIT_ASSUME_COMMENT_DELIMITERS
+    (tmp_path / CONFIG_FILENAME).write_text("""
+[parser]
+unit_assume_comment_delimiters = [
+  { open = "@x:y{", close = "}", sep = ":" },
+]
+""")
+    with caplog.at_level(logging.ERROR, logger="dimfort.config"):
+        cfg = load_config(tmp_path)
+    assert cfg.unit_assume_comment_delimiters == DEFAULT_UNIT_ASSUME_COMMENT_DELIMITERS
+    assert any("must not appear" in r.message for r in caplog.records)
+
+
+def test_structured_delimiters_missing_sep_drops_entry(tmp_path, caplog):
+    import logging
+
+    from dimfort.config import StructuredPatternEntry
+    (tmp_path / CONFIG_FILENAME).write_text("""
+[parser]
+unit_assume_comment_delimiters = [
+  { open = "@unit_assume{", close = "}", sep = ":" },
+  { open = "{{", close = "}}" },
+]
+""")
+    with caplog.at_level(logging.ERROR, logger="dimfort.config"):
+        cfg = load_config(tmp_path)
+    assert cfg.unit_assume_comment_delimiters == (
+        StructuredPatternEntry(open="@unit_assume{", close="}", sep=":"),
+    )
+    assert any("sep" in r.message for r in caplog.records)

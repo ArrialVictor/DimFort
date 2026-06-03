@@ -2685,13 +2685,19 @@ def _build_ctx(
                 _units_mod.parse(unit_text, active_table), reason, col, end_col,
             )
         except UnitError as exc:
+            from dimfort.core.rewrite import suggest_rewrite
+            suggestion = suggest_rewrite(unit_text, active_table)
+            msg = f"@unit_assume unit {unit_text!r}: {exc}"
+            if suggestion is not None:
+                msg += f"; did you mean {suggestion!r}?"
             assume_diags.append(Diagnostic(
                 file=str(file),
                 start=Position(line_no, col),
                 end=Position(line_no, end_col),
                 severity=Severity.ERROR,
                 code="U002",
-                message=f"@unit_assume unit {unit_text!r}: {exc}",
+                message=msg,
+                suggested_rewrite=suggestion,
             ))
 
     if signatures is None:

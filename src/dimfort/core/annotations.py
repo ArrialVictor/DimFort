@@ -29,7 +29,6 @@ Restrictions in v1 (documented; relax later if needed):
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -37,6 +36,14 @@ from pathlib import Path
 from tree_sitter import Node
 
 from dimfort.core import ts_parser as _ts
+from dimfort.core.unit_patterns import (
+    DEFAULT_AFFINE_PATTERNS,
+    DEFAULT_ASSUME_PATTERNS,
+    DEFAULT_UNIT_PATTERNS,
+    PatternMatch,
+    StructuredPattern,
+    UnitPattern,
+)
 
 
 class AnnotationKind(StrEnum):
@@ -54,6 +61,7 @@ class RawAnnotation:
     line: int        # 1-based physical line of the comment
     column: int      # 1-based column where `@unit{` begins
     unit_text: str   # raw inner text between `{` and `}`, untrimmed of surrounding spaces stripped
+    end_column: int = 0  # 1-based column one past the closing delimiter
 
 
 @dataclass(frozen=True)
@@ -91,6 +99,7 @@ class RawAffineConv:
     column: int      # 1-based column where `@unit_affine_conversion{` begins
     src: str         # source unit name, e.g. "degC"
     tgt: str         # target unit name, e.g. "K"
+    end_column: int = 0  # 1-based column one past the closing delimiter
 
 
 @dataclass(frozen=True)
@@ -100,6 +109,50 @@ class MalformedAnnotation:
     line: int
     column: int
     reason: str
+    # 1-based column one past the closing delimiter of the offending
+    # token. When ``0`` (back-compat default), the U001 emitter widens
+    # to ``column + 1`` so the squiggle covers at least one character.
+    end_column: int = 0
+
+
+@dataclass(frozen=True)
+class WrongStatementKind:
+    """A directive matched a comment but landed on a statement of
+    the wrong kind (spec §8.3 → U023).
+
+    For example, ``@unit_assume`` on a ``real :: x`` declaration, or
+    ``@unit`` on a ``v = 1.0`` assignment. The directive is dropped
+    (not attached). The diagnostic emitter names the directive
+    found, the statement kind it landed on, and which directive
+    would attach correctly there.
+    """
+
+    line: int
+    column: int
+    end_column: int               # 1-based column one past the closing delimiter
+    directive_found: str          # e.g. "@unit_assume"
+    landed_on: str                # "declaration" / "assignment"
+    expected_directive: str       # what would attach correctly here
+
+
+@dataclass(frozen=True)
+class PatternConflict:
+    """Two configured patterns matched the same comment with
+    disagreeing capture text (spec §8.2 → U021).
+
+    The first-listed pattern's capture is the one applied to the
+    statement; this record carries enough context for the diagnostic
+    emitter (task #6) to point the user at both captures.
+    """
+
+    line: int
+    column: int                   # 1-based column of the LATER pattern's open
+    end_column: int               # 1-based column one past its closing delimiter
+    directive: str                # "@unit" / "@unit_assume" / "@unit_affine_conversion"
+    first_unit_text: str          # winner capture
+    second_unit_text: str         # loser capture
+    first_pattern_index: int
+    second_pattern_index: int
 
 
 # ---------------------------------------------------------------------------
@@ -154,21 +207,6 @@ def _comment_start(line: str) -> int | None:
 # `!<`         → POST (trailing on the same line)
 _DOX_MARKER = {">": AnnotationKind.PRE, "!": AnnotationKind.PRE, "<": AnnotationKind.POST}
 
-# Match `@unit` followed by `{`. The opening brace is required.
-# NB: `@unit_assume{` does NOT match this (a `_` sits between `@unit`
-# and `{`), so the two scanners never collide.
-_UNIT_RE = re.compile(r"@unit\s*\{")
-
-# Match `@unit_assume` followed by `{` — the escape-hatch directive.
-_ASSUME_RE = re.compile(r"@unit_assume\s*\{")
-
-# Match `@unit_affine_conversion` followed by `{` — the verified
-# affine-conversion directive (Phase 2c). Like the two above, the `_`
-# after `@unit` keeps it from colliding with ``_UNIT_RE``; the longer
-# ``_affine_conversion`` keeps it distinct from ``_ASSUME_RE``.
-_AFFINE_RE = re.compile(r"@unit_affine_conversion\s*\{")
-
-
 def _doxygen_kind(comment_text: str) -> AnnotationKind | None:
     """Classify a comment (everything after the opening ``!``).
 
@@ -181,170 +219,318 @@ def _doxygen_kind(comment_text: str) -> AnnotationKind | None:
     return _DOX_MARKER.get(comment_text[0])
 
 
-def _find_unit_invocations(
-    comment_text: str, line_no: int, base_column: int
-) -> tuple[list[RawAnnotation], list[MalformedAnnotation], AnnotationKind | None]:
-    """Pull every ``@unit{...}`` out of one comment body.
+# Per-directive descriptors used in MalformedAnnotation / PatternConflict
+# messages so the unified extractor below can format errors that look
+# the same as the previous per-directive scanners produced.
+_UNIT_DIR_NAME = "@unit"
+_ASSUME_DIR_NAME = "@unit_assume"
+_AFFINE_DIR_NAME = "@unit_affine_conversion"
 
-    ``base_column`` is the 1-based column where ``comment_text`` starts
-    in the source line. ``comment_text`` does NOT include the leading
-    ``!``; it begins with the Doxygen marker character (``>``, ``<``,
-    or ``!``).
+
+def _open_implies_brace(pat: UnitPattern | StructuredPattern) -> bool:
+    """A pattern that ends with ``{`` triggers the historical
+    ``unclosed '{' in @unit`` malformed-annotation when an opener is
+    found without a closing brace. Bracket-style patterns (``[``/``]``)
+    don't fire that diagnostic — task #8 owns the rewrite-detector
+    that handles those.
     """
-    kind = _doxygen_kind(comment_text)
-    if kind is None:
-        return [], [], None
-    body = comment_text[1:]  # strip the Doxygen marker char
-    body_col_offset = base_column + 1  # 1-based column where body[0] sits
-    found: list[RawAnnotation] = []
-    errors: list[MalformedAnnotation] = []
-    for m in _UNIT_RE.finditer(body):
-        start = m.start()
-        close = body.find("}", m.end())
-        col = body_col_offset + start
-        if close == -1:
-            errors.append(MalformedAnnotation(line_no, col, "unclosed '{' in @unit"))
-            continue
-        inner = body[m.end():close].strip()
-        if not inner:
-            errors.append(MalformedAnnotation(line_no, col, "empty @unit{}"))
-            continue
-        found.append(RawAnnotation(kind=kind, line=line_no, column=col, unit_text=inner))
-    if len(found) > 1:
-        # Keep the first; flag every extra. Stage 2 may treat duplicates
-        # as ambiguous against the same declaration.
-        errors.extend(
-            MalformedAnnotation(a.line, a.column, "more than one @unit on one line")
-            for a in found[1:]
-        )
-        found = found[:1]
-    return found, errors, kind
+    return pat.open.endswith("{")
 
 
-def _find_assume_invocations(
-    comment_text: str, line_no: int, base_column: int
-) -> tuple[list[RawAssume], list[MalformedAnnotation]]:
-    """Pull every ``@unit_assume{ <unit> : <reason> }`` out of one comment.
-
-    Like :func:`_find_unit_invocations`, requires a Doxygen marker (so the
-    directive anchors to a statement via a trailing ``!<`` or a preceding
-    ``!>``/``!!``). The inner text is split on the first ``:`` into the
-    asserted unit and a mandatory reason; either part missing is malformed.
+def _find_unsupported_open(
+    body: str, patterns: tuple[UnitPattern | StructuredPattern, ...]
+) -> tuple[int, UnitPattern | StructuredPattern] | None:
+    """If ``body`` contains a ``{``-style pattern's open without a
+    matching close, return ``(index, pattern)``. Used to preserve the
+    pre-0.2.2 ``unclosed '{' in @unit`` malformed-annotation behavior.
     """
-    kind = _doxygen_kind(comment_text)
-    if kind is None:
-        return [], []
-    body = comment_text[1:]  # strip the Doxygen marker char
-    body_col_offset = base_column + 1
-    found: list[RawAssume] = []
-    errors: list[MalformedAnnotation] = []
-    for m in _ASSUME_RE.finditer(body):
-        start = m.start()
-        close = body.find("}", m.end())
-        col = body_col_offset + start
-        if close == -1:
-            errors.append(
-                MalformedAnnotation(line_no, col, "unclosed '{' in @unit_assume")
-            )
+    for pat in patterns:
+        if not _open_implies_brace(pat):
             continue
-        inner = body[m.end():close]
-        if ":" not in inner:
-            errors.append(MalformedAnnotation(
-                line_no, col,
-                "@unit_assume requires '{ <unit> : <reason> }' "
-                "(missing ':' separating unit from reason)",
-            ))
+        idx = body.find(pat.open)
+        if idx == -1:
             continue
-        unit_part, reason_part = inner.split(":", 1)
-        unit_text = unit_part.strip()
-        reason = reason_part.strip()
-        if not unit_text:
-            errors.append(
-                MalformedAnnotation(line_no, col, "empty unit in @unit_assume")
-            )
-            continue
-        if not reason:
-            errors.append(MalformedAnnotation(
-                line_no, col, "empty reason in @unit_assume (a justification is required)",
-            ))
-            continue
-        # `close` is the index of `}` in `body`; the exclusive 1-based end
-        # column sits one past it.
-        end_col = body_col_offset + close + 1
-        found.append(
-            RawAssume(
-                line=line_no, column=col, end_column=end_col,
-                unit_text=unit_text, reason=reason,
-            )
-        )
-    if len(found) > 1:
-        errors.extend(
-            MalformedAnnotation(a.line, a.column, "more than one @unit_assume on one line")
-            for a in found[1:]
-        )
-        found = found[:1]
-    return found, errors
+        if body.find(pat.close, idx + len(pat.open)) == -1:
+            return idx, pat
+    return None
 
 
-def _find_affine_invocations(
-    comment_text: str, line_no: int, base_column: int
-) -> tuple[list[RawAffineConv], list[MalformedAnnotation]]:
-    """Pull every ``@unit_affine_conversion{ <src> -> <tgt> }`` out of one
-    comment.
+def _select_unit(
+    body: str, line_no: int, body_col_offset: int, kind: AnnotationKind,
+    patterns: tuple[UnitPattern, ...],
+) -> tuple[
+    list[RawAnnotation], list[MalformedAnnotation], list[PatternConflict],
+    int | None,
+]:
+    """Pattern-driven ``@unit{}``-family extractor (spec §2, §8).
 
-    Like the other directive scanners, requires a Doxygen marker. The inner
-    text is split on the first ``->`` (primary) or ``,`` (synonym) into the
-    source and target unit names; either part missing is malformed. The unit
-    names are *not* resolved here — the checker does that at verify time so a
-    bad name surfaces as S003 with the statement, not a scan error.
+    The trailing ``int | None`` is the winner pattern's index in
+    ``patterns`` when one was selected — the caller uses it to apply
+    the spec §6 multi-var-skip rule.
     """
-    kind = _doxygen_kind(comment_text)
-    if kind is None:
-        return [], []
-    body = comment_text[1:]  # strip the Doxygen marker char
-    body_col_offset = base_column + 1
-    found: list[RawAffineConv] = []
+    if not patterns:
+        return [], [], [], None
+    hits_per_pattern: list[tuple[int, UnitPattern, list[PatternMatch]]] = []
+    for idx, pat in enumerate(patterns):
+        ms = pat.find(body)
+        if ms:
+            hits_per_pattern.append((idx, pat, ms))
+    if not hits_per_pattern:
+        unclosed = _find_unsupported_open(body, tuple(patterns))
+        if unclosed is not None:
+            idx_in_body, _pat = unclosed
+            return [], [MalformedAnnotation(
+                line_no, body_col_offset + idx_in_body,
+                f"unclosed '{{' in {_UNIT_DIR_NAME}",
+            )], [], None
+        return [], [], [], None
+    winner_idx, winner_pat, winner_hits = hits_per_pattern[0]
+    first = winner_hits[0]
+    col = body_col_offset + first.start
+
+    annotations: list[RawAnnotation] = []
     errors: list[MalformedAnnotation] = []
-    for m in _AFFINE_RE.finditer(body):
-        start = m.start()
-        close = body.find("}", m.end())
-        col = body_col_offset + start
-        if close == -1:
+    if len(winner_hits) > 1:
+        # Multiple captures on one line — ambiguous intent. Drop ALL
+        # captures so the variable surfaces as unannotated (U005 will
+        # nudge the user to fix the comment) rather than silently
+        # picking the first match. Every capture site is flagged so
+        # the user sees the full extent of the ambiguity.
+        for extra in winner_hits:
             errors.append(MalformedAnnotation(
-                line_no, col, "unclosed '{' in @unit_affine_conversion"
+                line_no, body_col_offset + extra.start,
+                f"more than one {_UNIT_DIR_NAME} on one line",
+                end_column=body_col_offset + extra.end,
             ))
-            continue
-        inner = body[m.end():close]
-        if "->" in inner:
-            src_part, tgt_part = inner.split("->", 1)
-        elif "," in inner:
-            src_part, tgt_part = inner.split(",", 1)
-        else:
+    elif first.unit_text == "":
+        errors.append(MalformedAnnotation(
+            line_no, col, f"empty {winner_pat.open}{winner_pat.close}",
+            end_column=body_col_offset + first.end,
+        ))
+    else:
+        annotations.append(RawAnnotation(
+            kind=kind, line=line_no, column=col,
+            unit_text=first.unit_text,
+            end_column=body_col_offset + first.end,
+        ))
+
+    conflicts: list[PatternConflict] = []
+    for idx, _pat, hits in hits_per_pattern[1:]:
+        other = hits[0]
+        if other.unit_text and other.unit_text != first.unit_text:
+            conflicts.append(PatternConflict(
+                line=line_no, column=body_col_offset + other.start,
+                end_column=body_col_offset + other.end,
+                directive=_UNIT_DIR_NAME,
+                first_unit_text=first.unit_text,
+                second_unit_text=other.unit_text,
+                first_pattern_index=winner_idx,
+                second_pattern_index=idx,
+            ))
+    return annotations, errors, conflicts, winner_idx
+
+
+def _select_assume(
+    body: str, line_no: int, body_col_offset: int,
+    patterns: tuple[StructuredPattern, ...],
+) -> tuple[
+    list[RawAssume], list[MalformedAnnotation], list[PatternConflict]
+]:
+    if not patterns:
+        return [], [], []
+    hits_per_pattern: list[tuple[int, StructuredPattern, list[PatternMatch]]] = []
+    for idx, pat in enumerate(patterns):
+        ms = pat.find(body)
+        if ms:
+            hits_per_pattern.append((idx, pat, ms))
+    if not hits_per_pattern:
+        # Distinguish "open present but unclosed" from "open present but
+        # missing sep" — both used to surface as MalformedAnnotation.
+        for pat in patterns:
+            if not _open_implies_brace(pat):
+                continue
+            i = body.find(pat.open)
+            if i == -1:
+                continue
+            close_at = body.find(pat.close, i + len(pat.open))
+            if close_at == -1:
+                return [], [MalformedAnnotation(
+                    line_no, body_col_offset + i,
+                    f"unclosed '{{' in {_ASSUME_DIR_NAME}",
+                )], []
+            inner = body[i + len(pat.open):close_at]
+            if pat.sep not in inner:
+                return [], [MalformedAnnotation(
+                    line_no, body_col_offset + i,
+                    f"{_ASSUME_DIR_NAME} requires '{{ <unit> : <reason> }}' "
+                    f"(missing '{pat.sep}' separating unit from reason)",
+                )], []
+        return [], [], []
+
+    winner_idx, winner_pat, winner_hits = hits_per_pattern[0]
+    first = winner_hits[0]
+    col = body_col_offset + first.start
+    end_col = body_col_offset + first.end
+
+    assumes: list[RawAssume] = []
+    errors: list[MalformedAnnotation] = []
+    if len(winner_hits) > 1:
+        for extra in winner_hits:
             errors.append(MalformedAnnotation(
-                line_no, col,
-                "@unit_affine_conversion requires '{ <src> -> <tgt> }' "
+                line_no, body_col_offset + extra.start,
+                f"more than one {_ASSUME_DIR_NAME} on one line",
+                end_column=body_col_offset + extra.end,
+            ))
+    elif first.unit_text == "":
+        errors.append(MalformedAnnotation(
+            line_no, col, f"empty unit in {_ASSUME_DIR_NAME}",
+            end_column=end_col,
+        ))
+    elif not first.payload:
+        errors.append(MalformedAnnotation(
+            line_no, col,
+            f"empty reason in {_ASSUME_DIR_NAME} "
+            "(a justification is required)",
+            end_column=end_col,
+        ))
+    else:
+        assumes.append(RawAssume(
+            line=line_no, column=col, end_column=end_col,
+            unit_text=first.unit_text, reason=first.payload,
+        ))
+
+    conflicts: list[PatternConflict] = []
+    for idx, _pat, hits in hits_per_pattern[1:]:
+        other = hits[0]
+        if other.unit_text and other.unit_text != first.unit_text:
+            conflicts.append(PatternConflict(
+                line=line_no, column=body_col_offset + other.start,
+                end_column=body_col_offset + other.end,
+                directive=_ASSUME_DIR_NAME,
+                first_unit_text=first.unit_text,
+                second_unit_text=other.unit_text,
+                first_pattern_index=winner_idx,
+                second_pattern_index=idx,
+            ))
+    return assumes, errors, conflicts
+
+
+def _select_affine(
+    body: str, line_no: int, body_col_offset: int,
+    patterns: tuple[StructuredPattern, ...],
+) -> tuple[
+    list[RawAffineConv], list[MalformedAnnotation], list[PatternConflict]
+]:
+    if not patterns:
+        return [], [], []
+    hits_per_pattern: list[tuple[int, StructuredPattern, list[PatternMatch]]] = []
+    for idx, pat in enumerate(patterns):
+        ms = pat.find(body)
+        if ms:
+            hits_per_pattern.append((idx, pat, ms))
+
+    # Legacy synonym: when the canonical ``@unit_affine_conversion{`` open
+    # is present and a ``->`` separator is missing but a ``,`` is, accept
+    # it as the pre-0.2.2 scanner did. We hand-roll this rather than
+    # plumb it through StructuredPattern — synonym support is a one-off
+    # for back-compat, not a general feature.
+    if not hits_per_pattern:
+        for pat in patterns:
+            if pat.open != "@unit_affine_conversion{" or pat.sep != "->":
+                continue
+            i = body.find(pat.open)
+            if i == -1:
+                continue
+            close_at = body.find(pat.close, i + len(pat.open))
+            if close_at == -1:
+                return [], [MalformedAnnotation(
+                    line_no, body_col_offset + i,
+                    f"unclosed '{{' in {_AFFINE_DIR_NAME}",
+                )], []
+            inner = body[i + len(pat.open):close_at]
+            if "," in inner:
+                src_part, tgt_part = inner.split(",", 1)
+                src = src_part.strip()
+                tgt = tgt_part.strip()
+                if not src or not tgt:
+                    return [], [MalformedAnnotation(
+                        line_no, body_col_offset + i,
+                        f"empty source or target unit in {_AFFINE_DIR_NAME}",
+                    )], []
+                return [RawAffineConv(
+                    line=line_no, column=body_col_offset + i,
+                    src=src, tgt=tgt,
+                    end_column=body_col_offset + close_at + len(pat.close),
+                )], [], []
+            return [], [MalformedAnnotation(
+                line_no, body_col_offset + i,
+                f"{_AFFINE_DIR_NAME} requires '{{ <src> -> <tgt> }}' "
                 "(missing '->' or ',' separating source from target)",
-            ))
-            continue
-        src = src_part.strip()
-        tgt = tgt_part.strip()
-        if not src or not tgt:
+            )], []
+        # No canonical open at all — defer to brace-detect for other
+        # configured patterns.
+        for pat in patterns:
+            if not _open_implies_brace(pat):
+                continue
+            i = body.find(pat.open)
+            if i == -1:
+                continue
+            close_at = body.find(pat.close, i + len(pat.open))
+            if close_at == -1:
+                return [], [MalformedAnnotation(
+                    line_no, body_col_offset + i,
+                    f"unclosed '{{' in {_AFFINE_DIR_NAME}",
+                )], []
+            inner = body[i + len(pat.open):close_at]
+            if pat.sep not in inner:
+                return [], [MalformedAnnotation(
+                    line_no, body_col_offset + i,
+                    f"{_AFFINE_DIR_NAME} requires '{{ <src> -> <tgt> }}' "
+                    f"(missing '{pat.sep}' separating source from target)",
+                )], []
+        return [], [], []
+
+    winner_idx, winner_pat, winner_hits = hits_per_pattern[0]
+    first = winner_hits[0]
+    col = body_col_offset + first.start
+
+    affines: list[RawAffineConv] = []
+    errors: list[MalformedAnnotation] = []
+    src = first.unit_text
+    tgt = first.payload or ""
+    if len(winner_hits) > 1:
+        for extra in winner_hits:
             errors.append(MalformedAnnotation(
-                line_no, col,
-                "empty source or target unit in @unit_affine_conversion",
+                line_no, body_col_offset + extra.start,
+                f"more than one {_AFFINE_DIR_NAME} on one line",
+                end_column=body_col_offset + extra.end,
             ))
-            continue
-        found.append(RawAffineConv(line=line_no, column=col, src=src, tgt=tgt))
-    if len(found) > 1:
-        errors.extend(
-            MalformedAnnotation(
-                a.line, a.column,
-                "more than one @unit_affine_conversion on one line",
-            )
-            for a in found[1:]
-        )
-        found = found[:1]
-    return found, errors
+    elif not src or not tgt:
+        errors.append(MalformedAnnotation(
+            line_no, col,
+            f"empty source or target unit in {_AFFINE_DIR_NAME}",
+            end_column=body_col_offset + first.end,
+        ))
+    else:
+        affines.append(RawAffineConv(
+            line=line_no, column=col, src=src, tgt=tgt,
+            end_column=body_col_offset + first.end,
+        ))
+
+    conflicts: list[PatternConflict] = []
+    for idx, _pat, hits in hits_per_pattern[1:]:
+        other = hits[0]
+        if other.unit_text and other.unit_text != first.unit_text:
+            conflicts.append(PatternConflict(
+                line=line_no, column=body_col_offset + other.start,
+                end_column=body_col_offset + other.end,
+                directive=_AFFINE_DIR_NAME,
+                first_unit_text=first.unit_text,
+                second_unit_text=other.unit_text,
+                first_pattern_index=winner_idx,
+                second_pattern_index=idx,
+            ))
+    return affines, errors, conflicts
 
 
 # ---------------------------------------------------------------------------
@@ -394,41 +580,156 @@ class ScanResult:
     assumes: tuple[RawAssume, ...] = ()
     # Every ``@unit_affine_conversion{...}`` occurrence (Phase 2c).
     affine_conversions: tuple[RawAffineConv, ...] = ()
+    # Conflicts between configured patterns (spec §8.2). Populated when
+    # more than one pattern matches a comment with disagreeing capture
+    # text. Empty for the default single-pattern config. Consumed by
+    # the U021 emitter (task #6).
+    pattern_conflicts: tuple[PatternConflict, ...] = ()
+    # Wrong-statement-kind events (spec §8.3 → U023). A directive
+    # landed on a statement of a kind it does not target; the
+    # directive is dropped.
+    wrong_statement_kinds: tuple[WrongStatementKind, ...] = ()
+    # Line ranges (1-based, inclusive) of every ``assignment_statement``
+    # in the source. Used to distinguish "wrong statement kind here"
+    # (U023) from "no statement here at all" (U006 orphan) for
+    # ``@unit{}`` annotations that don't find a declaration.
+    assignment_line_ranges: tuple[tuple[int, int], ...] = ()
 
 
-def scan_text(source: str) -> ScanResult:
-    """Scan a single Fortran source string and return annotations + declarations."""
+def scan_text(
+    source: str,
+    *,
+    unit_patterns: tuple[UnitPattern, ...] = DEFAULT_UNIT_PATTERNS,
+    assume_patterns: tuple[StructuredPattern, ...] = DEFAULT_ASSUME_PATTERNS,
+    affine_patterns: tuple[StructuredPattern, ...] = DEFAULT_AFFINE_PATTERNS,
+) -> ScanResult:
+    """Scan a single Fortran source string for annotations + declarations.
+
+    Pattern lists default to the canonical ``@unit{...}`` etc. forms
+    so callers with no project config get bit-for-bit pre-0.2.2
+    behavior — with one documented expansion (spec §10): a bare
+    ``!`` comment containing a default-pattern match is now eligible
+    at trailing-on-decl-line and standalone-immediately-above-decl
+    positions.
+    """
     lines = source.splitlines()
+    declarations, routine_scopes, assignment_ranges = _scan_declarations(source)
+
+    # Per spec §3, plain ``!`` eligibility is decided by position
+    # against the declaration set. Pre-compute two lookups:
+    #   - decl_starts[N] → the Declaration whose line_start == N
+    #   - decl_covered[N] → the Declaration whose line range covers N
+    decl_starts: dict[int, DeclarationSite] = {
+        d.line_start: d for d in declarations
+    }
+    decl_covered: dict[int, DeclarationSite] = {}
+    for d in declarations:
+        for ln in range(d.line_start, d.line_end + 1):
+            decl_covered[ln] = d
+    assignment_starts: frozenset[int] = frozenset(lo for lo, _ in assignment_ranges)
+    assignment_covered: frozenset[int] = frozenset(
+        ln for lo, hi in assignment_ranges for ln in range(lo, hi + 1)
+    )
+
     annotations: list[RawAnnotation] = []
     errors: list[MalformedAnnotation] = []
     assumes: list[RawAssume] = []
     affine_conversions: list[RawAffineConv] = []
     pre_block_lines: set[int] = set()
+    pattern_conflicts: list[PatternConflict] = []
+    wrong_statement_kinds: list[WrongStatementKind] = []
+
+    def _line_in_decl(ln: int) -> bool:
+        return ln in decl_covered
+
+    def _line_in_assignment(ln: int) -> bool:
+        return any(lo <= ln <= hi for lo, hi in assignment_ranges)
+
     for line_no, line in enumerate(lines, start=1):
         col = _comment_start(line)
         if col is None:
             continue
         comment = line[col + 1:]
-        # `col` is 0-based column of `!`. The character right after the
-        # `!` (i.e. `comment[0]`) sits at 1-based column `col + 2`.
-        anns, errs, kind = _find_unit_invocations(
-            comment, line_no=line_no, base_column=col + 2
+        # `col` is 0-based column of `!`. `comment[0]` sits at 1-based
+        # column `col + 2`.
+        marker_kind = _doxygen_kind(comment)
+
+        kind: AnnotationKind
+        if marker_kind is not None:
+            # Doxygen-marked: kind from marker; body skips the marker
+            # character. Pattern matching is config-driven (spec §4).
+            kind = marker_kind
+            body = comment[1:]
+            body_col_offset = col + 3
+        else:
+            # Plain `!`: eligibility depends on position (spec §3).
+            plain_kind = _classify_plain_comment(
+                line, col, line_no, decl_starts, decl_covered,
+                assignment_starts, assignment_covered,
+            )
+            if plain_kind is None:
+                continue
+            kind = plain_kind
+            body = comment
+            body_col_offset = col + 2
+
+        u_anns, u_errs, u_confs, _u_winner_idx = _select_unit(
+            body, line_no, body_col_offset, kind, unit_patterns,
         )
-        annotations.extend(anns)
-        errors.extend(errs)
-        asms, asm_errs = _find_assume_invocations(
-            comment, line_no=line_no, base_column=col + 2
+        # Spec §6 (post-Q1): every configured pattern attaches to all
+        # names on a multi-variable declaration, same as canonical
+        # ``@unit{...}``. Authors who want different units per name
+        # write multiple matches on the line (``! [m] [s]``), which
+        # fires today's "more than one … on one line" malformed
+        # diagnostic and asks them to split the declaration.
+        annotations.extend(u_anns)
+        errors.extend(u_errs)
+        pattern_conflicts.extend(u_confs)
+
+        a_anns, a_errs, a_confs = _select_assume(
+            body, line_no, body_col_offset, assume_patterns,
         )
-        assumes.extend(asms)
-        errors.extend(asm_errs)
-        afcs, afc_errs = _find_affine_invocations(
-            comment, line_no=line_no, base_column=col + 2
+        # Spec §8.3: @unit_assume on a declaration is the wrong
+        # statement kind (declarations don't host an RHS to
+        # suppress). Drop + U023. The target line is the comment's
+        # own line for POST, the next line for PRE (mirrors how the
+        # directive would attach if the kind were right).
+        target_line = line_no if kind is AnnotationKind.POST else line_no + 1
+        if a_anns and _line_in_decl(target_line):
+            for a in a_anns:
+                wrong_statement_kinds.append(WrongStatementKind(
+                    line=a.line, column=a.column,
+                    end_column=a.end_column,
+                    directive_found=_ASSUME_DIR_NAME,
+                    landed_on="declaration",
+                    expected_directive=_UNIT_DIR_NAME,
+                ))
+            a_anns = []
+        assumes.extend(a_anns)
+        errors.extend(a_errs)
+        pattern_conflicts.extend(a_confs)
+
+        f_anns, f_errs, f_confs = _select_affine(
+            body, line_no, body_col_offset, affine_patterns,
         )
-        affine_conversions.extend(afcs)
-        errors.extend(afc_errs)
+        # Same §8.3 check for @unit_affine_conversion.
+        if f_anns and _line_in_decl(target_line):
+            for fa in f_anns:
+                wrong_statement_kinds.append(WrongStatementKind(
+                    line=fa.line, column=fa.column,
+                    end_column=fa.end_column,
+                    directive_found=_AFFINE_DIR_NAME,
+                    landed_on="declaration",
+                    expected_directive=_UNIT_DIR_NAME,
+                ))
+            f_anns = []
+        affine_conversions.extend(f_anns)
+        errors.extend(f_errs)
+        pattern_conflicts.extend(f_confs)
+
         if kind is AnnotationKind.PRE:
             pre_block_lines.add(line_no)
-    declarations, routine_scopes = _scan_declarations(source)
+
     return ScanResult(
         annotations=tuple(annotations),
         errors=tuple(errors),
@@ -437,7 +738,39 @@ def scan_text(source: str) -> ScanResult:
         routine_scopes=tuple(routine_scopes),
         assumes=tuple(assumes),
         affine_conversions=tuple(affine_conversions),
+        pattern_conflicts=tuple(pattern_conflicts),
+        wrong_statement_kinds=tuple(wrong_statement_kinds),
+        assignment_line_ranges=tuple(assignment_ranges),
     )
+
+
+def _classify_plain_comment(
+    line: str, col: int, line_no: int,
+    decl_starts: dict[int, DeclarationSite],
+    decl_covered: dict[int, DeclarationSite],
+    assignment_starts: frozenset[int],
+    assignment_covered: frozenset[int],
+) -> AnnotationKind | None:
+    """Return POST/PRE/None for a plain ``!`` comment per spec §3 / §5.
+
+    POST: trailing on a statement-bearing line — a declaration (for
+    ``@unit{}``) or an assignment (for ``@unit_assume`` /
+    ``@unit_affine_conversion``). Per spec §5, eligibility is the
+    union; the kind-correctness check (§8.3 → U023) happens after
+    extraction.
+
+    PRE: standalone on its own line (only whitespace before ``!``)
+    AND the very next line begins a declaration or assignment.
+    """
+    is_standalone = not line[:col].strip()
+    if not is_standalone:
+        if line_no in decl_covered or line_no in assignment_covered:
+            return AnnotationKind.POST
+        return None
+    next_ln = line_no + 1
+    if next_ln in decl_starts or next_ln in assignment_starts:
+        return AnnotationKind.PRE
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -538,7 +871,11 @@ def _ts_routine_name(node: Node) -> str | None:
 
 def _scan_declarations(
     source: str,
-) -> tuple[list[DeclarationSite], list[tuple[int, int, str]]]:
+) -> tuple[
+    list[DeclarationSite],
+    list[tuple[int, int, str]],
+    list[tuple[int, int]],
+]:
     """Walk a tree-sitter Fortran tree and emit one :class:`DeclarationSite` per decl.
 
     Also returns the byte-range cover of every ``subroutine`` /
@@ -560,6 +897,7 @@ def _scan_declarations(
     # one type definition starts on the same line another ends on.
     type_ranges: list[tuple[int, int, str]] = []
     routine_ranges: list[tuple[int, int, str]] = []
+    assignment_ranges: list[tuple[int, int]] = []
     for n in _ts.walk(root):
         if n.type == "derived_type_definition":
             name = _ts_type_name(n)
@@ -569,6 +907,13 @@ def _scan_declarations(
             name = _ts_routine_name(n)
             if name is not None:
                 routine_ranges.append((n.start_byte, n.end_byte, name.lower()))
+        elif n.type == "assignment_statement":
+            a_start = _ts.position_for(n).line
+            a_end = _ts.end_position_for(n).line
+            # Same trailing-newline correction as for declarations.
+            if a_end > a_start and n.end_point[1] == 0:
+                a_end -= 1
+            assignment_ranges.append((a_start, a_end))
 
     routine_ranges.sort(key=lambda r: r[0])
 
@@ -620,7 +965,7 @@ def _scan_declarations(
                 intrinsic_type=_ts_decl_intrinsic_type(n),
             )
         )
-    return out, routine_ranges
+    return out, routine_ranges, assignment_ranges
 
 
 # Tree-sitter Fortran wraps the type qualifier of an intrinsic-typed

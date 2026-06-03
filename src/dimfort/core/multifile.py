@@ -46,12 +46,20 @@ from dimfort.core.cache_serde import (
 )
 from dimfort.core.cache_store import CacheStore
 from dimfort.core.diagnostics import AutocastEvent, Diagnostic, Position, Severity
+from dimfort.core.rewrite import suggest_rewrite as _suggest_rewrite
 from dimfort.core.symbols import (
     FuncSig,
     ModuleExports,
     apply_use_clauses,
     compute_transitive_exports,
     deps_consumed_from_uses,
+)
+from dimfort.core.unit_patterns import (
+    DEFAULT_AFFINE_PATTERNS,
+    DEFAULT_ASSUME_PATTERNS,
+    DEFAULT_UNIT_PATTERNS,
+    StructuredPattern,
+    UnitPattern,
 )
 from dimfort.core.units import UnitError, UnitExpr, UnitTable
 
@@ -181,6 +189,9 @@ def _load_one(
     overrides: dict[Path, str],
     cpp_defines: tuple[str, ...] = (),
     include_paths: tuple[Path, ...] = (),
+    unit_patterns: tuple[UnitPattern, ...] = DEFAULT_UNIT_PATTERNS,
+    assume_patterns: tuple[StructuredPattern, ...] = DEFAULT_ASSUME_PATTERNS,
+    affine_patterns: tuple[StructuredPattern, ...] = DEFAULT_AFFINE_PATTERNS,
 ) -> _Loaded:
     """Read source, scan + attach annotations, parse with tree-sitter.
 
@@ -202,7 +213,12 @@ def _load_one(
     from dimfort.core._source_io import read_text
     text = overrides[path] if path in overrides else read_text(path)
     source = text.encode("utf-8")
-    scan = scan_text(text)
+    scan = scan_text(
+        text,
+        unit_patterns=unit_patterns,
+        assume_patterns=assume_patterns,
+        affine_patterns=affine_patterns,
+    )
     attachment = attach(scan)
 
     # cpp short-circuit: even when defines/includes are configured, a
@@ -299,13 +315,43 @@ def _u007(path: Path, message: str) -> Diagnostic:
     )
 
 
-def _attachment_diags(file: str, att: AttachmentResult) -> list[Diagnostic]:
-    """Surface attach-time issues (orphan annotations, conflicts, U010)."""
+def _attachment_diags(
+    file: str,
+    att: AttachmentResult,
+    assignment_line_ranges: tuple[tuple[int, int], ...] = (),
+) -> list[Diagnostic]:
+    """Surface attach-time issues (orphan annotations, conflicts, U010).
+
+    When an ``@unit{}`` orphan lands on an assignment statement,
+    that's a wrong-statement-kind situation (spec §8.3 → U023)
+    rather than a plain orphan (U006).
+    """
     out: list[Diagnostic] = []
     for orph in att.orphans:
         msg = orph.reason
         if msg and not msg[:1].isupper():
             msg = msg[:1].upper() + msg[1:]
+        check_line = orph.target_line or orph.line
+        on_assignment = any(
+            lo <= check_line <= hi for lo, hi in assignment_line_ranges
+        )
+        if on_assignment:
+            end_col = orph.end_column or (orph.column + 1)
+            out.append(
+                Diagnostic(
+                    file=file,
+                    start=Position(orph.line, orph.column),
+                    end=Position(orph.line, end_col),
+                    severity=Severity.WARNING,
+                    code="U023",
+                    message=(
+                        "@unit landed on an assignment statement; "
+                        "@unit attaches to declarations. Did you mean "
+                        "@unit_assume or @unit_affine_conversion?"
+                    ),
+                )
+            )
+            continue
         out.append(
             Diagnostic(
                 file=file,
@@ -410,6 +456,9 @@ def _build_cache_config_view(
     units_file: Path | None,
     diagnostic_severities: dict[str, str] | None,
     scale_mode: bool,
+    unit_patterns: tuple[UnitPattern, ...],
+    assume_patterns: tuple[StructuredPattern, ...],
+    affine_patterns: tuple[StructuredPattern, ...],
 ) -> dict[str, object]:
     """Assemble the per-file-affecting config dict for the cache key.
 
@@ -424,6 +473,15 @@ def _build_cache_config_view(
         "units_file_hash": _hash_file(units_file) if units_file else "",
         "diagnostic_severities": dict(diagnostic_severities or {}),
         "scale_mode": scale_mode,
+        "unit_comment_delimiters": [
+            [p.open, p.close] for p in unit_patterns
+        ],
+        "unit_assume_comment_delimiters": [
+            [p.open, p.close, p.sep] for p in assume_patterns
+        ],
+        "unit_affine_comment_delimiters": [
+            [p.open, p.close, p.sep] for p in affine_patterns
+        ],
     }
 
 
@@ -518,6 +576,9 @@ def check_files(
     units_file: Path | None = None,
     diagnostic_severities: dict[str, str] | None = None,
     scale_mode: bool = False,
+    unit_patterns: tuple[UnitPattern, ...] = DEFAULT_UNIT_PATTERNS,
+    assume_patterns: tuple[StructuredPattern, ...] = DEFAULT_ASSUME_PATTERNS,
+    affine_patterns: tuple[StructuredPattern, ...] = DEFAULT_AFFINE_PATTERNS,
 ) -> WorksetResult:
     """Scan, attach, and check every file in ``sources`` together.
 
@@ -562,6 +623,9 @@ def check_files(
                 overrides=overrides_map,
                 cpp_defines=cpp_defines,
                 include_paths=include_paths,
+                unit_patterns=unit_patterns,
+                assume_patterns=assume_patterns,
+                affine_patterns=affine_patterns,
             ), None
         except OSError as exc:
             return idx, src, None, exc
@@ -682,21 +746,65 @@ def check_files(
         units_file=units_file,
         diagnostic_severities=diagnostic_severities,
         scale_mode=scale_mode,
+        unit_patterns=unit_patterns,
+        assume_patterns=assume_patterns,
+        affine_patterns=affine_patterns,
     )
 
     for di, entry in enumerate(loaded, start=1):
         diags: list[Diagnostic] = []
 
-        diags.extend(_attachment_diags(str(entry.path), entry.attachment))
+        diags.extend(_attachment_diags(
+            str(entry.path),
+            entry.attachment,
+            tuple(getattr(entry.scan, "assignment_line_ranges", ())),
+        ))
+        for wsk in getattr(entry.scan, "wrong_statement_kinds", ()):
+            diags.append(
+                Diagnostic(
+                    file=str(entry.path),
+                    start=Position(wsk.line, wsk.column),
+                    end=Position(wsk.line, wsk.end_column or wsk.column + 1),
+                    severity=Severity.WARNING,
+                    code="U023",
+                    message=(
+                        f"{wsk.directive_found} landed on a "
+                        f"{wsk.landed_on}; {wsk.directive_found} "
+                        f"attaches to a different statement kind. "
+                        f"Did you mean {wsk.expected_directive}?"
+                    ),
+                )
+            )
         for err in getattr(entry.scan, "errors", ()):
+            end_col = getattr(err, "end_column", 0) or (err.column + 1)
+            msg = err.reason
+            if msg and not msg[:1].isupper():
+                msg = msg[:1].upper() + msg[1:]
             diags.append(
                 Diagnostic(
                     file=str(entry.path),
                     start=Position(err.line, err.column),
-                    end=Position(err.line, err.column),
+                    end=Position(err.line, end_col),
                     severity=Severity.ERROR,
                     code="U001",
-                    message=err.reason,
+                    message=msg,
+                )
+            )
+        for conf in getattr(entry.scan, "pattern_conflicts", ()):
+            diags.append(
+                Diagnostic(
+                    file=str(entry.path),
+                    start=Position(conf.line, conf.column),
+                    end=Position(conf.line, conf.end_column or conf.column + 1),
+                    severity=Severity.WARNING,
+                    code="U021",
+                    message=(
+                        f"Conflicting {conf.directive} comment patterns: "
+                        f"first-listed capture {conf.first_unit_text!r} "
+                        f"applied; another configured pattern matched "
+                        f"with {conf.second_unit_text!r}. Clarify by "
+                        f"keeping only one form."
+                    ),
                 )
             )
         # Map each annotated name to its declaration line so a U002
@@ -728,6 +836,10 @@ def check_files(
                     line1 = decl_line_for.get(name.lower(), 0)
                     start = Position(line1, 0)
                     end = Position(line1, 0)
+                suggestion = _suggest_rewrite(text, active_table)
+                msg = f"Unit annotation for {name!r}: {exc}"
+                if suggestion is not None:
+                    msg += f"; did you mean {suggestion!r}?"
                 diags.append(
                     Diagnostic(
                         file=str(entry.path),
@@ -735,7 +847,8 @@ def check_files(
                         end=end,
                         severity=Severity.ERROR,
                         code="U002",
-                        message=f"Unit annotation for {name!r}: {exc}",
+                        message=msg,
+                        suggested_rewrite=suggestion,
                     )
                 )
         if unparseable:

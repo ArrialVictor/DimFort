@@ -91,3 +91,118 @@ def test_check_summary_emits_per_file_counts(tmp_path, capsys):
     assert "Summary" in out
     assert "1 H" in out
     assert "file(s)" in out
+
+
+def test_bracket_pattern_attaches_to_all_multivar_names(tmp_path, capsys):
+    """End-to-end (spec §6, Q1-unified): a configured `[`/`]` pattern
+    on a multi-variable declaration attaches to every name; no U022."""
+    (tmp_path / ".dimfort.toml").write_text(
+        '[parser]\n'
+        'unit_comment_delimiters = [\n'
+        '  { open = "@unit{", close = "}" },\n'
+        '  { open = "[",      close = "]" },\n'
+        ']\n'
+    )
+    (tmp_path / "src.f90").write_text(
+        "subroutine s\n"
+        "  real :: a, b, c   ! [m/s]\n"
+        "end subroutine\n"
+    )
+    rc = main(["check", str(tmp_path), "--no-color"])
+    out = capsys.readouterr().out
+    assert "U022" not in out
+    assert rc == 0
+
+
+def test_u021_fires_on_disagreeing_pattern_captures(tmp_path, capsys):
+    """Spec §8.2: two patterns matching the same comment with
+    different capture text → U021 WARNING; the first-listed capture
+    is the one that attaches."""
+    (tmp_path / ".dimfort.toml").write_text(
+        '[parser]\n'
+        'unit_comment_delimiters = [\n'
+        '  { open = "@unit{", close = "}" },\n'
+        '  { open = "[",      close = "]" },\n'
+        ']\n'
+    )
+    (tmp_path / "src.f90").write_text(
+        "subroutine s\n"
+        "  real :: v   !< wind speed [m/s] @unit{kg}\n"
+        "end subroutine\n"
+    )
+    rc = main(["check", str(tmp_path), "--no-color"])
+    out = capsys.readouterr().out
+    assert "U021" in out, out
+    assert "'kg'" in out
+    assert "'m/s'" in out
+    assert rc == 0
+
+
+def test_u021_silent_on_identical_captures(tmp_path, capsys):
+    """Spec §8.2: identical captures across patterns produce no
+    diagnostic."""
+    (tmp_path / ".dimfort.toml").write_text(
+        '[parser]\n'
+        'unit_comment_delimiters = [\n'
+        '  { open = "@unit{", close = "}" },\n'
+        '  { open = "[",      close = "]" },\n'
+        ']\n'
+    )
+    (tmp_path / "src.f90").write_text(
+        "subroutine s\n"
+        "  real :: v   !< @unit{m/s} also [m/s]\n"
+        "end subroutine\n"
+    )
+    rc = main(["check", str(tmp_path), "--no-color"])
+    out = capsys.readouterr().out
+    assert "U021" not in out
+    assert rc == 0
+
+
+def test_u023_fires_on_at_unit_on_assignment(tmp_path, capsys):
+    """End-to-end: ``!< @unit{m/s}`` on an assignment statement is
+    wrong-kind. The orphan reroutes to U023 with the right hint."""
+    (tmp_path / "src.f90").write_text(
+        "subroutine s\n"
+        "  real :: v\n"
+        "  v = 1.0   !< @unit{m/s}\n"
+        "end subroutine\n"
+    )
+    rc = main(["check", str(tmp_path), "--no-color"])
+    out = capsys.readouterr().out
+    assert "U023" in out, out
+    assert "@unit_assume" in out or "@unit_affine_conversion" in out
+    assert "U006" not in out
+    assert rc == 0
+
+
+def test_u023_fires_on_assume_on_declaration(tmp_path, capsys):
+    """End-to-end: ``!< @unit_assume`` on a declaration is dropped
+    and surfaced as U023."""
+    (tmp_path / "src.f90").write_text(
+        "subroutine s\n"
+        "  real :: v   !< @unit_assume{m/s: legacy fit}\n"
+        "end subroutine\n"
+    )
+    rc = main(["check", str(tmp_path), "--no-color"])
+    out = capsys.readouterr().out
+    assert "U023" in out, out
+    assert "@unit_assume" in out
+    assert rc == 0
+
+
+def test_u002_includes_suggested_rewrite_for_digit_suffix(tmp_path, capsys):
+    """End-to-end: ``@unit{m2/s}`` is unparseable; the rewrite
+    detector suggests ``m^2/s`` and the U002 message includes
+    'did you mean'."""
+    (tmp_path / "src.f90").write_text(
+        "subroutine s\n"
+        "  real :: a   !< @unit{m2/s}\n"
+        "end subroutine\n"
+    )
+    rc = main(["check", str(tmp_path), "--no-color"])
+    out = capsys.readouterr().out
+    assert "U002" in out, out
+    assert "did you mean" in out
+    assert "'m^2/s'" in out
+    assert rc == 1

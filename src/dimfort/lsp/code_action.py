@@ -104,6 +104,15 @@ def resolve(ls: LanguageServer, params: lsp.CodeActionParams) -> list[lsp.CodeAc
     actions.extend(
         _h010_extract_to_parameter_actions(params, doc, resolved)
     )
+    # U002 suggested-rewrite — "Replace `<old>` with `<new>`" applied
+    # as a direct workspace edit. The diagnostic carries the
+    # suggestion in ``data["suggested_rewrite"]`` (set by
+    # ``server._to_lsp_diagnostic``); we compute the inner-text range
+    # by finding the open/close delimiters inside the diagnostic's
+    # token span on the source line.
+    actions.extend(
+        _u002_rewrite_actions(params, doc)
+    )
     return actions or None
 
 
@@ -114,6 +123,61 @@ def resolve(ls: LanguageServer, params: lsp.CodeActionParams) -> list[lsp.CodeAc
 _H010_CAST_RE = re.compile(
     r"^Implicit cast: literal '([^']+)' to (.+?) \(prefer.*@unit\{(.+?)\}"
 )
+
+
+def _u002_rewrite_actions(
+    params: lsp.CodeActionParams, doc: Any,
+) -> list[lsp.CodeAction]:
+    """Build "Replace with `<suggestion>`" actions for U002
+    diagnostics whose payload includes a parsed rewrite candidate.
+
+    The diagnostic's range covers the directive token (e.g.
+    ``@unit{m2/s}``); we replace just the inner captured text — the
+    substring between the first ``{`` and the matching ``}`` within
+    the range — so the directive itself stays intact.
+    """
+    out: list[lsp.CodeAction] = []
+    diagnostics = params.context.diagnostics or []
+    for diag in diagnostics:
+        if diag.code != "U002":
+            continue
+        data = getattr(diag, "data", None)
+        if not isinstance(data, dict):
+            continue
+        suggestion = data.get("suggested_rewrite")
+        if not isinstance(suggestion, str) or not suggestion:
+            continue
+        rng = diag.range
+        if rng.start.line != rng.end.line:
+            continue
+        line_idx = rng.start.line
+        if line_idx >= len(doc.lines):
+            continue
+        line = doc.lines[line_idx].rstrip("\n").rstrip("\r")
+        open_at = line.find("{", rng.start.character)
+        if open_at == -1 or open_at >= rng.end.character:
+            continue
+        close_at = line.find("}", open_at + 1)
+        if close_at == -1 or close_at > rng.end.character:
+            continue
+        edit = lsp.TextEdit(
+            range=lsp.Range(
+                start=lsp.Position(line=line_idx, character=open_at + 1),
+                end=lsp.Position(line=line_idx, character=close_at),
+            ),
+            new_text=suggestion,
+        )
+        action = lsp.CodeAction(
+            title=f"DimFort: Replace with {suggestion!r}",
+            kind=lsp.CodeActionKind.QuickFix,
+            diagnostics=[diag],
+            edit=lsp.WorkspaceEdit(
+                changes={params.text_document.uri: [edit]},
+            ),
+            is_preferred=True,
+        )
+        out.append(action)
+    return out
 
 
 def _h010_extract_to_parameter_actions(
