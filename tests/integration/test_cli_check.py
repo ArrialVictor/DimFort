@@ -115,3 +115,48 @@ def test_u022_fires_on_plain_bracket_multivar(tmp_path, capsys):
     assert "multi-variable" in out
     # WARNING, not ERROR — exit code is still 0.
     assert rc == 0
+
+
+def test_u021_fires_on_disagreeing_pattern_captures(tmp_path, capsys):
+    """Spec §8.2: two patterns matching the same comment with
+    different capture text → U021 WARNING; the first-listed capture
+    is the one that attaches."""
+    (tmp_path / ".dimfort.toml").write_text(
+        '[parser]\n'
+        'unit_comment_delimiters = [\n'
+        '  { open = "@unit{", close = "}" },\n'
+        '  { open = "[",      close = "]" },\n'
+        ']\n'
+    )
+    (tmp_path / "src.f90").write_text(
+        "subroutine s\n"
+        "  real :: v   !< wind speed [m/s] @unit{kg}\n"
+        "end subroutine\n"
+    )
+    rc = main(["check", str(tmp_path), "--no-color"])
+    out = capsys.readouterr().out
+    assert "U021" in out, out
+    assert "'kg'" in out
+    assert "'m/s'" in out
+    assert rc == 0
+
+
+def test_u021_silent_on_identical_captures(tmp_path, capsys):
+    """Spec §8.2: identical captures across patterns produce no
+    diagnostic."""
+    (tmp_path / ".dimfort.toml").write_text(
+        '[parser]\n'
+        'unit_comment_delimiters = [\n'
+        '  { open = "@unit{", close = "}" },\n'
+        '  { open = "[",      close = "]" },\n'
+        ']\n'
+    )
+    (tmp_path / "src.f90").write_text(
+        "subroutine s\n"
+        "  real :: v   !< @unit{m/s} also [m/s]\n"
+        "end subroutine\n"
+    )
+    rc = main(["check", str(tmp_path), "--no-color"])
+    out = capsys.readouterr().out
+    assert "U021" not in out
+    assert rc == 0

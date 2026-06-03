@@ -720,6 +720,23 @@ def check_files(
                     message=err.reason,
                 )
             )
+        for conf in getattr(entry.scan, "pattern_conflicts", ()):
+            diags.append(
+                Diagnostic(
+                    file=str(entry.path),
+                    start=Position(conf.line, conf.column),
+                    end=Position(conf.line, conf.column),
+                    severity=Severity.WARNING,
+                    code="U021",
+                    message=(
+                        f"Conflicting {conf.directive} comment patterns: "
+                        f"first-listed capture {conf.first_unit_text!r} "
+                        f"applied; another configured pattern matched "
+                        f"with {conf.second_unit_text!r}. Clarify by "
+                        f"keeping only one form."
+                    ),
+                )
+            )
         for skip in getattr(entry.scan, "multi_var_skips", ()):
             names = ", ".join(skip.var_names)
             diags.append(
