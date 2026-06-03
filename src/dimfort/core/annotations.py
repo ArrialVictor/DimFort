@@ -110,6 +110,25 @@ class MalformedAnnotation:
 
 
 @dataclass(frozen=True)
+class MultiVarSkip:
+    """A non-canonical ``@unit`` pattern matched a plain-``!`` comment
+    on a multi-variable declaration; the match was dropped per spec
+    §6. Emitted as U022 by the diagnostic layer.
+
+    Rationale: bracket-style delimiters like ``[m/s]`` are ambiguous
+    about whether they apply to all variables on the line or just
+    one, so we refuse to guess. The default ``@unit{...}`` form
+    attaches to all names and is unaffected.
+    """
+
+    line: int
+    column: int               # 1-based column of the matched pattern
+    pattern_open: str
+    pattern_close: str
+    var_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class PatternConflict:
     """Two configured patterns matched the same comment with
     disagreeing capture text (spec §8.2 → U021).
@@ -232,11 +251,17 @@ def _select_unit(
     body: str, line_no: int, body_col_offset: int, kind: AnnotationKind,
     patterns: tuple[UnitPattern, ...],
 ) -> tuple[
-    list[RawAnnotation], list[MalformedAnnotation], list[PatternConflict]
+    list[RawAnnotation], list[MalformedAnnotation], list[PatternConflict],
+    int | None,
 ]:
-    """Pattern-driven ``@unit{}``-family extractor (spec §2, §8)."""
+    """Pattern-driven ``@unit{}``-family extractor (spec §2, §8).
+
+    The trailing ``int | None`` is the winner pattern's index in
+    ``patterns`` when one was selected — the caller uses it to apply
+    the spec §6 multi-var-skip rule.
+    """
     if not patterns:
-        return [], [], []
+        return [], [], [], None
     hits_per_pattern: list[tuple[int, UnitPattern, list[PatternMatch]]] = []
     for idx, pat in enumerate(patterns):
         ms = pat.find(body)
@@ -249,8 +274,8 @@ def _select_unit(
             return [], [MalformedAnnotation(
                 line_no, body_col_offset + idx_in_body,
                 f"unclosed '{{' in {_UNIT_DIR_NAME}",
-            )], []
-        return [], [], []
+            )], [], None
+        return [], [], [], None
     winner_idx, winner_pat, winner_hits = hits_per_pattern[0]
     first = winner_hits[0]
     col = body_col_offset + first.start
@@ -285,7 +310,7 @@ def _select_unit(
                 first_pattern_index=winner_idx,
                 second_pattern_index=idx,
             ))
-    return annotations, errors, conflicts
+    return annotations, errors, conflicts, winner_idx
 
 
 def _select_assume(
@@ -532,6 +557,11 @@ class ScanResult:
     # text. Empty for the default single-pattern config. Consumed by
     # the U021 emitter (task #6).
     pattern_conflicts: tuple[PatternConflict, ...] = ()
+    # Multi-variable plain-``!`` skip events (spec §6). Each entry
+    # marks a non-canonical ``@unit`` pattern that matched a bare
+    # ``!`` comment attached to a declaration with more than one
+    # name; the match was dropped. Consumed by the U022 emitter.
+    multi_var_skips: tuple[MultiVarSkip, ...] = ()
 
 
 def scan_text(
@@ -571,6 +601,7 @@ def scan_text(
     affine_conversions: list[RawAffineConv] = []
     pre_block_lines: set[int] = set()
     pattern_conflicts: list[PatternConflict] = []
+    multi_var_skips: list[MultiVarSkip] = []
 
     for line_no, line in enumerate(lines, start=1):
         col = _comment_start(line)
@@ -582,6 +613,7 @@ def scan_text(
         marker_kind = _doxygen_kind(comment)
 
         kind: AnnotationKind
+        is_plain = False
         if marker_kind is not None:
             # Doxygen-marked: kind from marker; body skips the marker
             # character. Pattern matching is config-driven (spec §4).
@@ -598,10 +630,39 @@ def scan_text(
             kind = plain_kind
             body = comment
             body_col_offset = col + 2
+            is_plain = True
 
-        u_anns, u_errs, u_confs = _select_unit(
+        u_anns, u_errs, u_confs, u_winner_idx = _select_unit(
             body, line_no, body_col_offset, kind, unit_patterns,
         )
+        # Spec §6: a non-canonical pattern that matched a plain-`!`
+        # comment on a multi-variable declaration is dropped. The
+        # canonical `@unit{...}` entry continues to attach to all
+        # names on the line, as today's `!<` does.
+        if (
+            is_plain
+            and u_winner_idx is not None
+            and u_anns
+        ):
+            decl_for_check: DeclarationSite | None
+            if kind is AnnotationKind.POST:
+                decl_for_check = decl_covered.get(line_no)
+            else:
+                decl_for_check = decl_starts.get(line_no + 1)
+            winner = unit_patterns[u_winner_idx]
+            if (
+                decl_for_check is not None
+                and len(decl_for_check.names) > 1
+                and not _is_canonical_unit_pattern(winner)
+            ):
+                multi_var_skips.append(MultiVarSkip(
+                    line=u_anns[0].line,
+                    column=u_anns[0].column,
+                    pattern_open=winner.open,
+                    pattern_close=winner.close,
+                    var_names=decl_for_check.names,
+                ))
+                u_anns = []
         annotations.extend(u_anns)
         errors.extend(u_errs)
         pattern_conflicts.extend(u_confs)
@@ -632,7 +693,17 @@ def scan_text(
         assumes=tuple(assumes),
         affine_conversions=tuple(affine_conversions),
         pattern_conflicts=tuple(pattern_conflicts),
+        multi_var_skips=tuple(multi_var_skips),
     )
+
+
+def _is_canonical_unit_pattern(pat: UnitPattern) -> bool:
+    """``@unit{...}`` is the spec's universal escape; per §6 it is
+    exempt from the multi-var skip rule. Identified by exact literal
+    open/close delimiters — a user-configured entry with different
+    text doesn't qualify (and shouldn't).
+    """
+    return pat.open == "@unit{" and pat.close == "}"
 
 
 def _classify_plain_comment(

@@ -358,3 +358,91 @@ def test_structured_pattern_affine_via_brackets():
     assert len(res.affine_conversions) == 1
     assert res.affine_conversions[0].src == "degC"
     assert res.affine_conversions[0].tgt == "K"
+
+
+# ---------------------------------------------------------------------------
+# Multi-var skip + U022 (spec §6)
+# ---------------------------------------------------------------------------
+
+
+def test_plain_relax_pattern_on_multivar_decl_is_skipped():
+    """Spec §6: a non-canonical pattern matched on a plain-`!`
+    comment trailing a multi-var declaration is dropped, and a
+    MultiVarSkip record is produced for the U022 emitter."""
+    from dimfort.core.unit_patterns import UnitPattern
+    src = "real :: a, b, c   ! [m/s]\n"
+    res = scan_text(
+        src,
+        unit_patterns=(
+            UnitPattern(open="@unit{", close="}"),
+            UnitPattern(open="[", close="]"),
+        ),
+    )
+    assert res.annotations == ()
+    assert len(res.multi_var_skips) == 1
+    skip = res.multi_var_skips[0]
+    assert skip.pattern_open == "["
+    assert skip.pattern_close == "]"
+    assert skip.var_names == ("a", "b", "c")
+
+
+def test_plain_canonical_pattern_on_multivar_still_attaches():
+    """The default `@unit{...}` entry is the universal escape — even
+    on a plain-`!` trailing a multi-var decl, it attaches to all
+    names (no U022)."""
+    src = "real :: a, b, c   ! @unit{m/s}\n"
+    res = scan_text(src)
+    assert res.multi_var_skips == ()
+    assert len(res.annotations) == 1
+    assert res.annotations[0].unit_text == "m/s"
+
+
+def test_doxygen_marker_on_multivar_with_relax_pattern_still_attaches():
+    """Spec §6 limits the skip to plain `!`. A Doxygen-marked
+    comment with a non-canonical pattern on a multi-var decl keeps
+    attaching (matches today's `!<` semantics)."""
+    from dimfort.core.unit_patterns import UnitPattern
+    src = "real :: a, b, c   !< [m/s]\n"
+    res = scan_text(
+        src,
+        unit_patterns=(
+            UnitPattern(open="@unit{", close="}"),
+            UnitPattern(open="[", close="]"),
+        ),
+    )
+    assert res.multi_var_skips == ()
+    assert len(res.annotations) == 1
+    assert res.annotations[0].unit_text == "m/s"
+
+
+def test_plain_relax_on_single_var_decl_attaches_normally():
+    """No skip for single-variable declarations."""
+    from dimfort.core.unit_patterns import UnitPattern
+    src = "real :: v   ! [m/s]\n"
+    res = scan_text(
+        src,
+        unit_patterns=(
+            UnitPattern(open="@unit{", close="}"),
+            UnitPattern(open="[", close="]"),
+        ),
+    )
+    assert res.multi_var_skips == ()
+    assert len(res.annotations) == 1
+    assert res.annotations[0].unit_text == "m/s"
+
+
+def test_plain_relax_pre_above_multivar_is_skipped():
+    """The skip rule fires in PRE position too — the comment stands
+    alone immediately above a multi-var declaration."""
+    from dimfort.core.unit_patterns import UnitPattern
+    src = "! [m/s]\nreal :: a, b\n"
+    res = scan_text(
+        src,
+        unit_patterns=(
+            UnitPattern(open="@unit{", close="}"),
+            UnitPattern(open="[", close="]"),
+        ),
+    )
+    assert res.annotations == ()
+    assert len(res.multi_var_skips) == 1
+    assert res.multi_var_skips[0].var_names == ("a", "b")

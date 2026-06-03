@@ -720,6 +720,24 @@ def check_files(
                     message=err.reason,
                 )
             )
+        for skip in getattr(entry.scan, "multi_var_skips", ()):
+            names = ", ".join(skip.var_names)
+            diags.append(
+                Diagnostic(
+                    file=str(entry.path),
+                    start=Position(skip.line, skip.column),
+                    end=Position(skip.line, skip.column),
+                    severity=Severity.WARNING,
+                    code="U022",
+                    message=(
+                        f"Pattern '{skip.pattern_open}…{skip.pattern_close}' "
+                        f"matched a plain-! comment on a multi-variable "
+                        f"declaration ({names}); skipped. Use explicit "
+                        f"@unit{{...}} per variable, or split the "
+                        f"declaration."
+                    ),
+                )
+            )
         # Map each annotated name to its declaration line so a U002
         # (unparseable annotation) lands on the offending declaration
         # rather than at the top of the file. First-declared wins when

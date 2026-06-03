@@ -91,3 +91,27 @@ def test_check_summary_emits_per_file_counts(tmp_path, capsys):
     assert "Summary" in out
     assert "1 H" in out
     assert "file(s)" in out
+
+
+def test_u022_fires_on_plain_bracket_multivar(tmp_path, capsys):
+    """End-to-end: a project that configures `[`/`]` as a non-canonical
+    unit pattern gets U022 when a plain-! `[m/s]` lands on a
+    multi-variable declaration."""
+    (tmp_path / ".dimfort.toml").write_text(
+        '[parser]\n'
+        'unit_comment_delimiters = [\n'
+        '  { open = "@unit{", close = "}" },\n'
+        '  { open = "[",      close = "]" },\n'
+        ']\n'
+    )
+    (tmp_path / "src.f90").write_text(
+        "subroutine s\n"
+        "  real :: a, b, c   ! [m/s]\n"
+        "end subroutine\n"
+    )
+    rc = main(["check", str(tmp_path), "--no-color"])
+    out = capsys.readouterr().out
+    assert "U022" in out, out
+    assert "multi-variable" in out
+    # WARNING, not ERROR — exit code is still 0.
+    assert rc == 0
