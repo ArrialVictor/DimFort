@@ -46,6 +46,7 @@ from dimfort.core.cache_serde import (
 )
 from dimfort.core.cache_store import CacheStore
 from dimfort.core.diagnostics import AutocastEvent, Diagnostic, Position, Severity
+from dimfort.core.rewrite import suggest_rewrite as _suggest_rewrite
 from dimfort.core.symbols import (
     FuncSig,
     ModuleExports,
@@ -833,6 +834,10 @@ def check_files(
                     line1 = decl_line_for.get(name.lower(), 0)
                     start = Position(line1, 0)
                     end = Position(line1, 0)
+                suggestion = _suggest_rewrite(text, active_table)
+                msg = f"Unit annotation for {name!r}: {exc}"
+                if suggestion is not None:
+                    msg += f"; did you mean {suggestion!r}?"
                 diags.append(
                     Diagnostic(
                         file=str(entry.path),
@@ -840,7 +845,8 @@ def check_files(
                         end=end,
                         severity=Severity.ERROR,
                         code="U002",
-                        message=f"Unit annotation for {name!r}: {exc}",
+                        message=msg,
+                        suggested_rewrite=suggestion,
                     )
                 )
         if unparseable:

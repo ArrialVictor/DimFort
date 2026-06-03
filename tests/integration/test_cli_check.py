@@ -192,3 +192,20 @@ def test_u023_fires_on_assume_on_declaration(tmp_path, capsys):
     assert "U023" in out, out
     assert "@unit_assume" in out
     assert rc == 0
+
+
+def test_u002_includes_suggested_rewrite_for_digit_suffix(tmp_path, capsys):
+    """End-to-end: ``@unit{m2/s}`` is unparseable; the rewrite
+    detector suggests ``m^2/s`` and the U002 message includes
+    'did you mean'."""
+    (tmp_path / "src.f90").write_text(
+        "subroutine s\n"
+        "  real :: a   !< @unit{m2/s}\n"
+        "end subroutine\n"
+    )
+    rc = main(["check", str(tmp_path), "--no-color"])
+    out = capsys.readouterr().out
+    assert "U002" in out, out
+    assert "did you mean" in out
+    assert "'m^2/s'" in out
+    assert rc == 1
