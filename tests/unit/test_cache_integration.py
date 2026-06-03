@@ -214,3 +214,49 @@ def test_unresolved_to_resolved_module_invalidates_consumer(tmp_path: Path):
     assert codes(warm) == codes(cold)
     assert "H001" in codes(warm)
     assert warm.cache_dirty >= 1
+
+
+def test_unit_pattern_change_invalidates_cache(tmp_path: Path):
+    """Changing the configured ``unit_assume_comment_delimiters``
+    must invalidate the cache. Pre-fix bug (caught manually during
+    0.2.2 in-editor testing): the new 0.2.2 pattern config dims
+    weren't in ``PER_FILE_CONFIG_KEYS``, so an LSP whose cache had
+    been written under the default ``@unit_assume{`` pattern would
+    keep replaying assume-derived diagnostics after the user
+    removed that pattern from their toml."""
+    from dimfort.core.unit_patterns import (
+        DEFAULT_ASSUME_PATTERNS,
+        StructuredPattern,
+    )
+
+    src = tmp_path / "a.f90"
+    src.write_text(
+        "subroutine s\n"
+        "  real :: a, b\n"
+        "  a = b   !< @unit_assume{m/s: legacy}\n"
+        "end subroutine\n"
+    )
+    cache = CacheStore(root=tmp_path / ".dimfort-cache")
+
+    check_files([src], cache=cache, cache_mode="read-write")
+
+    # Same source, same other config — only the assume pattern list
+    # differs. Pre-fix this returned a cache HIT.
+    warm = check_files(
+        [src], cache=cache, cache_mode="read-write",
+        assume_patterns=(StructuredPattern(open="[", close="]", sep=":"),),
+    )
+    assert warm.cache_misses == 1
+    assert warm.cache_hits == 0
+    # ``@unit_assume{...}`` no longer recognised → no U020 fires.
+    assert not any(
+        d.code == "U020" for d in warm.diagnostics.get(src.resolve(), [])
+    )
+    # Sanity: restoring the default brings the assume back.
+    restored = check_files(
+        [src], cache=cache, cache_mode="read-write",
+        assume_patterns=DEFAULT_ASSUME_PATTERNS,
+    )
+    assert any(
+        d.code == "U020" for d in restored.diagnostics.get(src.resolve(), [])
+    )

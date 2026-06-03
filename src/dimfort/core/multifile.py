@@ -456,6 +456,9 @@ def _build_cache_config_view(
     units_file: Path | None,
     diagnostic_severities: dict[str, str] | None,
     scale_mode: bool,
+    unit_patterns: tuple[UnitPattern, ...],
+    assume_patterns: tuple[StructuredPattern, ...],
+    affine_patterns: tuple[StructuredPattern, ...],
 ) -> dict[str, object]:
     """Assemble the per-file-affecting config dict for the cache key.
 
@@ -470,6 +473,15 @@ def _build_cache_config_view(
         "units_file_hash": _hash_file(units_file) if units_file else "",
         "diagnostic_severities": dict(diagnostic_severities or {}),
         "scale_mode": scale_mode,
+        "unit_comment_delimiters": [
+            [p.open, p.close] for p in unit_patterns
+        ],
+        "unit_assume_comment_delimiters": [
+            [p.open, p.close, p.sep] for p in assume_patterns
+        ],
+        "unit_affine_comment_delimiters": [
+            [p.open, p.close, p.sep] for p in affine_patterns
+        ],
     }
 
 
@@ -734,6 +746,9 @@ def check_files(
         units_file=units_file,
         diagnostic_severities=diagnostic_severities,
         scale_mode=scale_mode,
+        unit_patterns=unit_patterns,
+        assume_patterns=assume_patterns,
+        affine_patterns=affine_patterns,
     )
 
     for di, entry in enumerate(loaded, start=1):
