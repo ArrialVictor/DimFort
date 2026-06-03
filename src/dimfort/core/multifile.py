@@ -53,6 +53,13 @@ from dimfort.core.symbols import (
     compute_transitive_exports,
     deps_consumed_from_uses,
 )
+from dimfort.core.unit_patterns import (
+    DEFAULT_AFFINE_PATTERNS,
+    DEFAULT_ASSUME_PATTERNS,
+    DEFAULT_UNIT_PATTERNS,
+    StructuredPattern,
+    UnitPattern,
+)
 from dimfort.core.units import UnitError, UnitExpr, UnitTable
 
 # ---------------------------------------------------------------------------
@@ -181,6 +188,9 @@ def _load_one(
     overrides: dict[Path, str],
     cpp_defines: tuple[str, ...] = (),
     include_paths: tuple[Path, ...] = (),
+    unit_patterns: tuple[UnitPattern, ...] = DEFAULT_UNIT_PATTERNS,
+    assume_patterns: tuple[StructuredPattern, ...] = DEFAULT_ASSUME_PATTERNS,
+    affine_patterns: tuple[StructuredPattern, ...] = DEFAULT_AFFINE_PATTERNS,
 ) -> _Loaded:
     """Read source, scan + attach annotations, parse with tree-sitter.
 
@@ -202,7 +212,12 @@ def _load_one(
     from dimfort.core._source_io import read_text
     text = overrides[path] if path in overrides else read_text(path)
     source = text.encode("utf-8")
-    scan = scan_text(text)
+    scan = scan_text(
+        text,
+        unit_patterns=unit_patterns,
+        assume_patterns=assume_patterns,
+        affine_patterns=affine_patterns,
+    )
     attachment = attach(scan)
 
     # cpp short-circuit: even when defines/includes are configured, a
@@ -518,6 +533,9 @@ def check_files(
     units_file: Path | None = None,
     diagnostic_severities: dict[str, str] | None = None,
     scale_mode: bool = False,
+    unit_patterns: tuple[UnitPattern, ...] = DEFAULT_UNIT_PATTERNS,
+    assume_patterns: tuple[StructuredPattern, ...] = DEFAULT_ASSUME_PATTERNS,
+    affine_patterns: tuple[StructuredPattern, ...] = DEFAULT_AFFINE_PATTERNS,
 ) -> WorksetResult:
     """Scan, attach, and check every file in ``sources`` together.
 
@@ -562,6 +580,9 @@ def check_files(
                 overrides=overrides_map,
                 cpp_defines=cpp_defines,
                 include_paths=include_paths,
+                unit_patterns=unit_patterns,
+                assume_patterns=assume_patterns,
+                affine_patterns=affine_patterns,
             ), None
         except OSError as exc:
             return idx, src, None, exc

@@ -14,7 +14,13 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from dimfort.config import StructuredPatternEntry, UnitPatternEntry
+from dimfort.config import (
+    DEFAULT_UNIT_AFFINE_COMMENT_DELIMITERS,
+    DEFAULT_UNIT_ASSUME_COMMENT_DELIMITERS,
+    DEFAULT_UNIT_COMMENT_DELIMITERS,
+    StructuredPatternEntry,
+    UnitPatternEntry,
+)
 
 
 @dataclass(frozen=True)
@@ -146,6 +152,20 @@ def compile_structured_patterns(
     return tuple(
         StructuredPattern(open=e.open, close=e.close, sep=e.sep) for e in entries
     )
+
+
+# Module-level compiled defaults so the scanner can keep its
+# zero-arg call site working in test and ad-hoc tooling. The CLI /
+# LSP override via DimfortConfig.
+DEFAULT_UNIT_PATTERNS: tuple[UnitPattern, ...] = compile_unit_patterns(
+    DEFAULT_UNIT_COMMENT_DELIMITERS
+)
+DEFAULT_ASSUME_PATTERNS: tuple[StructuredPattern, ...] = compile_structured_patterns(
+    DEFAULT_UNIT_ASSUME_COMMENT_DELIMITERS
+)
+DEFAULT_AFFINE_PATTERNS: tuple[StructuredPattern, ...] = compile_structured_patterns(
+    DEFAULT_UNIT_AFFINE_COMMENT_DELIMITERS
+)
 
 
 # ---------------------------------------------------------------------------

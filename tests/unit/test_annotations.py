@@ -49,12 +49,78 @@ def test_preceding_block_with_double_bang():
     assert anns[0].unit_text == "Pa"
 
 
-def test_plain_comment_is_ignored():
-    """A plain ``!`` (no Doxygen marker) is not a unit annotation site."""
-    src = "real :: v   ! @unit{m/s}\n"  # missing > < or !
+def test_plain_comment_trailing_on_decl_is_post():
+    """Spec §3 / §10 expansion: a plain ``!`` containing the default
+    pattern, trailing a declaration line, is now eligible (POST)."""
+    src = "real :: v   ! @unit{m/s}\n"
+    anns, errs = _scan(src)
+    assert errs == ()
+    assert len(anns) == 1
+    assert anns[0].kind is AnnotationKind.POST
+    assert anns[0].unit_text == "m/s"
+
+
+def test_plain_comment_above_decl_is_pre():
+    """Spec §3.2: a plain ``!`` standalone with the very next line a
+    declaration is eligible (PRE)."""
+    src = "! @unit{kg}\nreal :: v\n"
+    anns, errs = _scan(src)
+    assert errs == ()
+    assert len(anns) == 1
+    assert anns[0].kind is AnnotationKind.PRE
+    assert anns[0].unit_text == "kg"
+
+
+def test_plain_comment_on_non_decl_line_is_skipped():
+    """Trailing plain-``!`` on a non-declaration statement is not
+    eligible (spec §3)."""
+    src = (
+        "real :: v\n"
+        "v = 1.0 ! @unit{m/s}\n"
+    )
     anns, errs = _scan(src)
     assert anns == ()
     assert errs == ()
+
+
+def test_plain_comment_standalone_with_blank_then_decl_is_skipped():
+    """Spec §3.2 strict immediacy: blank line between the standalone
+    comment and the declaration disqualifies the comment."""
+    src = (
+        "! @unit{kg}\n"
+        "\n"
+        "real :: v\n"
+    )
+    anns, errs = _scan(src)
+    assert anns == ()
+    assert errs == ()
+
+
+def test_plain_comment_above_non_decl_is_skipped():
+    """A standalone comment whose next line is a statement (not a
+    declaration) is not eligible."""
+    src = (
+        "! @unit{kg}\n"
+        "v = 1.0\n"
+    )
+    anns, errs = _scan(src)
+    assert anns == ()
+    assert errs == ()
+
+
+def test_two_plain_comments_only_last_eligible():
+    """Spec §3.2: 'no second comment line between'. With two stacked
+    plain-``!`` comments above a decl, only the one adjacent to the
+    decl is eligible."""
+    src = (
+        "! first prose only\n"
+        "! @unit{Pa}\n"
+        "real :: p\n"
+    )
+    anns, _ = _scan(src)
+    assert len(anns) == 1
+    assert anns[0].kind is AnnotationKind.PRE
+    assert anns[0].unit_text == "Pa"
 
 
 def test_bang_inside_string_is_not_a_comment():
@@ -197,3 +263,98 @@ def test_affine_does_not_collide_with_unit_or_assume():
     assert res.annotations == ()
     assert res.assumes == ()
     assert len(res.affine_conversions) == 1
+
+
+# ---------------------------------------------------------------------------
+# Configured patterns (0.2.2 — spec §2)
+# ---------------------------------------------------------------------------
+
+
+def test_bracket_pattern_trailing_on_decl():
+    """A user-configured ``[``/``]`` pattern recognises ``[m/s]`` as
+    a trailing unit on a decl line."""
+    from dimfort.core.unit_patterns import UnitPattern
+    src = "real :: v   ! horizontal wind speed [m/s]\n"
+    res = scan_text(
+        src,
+        unit_patterns=(
+            UnitPattern(open="@unit{", close="}"),
+            UnitPattern(open="[", close="]"),
+        ),
+    )
+    assert len(res.annotations) == 1
+    assert res.annotations[0].kind is AnnotationKind.POST
+    assert res.annotations[0].unit_text == "m/s"
+
+
+def test_first_listed_pattern_wins():
+    """Spec §8.1: with both ``@unit{}`` and ``[``/``]`` configured,
+    ``@unit{}`` wins regardless of position in the comment."""
+    from dimfort.core.unit_patterns import UnitPattern
+    src = "real :: v   !< wind speed [m/s] @unit{kg}\n"
+    res = scan_text(
+        src,
+        unit_patterns=(
+            UnitPattern(open="@unit{", close="}"),
+            UnitPattern(open="[", close="]"),
+        ),
+    )
+    assert len(res.annotations) == 1
+    assert res.annotations[0].unit_text == "kg"
+    # The bracket capture differs → recorded as a pattern conflict
+    # for the future U021 emitter.
+    assert len(res.pattern_conflicts) == 1
+    c = res.pattern_conflicts[0]
+    assert c.directive == "@unit"
+    assert c.first_unit_text == "kg"
+    assert c.second_unit_text == "m/s"
+
+
+def test_identical_captures_no_conflict():
+    """Spec §8.2: identical text across patterns is silent."""
+    from dimfort.core.unit_patterns import UnitPattern
+    src = "real :: v   !< @unit{m/s} also [m/s]\n"
+    res = scan_text(
+        src,
+        unit_patterns=(
+            UnitPattern(open="@unit{", close="}"),
+            UnitPattern(open="[", close="]"),
+        ),
+    )
+    assert len(res.annotations) == 1
+    assert res.annotations[0].unit_text == "m/s"
+    assert res.pattern_conflicts == ()
+
+
+def test_structured_pattern_assume_via_brackets():
+    """A bracket-configured assume pattern works on a plain ``!``
+    above an assignment-bearing decl line."""
+    from dimfort.core.unit_patterns import StructuredPattern
+    src = "real :: tracer_eff   ! eff. surface ratio [m^2: Andreas 1989]\n"
+    res = scan_text(
+        src,
+        assume_patterns=(
+            StructuredPattern(open="@unit_assume{", close="}", sep=":"),
+            StructuredPattern(open="[", close="]", sep=":"),
+        ),
+    )
+    assert len(res.assumes) == 1
+    assert res.assumes[0].unit_text == "m^2"
+    assert res.assumes[0].reason == "Andreas 1989"
+
+
+def test_structured_pattern_affine_via_brackets():
+    from dimfort.core.unit_patterns import StructuredPattern
+    src = "real :: sst_k = sst_c + 273.15   !< [degC -> K]\n"
+    res = scan_text(
+        src,
+        affine_patterns=(
+            StructuredPattern(
+                open="@unit_affine_conversion{", close="}", sep="->"
+            ),
+            StructuredPattern(open="[", close="]", sep="->"),
+        ),
+    )
+    assert len(res.affine_conversions) == 1
+    assert res.affine_conversions[0].src == "degC"
+    assert res.affine_conversions[0].tgt == "K"

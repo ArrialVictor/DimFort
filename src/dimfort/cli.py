@@ -194,6 +194,10 @@ def _run_check(args: argparse.Namespace) -> int:
     from dimfort.core import unit_config  # populate DEFAULT_TABLE
     from dimfort.core._source_io import FORTRAN_EXTS, discover_fortran_files
     from dimfort.core.multifile import check_files
+    from dimfort.core.unit_patterns import (
+        compile_structured_patterns,
+        compile_unit_patterns,
+    )
 
     roots: list[Path] = []
     for raw in args.paths:
@@ -267,6 +271,13 @@ def _run_check(args: argparse.Namespace) -> int:
             units_file=config.units_file,
             diagnostic_severities=config.diagnostic_severities,
             scale_mode=getattr(args, "scale", False) or config.scale_mode,
+            unit_patterns=compile_unit_patterns(config.unit_comment_delimiters),
+            assume_patterns=compile_structured_patterns(
+                config.unit_assume_comment_delimiters
+            ),
+            affine_patterns=compile_structured_patterns(
+                config.unit_affine_comment_delimiters
+            ),
         )
 
     if cache_obj is not None and cache_mode == "read-write":
@@ -350,6 +361,10 @@ def _run_interactions(args: argparse.Namespace) -> int:
     from dimfort.core._source_io import FORTRAN_EXTS, discover_fortran_files
     from dimfort.core.interactions import collect_interactions
     from dimfort.core.multifile import check_files
+    from dimfort.core.unit_patterns import (
+        compile_structured_patterns,
+        compile_unit_patterns,
+    )
 
     roots: list[Path] = []
     for raw in args.paths:
@@ -379,6 +394,13 @@ def _run_interactions(args: argparse.Namespace) -> int:
         external_modules=frozenset(config.external_modules),
         units_file=config.units_file,
         scale_mode=args.scale or config.scale_mode,
+        unit_patterns=compile_unit_patterns(config.unit_comment_delimiters),
+        assume_patterns=compile_structured_patterns(
+            config.unit_assume_comment_delimiters
+        ),
+        affine_patterns=compile_structured_patterns(
+            config.unit_affine_comment_delimiters
+        ),
     )
 
     report = collect_interactions(

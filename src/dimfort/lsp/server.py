@@ -75,6 +75,10 @@ from dimfort.core.diagnostics import (
     set_severity_overrides,
 )
 from dimfort.core.multifile import check_files
+from dimfort.core.unit_patterns import (
+    compile_structured_patterns,
+    compile_unit_patterns,
+)
 from dimfort.core.workspace_index import (
     resolve_workset,
     scan_workspace,
@@ -359,6 +363,15 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
             units_file=state.project_config.units_file,
             diagnostic_severities=state.project_config.diagnostic_severities,
             scale_mode=state.scale_mode,
+            unit_patterns=compile_unit_patterns(
+                state.project_config.unit_comment_delimiters
+            ),
+            assume_patterns=compile_structured_patterns(
+                state.project_config.unit_assume_comment_delimiters
+            ),
+            affine_patterns=compile_structured_patterns(
+                state.project_config.unit_affine_comment_delimiters
+            ),
         )
     except Exception:
         log.exception("dimfort pipeline crashed on %s", active)
@@ -1060,6 +1073,15 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
                 units_file=state.project_config.units_file,
                 diagnostic_severities=state.project_config.diagnostic_severities,
                 scale_mode=state.scale_mode,
+                unit_patterns=compile_unit_patterns(
+                    state.project_config.unit_comment_delimiters
+                ),
+                assume_patterns=compile_structured_patterns(
+                    state.project_config.unit_assume_comment_delimiters
+                ),
+                affine_patterns=compile_structured_patterns(
+                    state.project_config.unit_affine_comment_delimiters
+                ),
             )
         except Exception:
             log.exception("workspace check failed")
