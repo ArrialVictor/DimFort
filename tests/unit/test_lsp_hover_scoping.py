@@ -888,3 +888,69 @@ def test_hover_setting_parsed_from_init_options():
         assert _srv._features.hover == "short"
     finally:
         _srv._features.hover = "short"
+
+
+def test_u002_rewrite_action(tmp_path: Path):
+    """The U002 unparseable-unit diagnostic offers a "Replace with
+    `<suggestion>`" quick action that edits just the inner unit
+    text inside the directive token."""
+    pygls_lsp = pytest.importorskip("lsprotocol.types")
+    src = (
+        "subroutine demo\n"
+        "  real :: a   !< @unit{m2/s}\n"
+        "end subroutine\n"
+    )
+    f = tmp_path / "qf002.f90"
+    f.write_text(src)
+    result = check_files([f])
+    with _server.state.last_result_lock:
+        _server.state.last_result = result
+    try:
+        class _Doc:
+            def __init__(self, text: str):
+                self.lines = text.splitlines(keepends=True)
+        u002 = next(
+            d for d in result.diagnostics[f.resolve()]
+            if d.code == "U002"
+        )
+        assert u002.suggested_rewrite == "m^2/s"
+        diag_range = pygls_lsp.Range(
+            start=pygls_lsp.Position(
+                line=u002.start.line - 1, character=u002.start.column - 1
+            ),
+            end=pygls_lsp.Position(
+                line=u002.end.line - 1, character=u002.end.column - 1
+            ),
+        )
+        text_doc = pygls_lsp.TextDocumentIdentifier(uri=f.resolve().as_uri())
+        diag_lsp = pygls_lsp.Diagnostic(
+            range=diag_range, message=u002.message, code=u002.code,
+            severity=pygls_lsp.DiagnosticSeverity.Error,
+            data={"suggested_rewrite": u002.suggested_rewrite},
+        )
+        ctx = pygls_lsp.CodeActionContext(diagnostics=[diag_lsp])
+        cap = pygls_lsp.CodeActionParams(
+            text_document=text_doc, range=diag_range, context=ctx,
+        )
+        actions = _code_action._u002_rewrite_actions(cap, _Doc(src))
+    finally:
+        with _server.state.last_result_lock:
+            _server.state.last_result = None
+
+    assert len(actions) == 1
+    action = actions[0]
+    assert "Replace with 'm^2/s'" in action.title
+    assert action.is_preferred is True
+    assert action.edit is not None
+    [(uri, edits)] = list(action.edit.changes.items())
+    assert uri == f.resolve().as_uri()
+    assert len(edits) == 1
+    edit = edits[0]
+    assert edit.new_text == "m^2/s"
+    # Edit range covers just the inner captured text (between
+    # ``{`` and ``}``), not the whole ``@unit{...}`` token.
+    src_line = src.splitlines(keepends=False)[edit.range.start.line]
+    open_at = src_line.index("@unit{") + len("@unit{")
+    close_at = src_line.index("}", open_at)
+    assert edit.range.start.character == open_at
+    assert edit.range.end.character == close_at

@@ -239,6 +239,12 @@ def _to_lsp_diagnostic(d: Diagnostic) -> lsp.Diagnostic:
     end_col = max(d.end.column - 1, 0)
     if (end_line, end_col) <= (start_line, start_col):
         end_col = start_col + 1
+    data: dict[str, str] | None = None
+    if d.suggested_rewrite is not None:
+        # Carried into the code-action provider via `params.context.
+        # diagnostics`; spec §12 + task #9 turn it into a "Replace
+        # with …" quick-fix.
+        data = {"suggested_rewrite": d.suggested_rewrite}
     return lsp.Diagnostic(
         range=lsp.Range(
             start=lsp.Position(line=start_line, character=start_col),
@@ -248,6 +254,7 @@ def _to_lsp_diagnostic(d: Diagnostic) -> lsp.Diagnostic:
         code=d.code,
         source="DimFort",
         message=d.message,
+        data=data,
     )
 
 
