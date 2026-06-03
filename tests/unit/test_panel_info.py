@@ -951,7 +951,10 @@ def test_build_scope_vars_marks_unparseable_as_error(tmp_path: Path):
     }
     assert by_name["a"]["kind"] == "annotated"
     assert by_name["b"]["kind"] == "error"
-    assert by_name["b"]["unit"] == "??"  # raw text preserved for display
+    # The unparseable text is hidden — surfacing it as the var's unit
+    # in the panel would imply DimFort accepts it. The 'error' kind
+    # still drives the unparseable badge in the UI.
+    assert by_name["b"]["unit"] is None
     assert by_name["c"]["kind"] == "unannotated"
 
     # Without the set, 'b' falls back to 'annotated' (it has text) —

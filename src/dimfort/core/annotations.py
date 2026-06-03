@@ -61,6 +61,7 @@ class RawAnnotation:
     line: int        # 1-based physical line of the comment
     column: int      # 1-based column where `@unit{` begins
     unit_text: str   # raw inner text between `{` and `}`, untrimmed of surrounding spaces stripped
+    end_column: int = 0  # 1-based column one past the closing delimiter
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,7 @@ class RawAffineConv:
     column: int      # 1-based column where `@unit_affine_conversion{` begins
     src: str         # source unit name, e.g. "degC"
     tgt: str         # target unit name, e.g. "K"
+    end_column: int = 0  # 1-based column one past the closing delimiter
 
 
 @dataclass(frozen=True)
@@ -107,6 +109,10 @@ class MalformedAnnotation:
     line: int
     column: int
     reason: str
+    # 1-based column one past the closing delimiter of the offending
+    # token. When ``0`` (back-compat default), the U001 emitter widens
+    # to ``column + 1`` so the squiggle covers at least one character.
+    end_column: int = 0
 
 
 @dataclass(frozen=True)
@@ -123,28 +129,10 @@ class WrongStatementKind:
 
     line: int
     column: int
+    end_column: int               # 1-based column one past the closing delimiter
     directive_found: str          # e.g. "@unit_assume"
     landed_on: str                # "declaration" / "assignment"
     expected_directive: str       # what would attach correctly here
-
-
-@dataclass(frozen=True)
-class MultiVarSkip:
-    """A non-canonical ``@unit`` pattern matched a plain-``!`` comment
-    on a multi-variable declaration; the match was dropped per spec
-    §6. Emitted as U022 by the diagnostic layer.
-
-    Rationale: bracket-style delimiters like ``[m/s]`` are ambiguous
-    about whether they apply to all variables on the line or just
-    one, so we refuse to guess. The default ``@unit{...}`` form
-    attaches to all names and is unaffected.
-    """
-
-    line: int
-    column: int               # 1-based column of the matched pattern
-    pattern_open: str
-    pattern_close: str
-    var_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -159,6 +147,7 @@ class PatternConflict:
 
     line: int
     column: int                   # 1-based column of the LATER pattern's open
+    end_column: int               # 1-based column one past its closing delimiter
     directive: str                # "@unit" / "@unit_assume" / "@unit_affine_conversion"
     first_unit_text: str          # winner capture
     second_unit_text: str         # loser capture
@@ -301,20 +290,28 @@ def _select_unit(
 
     annotations: list[RawAnnotation] = []
     errors: list[MalformedAnnotation] = []
-    if first.unit_text == "":
+    if len(winner_hits) > 1:
+        # Multiple captures on one line — ambiguous intent. Drop ALL
+        # captures so the variable surfaces as unannotated (U005 will
+        # nudge the user to fix the comment) rather than silently
+        # picking the first match. Every capture site is flagged so
+        # the user sees the full extent of the ambiguity.
+        for extra in winner_hits:
+            errors.append(MalformedAnnotation(
+                line_no, body_col_offset + extra.start,
+                f"more than one {_UNIT_DIR_NAME} on one line",
+                end_column=body_col_offset + extra.end,
+            ))
+    elif first.unit_text == "":
         errors.append(MalformedAnnotation(
             line_no, col, f"empty {winner_pat.open}{winner_pat.close}",
+            end_column=body_col_offset + first.end,
         ))
     else:
         annotations.append(RawAnnotation(
-            kind=kind, line=line_no, column=col, unit_text=first.unit_text,
-        ))
-    # Preserve "more than one @unit on one line" for additional matches
-    # of the winner pattern only.
-    for extra in winner_hits[1:]:
-        errors.append(MalformedAnnotation(
-            line_no, body_col_offset + extra.start,
-            f"more than one {_UNIT_DIR_NAME} on one line",
+            kind=kind, line=line_no, column=col,
+            unit_text=first.unit_text,
+            end_column=body_col_offset + first.end,
         ))
 
     conflicts: list[PatternConflict] = []
@@ -323,6 +320,7 @@ def _select_unit(
         if other.unit_text and other.unit_text != first.unit_text:
             conflicts.append(PatternConflict(
                 line=line_no, column=body_col_offset + other.start,
+                end_column=body_col_offset + other.end,
                 directive=_UNIT_DIR_NAME,
                 first_unit_text=first.unit_text,
                 second_unit_text=other.unit_text,
@@ -376,25 +374,29 @@ def _select_assume(
 
     assumes: list[RawAssume] = []
     errors: list[MalformedAnnotation] = []
-    if first.unit_text == "":
+    if len(winner_hits) > 1:
+        for extra in winner_hits:
+            errors.append(MalformedAnnotation(
+                line_no, body_col_offset + extra.start,
+                f"more than one {_ASSUME_DIR_NAME} on one line",
+                end_column=body_col_offset + extra.end,
+            ))
+    elif first.unit_text == "":
         errors.append(MalformedAnnotation(
             line_no, col, f"empty unit in {_ASSUME_DIR_NAME}",
+            end_column=end_col,
         ))
     elif not first.payload:
         errors.append(MalformedAnnotation(
             line_no, col,
             f"empty reason in {_ASSUME_DIR_NAME} "
             "(a justification is required)",
+            end_column=end_col,
         ))
     else:
         assumes.append(RawAssume(
             line=line_no, column=col, end_column=end_col,
             unit_text=first.unit_text, reason=first.payload,
-        ))
-    for extra in winner_hits[1:]:
-        errors.append(MalformedAnnotation(
-            line_no, body_col_offset + extra.start,
-            f"more than one {_ASSUME_DIR_NAME} on one line",
         ))
 
     conflicts: list[PatternConflict] = []
@@ -403,6 +405,7 @@ def _select_assume(
         if other.unit_text and other.unit_text != first.unit_text:
             conflicts.append(PatternConflict(
                 line=line_no, column=body_col_offset + other.start,
+                end_column=body_col_offset + other.end,
                 directive=_ASSUME_DIR_NAME,
                 first_unit_text=first.unit_text,
                 second_unit_text=other.unit_text,
@@ -457,6 +460,7 @@ def _select_affine(
                 return [RawAffineConv(
                     line=line_no, column=body_col_offset + i,
                     src=src, tgt=tgt,
+                    end_column=body_col_offset + close_at + len(pat.close),
                 )], [], []
             return [], [MalformedAnnotation(
                 line_no, body_col_offset + i,
@@ -494,19 +498,23 @@ def _select_affine(
     errors: list[MalformedAnnotation] = []
     src = first.unit_text
     tgt = first.payload or ""
-    if not src or not tgt:
+    if len(winner_hits) > 1:
+        for extra in winner_hits:
+            errors.append(MalformedAnnotation(
+                line_no, body_col_offset + extra.start,
+                f"more than one {_AFFINE_DIR_NAME} on one line",
+                end_column=body_col_offset + extra.end,
+            ))
+    elif not src or not tgt:
         errors.append(MalformedAnnotation(
             line_no, col,
             f"empty source or target unit in {_AFFINE_DIR_NAME}",
+            end_column=body_col_offset + first.end,
         ))
     else:
         affines.append(RawAffineConv(
             line=line_no, column=col, src=src, tgt=tgt,
-        ))
-    for extra in winner_hits[1:]:
-        errors.append(MalformedAnnotation(
-            line_no, body_col_offset + extra.start,
-            f"more than one {_AFFINE_DIR_NAME} on one line",
+            end_column=body_col_offset + first.end,
         ))
 
     conflicts: list[PatternConflict] = []
@@ -515,6 +523,7 @@ def _select_affine(
         if other.unit_text and other.unit_text != first.unit_text:
             conflicts.append(PatternConflict(
                 line=line_no, column=body_col_offset + other.start,
+                end_column=body_col_offset + other.end,
                 directive=_AFFINE_DIR_NAME,
                 first_unit_text=first.unit_text,
                 second_unit_text=other.unit_text,
@@ -576,11 +585,6 @@ class ScanResult:
     # text. Empty for the default single-pattern config. Consumed by
     # the U021 emitter (task #6).
     pattern_conflicts: tuple[PatternConflict, ...] = ()
-    # Multi-variable plain-``!`` skip events (spec §6). Each entry
-    # marks a non-canonical ``@unit`` pattern that matched a bare
-    # ``!`` comment attached to a declaration with more than one
-    # name; the match was dropped. Consumed by the U022 emitter.
-    multi_var_skips: tuple[MultiVarSkip, ...] = ()
     # Wrong-statement-kind events (spec §8.3 → U023). A directive
     # landed on a statement of a kind it does not target; the
     # directive is dropped.
@@ -633,7 +637,6 @@ def scan_text(
     affine_conversions: list[RawAffineConv] = []
     pre_block_lines: set[int] = set()
     pattern_conflicts: list[PatternConflict] = []
-    multi_var_skips: list[MultiVarSkip] = []
     wrong_statement_kinds: list[WrongStatementKind] = []
 
     def _line_in_decl(ln: int) -> bool:
@@ -652,7 +655,6 @@ def scan_text(
         marker_kind = _doxygen_kind(comment)
 
         kind: AnnotationKind
-        is_plain = False
         if marker_kind is not None:
             # Doxygen-marked: kind from marker; body skips the marker
             # character. Pattern matching is config-driven (spec §4).
@@ -670,39 +672,16 @@ def scan_text(
             kind = plain_kind
             body = comment
             body_col_offset = col + 2
-            is_plain = True
 
-        u_anns, u_errs, u_confs, u_winner_idx = _select_unit(
+        u_anns, u_errs, u_confs, _u_winner_idx = _select_unit(
             body, line_no, body_col_offset, kind, unit_patterns,
         )
-        # Spec §6: a non-canonical pattern that matched a plain-`!`
-        # comment on a multi-variable declaration is dropped. The
-        # canonical `@unit{...}` entry continues to attach to all
-        # names on the line, as today's `!<` does.
-        if (
-            is_plain
-            and u_winner_idx is not None
-            and u_anns
-        ):
-            decl_for_check: DeclarationSite | None
-            if kind is AnnotationKind.POST:
-                decl_for_check = decl_covered.get(line_no)
-            else:
-                decl_for_check = decl_starts.get(line_no + 1)
-            winner = unit_patterns[u_winner_idx]
-            if (
-                decl_for_check is not None
-                and len(decl_for_check.names) > 1
-                and not _is_canonical_unit_pattern(winner)
-            ):
-                multi_var_skips.append(MultiVarSkip(
-                    line=u_anns[0].line,
-                    column=u_anns[0].column,
-                    pattern_open=winner.open,
-                    pattern_close=winner.close,
-                    var_names=decl_for_check.names,
-                ))
-                u_anns = []
+        # Spec §6 (post-Q1): every configured pattern attaches to all
+        # names on a multi-variable declaration, same as canonical
+        # ``@unit{...}``. Authors who want different units per name
+        # write multiple matches on the line (``! [m] [s]``), which
+        # fires today's "more than one … on one line" malformed
+        # diagnostic and asks them to split the declaration.
         annotations.extend(u_anns)
         errors.extend(u_errs)
         pattern_conflicts.extend(u_confs)
@@ -720,6 +699,7 @@ def scan_text(
             for a in a_anns:
                 wrong_statement_kinds.append(WrongStatementKind(
                     line=a.line, column=a.column,
+                    end_column=a.end_column,
                     directive_found=_ASSUME_DIR_NAME,
                     landed_on="declaration",
                     expected_directive=_UNIT_DIR_NAME,
@@ -737,6 +717,7 @@ def scan_text(
             for fa in f_anns:
                 wrong_statement_kinds.append(WrongStatementKind(
                     line=fa.line, column=fa.column,
+                    end_column=fa.end_column,
                     directive_found=_AFFINE_DIR_NAME,
                     landed_on="declaration",
                     expected_directive=_UNIT_DIR_NAME,
@@ -758,19 +739,9 @@ def scan_text(
         assumes=tuple(assumes),
         affine_conversions=tuple(affine_conversions),
         pattern_conflicts=tuple(pattern_conflicts),
-        multi_var_skips=tuple(multi_var_skips),
         wrong_statement_kinds=tuple(wrong_statement_kinds),
         assignment_line_ranges=tuple(assignment_ranges),
     )
-
-
-def _is_canonical_unit_pattern(pat: UnitPattern) -> bool:
-    """``@unit{...}`` is the spec's universal escape; per §6 it is
-    exempt from the multi-var skip rule. Identified by exact literal
-    open/close delimiters — a user-configured entry with different
-    text doesn't qualify (and shouldn't).
-    """
-    return pat.open == "@unit{" and pat.close == "}"
 
 
 def _classify_plain_comment(

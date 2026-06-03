@@ -464,9 +464,19 @@ def _decl_rows(
             kind = "error"
         else:
             kind = "annotated"
+        # Unparseable annotation → treat the variable as effectively
+        # unitless for display. The U002 squiggle already tells the
+        # user *what* they wrote; surfacing it as the var's unit in
+        # the panel would imply DimFort accepts it, which it doesn't.
+        # ``kind == "error"`` stays so the panel can render the
+        # unparseable badge.
+        if kind == "error":
+            display_unit: str | None = None
+        else:
+            display_unit = unit_text if unit_text else None
         rows.append({
             "name": vname,
-            "unit": unit_text if unit_text else None,
+            "unit": display_unit,
             "unitNormalized": (
                 _normalized_unit(unit_text, scale_mode=scale_mode)
                 if unit_text and kind == "annotated" else None

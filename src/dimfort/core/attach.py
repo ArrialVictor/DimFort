@@ -54,6 +54,11 @@ class OrphanAnnotation:
     # to U023 when the target line hosts a non-declaration statement
     # (spec §8.3).
     target_line: int = 0
+    # 1-based column one past the closing delimiter of the annotation's
+    # source token (e.g. one past ``}`` in ``@unit{m/s}``). The U023
+    # reroute emitter widens its diagnostic range with this so the
+    # squiggle covers the whole token rather than a single character.
+    end_column: int = 0
 
 
 @dataclass(frozen=True)
@@ -269,6 +274,7 @@ def attach(scan: ScanResult) -> AttachmentResult:
                     unit_text=ann.unit_text,
                     reason=orphan_reason,
                     target_line=target_line,
+                    end_column=ann.end_column,
                 )
             )
             continue

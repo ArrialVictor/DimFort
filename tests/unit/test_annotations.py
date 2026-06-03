@@ -185,14 +185,16 @@ def test_unclosed_brace_emits_error():
     assert "unclosed" in errs[0].reason
 
 
-def test_multiple_unit_on_one_line_keeps_first_flags_rest():
-    """Two ``@unit{...}`` on one comment line: keep the first, flag the rest as 'more than one'."""
+def test_multiple_unit_on_one_line_drops_all_flags_each():
+    """Two ``@unit{...}`` on one comment line: ambiguous intent. No
+    annotation attaches (the variable surfaces as unannotated and
+    fires U005 downstream if used in math). Every capture site is
+    flagged with U001 so the user sees the full extent."""
     src = "real :: v !< @unit{m} @unit{s}\n"
     anns, errs = _scan(src)
-    assert len(anns) == 1
-    assert anns[0].unit_text == "m"
-    assert len(errs) == 1
-    assert "more than one" in errs[0].reason
+    assert anns == ()
+    assert len(errs) == 2
+    assert all("more than one" in e.reason for e in errs)
 
 
 def test_multi_line_block_collects_each_annotation():
@@ -374,14 +376,14 @@ def test_structured_pattern_affine_via_brackets():
 
 
 # ---------------------------------------------------------------------------
-# Multi-var skip + U022 (spec §6)
+# Multi-var declarations (spec §6 — unified)
 # ---------------------------------------------------------------------------
 
 
-def test_plain_relax_pattern_on_multivar_decl_is_skipped():
-    """Spec §6: a non-canonical pattern matched on a plain-`!`
-    comment trailing a multi-var declaration is dropped, and a
-    MultiVarSkip record is produced for the U022 emitter."""
+def test_multivar_with_non_canonical_pattern_attaches_to_all():
+    """Spec §6 (Q1-unified): a configured `[...]` pattern attaches to
+    every name on a multi-variable declaration, same as the canonical
+    `@unit{...}` form."""
     from dimfort.core.unit_patterns import UnitPattern
     src = "real :: a, b, c   ! [m/s]\n"
     res = scan_text(
@@ -391,64 +393,27 @@ def test_plain_relax_pattern_on_multivar_decl_is_skipped():
             UnitPattern(open="[", close="]"),
         ),
     )
-    assert res.annotations == ()
-    assert len(res.multi_var_skips) == 1
-    skip = res.multi_var_skips[0]
-    assert skip.pattern_open == "["
-    assert skip.pattern_close == "]"
-    assert skip.var_names == ("a", "b", "c")
+    assert len(res.annotations) == 1
+    assert res.annotations[0].unit_text == "m/s"
 
 
-def test_plain_canonical_pattern_on_multivar_still_attaches():
-    """The default `@unit{...}` entry is the universal escape — even
-    on a plain-`!` trailing a multi-var decl, it attaches to all
-    names (no U022)."""
+def test_multivar_with_canonical_pattern_still_attaches_to_all():
+    """The legacy behavior is preserved: `! @unit{m/s}` on
+    `real :: a, b, c` attaches to all three."""
     src = "real :: a, b, c   ! @unit{m/s}\n"
     res = scan_text(src)
-    assert res.multi_var_skips == ()
     assert len(res.annotations) == 1
     assert res.annotations[0].unit_text == "m/s"
 
 
-def test_doxygen_marker_on_multivar_with_relax_pattern_still_attaches():
-    """Spec §6 limits the skip to plain `!`. A Doxygen-marked
-    comment with a non-canonical pattern on a multi-var decl keeps
-    attaching (matches today's `!<` semantics)."""
+def test_multivar_two_patterns_on_one_line_fires_more_than_one():
+    """Per §6 safety-net: writing two captures of the same pattern
+    on one line is ambiguous — no annotation attaches (every variable
+    on the line surfaces as unannotated), and both capture sites are
+    flagged 'more than one … on one line' so the author sees the
+    full extent of the ambiguity."""
     from dimfort.core.unit_patterns import UnitPattern
-    src = "real :: a, b, c   !< [m/s]\n"
-    res = scan_text(
-        src,
-        unit_patterns=(
-            UnitPattern(open="@unit{", close="}"),
-            UnitPattern(open="[", close="]"),
-        ),
-    )
-    assert res.multi_var_skips == ()
-    assert len(res.annotations) == 1
-    assert res.annotations[0].unit_text == "m/s"
-
-
-def test_plain_relax_on_single_var_decl_attaches_normally():
-    """No skip for single-variable declarations."""
-    from dimfort.core.unit_patterns import UnitPattern
-    src = "real :: v   ! [m/s]\n"
-    res = scan_text(
-        src,
-        unit_patterns=(
-            UnitPattern(open="@unit{", close="}"),
-            UnitPattern(open="[", close="]"),
-        ),
-    )
-    assert res.multi_var_skips == ()
-    assert len(res.annotations) == 1
-    assert res.annotations[0].unit_text == "m/s"
-
-
-def test_plain_relax_pre_above_multivar_is_skipped():
-    """The skip rule fires in PRE position too — the comment stands
-    alone immediately above a multi-var declaration."""
-    from dimfort.core.unit_patterns import UnitPattern
-    src = "! [m/s]\nreal :: a, b\n"
+    src = "real :: a, b   ! [m] [s]\n"
     res = scan_text(
         src,
         unit_patterns=(
@@ -457,8 +422,7 @@ def test_plain_relax_pre_above_multivar_is_skipped():
         ),
     )
     assert res.annotations == ()
-    assert len(res.multi_var_skips) == 1
-    assert res.multi_var_skips[0].var_names == ("a", "b")
+    assert sum(1 for e in res.errors if "more than one" in e.reason) == 2
 
 
 # ---------------------------------------------------------------------------

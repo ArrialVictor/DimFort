@@ -336,11 +336,12 @@ def _attachment_diags(
             lo <= check_line <= hi for lo, hi in assignment_line_ranges
         )
         if on_assignment:
+            end_col = orph.end_column or (orph.column + 1)
             out.append(
                 Diagnostic(
                     file=file,
                     start=Position(orph.line, orph.column),
-                    end=Position(orph.line, orph.column),
+                    end=Position(orph.line, end_col),
                     severity=Severity.WARNING,
                     code="U023",
                     message=(
@@ -748,7 +749,7 @@ def check_files(
                 Diagnostic(
                     file=str(entry.path),
                     start=Position(wsk.line, wsk.column),
-                    end=Position(wsk.line, wsk.column),
+                    end=Position(wsk.line, wsk.end_column or wsk.column + 1),
                     severity=Severity.WARNING,
                     code="U023",
                     message=(
@@ -760,14 +761,18 @@ def check_files(
                 )
             )
         for err in getattr(entry.scan, "errors", ()):
+            end_col = getattr(err, "end_column", 0) or (err.column + 1)
+            msg = err.reason
+            if msg and not msg[:1].isupper():
+                msg = msg[:1].upper() + msg[1:]
             diags.append(
                 Diagnostic(
                     file=str(entry.path),
                     start=Position(err.line, err.column),
-                    end=Position(err.line, err.column),
+                    end=Position(err.line, end_col),
                     severity=Severity.ERROR,
                     code="U001",
-                    message=err.reason,
+                    message=msg,
                 )
             )
         for conf in getattr(entry.scan, "pattern_conflicts", ()):
@@ -775,7 +780,7 @@ def check_files(
                 Diagnostic(
                     file=str(entry.path),
                     start=Position(conf.line, conf.column),
-                    end=Position(conf.line, conf.column),
+                    end=Position(conf.line, conf.end_column or conf.column + 1),
                     severity=Severity.WARNING,
                     code="U021",
                     message=(
@@ -784,24 +789,6 @@ def check_files(
                         f"applied; another configured pattern matched "
                         f"with {conf.second_unit_text!r}. Clarify by "
                         f"keeping only one form."
-                    ),
-                )
-            )
-        for skip in getattr(entry.scan, "multi_var_skips", ()):
-            names = ", ".join(skip.var_names)
-            diags.append(
-                Diagnostic(
-                    file=str(entry.path),
-                    start=Position(skip.line, skip.column),
-                    end=Position(skip.line, skip.column),
-                    severity=Severity.WARNING,
-                    code="U022",
-                    message=(
-                        f"Pattern '{skip.pattern_open}…{skip.pattern_close}' "
-                        f"matched a plain-! comment on a multi-variable "
-                        f"declaration ({names}); skipped. Use explicit "
-                        f"@unit{{...}} per variable, or split the "
-                        f"declaration."
                     ),
                 )
             )

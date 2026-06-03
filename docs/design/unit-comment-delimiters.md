@@ -178,20 +178,26 @@ shape on a bare `!` is now also accepted.
 
 ## 6. Multi-variable declarations
 
-`!<` on a multi-variable declaration applies the unit to **all** names
-on the declaration. This is the current behavior and is **unchanged**.
+A unit annotation on a multi-variable declaration applies to **all**
+names on the declaration, regardless of which pattern (canonical
+`@unit{...}` or a user-configured `[...]`) matched. Treatment is
+unified across pattern types — once a project has opted into a
+pattern via `.dimfort.toml`, the project-level configuration is
+itself the explicit gesture, no weaker than typing `@unit{...}`.
 
-For the new plain-`!` patterns, a multi-variable declaration is
-**not** matched by relax-style patterns. If a configured pattern (other
-than the default `@unit{...}` entry) would match a plain-`!` comment on
-a multi-variable declaration line, the match is **skipped** and a new
-diagnostic (§9, **U022**) fires advising the user to either split the
-declaration or annotate per-variable with explicit `@unit{}`.
+If the author wants different units per name, they write multiple
+matches on one line (`! [m] [s]`), which fires the existing
+"more than one … on one line" malformed-annotation diagnostic and
+asks the author to split the declaration — the same safety net that
+already applies to `@unit{...}`.
 
-Rationale: bare delimiters like `[m/s]` are ambiguous about whether
-they apply to all variables on the line or just one, and a per-project
-configurable scanner should not bet on author intent. Explicit
-`@unit{}` is the universal escape.
+(Historic note: an earlier draft of this spec emitted U022 to skip
+non-canonical patterns on multi-var decls. That was reverted before
+0.2.2 ship because the divergence between canonical and configured
+patterns confused users with no DimFort history. The unified rule
+is safer and simpler: any single annotation on a multi-var decl is
+treated as applying to all of them, and an author who meant only
+one writes one explicit annotation per variable.)
 
 ## 7. Continuation lines
 
@@ -273,11 +279,6 @@ only distinguishes statement *kind*, not statement *shape*.
   Multiple configured patterns matched the same comment and captured
   different unit text. The first-listed pattern's capture is applied;
   the user should clarify the annotation.
-- **U022 — relax pattern match on multi-variable declaration,
-  skipped**: WARNING.
-  A non-default pattern matched a plain-`!` comment on a declaration
-  with more than one variable. The match is not applied. The user
-  should split the declaration or use explicit `@unit{}` per variable.
 - **U023 — directive on wrong statement kind**: WARNING.
   A directive was found on a comment attached to a statement of a
   kind that directive does not target — for example `@unit_assume`
@@ -594,24 +595,13 @@ Same procedure for the diagnostic emission set (codes + counts).
 
 ## 17. Open questions
 
-- **U022 noise on first legacy-codebase run.** Could be hundreds of
-  warnings. Default to WARNING (current spec) and downgrade only if
-  the first real-world run shows it is intolerable. Could also be
-  aggregated ("17 multi-var declarations skipped in this file") as a
-  later UX polish.
 - **Trailing-pattern attachment when a non-decl statement also has a
   trailing comment that happens to match.** Example:
-  `x = x + 1 ! [m/s]`. Per §3, only declaration lines are eligible
-  for trailing-pattern matching. The scanner already knows what is a
-  declaration; this is just a tightening of the rule, but worth a
-  test.
+  `x = x + 1 ! [m/s]`. Per §5, eligibility includes assignments now;
+  the kind-correctness check in §8.3 catches mismatches as U023.
 - **Patterns that overlap by prefix** (e.g. `[` and `[unit:`). With
   literal-string `str.find`, both will match independently and §8.2
   conflict logic applies. Confirm with tests.
-- **U022 (multi-var skip) for `@unit_assume` / `@unit_affine_conversion`?**
-  Both directives attach to statements, not multi-variable
-  declarations, so the multi-var-skip rule does not apply to them.
-  Confirm with tests; the diagnostic stays `@unit{}`-specific.
 - **Should multi-pattern users keep `@unit{}` first by convention?**
   We could lint a config where `@unit{}` is *not* first and warn,
   since first-match-wins makes pattern order important. Probably
