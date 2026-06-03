@@ -29,6 +29,37 @@ CONFIG_FILENAME = ".dimfort.toml"
 
 
 @dataclass(frozen=True)
+class UnitPatternEntry:
+    """One configured ``@unit{}``-family delimiter pair."""
+
+    open: str
+    close: str
+
+
+@dataclass(frozen=True)
+class StructuredPatternEntry:
+    """One configured ``@unit_assume{}`` / ``@unit_affine_conversion{}``
+    delimiter triple. ``sep`` separates the unit text from the
+    directive-specific payload (reason / target unit).
+    """
+
+    open: str
+    close: str
+    sep: str
+
+
+DEFAULT_UNIT_COMMENT_DELIMITERS: tuple[UnitPatternEntry, ...] = (
+    UnitPatternEntry(open="@unit{", close="}"),
+)
+DEFAULT_UNIT_ASSUME_COMMENT_DELIMITERS: tuple[StructuredPatternEntry, ...] = (
+    StructuredPatternEntry(open="@unit_assume{", close="}", sep=":"),
+)
+DEFAULT_UNIT_AFFINE_COMMENT_DELIMITERS: tuple[StructuredPatternEntry, ...] = (
+    StructuredPatternEntry(open="@unit_affine_conversion{", close="}", sep="->"),
+)
+
+
+@dataclass(frozen=True)
 class DimfortConfig:
     """Resolved configuration. ``None`` means "not set, fall through to
     the next layer." Empty tuples mean "explicitly empty."
@@ -78,6 +109,20 @@ class DimfortConfig:
     #   [scale]
     #   enabled = true
     scale_mode: bool = False
+
+    # [parser] — configurable comment delimiters for the three unit
+    # directive families. See docs/design/unit-comment-delimiters.md.
+    # Defaults preserve the canonical ``@unit{...}`` etc. forms; users
+    # opt in to additional patterns (e.g. ``[m/s]``) per directive.
+    unit_comment_delimiters: tuple[UnitPatternEntry, ...] = field(
+        default_factory=lambda: DEFAULT_UNIT_COMMENT_DELIMITERS
+    )
+    unit_assume_comment_delimiters: tuple[StructuredPatternEntry, ...] = field(
+        default_factory=lambda: DEFAULT_UNIT_ASSUME_COMMENT_DELIMITERS
+    )
+    unit_affine_comment_delimiters: tuple[StructuredPatternEntry, ...] = field(
+        default_factory=lambda: DEFAULT_UNIT_AFFINE_COMMENT_DELIMITERS
+    )
 
 
 def find_config(start: Path) -> Path | None:
@@ -190,6 +235,19 @@ def _from_raw(raw: dict[str, Any], path: Path) -> DimfortConfig:
     scale_section = raw.get("scale", {}) or {}
     scale_mode = bool(scale_section.get("enabled", False))
 
+    unit_comment_delimiters = _parse_unit_pattern_list(
+        parser_section, "unit_comment_delimiters", path,
+        default=DEFAULT_UNIT_COMMENT_DELIMITERS,
+    )
+    unit_assume_comment_delimiters = _parse_structured_pattern_list(
+        parser_section, "unit_assume_comment_delimiters", path,
+        default=DEFAULT_UNIT_ASSUME_COMMENT_DELIMITERS,
+    )
+    unit_affine_comment_delimiters = _parse_structured_pattern_list(
+        parser_section, "unit_affine_comment_delimiters", path,
+        default=DEFAULT_UNIT_AFFINE_COMMENT_DELIMITERS,
+    )
+
     return DimfortConfig(
         config_path=path,
         src_paths=src_paths,
@@ -200,4 +258,152 @@ def _from_raw(raw: dict[str, Any], path: Path) -> DimfortConfig:
         units_file=units_file,
         diagnostic_severities=diagnostic_severities,
         scale_mode=scale_mode,
+        unit_comment_delimiters=unit_comment_delimiters,
+        unit_assume_comment_delimiters=unit_assume_comment_delimiters,
+        unit_affine_comment_delimiters=unit_affine_comment_delimiters,
     )
+
+
+# ---------------------------------------------------------------------------
+# Delimiter-list parsing helpers
+# ---------------------------------------------------------------------------
+
+
+def _validate_required_string(
+    entry: dict[str, Any], key: str, *, where: str, path: Path
+) -> str | None:
+    value = entry.get(key)
+    if not isinstance(value, str) or not value:
+        log.error(
+            "%s: %s: missing or empty required string field %r — "
+            "entry ignored", path, where, key,
+        )
+        return None
+    return value
+
+
+def _parse_unit_pattern_list(
+    parser_section: dict[str, Any],
+    key: str,
+    path: Path,
+    *,
+    default: tuple[UnitPatternEntry, ...],
+) -> tuple[UnitPatternEntry, ...]:
+    if key not in parser_section:
+        return default
+    raw_list = parser_section.get(key)
+    if not isinstance(raw_list, list):
+        log.error(
+            "%s: [parser].%s must be an array of tables — falling back "
+            "to default", path, key,
+        )
+        return default
+    if not raw_list:
+        log.error(
+            "%s: [parser].%s is explicitly empty — clearing the unit "
+            "pattern list would disable all unit recognition; falling "
+            "back to default", path, key,
+        )
+        return default
+    allowed = {"open", "close"}
+    entries: list[UnitPatternEntry] = []
+    seen: set[tuple[str, str]] = set()
+    for i, raw in enumerate(raw_list):
+        where = f"[parser].{key}[{i}]"
+        if not isinstance(raw, dict):
+            log.error("%s: %s: entry must be a table — ignored", path, where)
+            continue
+        unknown = set(raw) - allowed
+        if unknown:
+            log.error(
+                "%s: %s: unknown key(s) %s — entry ignored",
+                path, where, sorted(unknown),
+            )
+            continue
+        op = _validate_required_string(raw, "open", where=where, path=path)
+        cl = _validate_required_string(raw, "close", where=where, path=path)
+        if op is None or cl is None:
+            continue
+        key_pair = (op, cl)
+        if key_pair in seen:
+            log.error(
+                "%s: %s: duplicate entry {open=%r, close=%r} — ignored",
+                path, where, op, cl,
+            )
+            continue
+        seen.add(key_pair)
+        entries.append(UnitPatternEntry(open=op, close=cl))
+    if not entries:
+        log.error(
+            "%s: [parser].%s yielded no valid entries — falling back "
+            "to default", path, key,
+        )
+        return default
+    return tuple(entries)
+
+
+def _parse_structured_pattern_list(
+    parser_section: dict[str, Any],
+    key: str,
+    path: Path,
+    *,
+    default: tuple[StructuredPatternEntry, ...],
+) -> tuple[StructuredPatternEntry, ...]:
+    if key not in parser_section:
+        return default
+    raw_list = parser_section.get(key)
+    if not isinstance(raw_list, list):
+        log.error(
+            "%s: [parser].%s must be an array of tables — falling back "
+            "to default", path, key,
+        )
+        return default
+    if not raw_list:
+        log.error(
+            "%s: [parser].%s is explicitly empty — clearing the list "
+            "would disable directive recognition; falling back to "
+            "default", path, key,
+        )
+        return default
+    allowed = {"open", "close", "sep"}
+    entries: list[StructuredPatternEntry] = []
+    seen: set[tuple[str, str, str]] = set()
+    for i, raw in enumerate(raw_list):
+        where = f"[parser].{key}[{i}]"
+        if not isinstance(raw, dict):
+            log.error("%s: %s: entry must be a table — ignored", path, where)
+            continue
+        unknown = set(raw) - allowed
+        if unknown:
+            log.error(
+                "%s: %s: unknown key(s) %s — entry ignored",
+                path, where, sorted(unknown),
+            )
+            continue
+        op = _validate_required_string(raw, "open", where=where, path=path)
+        cl = _validate_required_string(raw, "close", where=where, path=path)
+        sep = _validate_required_string(raw, "sep", where=where, path=path)
+        if op is None or cl is None or sep is None:
+            continue
+        if sep in op or sep in cl:
+            log.error(
+                "%s: %s: sep %r must not appear inside open %r or "
+                "close %r — entry ignored", path, where, sep, op, cl,
+            )
+            continue
+        key_triple = (op, cl, sep)
+        if key_triple in seen:
+            log.error(
+                "%s: %s: duplicate entry {open=%r, close=%r, sep=%r} — "
+                "ignored", path, where, op, cl, sep,
+            )
+            continue
+        seen.add(key_triple)
+        entries.append(StructuredPatternEntry(open=op, close=cl, sep=sep))
+    if not entries:
+        log.error(
+            "%s: [parser].%s yielded no valid entries — falling back "
+            "to default", path, key,
+        )
+        return default
+    return tuple(entries)

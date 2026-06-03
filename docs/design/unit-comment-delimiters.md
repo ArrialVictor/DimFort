@@ -320,9 +320,12 @@ backward-compat check (§16) will catch any project where this turns
 out to matter.
 
 If a project explicitly clears the list (`unit_comment_delimiters =
-[]`), DimFort raises a configuration error at load time: an empty
-list disables all unit recognition and is almost certainly an
-unintended typo.
+[]`), DimFort logs a configuration error and falls back to the
+default for that key. An empty list would disable all unit
+recognition and is almost certainly an unintended typo; we surface
+the problem loudly without crashing the LSP startup or CLI run
+(`load_config` is contractually non-raising so a broken config never
+takes the whole tool down — see also §14).
 
 ## 11. Performance
 
@@ -500,13 +503,16 @@ Three full key paths, all under `[parser]`:
 - `parser.unit_affine_comment_delimiters` — same shape as the assume
   list (with `sep` typically `"->"`).
 
-Validation at config-load time:
+Validation at config-load time. All violations are logged at
+`ERROR` level against the offending entry / list and the loader
+falls back to the default value for the affected key (matching
+`load_config`'s never-raises contract — see §10):
 
 - Each entry has all required fields, all non-empty strings.
 - Each list is non-empty (cleared list is an error, per §10 — applies
   to all three lists).
 - Duplicate entries within a list are an error.
-- Unknown keys inside an entry raise.
+- Unknown keys inside an entry are an error (entry is dropped).
 - `sep` must not appear inside `open` or `close` (would make matching
   ambiguous).
 
