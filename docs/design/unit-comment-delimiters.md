@@ -258,6 +258,13 @@ statement kind (e.g. a stray `@unit_assume` on a declaration line),
 orphan-annotation diagnostic still fires for the case where no
 candidate statement exists at all.
 
+The U023 check currently covers two cases: declaration vs.
+assignment for all three directive families. The narrower case of
+`@unit_affine_conversion{}` on a non-conversion assignment is left
+to the existing checker-level S003 path (which fires when the
+arithmetic doesn't match the asserted conversion); the U023 surface
+only distinguishes statement *kind*, not statement *shape*.
+
 ## 9. Diagnostics
 
 ### New codes

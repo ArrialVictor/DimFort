@@ -71,16 +71,21 @@ def test_plain_comment_above_decl_is_pre():
     assert anns[0].unit_text == "kg"
 
 
-def test_plain_comment_on_non_decl_line_is_skipped():
-    """Trailing plain-``!`` on a non-declaration statement is not
-    eligible (spec §3)."""
+def test_plain_at_unit_trailing_on_assignment_orphans():
+    """Spec §5 + §8.3: plain-``!`` ``@unit{}`` on an assignment is
+    eligible, captured by the scanner, then surfaced by the U023
+    emitter as a wrong-statement-kind diagnostic. At scan level the
+    annotation IS produced; attach orphans it (no decl matches)."""
     src = (
         "real :: v\n"
         "v = 1.0 ! @unit{m/s}\n"
     )
-    anns, errs = _scan(src)
-    assert anns == ()
-    assert errs == ()
+    res = scan_text(src)
+    assert len(res.annotations) == 1
+    assert res.annotations[0].line == 2
+    # The annotation has nowhere to attach — assignment isn't a decl.
+    # multifile reroutes the orphan to U023 (covered by an
+    # integration test below).
 
 
 def test_plain_comment_standalone_with_blank_then_decl_is_skipped():
@@ -96,16 +101,18 @@ def test_plain_comment_standalone_with_blank_then_decl_is_skipped():
     assert errs == ()
 
 
-def test_plain_comment_above_non_decl_is_skipped():
-    """A standalone comment whose next line is a statement (not a
-    declaration) is not eligible."""
+def test_plain_at_unit_standalone_above_assignment_orphans():
+    """Spec §5: plain-``!`` standalone above an assignment is
+    eligible. ``@unit{}`` captures but later surfaces as U023 (the
+    target is an assignment, not a declaration)."""
     src = (
+        "real :: v\n"
         "! @unit{kg}\n"
         "v = 1.0\n"
     )
-    anns, errs = _scan(src)
-    assert anns == ()
-    assert errs == ()
+    res = scan_text(src)
+    assert len(res.annotations) == 1
+    assert res.annotations[0].kind is AnnotationKind.PRE
 
 
 def test_two_plain_comments_only_last_eligible():
@@ -328,9 +335,12 @@ def test_identical_captures_no_conflict():
 
 def test_structured_pattern_assume_via_brackets():
     """A bracket-configured assume pattern works on a plain ``!``
-    above an assignment-bearing decl line."""
+    trailing an assignment statement (the directive's target kind)."""
     from dimfort.core.unit_patterns import StructuredPattern
-    src = "real :: tracer_eff   ! eff. surface ratio [m^2: Andreas 1989]\n"
+    src = (
+        "real :: tracer_eff, ratio, area\n"
+        "tracer_eff = ratio * area   ! eff. surface ratio [m^2: Andreas 1989]\n"
+    )
     res = scan_text(
         src,
         assume_patterns=(
@@ -345,7 +355,10 @@ def test_structured_pattern_assume_via_brackets():
 
 def test_structured_pattern_affine_via_brackets():
     from dimfort.core.unit_patterns import StructuredPattern
-    src = "real :: sst_k = sst_c + 273.15   !< [degC -> K]\n"
+    src = (
+        "real :: sst_k, sst_c\n"
+        "sst_k = sst_c + 273.15   !< [degC -> K]\n"
+    )
     res = scan_text(
         src,
         affine_patterns=(
@@ -446,3 +459,58 @@ def test_plain_relax_pre_above_multivar_is_skipped():
     assert res.annotations == ()
     assert len(res.multi_var_skips) == 1
     assert res.multi_var_skips[0].var_names == ("a", "b")
+
+
+# ---------------------------------------------------------------------------
+# Wrong-statement-kind + U023 (spec §8.3)
+# ---------------------------------------------------------------------------
+
+
+def test_assume_on_declaration_dropped_and_recorded():
+    """A trailing ``!< @unit_assume{...}`` on a declaration is dropped
+    (declarations don't host an RHS to suppress) and recorded for the
+    U023 emitter."""
+    src = "real :: x   !< @unit_assume{m/s: legacy fit}\n"
+    res = scan_text(src)
+    assert res.assumes == ()
+    assert len(res.wrong_statement_kinds) == 1
+    wsk = res.wrong_statement_kinds[0]
+    assert wsk.directive_found == "@unit_assume"
+    assert wsk.landed_on == "declaration"
+    assert wsk.expected_directive == "@unit"
+
+
+def test_affine_on_declaration_dropped_and_recorded():
+    src = "real :: x   !< @unit_affine_conversion{degC -> K}\n"
+    res = scan_text(src)
+    assert res.affine_conversions == ()
+    assert len(res.wrong_statement_kinds) == 1
+    assert res.wrong_statement_kinds[0].directive_found == "@unit_affine_conversion"
+
+
+def test_assume_pre_above_declaration_dropped():
+    """Spec §8.3 applies to the PRE position too — a standalone
+    ``!> @unit_assume{...}`` immediately above a decl is wrong-kind."""
+    src = "!> @unit_assume{kg: legacy}\nreal :: m\n"
+    res = scan_text(src)
+    assert res.assumes == ()
+    assert len(res.wrong_statement_kinds) == 1
+
+
+def test_assume_on_assignment_still_captures():
+    """The kind is right — the assume attaches and no U023 fires."""
+    src = (
+        "real :: tracer_eff, ratio\n"
+        "tracer_eff = ratio   !< @unit_assume{m/s: legacy}\n"
+    )
+    res = scan_text(src)
+    assert len(res.assumes) == 1
+    assert res.wrong_statement_kinds == ()
+
+
+def test_assignment_line_ranges_populated():
+    """The new ScanResult field is non-empty when assignments exist
+    so the multifile orphan rerouter can branch correctly."""
+    src = "real :: v\nv = 1.0\n"
+    res = scan_text(src)
+    assert (2, 2) in res.assignment_line_ranges

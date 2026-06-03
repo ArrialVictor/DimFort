@@ -48,6 +48,12 @@ class OrphanAnnotation:
     column: int
     unit_text: str
     reason: str
+    # 1-based source line where the annotation tried to attach (the
+    # comment line itself for POST, ``_block_end + 1`` for PRE). The
+    # multifile diagnostic emitter consults this to reroute orphans
+    # to U023 when the target line hosts a non-declaration statement
+    # (spec §8.3).
+    target_line: int = 0
 
 
 @dataclass(frozen=True)
@@ -222,11 +228,13 @@ def attach(scan: ScanResult) -> AttachmentResult:
     """
     result = AttachmentResult(routine_scopes=scan.routine_scopes)
     for ann in scan.annotations:
+        target_line: int
         if ann.kind is AnnotationKind.POST:
             decl = _decl_containing_line(ann.line, scan.declarations)
             orphan_reason = (
                 "no declaration spans this line" if decl is None else ""
             )
+            target_line = ann.line
             # U010: POST on a strictly-interior continuation line is rejected.
             if (
                 decl is not None
@@ -251,6 +259,7 @@ def attach(scan: ScanResult) -> AttachmentResult:
                 if decl is None
                 else ""
             )
+            target_line = target
 
         if decl is None:
             result.orphans.append(
@@ -259,6 +268,7 @@ def attach(scan: ScanResult) -> AttachmentResult:
                     column=ann.column,
                     unit_text=ann.unit_text,
                     reason=orphan_reason,
+                    target_line=target_line,
                 )
             )
             continue

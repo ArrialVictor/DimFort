@@ -314,13 +314,42 @@ def _u007(path: Path, message: str) -> Diagnostic:
     )
 
 
-def _attachment_diags(file: str, att: AttachmentResult) -> list[Diagnostic]:
-    """Surface attach-time issues (orphan annotations, conflicts, U010)."""
+def _attachment_diags(
+    file: str,
+    att: AttachmentResult,
+    assignment_line_ranges: tuple[tuple[int, int], ...] = (),
+) -> list[Diagnostic]:
+    """Surface attach-time issues (orphan annotations, conflicts, U010).
+
+    When an ``@unit{}`` orphan lands on an assignment statement,
+    that's a wrong-statement-kind situation (spec §8.3 → U023)
+    rather than a plain orphan (U006).
+    """
     out: list[Diagnostic] = []
     for orph in att.orphans:
         msg = orph.reason
         if msg and not msg[:1].isupper():
             msg = msg[:1].upper() + msg[1:]
+        check_line = orph.target_line or orph.line
+        on_assignment = any(
+            lo <= check_line <= hi for lo, hi in assignment_line_ranges
+        )
+        if on_assignment:
+            out.append(
+                Diagnostic(
+                    file=file,
+                    start=Position(orph.line, orph.column),
+                    end=Position(orph.line, orph.column),
+                    severity=Severity.WARNING,
+                    code="U023",
+                    message=(
+                        "@unit landed on an assignment statement; "
+                        "@unit attaches to declarations. Did you mean "
+                        "@unit_assume or @unit_affine_conversion?"
+                    ),
+                )
+            )
+            continue
         out.append(
             Diagnostic(
                 file=file,
@@ -708,7 +737,27 @@ def check_files(
     for di, entry in enumerate(loaded, start=1):
         diags: list[Diagnostic] = []
 
-        diags.extend(_attachment_diags(str(entry.path), entry.attachment))
+        diags.extend(_attachment_diags(
+            str(entry.path),
+            entry.attachment,
+            tuple(getattr(entry.scan, "assignment_line_ranges", ())),
+        ))
+        for wsk in getattr(entry.scan, "wrong_statement_kinds", ()):
+            diags.append(
+                Diagnostic(
+                    file=str(entry.path),
+                    start=Position(wsk.line, wsk.column),
+                    end=Position(wsk.line, wsk.column),
+                    severity=Severity.WARNING,
+                    code="U023",
+                    message=(
+                        f"{wsk.directive_found} landed on a "
+                        f"{wsk.landed_on}; {wsk.directive_found} "
+                        f"attaches to a different statement kind. "
+                        f"Did you mean {wsk.expected_directive}?"
+                    ),
+                )
+            )
         for err in getattr(entry.scan, "errors", ()):
             diags.append(
                 Diagnostic(

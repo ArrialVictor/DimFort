@@ -110,6 +110,25 @@ class MalformedAnnotation:
 
 
 @dataclass(frozen=True)
+class WrongStatementKind:
+    """A directive matched a comment but landed on a statement of
+    the wrong kind (spec §8.3 → U023).
+
+    For example, ``@unit_assume`` on a ``real :: x`` declaration, or
+    ``@unit`` on a ``v = 1.0`` assignment. The directive is dropped
+    (not attached). The diagnostic emitter names the directive
+    found, the statement kind it landed on, and which directive
+    would attach correctly there.
+    """
+
+    line: int
+    column: int
+    directive_found: str          # e.g. "@unit_assume"
+    landed_on: str                # "declaration" / "assignment"
+    expected_directive: str       # what would attach correctly here
+
+
+@dataclass(frozen=True)
 class MultiVarSkip:
     """A non-canonical ``@unit`` pattern matched a plain-``!`` comment
     on a multi-variable declaration; the match was dropped per spec
@@ -562,6 +581,15 @@ class ScanResult:
     # ``!`` comment attached to a declaration with more than one
     # name; the match was dropped. Consumed by the U022 emitter.
     multi_var_skips: tuple[MultiVarSkip, ...] = ()
+    # Wrong-statement-kind events (spec §8.3 → U023). A directive
+    # landed on a statement of a kind it does not target; the
+    # directive is dropped.
+    wrong_statement_kinds: tuple[WrongStatementKind, ...] = ()
+    # Line ranges (1-based, inclusive) of every ``assignment_statement``
+    # in the source. Used to distinguish "wrong statement kind here"
+    # (U023) from "no statement here at all" (U006 orphan) for
+    # ``@unit{}`` annotations that don't find a declaration.
+    assignment_line_ranges: tuple[tuple[int, int], ...] = ()
 
 
 def scan_text(
@@ -581,7 +609,7 @@ def scan_text(
     positions.
     """
     lines = source.splitlines()
-    declarations, routine_scopes = _scan_declarations(source)
+    declarations, routine_scopes, assignment_ranges = _scan_declarations(source)
 
     # Per spec §3, plain ``!`` eligibility is decided by position
     # against the declaration set. Pre-compute two lookups:
@@ -594,6 +622,10 @@ def scan_text(
     for d in declarations:
         for ln in range(d.line_start, d.line_end + 1):
             decl_covered[ln] = d
+    assignment_starts: frozenset[int] = frozenset(lo for lo, _ in assignment_ranges)
+    assignment_covered: frozenset[int] = frozenset(
+        ln for lo, hi in assignment_ranges for ln in range(lo, hi + 1)
+    )
 
     annotations: list[RawAnnotation] = []
     errors: list[MalformedAnnotation] = []
@@ -602,6 +634,13 @@ def scan_text(
     pre_block_lines: set[int] = set()
     pattern_conflicts: list[PatternConflict] = []
     multi_var_skips: list[MultiVarSkip] = []
+    wrong_statement_kinds: list[WrongStatementKind] = []
+
+    def _line_in_decl(ln: int) -> bool:
+        return ln in decl_covered
+
+    def _line_in_assignment(ln: int) -> bool:
+        return any(lo <= ln <= hi for lo, hi in assignment_ranges)
 
     for line_no, line in enumerate(lines, start=1):
         col = _comment_start(line)
@@ -624,6 +663,7 @@ def scan_text(
             # Plain `!`: eligibility depends on position (spec §3).
             plain_kind = _classify_plain_comment(
                 line, col, line_no, decl_starts, decl_covered,
+                assignment_starts, assignment_covered,
             )
             if plain_kind is None:
                 continue
@@ -670,6 +710,21 @@ def scan_text(
         a_anns, a_errs, a_confs = _select_assume(
             body, line_no, body_col_offset, assume_patterns,
         )
+        # Spec §8.3: @unit_assume on a declaration is the wrong
+        # statement kind (declarations don't host an RHS to
+        # suppress). Drop + U023. The target line is the comment's
+        # own line for POST, the next line for PRE (mirrors how the
+        # directive would attach if the kind were right).
+        target_line = line_no if kind is AnnotationKind.POST else line_no + 1
+        if a_anns and _line_in_decl(target_line):
+            for a in a_anns:
+                wrong_statement_kinds.append(WrongStatementKind(
+                    line=a.line, column=a.column,
+                    directive_found=_ASSUME_DIR_NAME,
+                    landed_on="declaration",
+                    expected_directive=_UNIT_DIR_NAME,
+                ))
+            a_anns = []
         assumes.extend(a_anns)
         errors.extend(a_errs)
         pattern_conflicts.extend(a_confs)
@@ -677,6 +732,16 @@ def scan_text(
         f_anns, f_errs, f_confs = _select_affine(
             body, line_no, body_col_offset, affine_patterns,
         )
+        # Same §8.3 check for @unit_affine_conversion.
+        if f_anns and _line_in_decl(target_line):
+            for fa in f_anns:
+                wrong_statement_kinds.append(WrongStatementKind(
+                    line=fa.line, column=fa.column,
+                    directive_found=_AFFINE_DIR_NAME,
+                    landed_on="declaration",
+                    expected_directive=_UNIT_DIR_NAME,
+                ))
+            f_anns = []
         affine_conversions.extend(f_anns)
         errors.extend(f_errs)
         pattern_conflicts.extend(f_confs)
@@ -694,6 +759,8 @@ def scan_text(
         affine_conversions=tuple(affine_conversions),
         pattern_conflicts=tuple(pattern_conflicts),
         multi_var_skips=tuple(multi_var_skips),
+        wrong_statement_kinds=tuple(wrong_statement_kinds),
+        assignment_line_ranges=tuple(assignment_ranges),
     )
 
 
@@ -710,20 +777,27 @@ def _classify_plain_comment(
     line: str, col: int, line_no: int,
     decl_starts: dict[int, DeclarationSite],
     decl_covered: dict[int, DeclarationSite],
+    assignment_starts: frozenset[int],
+    assignment_covered: frozenset[int],
 ) -> AnnotationKind | None:
-    """Return POST/PRE/None for a plain ``!`` comment per spec §3.
+    """Return POST/PRE/None for a plain ``!`` comment per spec §3 / §5.
 
-    POST: trailing on a declaration line (there is code before the
-    ``!`` and the line is covered by a declaration's range).
+    POST: trailing on a statement-bearing line — a declaration (for
+    ``@unit{}``) or an assignment (for ``@unit_assume`` /
+    ``@unit_affine_conversion``). Per spec §5, eligibility is the
+    union; the kind-correctness check (§8.3 → U023) happens after
+    extraction.
+
     PRE: standalone on its own line (only whitespace before ``!``)
-    AND the very next line is a declaration's ``line_start``.
+    AND the very next line begins a declaration or assignment.
     """
     is_standalone = not line[:col].strip()
     if not is_standalone:
-        if line_no in decl_covered:
+        if line_no in decl_covered or line_no in assignment_covered:
             return AnnotationKind.POST
         return None
-    if (line_no + 1) in decl_starts:
+    next_ln = line_no + 1
+    if next_ln in decl_starts or next_ln in assignment_starts:
         return AnnotationKind.PRE
     return None
 
@@ -826,7 +900,11 @@ def _ts_routine_name(node: Node) -> str | None:
 
 def _scan_declarations(
     source: str,
-) -> tuple[list[DeclarationSite], list[tuple[int, int, str]]]:
+) -> tuple[
+    list[DeclarationSite],
+    list[tuple[int, int, str]],
+    list[tuple[int, int]],
+]:
     """Walk a tree-sitter Fortran tree and emit one :class:`DeclarationSite` per decl.
 
     Also returns the byte-range cover of every ``subroutine`` /
@@ -848,6 +926,7 @@ def _scan_declarations(
     # one type definition starts on the same line another ends on.
     type_ranges: list[tuple[int, int, str]] = []
     routine_ranges: list[tuple[int, int, str]] = []
+    assignment_ranges: list[tuple[int, int]] = []
     for n in _ts.walk(root):
         if n.type == "derived_type_definition":
             name = _ts_type_name(n)
@@ -857,6 +936,13 @@ def _scan_declarations(
             name = _ts_routine_name(n)
             if name is not None:
                 routine_ranges.append((n.start_byte, n.end_byte, name.lower()))
+        elif n.type == "assignment_statement":
+            a_start = _ts.position_for(n).line
+            a_end = _ts.end_position_for(n).line
+            # Same trailing-newline correction as for declarations.
+            if a_end > a_start and n.end_point[1] == 0:
+                a_end -= 1
+            assignment_ranges.append((a_start, a_end))
 
     routine_ranges.sort(key=lambda r: r[0])
 
@@ -908,7 +994,7 @@ def _scan_declarations(
                 intrinsic_type=_ts_decl_intrinsic_type(n),
             )
         )
-    return out, routine_ranges
+    return out, routine_ranges, assignment_ranges
 
 
 # Tree-sitter Fortran wraps the type qualifier of an intrinsic-typed

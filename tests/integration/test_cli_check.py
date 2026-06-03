@@ -160,3 +160,35 @@ def test_u021_silent_on_identical_captures(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "U021" not in out
     assert rc == 0
+
+
+def test_u023_fires_on_at_unit_on_assignment(tmp_path, capsys):
+    """End-to-end: ``!< @unit{m/s}`` on an assignment statement is
+    wrong-kind. The orphan reroutes to U023 with the right hint."""
+    (tmp_path / "src.f90").write_text(
+        "subroutine s\n"
+        "  real :: v\n"
+        "  v = 1.0   !< @unit{m/s}\n"
+        "end subroutine\n"
+    )
+    rc = main(["check", str(tmp_path), "--no-color"])
+    out = capsys.readouterr().out
+    assert "U023" in out, out
+    assert "@unit_assume" in out or "@unit_affine_conversion" in out
+    assert "U006" not in out
+    assert rc == 0
+
+
+def test_u023_fires_on_assume_on_declaration(tmp_path, capsys):
+    """End-to-end: ``!< @unit_assume`` on a declaration is dropped
+    and surfaced as U023."""
+    (tmp_path / "src.f90").write_text(
+        "subroutine s\n"
+        "  real :: v   !< @unit_assume{m/s: legacy fit}\n"
+        "end subroutine\n"
+    )
+    rc = main(["check", str(tmp_path), "--no-color"])
+    out = capsys.readouterr().out
+    assert "U023" in out, out
+    assert "@unit_assume" in out
+    assert rc == 0
