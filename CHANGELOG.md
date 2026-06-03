@@ -2,6 +2,132 @@
 
 All notable changes to DimFort are documented here. Format inspired by [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.2] — 2026-06-03
+
+### Add: configurable comment delimiters for the three unit directive families
+
+A project can now opt into bracket-style (or any other literal-string)
+comment delimiters for unit annotations, alongside the canonical
+`@unit{...}`, `@unit_assume{...:...}`, and
+`@unit_affine_conversion{...->...}` forms. The driving use case is
+**bringing DimFort to an existing codebase** whose authors already
+used `! [m/s]`-style inline labels — without 0.2.2 those labels
+would have been invisible to the checker, and the cost to migrate
+each one to `@unit{m/s}` was a real adoption blocker.
+
+Three new `[parser]` keys in `.dimfort.toml`, each independent of
+the others (a project that opts into bracket-shaped `@unit{}` does
+*not* automatically opt into bracket-shaped assumes / affines —
+those have higher safety stakes, so the choice is per-directive):
+
+```toml
+[parser]
+unit_comment_delimiters = [
+  { open = "@unit{", close = "}" },
+  { open = "[",      close = "]" },
+]
+# unit_assume_comment_delimiters and
+# unit_affine_comment_delimiters have the same shape, plus a `sep`
+# field that splits the inner text (`:` for assume → unit + reason;
+# `->` for affine → src + tgt). Defaults keep the canonical forms.
+```
+
+Each list **replaces** its default; to keep canonical alongside a
+custom form, list both. Setting a list to `[]` is an error (logs
++ falls back to default) — empty would silently disable that
+directive family, almost certainly a typo. The full design lives
+at `docs/design/unit-comment-delimiters.md`.
+
+### Add: plain `!` comments are now eligible at statement-bearing positions
+
+The pre-0.2.2 scanner required a Doxygen marker (`!<`, `!>`, `!!`)
+for an annotation to be recognised. As of 0.2.2 a bare `!` comment
+is also scanned, provided it sits at an eligible position:
+
+- Trailing on a declaration line (for `@unit{}`) or an assignment
+  line (for `@unit_assume{}` / `@unit_affine_conversion{}`).
+- Standalone immediately above such a line, with strict
+  immediacy: no blank line, no other statement, no second comment
+  line between the bare comment and its target.
+
+This is a deliberate, documented expansion — the diagnostic
+emission set on the validation workspace was bit-for-bit unchanged
+by the §16 baseline regression check, confirming no production
+annotation drifted from "ignored prose" into "newly-checked
+claim".
+
+### Add: U021 / U023 diagnostics and U002 suggested-rewrite payload
+
+Three new diagnostic codes surface configuration-time mistakes
+that 0.2.2's flexibility makes possible:
+
+- **U021 — conflicting unit comment patterns** (WARNING). Two
+  configured patterns matched the same comment with disagreeing
+  capture text. The first-listed wins (deterministic from
+  `unit_comment_delimiters` order) and the diagnostic asks the
+  user to remove one of the forms.
+- **U023 — directive on wrong statement kind** (WARNING). The
+  scanner saw a directive on a comment whose target statement
+  doesn't match the directive family — `@unit_assume` on a
+  `real :: x` declaration, `@unit{}` on a regular assignment, and
+  similar. The directive is *dropped* (not silently applied) and
+  the message suggests the directive that would attach correctly.
+- **U002 — could not parse unit text** (existing). The diagnostic
+  payload is extended with an optional `suggested_rewrite`. A
+  one-step rewrite pipeline runs on the failed capture; if the
+  transformed string parses cleanly against the project's unit
+  table, the diagnostic message gets a trailing "did you mean
+  `<X>`?" and (in the LSP) a Quick Fix code action that replaces
+  just the inner unit text inside the directive token. The sole
+  rewrite rule shipped in 0.2.2 is digit-suffix → caret exponent
+  (`m2 → m^2`, `kg/m3 → kg/m^3`); the rule design is documented
+  in `docs/design/unit-comment-delimiters.md` §12.5 so future
+  additions stay disciplined.
+
+When U001 ("more than one … on one line") fires, **no annotation
+attaches** — the variable surfaces as unannotated rather than
+silently picking the first match, and every capture site is
+squiggled so the user sees the full extent of the ambiguity.
+When U002 fires the panel hides the raw unparseable text (the
+'error' kind still drives the unparseable badge) so the displayed
+unit no longer implies DimFort accepted text that it could not
+parse.
+
+### Fix: cache invalidation on pattern config change
+
+`PER_FILE_CONFIG_KEYS` now includes the three new pattern lists,
+so toggling a pattern in `.dimfort.toml` correctly invalidates
+each file's cache entry. Pre-fix, the cache would replay stale
+assume- or affine-derived diagnostics for files whose source
+bytes hadn't changed. The output-version is bumped to v4 so any
+v3 entries written before this fix are orphaned automatically
+(clean rebuild rather than serving stale schema).
+
+### Backward compatibility
+
+A project that does not set any of the new `[parser]` keys gets
+exactly the pre-0.2.2 diagnostic emission set, with one
+documented expansion: a bare `!` comment containing the default
+`@unit{...}` (etc.) form is now eligible at its declaration's
+position. The validation workspace ran the §16 pre/post baseline
+regression check cleanly — 116 H + 52094 U diagnostics
+unchanged, `var_units_by_scope` semantically identical
+(sorted-diff of the 22 MB workset.json is empty).
+
+### Spec & adoption
+
+- Full spec: `docs/design/unit-comment-delimiters.md` — 17
+  sections covering the unified model, eligibility, multi-var
+  treatment (unified across pattern types post-Q1), conflict /
+  wrong-kind handling, U002 rewrites, and the §16 pre-merge
+  backward-compat protocol. **Read this first** before opening
+  the related code paths.
+- Migration guide: see §15 of the spec ("Migration and adoption
+  guidance"). On a fresh codebase, expect a burst of new
+  diagnostics on the first run after enabling bracket patterns —
+  many of them real bugs that have been hiding behind doc-only
+  annotations.
+
 ## [0.2.1] — 2026-05-30
 
 ### Add: `demos/` directory with a canonical, user-facing tour file
