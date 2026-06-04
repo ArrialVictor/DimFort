@@ -52,13 +52,15 @@ bases are universal.
 Maps a prefix character to a multiplicative factor. Values are
 **exact**: either an integer or a rational string `"p/q"`. Floats
 are rejected because binary floats can't represent decimal
-fractions like `0.01` exactly.
+fractions like `0.01` exactly. TOML allows underscores inside
+integer literals for readability (`1_000_000`) and DimFort treats
+the underscored form identically to the unsuffixed one.
 
 ```toml
 [prefixes]
-G = 1000000000
-M = 1000000
-k = 1000
+G = 1_000_000_000
+M = 1_000_000
+k = 1_000
 d = "1/10"
 c = "1/100"
 m = "1/1000"
@@ -75,14 +77,14 @@ optionally with a `factor` (for scaled units like `hPa`) or an
 [derived]
 N    = { expr = "kg*m/s^2" }
 Pa   = { expr = "N/m^2" }
-hPa  = { expr = "Pa", factor = 100 }            # 1 hPa = 100 Pa
-bar  = { expr = "Pa", factor = 100000 }
-degC = { expr = "K", offset = "273.15" }        # 0 °C = 273.15 K
+hPa  = { expr = "Pa", factor = 100 }              # 1 hPa = 100 Pa
+bar  = { expr = "Pa", factor = 100_000 }
+degC = { expr = "K", offset = "273.15" }          # 0 °C = 273.15 K
 
 # Domain-specific examples a project might add:
-percent = { expr = "1", factor = "1/100" }      # dimensionless ratio
-day     = { expr = "s", factor = 86400 }
-g_per_kg = { expr = "g/kg" }                    # tracer mixing ratios
+percent  = { expr = "1", factor = "1/100" }       # dimensionless ratio
+day      = { expr = "s", factor = 86_400 }
+g_per_kg = { expr = "g/kg" }                      # tracer mixing ratios
 ```
 
 Per-entry fields:
@@ -95,8 +97,8 @@ Per-entry fields:
 | `prefixable`   | bool    | `false` | If `true`, the unit accepts standard SI prefixes (`khPa`, `mbar`, …). Most derived units do **not** want this. |
 
 Entries are resolved in **dependency order** — an entry can refer
-to any unit defined earlier in the merged catalog (shipped defaults
-+ all user entries above it).
+to any unit defined earlier in the merged catalog (the shipped
+defaults plus every user entry listed above it).
 
 ### `[doxygen]`
 

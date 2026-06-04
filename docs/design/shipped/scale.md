@@ -451,8 +451,8 @@ piece that makes the affine triage actually pay off.
 
 A multiplicative conversion rides on a typed `PARAMETER` because units
 compose under `*`/`/`: `play[Pa] / PA_PER_HPA[Pa/hPa] = [hPa]`. An
-**affine** conversion cannot — addition *preserves* the frame (`point
-+ vector = point`, §4.1), and there is no unit you can add that turns
+**affine** conversion cannot — addition *preserves* the frame
+(`point + vector = point`, §4.1), and there is no unit you can add that turns
 a `degC` into a `K`. So a correct `t_k = t_c + 273.15` always fires
 `S002`. We need a way to *bless* it.
 

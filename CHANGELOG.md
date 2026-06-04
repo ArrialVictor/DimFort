@@ -33,9 +33,10 @@ unit_comment_delimiters = [
 ```
 
 Each list **replaces** its default; to keep canonical alongside a
-custom form, list both. Setting a list to `[]` is an error (logs
-+ falls back to default) — empty would silently disable that
-directive family, almost certainly a typo. The full design lives
+custom form, list both. Setting a list to `[]` is an error
+(the loader logs and falls back to the default) — empty would
+silently disable that directive family, almost certainly a typo.
+The full design lives
 at `docs/design/unit-comment-delimiters.md`.
 
 ### Add: plain `!` comments are now eligible at statement-bearing positions
