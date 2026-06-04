@@ -28,7 +28,7 @@ D-class identifies the algebra rule violated.
 |-------|----------|---------------|
 | H001  | error    | Assignment LHS unit does not match the RHS unit. Wrapper-arithmetic variants surface as `H001 (D1.2 / D1.3 / D1.5 / D1.6)`. |
 | H002  | error    | Additive operands (`+`, `-`), or arguments to a same-unit intrinsic (`min`, `max`, `mod`, `modulo`, `merge`), disagree on unit. |
-| H003  | error    | A dimensionless-only intrinsic (`exp`, `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`) received a non-dimensionless argument. |
+| H003  | error    | A dimensionless-only intrinsic (`exp`, `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`) received a bare-dimensioned argument. `log` / `exp` also accept `LOG(...)` / `EXP(...)`-wrapped arguments — `log(x)` where `x : LOG(Pa)` unwraps to `Pa`, `exp(x)` where `x : LOG(Pa)` returns `Pa`. Only bare-dimensioned input fires H003. |
 | H004  | error    | User-defined function or subroutine call: an actual argument's unit does not match the formal's annotated unit. Resolved across files. |
 | H010  | warning  | Implicit cast or wrapper untag: the expression is accepted but flagged. Covers D1.5 (literal cast against a typed slot) and D1.6 (wrapper-tag untagging). |
 
@@ -41,7 +41,7 @@ D-class identifies the algebra rule violated.
 | U005         | warning  | A variable is used in a unit-relevant position but has no `@unit{}` annotation. |
 | U006         | warning  | Orphan annotation: an `@unit{}` directive does not attach to a known declaration. |
 | U007         | error    | The parser could not load the file (read error, encoding problem, or other I/O-level failure). |
-| U010         | error    | `!<` Doxygen-trailing marker on an intermediate line of an `&`-continued declaration. The annotation is rejected. |
+| U010         | error    | A trailing-style annotation (canonical `!<`, or any custom delimiter configured as trailing) on an intermediate line of an `&`-continued declaration. The annotation is rejected — only the first or last line of a continued declaration is eligible. |
 | U020         | info     | An `@unit_assume{}` was applied at this site — the RHS unit was *asserted*, not derived. Audit note only. |
 | U021         | warning  | Two configured comment-delimiter patterns both matched the same comment with different captures. The first listed pattern wins; U021 surfaces the disagreement so the author can resolve the conflict. |
 | U023         | warning  | A directive landed on the wrong statement kind (e.g. `@unit_assume` on a declaration, or `@unit{}` on an assignment). The directive is dropped, not silently applied; the message suggests the directive that would attach. |

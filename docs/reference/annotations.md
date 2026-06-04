@@ -19,7 +19,7 @@ The unit expression follows a small grammar:
 | Base unit      | `m`, `kg`, `s`, `K`, `A`, `mol`, `cd`   | The seven SI base units. |
 | Derived unit   | `N`, `J`, `W`, `Pa`, `Hz`, `C`, `V`, `Ohm`, `T`, `rad`, `sr` | Shipped as defaults; extensible. |
 | Prefix         | `km`, `ms`, `ns`, `MPa`, `kJ`, …        | Base units take all standard SI prefixes by default. Derived units must opt in. |
-| Product        | `kg*m/s^2`                              | `*` and `/` are left-associative. |
+| Product        | `kg*m/s^2`                              | `*` and `/` are left-associative — `kg/m/s` parses as `(kg/m)/s = kg·m⁻¹·s⁻¹`, not as `kg/(m/s) = kg·s·m⁻¹`. Parenthesise if you mean the right-associative reading. |
 | Power          | `m^2`, `m^-1`, `m^(1/2)`                | Integer or rational exponents. No decimals. |
 | Grouping       | `kg/(m*s)`                              | Use parentheses to disambiguate. |
 | Dimensionless  | `1`                                     | Also `rad`, `sr` by convention. |
@@ -37,6 +37,23 @@ Two slashes at the same paren depth (e.g. `kg/m*s`) produce a
 **`UnitAmbiguityWarning`** — the expression has a defined meaning
 (left-to-right) but the reader can't be sure which one you meant.
 Parenthesise.
+
+## Custom comment delimiters
+
+The `@unit{...}` form is the canonical syntax, but DimFort can also
+read your project's existing inline-comment unit conventions —
+`! [m/s]`, `! desc [m^2: empirical]`, and so on — once you tell it
+about the delimiters in `.dimfort.toml`. This is the path of least
+disruption when adopting DimFort on a codebase that already
+documents units in author prose: you don't rewrite the
+declarations.
+
+See [Bringing DimFort to an existing codebase](../quickstart/bringing-to-existing-codebase.md)
+for the recipe, and
+[`.dimfort.toml` reference](dimfort-toml.md#parser) for the three
+delimiter-list keys (`unit_comment_delimiters`,
+`unit_assume_comment_delimiters`,
+`unit_affine_comment_delimiters`).
 
 ## Where to put the annotation
 
@@ -185,9 +202,29 @@ interior fire — and instead treat the result as the asserted `<unit>`.
   exponents, empirical fits). Prefer a typed PARAMETER or a real fix
   everywhere else.
 
-> v1 keys assumes by source line, which is exact for raw-parsed files.
-> A `.F90` file whose lines shift under `cpp` preprocessing is a known
-> limitation (the assume may not align with the expanded statement).
+### Keeping a project-level registry
+
+Because `@unit_assume` is the only DimFort directive that *trusts*
+the author rather than verifying, it earns extra discipline. The
+recommended practice is to keep a project-level Markdown file
+(canonically named `UNIT_ASSUME_REGISTRY.md`) that lists every
+`@unit_assume` site with: the file and line, the asserted unit,
+the reason category, and a sentence of justification. Re-derive it
+at audit time by grepping the codebase
+(`grep -rn @unit_assume src/`); every entry must still have a
+matching justification. A site without a registry entry is a
+warning sign — either the assumption is unjustified or the
+registry has drifted.
+
+Tool-enforced enforcement (DimFort cross-references the registry
+on every check and flags missing or stale entries) is a candidate
+future feature; see
+[`design/future/`](../design/future/) once that proposal lands.
+
+> The current implementation keys assumes by source line. This is
+> exact for raw-parsed files; a `.F90` file whose lines shift under
+> `cpp` preprocessing is a known limitation (the assume may not
+> align with the expanded statement).
 
 ## Verified conversion: `@unit_affine_conversion`
 
@@ -217,6 +254,13 @@ accepted synonym). DimFort checks the assignment actually performs the
 - **Invalid ⇒ `S003` (error).** Wrong direction, wrong constant, wrong
   target, a non-affine (multiplicative) pair like `{Pa -> hPa}`, or a
   non-affine-linear RHS — each reports *how* the arithmetic is off.
+  `{Pa -> hPa}` is intentionally rejected: the conversion is purely
+  multiplicative (no offset), so a typed PARAMETER carries it just
+  as safely (`real, parameter :: PA_PER_HPA = 100.0 !< @unit{Pa/hPa}`)
+  and the scale-checker (`S001`) catches scale-mismatch bugs
+  directly. The affine directive's purpose is the *offset* class
+  where typed PARAMETER cannot help — using it for purely
+  multiplicative pairs adds nothing and is therefore not accepted.
 - **Not an `@unit_assume`.** That directive is *trusted* and for the
   irreducible (and lives in `UNIT_ASSUME_REGISTRY.md`); this one is
   *verified* and needs **no registry entry** — the check is its
@@ -263,9 +307,13 @@ and the call's resolved unit becomes the formal return unit (used by
 the surrounding H001 check). When the called routine lives in a
 different file, pass both files to `dimfort check` on the same command
 line — the orchestrator compiles modules first (in dependency order)
-and aggregates signatures across the whole workset. v1 keys signatures
-by the bare function name — two functions with the same name in
-different scopes are not disambiguated; last definition wins.
+and aggregates signatures across the whole workset.
+
+> **Current limitation.** Function signatures are stored keyed by
+> the bare function name, without a scope qualifier. Two functions
+> with the same name in different modules or scopes are not
+> disambiguated; the last-loaded definition wins. Scope-qualified
+> keying is on the roadmap.
 
 ### Derived-type fields
 

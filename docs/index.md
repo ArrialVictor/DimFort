@@ -38,6 +38,9 @@ shift between `0.x` releases.
 - [Intrinsics](reference/intrinsics.md) — Fortran intrinsics whose
   unit semantics DimFort knows.
 - [`.dimfort.toml`](reference/dimfort-toml.md) — every config key.
+- [Project units file](reference/units-file.md) — extend the
+  shipped SI catalog with domain-specific units (`hPa`, `bar`,
+  `percent`, …).
 
 ## Editor integration
 

@@ -8,8 +8,25 @@ dimfort --version
 ```
 
 `<paths>` may be individual files or directories. Directories are
-walked recursively for `.f90` / `.F90` / `.f95` / `.F95` / `.f03` /
-`.F03` / `.f08` / `.F08` sources.
+walked recursively for files whose suffix is in the accepted set
+(see [Supported file extensions](#supported-file-extensions) below).
+
+## Supported file extensions
+
+DimFort accepts `.f90` / `.F90`, `.f95` / `.F95`, `.f03` / `.F03`,
+and `.f08` / `.F08`. The casing follows convention: lower-case
+suffixes are plain Fortran source; upper-case suffixes carry CPP
+preprocessor directives and trigger the `[parser] cpp_defines` /
+`include_paths` machinery.
+
+Fortran 2018 (`.f18` / `.F18`) and Fortran 2023 (`.f23` / `.F23`)
+suffixes are **not currently accepted**. The underlying
+`tree-sitter-fortran` grammar covers F2008 reliably and parts of
+F2018 best-effort; constructs the grammar does not recognize would
+surface as `P001` unparsed regions rather than silent acceptance.
+Most projects targeting F2018+ still use `.f90` as the file suffix
+(the standard level is set on the compiler command line, not by
+the filename), so the practical gap is narrower than it sounds.
 
 ## `dimfort check`
 

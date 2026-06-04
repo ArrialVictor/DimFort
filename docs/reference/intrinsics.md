@@ -10,7 +10,7 @@ unit and emits no homogeneity diagnostic for the call.
 
 | Category | Intrinsics | Unit semantics |
 |---|---|---|
-| **Dimensionless** | `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh` | Argument must be dimensionless (`1`); result is `1`. `H003` on violation. |
+| **Dimensionless** | `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh` | Argument must be **dimensionless** (`1`) or, for `log` / `log10` / `exp`, **appropriately wrapped** (`log(x)` accepts `x : LOG(...)` and returns the inner unit; `exp(x)` accepts `x : LOG(...)` and returns the inner unit; nested cases compose). Bare-dimensioned arguments fire `H003`. |
 | **Transforming** | `sqrt`, `abs` | Result is `arg^(1/2)` for `sqrt`, `arg^1` for `abs`. |
 | **Transparent** | `floor`, `ceiling`, `nint`, `int`, `real`, `dble`, `sign`, `aimag`, `anint` | Result has the same unit as the first argument. |
 | **Same-unit args** | `min`, `max`, `mod`, `modulo`, `merge` | Every argument must share one unit; result is that unit. (`merge` only constrains the first two — the mask is `logical`.) `H002` on mismatch. |
@@ -19,11 +19,18 @@ unit and emits no homogeneity diagnostic for the call.
 
 ## LOG / EXP wrappers
 
-`log`, `log10`, and `exp` interact specially with `LOG(...)` /
-`EXP(...)`-tagged units: `exp(log_pa)` where `log_pa : LOG(Pa)`
-unwraps to `Pa`, and `log(pa)` where `pa : Pa` wraps to `LOG(Pa)`.
-The full algebra is in
-[unit-algebra.md](unit-algebra.md#wrapper-arithmetic) §5–§7.
+`log`, `log10`, and `exp` interact with `LOG(...)` / `EXP(...)`-tagged
+units by inversion: `exp(log_pa)` where `log_pa : LOG(Pa)` unwraps
+to `Pa`; `log(pa)` where `pa : Pa` wraps to `LOG(Pa)`. The full
+algebra (cancellation, dimensionless collapse, log-of-product,
+log-of-power) is in
+[unit-algebra.md](unit-algebra.md) §5–§7.
+
+This is why the "Dimensionless" category above isn't strictly
+"argument must be dimensionless" — `log` and `exp` legitimately
+accept dimensioned values when they're already wrapped, and unwrap
+them. Bare dimensioned values (a raw `Pa` not inside a `LOG(...)`
+tag) fire `H003`.
 
 ## Adding intrinsics
 

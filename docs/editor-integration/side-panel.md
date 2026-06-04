@@ -17,12 +17,14 @@ content are identical across editors.
 ### 1. Expression
 
 The unit-algebra tree for the expression under the cursor: each node
-labelled with its resolved unit, the unit-algebra rule that produced
-it (`R3.1`, `R5.6`, …), and a 🟢 / 🟡 / 🔴 marker.
+labelled with its resolved unit and a 🟢 / 🟡 / 🔴 marker. The tree
+stays visible while you edit — useful for debugging a mismatch or
+walking through code with someone.
 
-The same content as the **detailed** hover, but it stays visible
-while you edit — useful for debugging a mismatch or walking through
-code with someone.
+Per-node provenance (the `R3.1` / `R5.6`-style rule chain that
+produced each unit) is rendered in the **detailed** hover rather
+than the panel — open the hover on a node when you need to see why
+its unit resolved the way it did.
 
 ### 2. Diagnostics
 

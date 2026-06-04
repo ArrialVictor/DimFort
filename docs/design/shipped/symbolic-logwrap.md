@@ -9,10 +9,9 @@ in a real-world Fortran codebase; the irreducible empirical-fit cases
 remain pending and use the `@unit_assume` escape hatch.
 
 This branch extended the symbolic-exponent machinery to one more
-algebra path: the multiplier in `γ · LOG(p)` patterns. The design
-below (problem statement + rules + tests) remains accurate as a
-spec; the "step-by-step plan" near the end is historical (work
-completed).
+algebra path: the multiplier in `γ · LOG(p)` patterns. The
+problem statement, rules, and tests below remain accurate as a
+spec.
 
 
 ## Problem statement
@@ -165,48 +164,6 @@ if right_lit is None and right is not None:
 
 LogWrap divided by a symbolic γ → D1.4 (explicit refusal, see
 algebra section).
-
-
-## Step-by-step implementation plan
-
-### Step 1 — widen `combine`'s literal parameter type (~10 lines)
-
-- Change signature: `a_literal: Number | Exponent | None`,
-  `b_literal: Number | Exponent | None`.
-- Update any internal logic that does `isinstance(x_literal, int)`
-  or arithmetic on `x_literal` to also handle Exponent.
-- No behavior change yet; this just makes the types correct.
-
-### Step 2 — wire symbolic fallback at the resolver (~30 lines + tests)
-
-- In `ts_checker._resolve` and `_walk_expressions`, after
-  `_resolve_constant_value` returns None for an operand of `*` or
-  `/`, fall through to `_resolve_symbolic_exponent`.
-- Tests: `γ * LOG(p)` with `γ : 1` annotated dim'less → no D1.4,
-  result `LOG(Pa^γ)`.
-
-### Step 3 — refuse symbolic divisor on LogWrap (~5 lines + test)
-
-- In `combine`'s LogWrap / Unit branch, when `b_literal` is a
-  symbolic Exponent, return D1.4 (don't try `1/symbolic`).
-- Test: `LOG(p) / γ` with symbolic γ → D1.4.
-
-### Step 4 — Real-world verification
-
-- Re-run on the validation workspace.
-- Expected: all 4 Tetens-family D1.4s closed.
-- Expected: no new false positives.
-
-### Step 5 — extend R6.4 (ExpWrap) similarly if needed
-
-- Check whether any real-world ExpWrap case fires D1.4 today and would
-  benefit. If yes, apply the same widening to the ExpWrap path.
-  If no, defer.
-
-### Step 6 — update the internal findings log entry `#009`
-
-- Mark the Tetens family as closed.
-- Note that the fix shipped via this branch.
 
 
 ## Test plan

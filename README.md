@@ -35,6 +35,30 @@ force = mass * velocity            ! diagnosed: force unit is kg, expected kg*m/
 > hints, go-to-definition, code actions, completion, and a CLI that
 > accepts files or directories.
 
+## Adopting on an existing codebase
+
+Many real-world Fortran projects already document units in inline
+comments — `! [m/s]`, `! horizontal wind speed [m/s]`,
+`! tracer ratio [m^2: Andreas 1989]`. DimFort can read your
+project's own convention, so you don't rewrite every declaration
+just to opt in.
+
+Add a few lines to `.dimfort.toml`:
+
+```toml
+[parser]
+unit_comment_delimiters = [
+  { open = "@unit{", close = "}" },
+  { open = "[",      close = "]" },
+]
+```
+
+Now `! [m/s]` is a first-class unit annotation, checked exactly
+like `@unit{m/s}`. The same mechanism handles `@unit_assume` and
+`@unit_affine_conversion`, each on its own list with its own
+opt-in. Full recipe in
+[Bringing DimFort to an existing codebase](docs/quickstart/bringing-to-existing-codebase.md).
+
 ## Quick tour
 
 Want a hands-on look first? [`demos/tour.f90`](https://github.com/ArrialVictor/DimFort/blob/main/demos/tour.f90)

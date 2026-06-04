@@ -92,9 +92,10 @@ for the full spec.
 |---|---|---|---|
 | `file` | `string` | unset | Path to an extension units file (`*.toml`) merged on top of the shipped SI catalog. Lets a project add domain-specific units (`hPa`, `bar`, `day`, `percent`) without forking DimFort. Path is resolved relative to the config file. |
 
-The extension file shares the same schema as
-`src/dimfort/core/default_units.toml`; copy that as a starting
-point.
+Full schema, merge semantics, and per-section examples are in
+[units-file.md](units-file.md). The schema is the same as the
+shipped [`default_units.toml`](https://github.com/ArrialVictor/DimFort/blob/main/src/dimfort/core/default_units.toml);
+copy any entry from there as a starting point.
 
 ## `[diagnostics]`
 
