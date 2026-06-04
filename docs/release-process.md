@@ -29,12 +29,79 @@ Until both sides are configured, pushing a tag will fail at the
 `publish-pypi` step. The sdist/wheel build and the GitHub Release will
 still succeed, which is useful for testing the pipeline.
 
+## Pre-release documentation audit
+
+Standing practice since v0.2.2.1: every release (patch, minor, or
+major) is preceded by a documentation audit pass across the
+docs surface. Catches drift before it accumulates. Lands either
+inside the release PR itself or as a release-prep PR that merges
+immediately before the version bump.
+
+The audit takes ~30 minutes in steady state. Run the six checks
+below in order:
+
+1. **Cross-reference sweep.** For every feature added since the
+   previous tag, confirm:
+   - The feature is documented in `docs/` at its canonical home.
+   - The CLI flag table in
+     [`reference/cli.md`](reference/cli.md) matches the running
+     argparse registration in `src/dimfort/cli.py`.
+   - LSP-side additions are reflected in
+     [`editor-integration/lsp-protocol.md`](editor-integration/lsp-protocol.md)
+     `initializationOptions` table and custom-request sections.
+   - Diagnostic codes added or remapped are in
+     [`reference/diagnostic-codes.md`](reference/diagnostic-codes.md)
+     with the right severity and trigger wording. Ground the
+     list with `grep -rohE '"[HUSXPD][0-9]+"' src/dimfort/ | sort -u`.
+   - Config keys added or remapped are in
+     [`reference/dimfort-toml.md`](reference/dimfort-toml.md)
+     with type and default sourced from `src/dimfort/config.py`.
+
+2. **Stale-content sweep.** For every doc touched (or
+   pointed-at), confirm:
+   - Version strings match the release being cut.
+   - Status banners on shipped specs say shipped, not "targets
+     X.Y.Z".
+   - Step-by-step implementation plans for features that
+     shipped are removed (the spec content stays; the plan goes).
+   - Hard-coded performance numbers still match the current
+     implementation, or are reframed as illustrative.
+
+3. **Prose tells.** Grep for maintainer-internal phrasing that
+   leaked into checked-in docs:
+   ```bash
+   grep -rnE 'update.+(doc|spec).+first|code follows the doc' docs/
+   grep -rnE 'agreed in the .* session|internal findings log' docs/
+   ```
+   Each hit is a leak; rephrase as plain spec or remove.
+
+4. **Companion parity.** If the release adds a feature that
+   touches a wire format the side panel or hover consume, sweep
+   the three companion READMEs for stale wording.
+   [`editor-integration/side-panel.md`](editor-integration/side-panel.md)
+   and [`editor-integration/hover-ui.md`](editor-integration/hover-ui.md)
+   are the source of truth; companion READMEs link there and
+   carry only editor-specific deltas.
+
+5. **Link integrity.** Confirm every markdown link target in
+   `docs/`, the four READMEs, `CHANGELOG.md`, and
+   `CONTRIBUTING.md` resolves.
+
+6. **README PyPI preflight.** Run the image-path check below
+   (step 4 of "Cutting a release") — every image must use the
+   absolute `raw.githubusercontent.com` URL or PyPI's renderer
+   will break it.
+
+When the release adds no documented feature surface (pure perf,
+pure bug fix), steps 1, 2, and 4 collapse to spot checks and the
+audit shrinks to under 15 minutes.
+
 ## Cutting a release
 
 1. Bump `version` in [`pyproject.toml`](../pyproject.toml).
 2. Add a new section to [`CHANGELOG.md`](../CHANGELOG.md).
 3. Commit; PR; merge to `main` once CI is green.
-4. **README image-paths preflight.** PyPI renders the README's long-description
+4. **README image-paths preflight** (also part of the pre-release audit step 6). PyPI renders the README's long-description
    but **does not resolve relative paths** the way GitHub does — relative
    `src="docs/img/..."` / `srcset="docs/img/..."` references render as broken
    images on the project's PyPI page. GitHub renders them fine, so the issue
