@@ -575,7 +575,7 @@ unit_affine_comment_delimiters = [
    as the loose patterns. The relax-pattern path exists for legacy
    compatibility, not as the recommended writing style.
 
-See also [Bringing DimFort to an existing codebase](../usage.md#bringing-dimfort-to-an-existing-codebase) in the user guide.
+See also [Bringing DimFort to an existing codebase](../../usage.md#bringing-dimfort-to-an-existing-codebase) in the user guide.
 
 ## 16. Open questions
 

@@ -6,16 +6,16 @@ run replays diagnostics from disk; a cold run is unaffected.
 
 Shipped on `main` 2026-05-22 in the `content-hash-cache` merge
 (`ef3ecbc`); the stress-test harness and LSP wiring landed alongside.
-The user-facing summary lives in [CHANGELOG.md](../../CHANGELOG.md)
+The user-facing summary lives in [CHANGELOG.md](../../../CHANGELOG.md)
 under "Content-hash cache for workspace check"; the user guide is
-[docs/usage.md](../usage.md#content-hash-cache). This doc is the **wire-format and
+[docs/usage.md](../../usage.md#content-hash-cache). This doc is the **wire-format and
 key-shape reference** — what bytes go into the key, what bytes go
 into a cache entry, and when an entry becomes stale.
 
 When this doc and the code disagree, the code in
-[src/dimfort/core/cache_key.py](../../src/dimfort/core/cache_key.py),
-[cache_serde.py](../../src/dimfort/core/cache_serde.py), and
-[cache_store.py](../../src/dimfort/core/cache_store.py) is the
+[src/dimfort/core/cache_key.py](../../../src/dimfort/core/cache_key.py),
+[cache_serde.py](../../../src/dimfort/core/cache_serde.py), and
+[cache_store.py](../../../src/dimfort/core/cache_store.py) is the
 authoritative reference.
 
 ## What the cache stores
@@ -46,7 +46,7 @@ checker change.
 ## Cache key
 
 `compute_file_key` in
-[cache_key.py](../../src/dimfort/core/cache_key.py) returns the hex
+[cache_key.py](../../../src/dimfort/core/cache_key.py) returns the hex
 SHA-256 of five length-prefixed sections:
 
 | Tag | Bytes covered |
@@ -100,7 +100,7 @@ overrides; `v3` covered the `@unit_affine_conversion` directive
 
 ### cpp closure
 
-`_run_cpp` in [ts_parser.py](../../src/dimfort/core/ts_parser.py)
+`_run_cpp` in [ts_parser.py](../../../src/dimfort/core/ts_parser.py)
 parses the `# <lineno> "file"` markers emitted by the system cpp and
 returns the set of distinct files referenced (excluding `<built-in>`,
 `<command-line>`, and system headers — system headers are stripped
@@ -133,7 +133,7 @@ because a module it imports from changed shape.
 
 `deps_consumed` records workspace modules the file pulls in via
 `use` clauses (computed by `deps_consumed_from_uses` in
-[symbols.py](../../src/dimfort/core/symbols.py)). Per-module rather
+[symbols.py](../../../src/dimfort/core/symbols.py)). Per-module rather
 than per-symbol: `use phys_constants, only: pi` and `use
 phys_constants` both record the module, and any change to
 `phys_constants`' exports — even one unrelated to `pi` — invalidates
@@ -223,7 +223,7 @@ status line when cache mode is non-`off`.
 
 The server reads `cacheMode` and `cacheDir` from
 `initializationOptions` on `initialize`; see
-[docs/lsp.md](../lsp.md) for the client-side shape. `cacheMode`
+[docs/lsp.md](../../editor-integration/lsp-protocol.md) for the client-side shape. `cacheMode`
 takes the same `off | read-only | read-write` vocabulary as the
 CLI flag, and defaults to `off`. `cacheDir` defaults to the
 workspace-folder default if omitted.
@@ -251,10 +251,10 @@ a cold key; that's deliberate.
 
 ## Cross-references
 
-- [docs/usage.md#content-hash-cache](../usage.md#content-hash-cache)
+- [docs/usage.md#content-hash-cache](../../usage.md#content-hash-cache)
   — user-facing guide: when to clear, what triggers invalidation,
   where the cache lives.
-- [docs/lsp.md](../lsp.md) — `cacheMode` / `cacheDir` shape in
+- [docs/lsp.md](../../editor-integration/lsp-protocol.md) — `cacheMode` / `cacheDir` shape in
   `initializationOptions`.
 - [docs/design/panel-info.md](panel-info.md) — panel data is **not**
   cached; it's recomputed every run from the load/index phases.

@@ -247,8 +247,8 @@ Wire-format:
 - `ExpressionNode.assumed: string | null` — the mandatory reason,
   set on the **RHS row** when assumed. `null` everywhere else.
 
-Documented at [docs/design/markers.md](docs/design/markers.md) §4.6;
-[panel-info.md](docs/design/panel-info.md) details the wire field;
+Documented at [docs/design/markers.md](docs/design/shipped/markers.md) §4.6;
+[panel-info.md](docs/design/shipped/panel-info.md) details the wire field;
 hover-ui.md adds the `🔵` and `(assumed: …)` glyph rows.
 
 ### Change: every hover is the same tree shape — `◂` retired, intrinsics join the tree path
@@ -320,7 +320,7 @@ paints 🟢 (it's in `_NO_UNIT_NODE_TYPES`, so its resolution-axis
 base is 🟢), instead of the previous 🟡 from "unresolved unit". The
 marker still rolls up worst-of-children, so 🟡/🔴 inside args still
 propagates to the root. Spec at
-[docs/design/markers.md](docs/design/markers.md) §4.5.
+[docs/design/markers.md](docs/design/shipped/markers.md) §4.5.
 
 Wire-format: `ExpressionNode.unit` is now always a string (`"-"` /
 `"?"` / a unit), never null. Companions that still treat null as
@@ -353,7 +353,7 @@ post-0.2.1 servers.
   override is bounded to "would otherwise paint 🟢 AND carries
   `expected`" so it never overrides a diagnostic-owned 🔴 or a 🟡 from
   resolution. Applies symmetrically in the trace hover and the panel
-  payload — see [docs/design/markers.md](docs/design/markers.md) §4.4.
+  payload — see [docs/design/markers.md](docs/design/shipped/markers.md) §4.4.
 - The old "Signature ◂ Call" two-column pairing layout and the typed-
   language-style `name(arg: unit, …) : ret` signature line are gone.
 
@@ -370,7 +370,7 @@ post-0.2.1 servers.
   hover (which now surfaces the expected unit) and the panel tree
   (which only marked the row 🔴 with no context).
 - Wire-format: `ExpressionNode.ruleId` → `ExpressionNode.expected`
-  (see [docs/design/panel-info.md](docs/design/panel-info.md)). All
+  (see [docs/design/panel-info.md](docs/design/shipped/panel-info.md)). All
   three companions consume the new field.
 
 ### Change: misc polish + UX consistency
@@ -594,14 +594,14 @@ they may still shift between `0.x` releases.
   the cursor, plus the declarations of every *enclosing scope*
   (subroutine / function / module / program), stacked outermost-first.
   Each editor renders it natively (Neovim split shipped; Emacs /
-  VSCode to follow). Spec: [`docs/design/panel-info.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/design/panel-info.md).
+  VSCode to follow). Spec: [`docs/design/panel-info.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/design/shipped/panel-info.md).
 - **R4.4 — literal initialization autocast.** When the sole RHS of an
   assignment is a pure-numeric constant (literal, unary-minus literal,
   or arithmetic of literals), it takes on the LHS's unit and no
   diagnostic fires — `t = 2.0` where `t : s` is initialization, not an
   implicit cast. The existing D1.5 H010 still fires for literals buried
   in compound expressions (`t = c + 2.0`). Documented in
-  [`docs/unit-algebra.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/unit-algebra.md).
+  [`docs/unit-algebra.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/reference/unit-algebra.md).
 - **`AutocastEvent` + `WorksetResult.autocast_events`.** Each R4.4 fire
   is recorded as a structured event (file, span, literal text, inferred
   unit) for audit tooling / a future strict-mode that promotes them to
@@ -643,7 +643,7 @@ they may still shift between `0.x` releases.
 - **Correctness gate.** 100-iteration parametrised stress test
   (`tests/unit/test_cache_stress.py`): cold-populate → random edit →
   cached run vs fresh cold run must produce byte-identical diagnostics.
-  Documented in [`docs/design/content-hash-cache.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/design/content-hash-cache.md);
+  Documented in [`docs/design/content-hash-cache.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/design/shipped/content-hash-cache.md);
   user guide in [`docs/usage.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/usage.md#content-hash-cache).
 - **Key dimensions covered.** Source bytes, cpp include closure,
   `external_modules`, `extra_defines`, `extra_include_paths`, the
@@ -667,7 +667,7 @@ emitted with an existing `H001` / `H002` severity code; the
 specific rule appears as a `(D1.x)` tag in the message and as a
 rule ID (`R5.6`, `R6.5`, etc.) in `--trace` output. The full rule
 set is documented in
-[`docs/unit-algebra.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/unit-algebra.md).
+[`docs/unit-algebra.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/reference/unit-algebra.md).
 
 - **`LogWrap` and `ExpWrap` unit types** alongside the existing
   `Regular` 7-tuple. Wrappers form a recursive `UnitExpr` tree;
@@ -743,7 +743,7 @@ set is documented in
 - **Expression detailed** — the unit-algebra rule-chain tree.
 - **Notation unified.** `:` between expression and unit, `◂`
   between target slot and value, 🟢/🟡/🔴 in row markers and headers.
-- **Spec at [`docs/hover-ui.md`](docs/hover-ui.md)** — six layouts
+- **Spec at [`docs/hover-ui.md`](docs/editor-integration/hover-ui.md)** — six layouts
   (3 surfaces × 2 levels), notation legend, conflict-resolution
   rules ("most-specific wins"), examples by cursor position.
 - **Most-specific wins** dispatch: identifier, member, callee, and
@@ -794,7 +794,7 @@ Extends the unit algebra so that dimension-slot exponents can carry
 not just literal rationals. Closes the family of D1.4s where the
 exponent is a runtime `REAL` (the Exner-kappa pattern in atmospheric
 dycores) that OQ4 couldn't reach. Full spec in
-[`docs/design/symbolic-exponents.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/design/symbolic-exponents.md).
+[`docs/design/symbolic-exponents.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/design/shipped/symbolic-exponents.md).
 
 - **New `Exponent` type** (`core/units.py`): linear combination
   `q₁·x₁ + q₂·x₂ + … + c` with named opaque generators. Each
@@ -818,7 +818,7 @@ Same machinery applied to `combine`'s R5.4 path (LogWrap × scalar).
 The log-power identity `γ·LOG(p) = LOG(p^γ)` now accepts an
 `Exponent` multiplier so dimensionless-but-symbolic scale factors no
 longer fire D1.4. Spec:
-[`docs/design/symbolic-logwrap.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/design/symbolic-logwrap.md).
+[`docs/design/symbolic-logwrap.md`](https://github.com/ArrialVictor/DimFort/blob/main/docs/design/shipped/symbolic-logwrap.md).
 
 - **R5.4 accepts Exponent multipliers.** `(2/7) * LOG(p)` →
   `LOG(p^(2/7))` (already worked); `xalpw * LOG(p)` with `xalpw`
@@ -866,7 +866,7 @@ longer fire D1.4. Spec:
   infers the missing annotation from a sibling operand. Same path
   applies inside wrapper intrinsics — `LOG(unannotated)` is
   unknown, U005 fires on the declaration. Recorded in
-  [docs/unit-algebra.md §11](https://github.com/ArrialVictor/DimFort/blob/main/docs/unit-algebra.md#oq5--resolved-missing-annotation-propagation).
+  [docs/unit-algebra.md §11](https://github.com/ArrialVictor/DimFort/blob/main/docs/reference/unit-algebra.md#oq5--resolved-missing-annotation-propagation).
 - **Outer-unary-minus sign propagation in `_resolve`**: `-1.0 *
   LOG(p)` (parsed by tree-sitter as `-(1.0 * LOG(p))`) now sees
   R5.4 with `k = -1` and types as `LOG(1/Pa)` rather than the

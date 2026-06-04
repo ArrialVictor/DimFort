@@ -115,7 +115,7 @@ reference (every code, severity, and trigger) lives at
 [docs/reference/diagnostic-codes.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/reference/diagnostic-codes.md).
 The unit-algebra rule taxonomy (`D1.1`–`D1.7`) that classifies
 *why* a homogeneity diagnostic fires is at
-[docs/unit-algebra.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/unit-algebra.md).
+[docs/reference/unit-algebra.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/reference/unit-algebra.md).
 
 ## Doxygen integration
 
@@ -148,7 +148,7 @@ DimFort tracks the wrapper through arithmetic: `LOG(psol) + LOG(pref)`
 types as `LOG(Pa²)`, `LOG(p1) − LOG(p2)` collapses to dimensionless
 via the pressure-ratio rule, and `EXP(LOG(psol) − ...)` cancels back
 to `Pa`. The full rule set is in
-[docs/unit-algebra.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/unit-algebra.md).
+[docs/reference/unit-algebra.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/reference/unit-algebra.md).
 
 ### Trace mode
 
@@ -170,22 +170,22 @@ per-row 🟢/🟡/🔴 markers).
   <img width="640" src="https://raw.githubusercontent.com/ArrialVictor/DimFort/main/docs/img/hover-expression-detailed-violation_light.png" alt="Detailed expression hover showing a homogeneity violation propagating up the unit-algebra tree">
 </picture>
 
-See [docs/hover-ui.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/hover-ui.md)
+See [docs/editor-integration/hover-ui.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/editor-integration/hover-ui.md)
 for the layout spec.
 
-See [docs/annotations.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/annotations.md)
+See [docs/reference/annotations.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/reference/annotations.md)
 for the full reference: unit-expression grammar, continuation-line
 forms, declaration lists, and the diagnostic codes the scanner can
 emit.
 
 ## Documentation
 
-- [Annotations](https://github.com/ArrialVictor/DimFort/blob/main/docs/annotations.md)
+- [Annotations](https://github.com/ArrialVictor/DimFort/blob/main/docs/reference/annotations.md)
 - [Usage details](https://github.com/ArrialVictor/DimFort/blob/main/docs/usage.md)
   — includes the [bringing DimFort to an existing codebase](https://github.com/ArrialVictor/DimFort/blob/main/docs/usage.md#bringing-dimfort-to-an-existing-codebase)
   guide (configurable comment delimiters, added 0.2.2).
-- [Language server](https://github.com/ArrialVictor/DimFort/blob/main/docs/lsp.md)
-- [Releases](https://github.com/ArrialVictor/DimFort/blob/main/docs/release.md)
+- [Language server](https://github.com/ArrialVictor/DimFort/blob/main/docs/editor-integration/lsp-protocol.md)
+- [Releases](https://github.com/ArrialVictor/DimFort/blob/main/docs/release-process.md)
 
 ## Editor integrations
 

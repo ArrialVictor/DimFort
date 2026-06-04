@@ -7,7 +7,7 @@ its own toggle commands, settings keys, and dock-side / width
 controls.
 
 The wire-format spec behind the panel (`dimfort/panelInfo` request +
-response) is in [design/panel-info.md](../design/panel-info.md).
+response) is in [design/panel-info.md](../design/shipped/panel-info.md).
 
 ## What's in the panel
 
@@ -84,8 +84,8 @@ panel doubles as a per-file health indicator.
 The 🟢 / 🟡 / 🔴 / 🔵 circles appear in every section and follow the
 single source of truth shared with the hover and the Problems panel.
 The derivation rules live in
-[design/markers.md](../design/markers.md); the per-surface
-presentation rules live in [hover-ui.md](../hover-ui.md).
+[design/markers.md](../design/shipped/markers.md); the per-surface
+presentation rules live in [hover-ui.md](hover-ui.md).
 
 Quick gloss:
 

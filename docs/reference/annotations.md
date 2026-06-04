@@ -238,7 +238,7 @@ malformed, `U006` orphan, `U-conflict` two annotations disagreeing,
 **S-series** (`S001`–`S003`).
 
 The full table — every code, severity, and trigger — lives at
-[reference/diagnostic-codes.md](reference/diagnostic-codes.md). Per-code
+[reference/diagnostic-codes.md](diagnostic-codes.md). Per-code
 severity can be remapped per project under `[diagnostics]` in
 `.dimfort.toml`.
 

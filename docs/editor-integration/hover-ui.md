@@ -10,7 +10,7 @@ each computed child. The same renderer powers the panel's Expression
 section, so hover and panel are guaranteed to agree by construction.
 
 This document covers presentation only — the rules behind the rendered
-units live in [unit-algebra.md](unit-algebra.md).
+units live in [unit-algebra.md](../reference/unit-algebra.md).
 
 
 ## Notation
@@ -18,13 +18,13 @@ units live in [unit-algebra.md](unit-algebra.md).
 | Glyph | Meaning |
 |---|---|
 | `:` | separates an expression (name / source text) from its unit |
-| `-` | unit-column glyph for **structural-no-unit** rows (assignment statement, relational expression, subroutine call) — the row has no unit *by design*, not because we couldn't resolve one. See [design/markers.md](design/markers.md) §4.5 |
+| `-` | unit-column glyph for **structural-no-unit** rows (assignment statement, relational expression, subroutine call) — the row has no unit *by design*, not because we couldn't resolve one. See [design/markers.md](../design/shipped/markers.md) §4.5 |
 | `?` | unit-column glyph for **unknown** units — unannotated identifier, unsupported intrinsic, partial resolution |
 | `→` | in the **pure-signature** hover (cursor on a function/subroutine definition header), separates the formal argument tuple from the return unit, e.g. `(kg·m⁻³, m·s⁻¹) → kg·m⁻¹·s⁻²` |
 | `(expected …)` | trailing annotation on a row whose actual unit doesn't satisfy what its container demanded — call argument vs formal, or RHS vs LHS unit in an assignment. Names the expected unit |
-| `(assumed: <reason>)` | trailing annotation on the **RHS row** of an `@unit_assume{<unit> : <reason>}` assignment. The RHS row shows the asserted unit + this annotation + 🔵 (per-row overlay, not a severity tier). The assignment row itself stays 🟢 when the homogeneity check passes. See [design/markers.md](design/markers.md) §4.6 |
+| `(assumed: <reason>)` | trailing annotation on the **RHS row** of an `@unit_assume{<unit> : <reason>}` assignment. The RHS row shows the asserted unit + this annotation + 🔵 (per-row overlay, not a severity tier). The assignment row itself stays 🟢 when the homogeneity check passes. See [design/markers.md](../design/shipped/markers.md) §4.6 |
 | `🟢` | known and consistent |
-| `🔵` | **per-row overlay** — accepted via `@unit_assume`. Appears only on the RHS row of an assumed assignment; not a severity tier and not propagated. See [design/markers.md](design/markers.md) §4.6 |
+| `🔵` | **per-row overlay** — accepted via `@unit_assume`. Appears only on the RHS row of an assumed assignment; not a severity tier and not propagated. See [design/markers.md](../design/shipped/markers.md) §4.6 |
 | `🟡` | known partially / contains an unannotated leaf |
 | `🔴` | known but inconsistent (unit mismatch) |
 
@@ -36,7 +36,7 @@ The header marker aggregates the per-row markers in the body:
 **🔴** if any row is 🔴, else **🟡** if any row is 🟡, else **🟢**.
 Markers are diagnostic-driven and aggregate worst-of-children, so a 🔴
 anywhere in a sub-tree propagates up to every ancestor. See
-[design/markers.md](design/markers.md) for the derivation.
+[design/markers.md](../design/shipped/markers.md) for the derivation.
 
 
 ## Settings and surfaces
@@ -112,7 +112,7 @@ shows the actual argument's source text, its resolved unit, a
 diagnostic-driven 🟢/🟡/🔴 marker, and — when its unit dimensionally
 differs from the formal — an `(expected <formal>)` tail. The
 mismatching row paints 🟡 (not 🔴) by the **🟡-on-`expected` override**
-documented in [design/markers.md](design/markers.md): the
+documented in [design/markers.md](../design/shipped/markers.md): the
 expression itself resolved cleanly, but its consumer disagrees with
 the formal it's flowing into. The 🔴 belongs on the enclosing call,
 where H004 fires.
@@ -275,7 +275,7 @@ bogus = c_sound * t   :  -   🔴
 
 The 🔴 on the root comes from `H001` owning the assignment node. The
 🟡 on the RHS row is the **🟡-on-`expected` override**
-(see [design/markers.md](design/markers.md) §4.4): the expression
+(see [design/markers.md](../design/shipped/markers.md) §4.4): the expression
 itself resolved cleanly to `m`, but its consumer (the LHS) demanded
 `kg` — flag it without painting a hard 🔴 that would redundantly
 re-derive H001's verdict.
@@ -289,7 +289,7 @@ shows 🟢, e.g. `t = 2.0` renders with RHS row `2.0 : s 🟢` (no
 literal *inside* a compound expression (`t = c + 2.0`), which still
 triggers the D1.5 implicit-cast warning. The assignment marker, like
 every marker, is **diagnostic-driven** — read from the file's
-diagnostics by range ([design/markers.md](design/markers.md)) — so
+diagnostics by range ([design/markers.md](../design/shipped/markers.md)) — so
 the hover and the Problems panel never disagree.
 
 **Relational expression** (cursor on `<`, `<=`, `==`, `/=`, `>`, `>=`)
@@ -306,7 +306,7 @@ Same shape again — relational root is structural-no-unit, with one
 row per operand. The relation itself has no unit; only its two
 operands' agreement matters. The checker does **not** currently emit
 a diagnostic for relational operand mismatches (it is not an
-emission site — see [design/markers.md](design/markers.md) §6.1), so
+emission site — see [design/markers.md](../design/shipped/markers.md) §6.1), so
 even though Pa and dim'less disagree, the diagnostic-driven marker
 on the relational node stays 🟡 (no consistency diagnostic + no
 unit), not a re-derived 🔴. Emitting at relational sites — which
@@ -397,7 +397,7 @@ for the target audience and has been removed.)
 **Per-row marker semantics.** Markers are **diagnostic-driven** — a
 node's marker is its resolution state worst-of the unit-*consistency*
 diagnostics that own it, worst-of its children. So the circle never
-disagrees with the squiggle. See [design/markers.md](design/markers.md)
+disagrees with the squiggle. See [design/markers.md](../design/shipped/markers.md)
 for the model; in short:
 
 - 🟢 — this node resolved to a unit and no consistency diagnostic owns it.

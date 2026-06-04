@@ -47,8 +47,8 @@ A patch that breaks tests or trips ruff will not be merged.
 ## Code style
 
 - Follow the existing module organisation. Start with the architecture
-  overviews — [core architecture](docs/design/core-architecture.md) (the
-  check pipeline) and [LSP architecture](docs/design/lsp-architecture.md) —
+  overviews — [core architecture](docs/design/contributor/core-architecture.md) (the
+  check pipeline) and [LSP architecture](docs/design/contributor/lsp-architecture.md) —
   then the per-feature design docs under [docs/design/](docs/design/) and the
   docstrings at the top of each `core/` module for the layout rationale.
 - Comments should explain **why**, not what. Reading the code

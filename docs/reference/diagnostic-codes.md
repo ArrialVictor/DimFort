@@ -18,7 +18,7 @@ code.
 
 The unit-algebra rule taxonomy that classifies *why* a homogeneity
 diagnostic fired (`D1.1`–`D1.7`) is documented separately in
-[unit-algebra.md](../unit-algebra.md). When the message reads
+[unit-algebra.md](unit-algebra.md). When the message reads
 `H002 (D1.3)` the H code identifies the surfacing diagnostic; the
 D-class identifies the algebra rule violated.
 
@@ -68,13 +68,13 @@ Produced only by `dimfort interactions` (CLI) and the
 
 | Code  | Severity | When it fires |
 |-------|----------|---------------|
-| X001  | error    | Two sites of the same variable make conflicting unit claims that no single statement reveals. See [design/interaction-points.md](../design/interaction-points.md). |
+| X001  | error    | Two sites of the same variable make conflicting unit claims that no single statement reveals. See [design/interaction-points.md](../design/shipped/interaction-points.md). |
 
 ## P-series — parser
 
 | Code  | Severity | When it fires |
 |-------|----------|---------------|
-| P001  | info     | A region the parser could not read. DimFort makes no unit claims about the region and skips it. Common on F77 idioms or `.F90` files with active preprocessor conditionals. Silence per-file by setting `[diagnostics] P001 = "off"` in `.dimfort.toml`. See [design/unparsed-regions.md](../design/unparsed-regions.md). |
+| P001  | info     | A region the parser could not read. DimFort makes no unit claims about the region and skips it. Common on F77 idioms or `.F90` files with active preprocessor conditionals. Silence per-file by setting `[diagnostics] P001 = "off"` in `.dimfort.toml`. See [design/unparsed-regions.md](../design/shipped/unparsed-regions.md). |
 
 ## Tuning severity per project
 

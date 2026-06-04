@@ -63,7 +63,7 @@ the LHS, with no annotations needed beyond the LHS unit and no escape
 hatch. The same algebra handles the product form
 `exp(log(a) + log(b))` (which types as `a · b`) and the cancellation
 `exp(LOG(Pa))` (which types as `Pa`). Full rule set in
-[`docs/unit-algebra.md`](../docs/unit-algebra.md) §R5.
+[`docs/unit-algebra.md`](../docs/reference/unit-algebra.md) §R5.
 
 ## Expected `dimfort check` output
 
@@ -105,7 +105,7 @@ an annotation — it's a real physical-units error. The same rule IDs
 surface in the editor companions on hover, with the depth selectable
 per-surface (`Short` / `Detailed`) via the `DimFort: Hover` settings.
 The full rule reference lives in
-[`docs/unit-algebra.md`](../docs/unit-algebra.md).
+[`docs/unit-algebra.md`](../docs/reference/unit-algebra.md).
 
 ## In an editor
 

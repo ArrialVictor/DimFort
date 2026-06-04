@@ -10,7 +10,7 @@ dimfort lsp
 This page documents the wire-protocol contract that editor companions
 build against. The user-facing hover rendering rules live in
 [hover-ui.md](hover-ui.md); the side-panel request/response payload
-lives in [design/panel-info.md](design/panel-info.md).
+lives in [design/panel-info.md](../design/shipped/panel-info.md).
 
 ## What's wired up
 
@@ -60,7 +60,7 @@ Custom request returning everything the editor needs to render the
 with their typed variables, current imports with their resolved units,
 the expression tree under the cursor, line-scoped diagnostics, and
 file-wide H/U counts. The user-facing description of what the panel
-shows is in [editor-integration/side-panel.md](editor-integration/side-panel.md).
+shows is in [editor-integration/side-panel.md](side-panel.md).
 
 Method: `dimfort/panelInfo`
 
@@ -74,7 +74,7 @@ Request:
 ```
 
 Response (top-level shape — full field reference in
-[design/panel-info.md](design/panel-info.md)):
+[design/panel-info.md](../design/shipped/panel-info.md)):
 
 ```jsonc
 {
@@ -117,7 +117,7 @@ Response:
 }
 ```
 
-Spec: [design/interaction-points.md](design/interaction-points.md).
+Spec: [design/interaction-points.md](../design/shipped/interaction-points.md).
 
 ### Inlay hints, definition, code actions, completion
 
@@ -156,7 +156,7 @@ the matching `.dimfort.toml` setting where one exists.
 | `scaleMode` | boolean | from `.dimfort.toml` (`false` if unset) | Opt in to multiplicative-scale checking (S001 / S002 / S003) and the scale-aware unit display. |
 | `maxWorksetSize` | integer | `40` | Cap the per-check workset; on large workspaces, files are pinned to the active file's direct dependencies and topo-last entries are dropped to keep the LSP responsive. |
 | `externalModules` | string[] | (merges with config) | Extend the known-external module list (intrinsics + common libraries) beyond `.dimfort.toml`. Lowercased. |
-| `cacheMode` | `"off"` \| `"read-only"` \| `"read-write"` | `"off"` | Content-hash cache mode. See [usage.md § Content-hash cache](usage.md#content-hash-cache). |
+| `cacheMode` | `"off"` \| `"read-only"` \| `"read-write"` | `"off"` | Content-hash cache mode. See [usage.md § Content-hash cache](../usage.md#content-hash-cache). |
 | `cacheDir` | string (absolute path) | `.dimfort-cache/` under the first workspace folder | Override the cache directory when `cacheMode` is not `"off"`. |
 | `traceHoverEnabled` | boolean | — | **Legacy.** `true` → `hover = "detailed"`. Ignored if `hover` is set. |
 

@@ -53,7 +53,7 @@ Warnings alone do not fail the run.
 DimFort recognises units written as `@unit{…}` inside Doxygen comments
 attached to declarations. The full reference — including continuation
 lines, declaration lists, and the diagnostic codes — lives in
-[annotations.md](annotations.md). Minimal example:
+[annotations.md](reference/annotations.md). Minimal example:
 
 ```fortran
 real :: velocity      !< @unit{m/s}
@@ -168,7 +168,7 @@ U023 = "info"
 
 The full spec — including the `@unit{...}` rewrite detector that
 adds "did you mean …?" suggestions to U002 — lives in
-[design/unit-comment-delimiters.md](design/unit-comment-delimiters.md).
+[design/unit-comment-delimiters.md](design/shipped/unit-comment-delimiters.md).
 The canonical list of every diagnostic code (severity, trigger,
 per-project severity overrides) lives at
 [reference/diagnostic-codes.md](reference/diagnostic-codes.md).
@@ -192,12 +192,12 @@ Beta. Working pipeline pieces:
   unit guarantee on those lines, so it says so (a blue squiggle) rather
   than implying they're clean. On by default; silence it with
   `[diagnostics]` `P001 = "off"` in `.dimfort.toml` (e.g. on known F77
-  files). See [docs/design/unparsed-regions.md](design/unparsed-regions.md).
+  files). See [docs/design/unparsed-regions.md](design/shipped/unparsed-regions.md).
 - unit-algebra rules for `LOG` / `EXP`-tagged quantities (Phase
   B): `@unit{LOG(Pa)}`, `@unit{EXP(K)}`, and nested forms.
   Wrapper arithmetic raises H001 / H002 with `(D1.2)` / `(D1.3)` /
   `(D1.4)` markers identifying the firing rule. See
-  [docs/unit-algebra.md](unit-algebra.md) for the full rule set.
+  [docs/unit-algebra.md](reference/unit-algebra.md) for the full rule set.
 - per-rule provenance traces (`dimfort check --trace`, and in the
   VSCode hover when the trace toggle is on)
 - derived-type field access (`b%v`) both as a read and as an
@@ -211,7 +211,7 @@ Beta. Working pipeline pieces:
   diagnostics in the editor), debounced live editing on every
   keystroke, hover / inlay hints / go-to-definition / code
   action for inserting `!< @unit{}` skeletons. Wire it up in your
-  editor following [docs/lsp.md](lsp.md); a VSCode extension scaffold
+  editor following [docs/lsp.md](editor-integration/lsp-protocol.md); a VSCode extension scaffold
   lives next to the repo at `Homogeneity/DimFort-VSCompanion/` (its
   own GitHub repo:
   https://github.com/ArrialVictor/DimFort-VSCompanion)

@@ -11,7 +11,7 @@ The 🟢/🟡/🔴 marker is one concern split across three docs — this one
 **centralises the derivation**; the other two stay authoritative for what
 they already own:
 
-- **[hover-ui.md](../hover-ui.md)** — *presentation*: which layouts fire,
+- **[hover-ui.md](../../editor-integration/hover-ui.md)** — *presentation*: which layouts fire,
   the glyph legend, where the marker sits in each row. Owns the **look**.
 - **[panel-info.md](panel-info.md)** — *wire contract*: the
   `marker: "ok" | "assumed" | "warn" | "error"` field on `ExpressionNode`,
