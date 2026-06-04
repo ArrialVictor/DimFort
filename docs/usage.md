@@ -169,6 +169,9 @@ U023 = "info"
 The full spec — including the `@unit{...}` rewrite detector that
 adds "did you mean …?" suggestions to U002 — lives in
 [design/unit-comment-delimiters.md](design/unit-comment-delimiters.md).
+The canonical list of every diagnostic code (severity, trigger,
+per-project severity overrides) lives at
+[reference/diagnostic-codes.md](reference/diagnostic-codes.md).
 
 ## Status
 

@@ -107,25 +107,14 @@ Exit code is `0` if no errors, `1` if any error-severity diagnostic was
 produced, `2` for usage / file / config errors. Warnings alone do not
 fail the run.
 
-Diagnostic codes split into two families:
-
-- **H-series** (`H001`–`H004`, `H010`) — homogeneity violations: the
-  math doesn't balance dimensionally. `H010` is a warning (the rest
-  are errors) and covers the implicit-cast / wrapper-untag cases
-  (D1.5, D1.6) where DimFort accepts the expression but flags a
-  smell. Wrapper-arithmetic violations (D1.2 / D1.3 / D1.4) surface
-  via the same `H001` / `H002` codes with a `(D1.x)` tag in the
-  message.
-- **U-series** (`U001`, `U002`, `U005`–`U007`, `U010`, `U-conflict`) —
-  annotation / metadata problems: something's wrong with the
-  annotations themselves, not the math.
-- **X-series** (`X001`) — cross-site findings produced only by
-  `dimfort interactions`, not by the `check` pass: a variable whose
-  use-sites make conflicting unit claims.
-
-Full reference: [docs/usage.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/usage.md).
-The wrapper-rule specification — including the rule IDs surfaced by
-`--trace` — lives at
+Diagnostics are grouped by code prefix: **H** for homogeneity,
+**U** for annotation-pipeline problems, **S** for the opt-in
+scale family, **X** for cross-site findings from `dimfort
+interactions`, and **P** for parser-skipped regions. Full
+reference (every code, severity, and trigger) lives at
+[docs/reference/diagnostic-codes.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/reference/diagnostic-codes.md).
+The unit-algebra rule taxonomy (`D1.1`–`D1.7`) that classifies
+*why* a homogeneity diagnostic fires is at
 [docs/unit-algebra.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/unit-algebra.md).
 
 ## Doxygen integration

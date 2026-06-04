@@ -228,32 +228,19 @@ accepted synonym). DimFort checks the assignment actually performs the
 The cleanest idiom is a small conversion **function** whose one body line
 carries the directive — callers then get a clean typed `degC → K` signature.
 
-## Diagnostics produced at annotation time
+## Diagnostics
 
-| Code        | Severity | Meaning |
-|-------------|----------|---------|
-| (malformed) | error    | `@unit{` with no closing `}`, empty `@unit{}`, or more than one `@unit{…}` on one comment line. A malformed `@unit_assume` (missing `:` reason, empty unit/reason) surfaces here too (U001). |
-| (orphan)    | warning  | An annotation that doesn't sit on or before a known declaration. |
-| (conflict)  | error    | The same variable received two different unit annotations (e.g. `!>` block disagrees with `!<` trailing). |
-| **U010**    | error    | `!<` on an intermediate line of an `&`-continued declaration; annotation is rejected. |
-| **U020**    | info     | An `@unit_assume{…}` was applied here — the RHS unit was asserted, not derived. Audit note; never affects the exit code. |
+Annotation-time problems surface as **U-series** codes (`U001`
+malformed, `U006` orphan, `U-conflict` two annotations disagreeing,
+`U010` `!<` on an intermediate continuation line, `U020`
+`@unit_assume` audit note, …). The semantic checker adds the
+**H-series** (`H001`–`H004`, `H010`), and `scale_mode` adds the
+**S-series** (`S001`–`S003`).
 
-The semantic checker layers add the **H-series** on top:
-
-| Code  | Severity | Meaning |
-|-------|----------|---------|
-| H001  | error    | Assignment LHS unit doesn't match RHS unit. |
-| H002  | error    | `+` / `-` operands, or same-unit intrinsic args (`min`, `max`, `mod`, …) have different dimensions. |
-| H003  | error    | Intrinsic that requires a dimensionless argument (`exp`, `log`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `log10`) given something else. |
-| H004  | error    | User-defined function or subroutine-call argument unit mismatch. |
-
-The opt-in **scale family** (`scale_mode`) adds:
-
-| Code  | Severity | Meaning |
-|-------|----------|---------|
-| S001  | warning  | Same dimension, different magnitude factor (e.g. `hPa` vs `Pa`, `g/kg` vs `kg/kg`). |
-| S002  | warning  | Same dimension and factor, different zero-point (e.g. `degC` vs `K`). |
-| S003  | error    | An `@unit_affine_conversion{src -> tgt}` directive whose arithmetic doesn't perform the stated conversion. |
+The full table — every code, severity, and trigger — lives at
+[reference/diagnostic-codes.md](reference/diagnostic-codes.md). Per-code
+severity can be remapped per project under `[diagnostics]` in
+`.dimfort.toml`.
 
 Intrinsics handled:
 
