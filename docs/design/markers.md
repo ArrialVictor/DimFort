@@ -5,9 +5,6 @@ are now diagnostic-driven; the old re-derivation helpers are removed).
 Drafted after an audit of the panel/hover marker code (see "The problem"
 below); model + decisions (§6) settled, then built.
 
-This document is the spec. Code follows the doc. If something here turns
-out wrong during implementation, **update this doc first**, then the code.
-
 ## Scope and relationship to the other docs
 
 The 🟢/🟡/🔴 marker is one concern split across three docs — this one

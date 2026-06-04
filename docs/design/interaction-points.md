@@ -8,8 +8,7 @@ auditing a suspicious unit in real-world Fortran codebases, and it is where the
 hardest bugs live — a unit contradiction that no single statement reveals.
 
 This document is the spec for both the on-demand CLI and the LSP request the
-editor panels consume. Code follows the doc. If something here drifts from the
-implementation, **update this doc first**, then the code.
+editor panels consume.
 
 ## The problem
 
@@ -19,9 +18,6 @@ imply incompatible dimensions, the variable is over-constrained — but neither
 read fires on its own, because per-statement homogeneity is satisfied locally.
 Surfacing this requires looking at every site for the symbol at once, deriving
 the unit each site *requires* of it, and comparing.
-
-The internal findings log records the original audit traces that motivated this
-design.
 
 ## The constraint model
 

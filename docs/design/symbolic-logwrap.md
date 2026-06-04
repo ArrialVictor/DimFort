@@ -5,9 +5,8 @@ Status: **shipped** (merged to `main` 2026-05-22, alongside the
 linear `Exponent` multipliers — see `_combine` in
 `src/dimfort/core/units.py` (the docstring around the rule explicitly
 references "γ · LOG(u) = LOG(u^γ)"). Closed three Tetens-family D1.4s
-in the real-world Fortran codebase tracked in the internal findings
-log; the irreducible empirical-fit cases remain pending and use the
-`@unit_assume` escape hatch.
+in a real-world Fortran codebase; the irreducible empirical-fit cases
+remain pending and use the `@unit_assume` escape hatch.
 
 This branch extended the symbolic-exponent machinery to one more
 algebra path: the multiplier in `γ · LOG(p)` patterns. The design

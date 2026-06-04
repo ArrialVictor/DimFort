@@ -15,8 +15,7 @@ What this doc is: the spec for the scale axis of the unit checker — the
 data model (`factor`, `offset`), the structured comparison verdict, the
 diagnostics (`S001` / `S002` / `S003`), the affine algebra, the
 `@unit_affine_conversion` directive, the uniform scale-aware display
-rule, and the open questions. Code follows the doc; if implementation
-disagrees, update the doc first.
+rule, and the open questions.
 
 
 ## 1. Problem statement

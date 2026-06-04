@@ -5,7 +5,6 @@
 > rule below; this document is the canonical reference for the rule
 > IDs, the operation tables in §14, and the diagnostic codes.
 >
-> Captures the rules agreed in the 2026-05-20 design session.
 > Rules are numbered (`R<section>.<rule>`) so they can be referenced
 > from code comments, diagnostics, and future design discussions.
 > Diagnostic classes use the prefix `D`. Trace primitives use `T`.

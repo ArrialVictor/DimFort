@@ -2,9 +2,6 @@
 
 Status: **draft** (2026-06-02). Pre-implementation. Targets 0.2.2.
 
-This document is the spec. Code follows the doc. If something here turns
-out wrong during implementation, **update this doc first**, then the code.
-
 ## 1. Problem statement
 
 **In one line:** Make the comment syntax that carries a unit annotation
