@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dimfort"
-version = "0.2.2"
+version = "0.2.2.1"
 description = "Dimensional homogeneity checker for Fortran projects, with LSP support."
 readme = "README.md"
 requires-python = ">=3.11"
