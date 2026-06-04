@@ -32,6 +32,8 @@ walked recursively for `.f90` / `.F90` / `.f95` / `.F95` / `.f03` /
 | `--no-color`     | Disable ANSI colour (also auto-disabled outside a TTY, or when `NO_COLOR` is set). |
 | `--summary`      | After the diagnostic stream, print a per-file H-/U-count breakdown and total. |
 | `--timings`      | Print wall-clock seconds per pipeline phase. With a cache active, also prints hit/miss/dirty/write counts. |
+| `--trace`        | Attach a unit-algebra rule-chain trace to each diagnostic and render it below the message. Useful for explaining wrapper-arithmetic diagnostics (D1.2 / D1.3 / D1.6). |
+| `--scale`        | Opt-in multiplicative-scale checking: flag operands of the same dimension but different magnitude (e.g. `hPa` vs `Pa`, `g/kg` vs `kg/kg`) as S001. Dimension-only is the default. Equivalent to `[scale] enabled = true` in `.dimfort.toml`. |
 | `--cache MODE`   | Content-hash cache mode: `off` (default), `read-only`, or `read-write`. See [Content-hash cache](#content-hash-cache). |
 | `--cache-dir D`  | Override the cache directory (default: `.dimfort-cache/` under the first path argument). |
 | `--clear-cache`  | Wipe the cache directory before running. Combine with `--cache read-write` to repopulate. |
@@ -170,7 +172,7 @@ adds "did you mean …?" suggestions to U002 — lives in
 
 ## Status
 
-Pre-alpha. Working pipeline pieces:
+Beta. Working pipeline pieces:
 
 - annotation scanner (`@unit{…}` extraction, all placement forms)
 - attachment (annotations → variables, with U010 enforcement)

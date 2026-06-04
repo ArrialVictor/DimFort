@@ -1,6 +1,8 @@
 # Unit comment delimiters — design spec
 
-Status: **draft** (2026-06-02). Pre-implementation. Targets 0.2.2.
+Status: **shipped in 0.2.2** (2026-06-03). This document is the canonical
+spec for the three `[parser]` delimiter lists, the eligibility surface, the
+precedence rules, and the U021 / U023 diagnostics.
 
 ## 1. Problem statement
 
@@ -190,7 +192,7 @@ already applies to `@unit{...}`.
 
 (Historic note: an earlier draft of this spec emitted U022 to skip
 non-canonical patterns on multi-var decls. That was reverted before
-0.2.2 ship because the divergence between canonical and configured
+the 0.2.2 release because the divergence between canonical and configured
 patterns confused users with no DimFort history. The unified rule
 is safer and simpler: any single annotation on a multi-var decl is
 treated as applying to all of them, and an author who meant only
@@ -452,7 +454,7 @@ These are rule-design constraints, not user-facing config concerns —
 the list order in §12.2 is fixed by the implementation, not
 configurable.
 
-## 13. Out of scope for 0.2.2
+## 13. Out of scope
 
 - **Rewrite detector rule classes 2 and 3** (separator swaps, typo
   correction against the unit dictionary). Evidence-driven follow-up,
@@ -538,8 +540,6 @@ unit_affine_comment_delimiters = [
 
 ## 15. Migration and adoption guidance
 
-The 0.2.2 release notes and README should say:
-
 1. **Existing users** (`.dimfort.toml` does not set
    `unit_comment_delimiters`): nothing to do. Behavior is preserved
    except that bare `! @unit{...}` is now accepted in addition to
@@ -575,22 +575,9 @@ The 0.2.2 release notes and README should say:
    as the loose patterns. The relax-pattern path exists for legacy
    compatibility, not as the recommended writing style.
 
-The DimFort website / docs should add a small "Bringing DimFort to an
-existing codebase" page covering the steps above.
+See also [Bringing DimFort to an existing codebase](../usage.md#bringing-dimfort-to-an-existing-codebase) in the user guide.
 
-## 16. Pre-merge backward-compat check
-
-Before merging this feature, run a snapshot regression:
-
-1. Capture the current `var_units_by_scope` map for every annotated
-   file in the validation workspace.
-2. Re-run after the implementation.
-3. Diff. Any change is either a documented expansion (bare `!
-   @unit{}` newly accepted) or a regression to investigate.
-
-Same procedure for the diagnostic emission set (codes + counts).
-
-## 17. Open questions
+## 16. Open questions
 
 - **Trailing-pattern attachment when a non-decl statement also has a
   trailing comment that happens to match.** Example:

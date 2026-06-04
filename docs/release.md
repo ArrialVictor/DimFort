@@ -47,10 +47,10 @@ still succeed, which is useful for testing the pipeline.
    PyPI's README is **frozen** once the version is published — a broken-image
    fix only lands for users on the next release; you can't edit a published
    release's long-description.
-5. Tag the merge commit:
+5. Tag the merge commit (replace `vX.Y.Z` with the actual version):
    ```bash
-   git tag v0.2.0
-   git push origin v0.2.0
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
    ```
 6. Watch the `release` workflow on GitHub Actions. The `publish-pypi` job
    pauses for manual approval (the `pypi` environment has required reviewers
