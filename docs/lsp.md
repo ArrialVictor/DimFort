@@ -59,7 +59,8 @@ Custom request returning everything the editor needs to render the
 "DimFort" side panel at a given cursor position: enclosing scopes
 with their typed variables, current imports with their resolved units,
 the expression tree under the cursor, line-scoped diagnostics, and
-file-wide H/U counts.
+file-wide H/U counts. The user-facing description of what the panel
+shows is in [editor-integration/side-panel.md](editor-integration/side-panel.md).
 
 Method: `dimfort/panelInfo`
 
