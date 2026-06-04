@@ -2,8 +2,8 @@
 
 How `src/dimfort/core/` is organised: the unit-checking pipeline that both the
 CLI and the language server run. For the *user-facing* annotation syntax see
-[`docs/annotations.md`](../annotations.md) and the unit-algebra rules in
-[`docs/unit-algebra.md`](../unit-algebra.md); this document is for people editing
+[`docs/annotations.md`](../../reference/annotations.md) and the unit-algebra rules in
+[`docs/unit-algebra.md`](../../reference/unit-algebra.md); this document is for people editing
 the checker itself. The editor layer that sits on top is documented separately
 in [`lsp-architecture.md`](lsp-architecture.md).
 
@@ -44,7 +44,7 @@ source ─▶ scan(@unit) + parse ─▶ attach ─▶ aggregate units ─▶ in
 ```
 
 A content-hash cache can short-circuit Phase D for unchanged files — see
-[`content-hash-cache.md`](content-hash-cache.md).
+[`content-hash-cache.md`](../shipped/content-hash-cache.md).
 
 ## Module map
 
@@ -63,13 +63,13 @@ A content-hash cache can short-circuit Phase D for unchanged files — see
 ### Unit model
 | Module | Owns |
 | --- | --- |
-| `units.py` | The `Unit` value type — a 7-slot SI dimension vector (M, L, T, Θ, I, N, J) with a `Fraction` prefactor — its parser and algebra (`*`, `/`, `^`, `compare`, `equal_dim`, `format_unit`), plus the symbolic-exponent / log-wrap types (`Exponent`, `ExpWrap`, `LogWrap`). See [`symbolic-exponents.md`](symbolic-exponents.md) and [`symbolic-logwrap.md`](symbolic-logwrap.md). |
+| `units.py` | The `Unit` value type — a 7-slot SI dimension vector (M, L, T, Θ, I, N, J) with a `Fraction` prefactor — its parser and algebra (`*`, `/`, `^`, `compare`, `equal_dim`, `format_unit`), plus the symbolic-exponent / log-wrap types (`Exponent`, `ExpWrap`, `LogWrap`). See [`symbolic-exponents.md`](../shipped/symbolic-exponents.md) and [`symbolic-logwrap.md`](../shipped/symbolic-logwrap.md). |
 | `unit_config.py` | Loads the unit table (`DEFAULT_TABLE` + `.dimfort.toml` overrides) that maps unit names to `Unit`s. |
 
 ### Checker
 | Module | Owns |
 | --- | --- |
-| `ts_checker.py` | The checker. `check(tree, …)` walks the tree and emits the H-series (H001 assignment, H002 operands, H003 intrinsic-arg, H004 call-arg) plus scale (S00x) and derivation (D1.x) diagnostics. Also the cross-workset collectors (`collect_var_types`, `collect_function_signatures`, `collect_module_exports`, …) and the **intended-public resolution API** (`Ctx`, `resolve_unit`, `assignment_homogeneity`, `resolve_member_chain`, `is_pure_numeric_constant`) that the editor layer and `interactions` consume. Marker semantics live in [`markers.md`](markers.md); scale rules in [`scale.md`](scale.md). |
+| `ts_checker.py` | The checker. `check(tree, …)` walks the tree and emits the H-series (H001 assignment, H002 operands, H003 intrinsic-arg, H004 call-arg) plus scale (S00x) and derivation (D1.x) diagnostics. Also the cross-workset collectors (`collect_var_types`, `collect_function_signatures`, `collect_module_exports`, …) and the **intended-public resolution API** (`Ctx`, `resolve_unit`, `assignment_homogeneity`, `resolve_member_chain`, `is_pure_numeric_constant`) that the editor layer and `interactions` consume. Marker semantics live in [`markers.md`](../shipped/markers.md); scale rules in [`scale.md`](../shipped/scale.md). |
 | `symbols.py` | Parser-agnostic symbol data: `FuncSig`, `ModuleExports`, `apply_use_clauses`, the intrinsic-classification tables (LOG / EXP / dimensionless / …), and the `CODES` diagnostic registry (every diagnostic code + severity is declared here). |
 
 ### Diagnostics and provenance
@@ -87,7 +87,7 @@ A content-hash cache can short-circuit Phase D for unchanged files — see
 ### Cross-site analysis
 | Module | Owns |
 | --- | --- |
-| `interactions.py` | On-demand, per-symbol analysis: collect every read/write of one variable across the workset, tag the constraint each site places on its unit, and flag `X001` when two sites disagree. Built on the public checker API. See [`interaction-points.md`](interaction-points.md). |
+| `interactions.py` | On-demand, per-symbol analysis: collect every read/write of one variable across the workset, tag the constraint each site places on its unit, and flag `X001` when two sites disagree. Built on the public checker API. See [`interaction-points.md`](../shipped/interaction-points.md). |
 
 ### Content-hash cache
 | Module | Owns |

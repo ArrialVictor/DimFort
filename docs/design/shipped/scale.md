@@ -15,8 +15,7 @@ What this doc is: the spec for the scale axis of the unit checker — the
 data model (`factor`, `offset`), the structured comparison verdict, the
 diagnostics (`S001` / `S002` / `S003`), the affine algebra, the
 `@unit_affine_conversion` directive, the uniform scale-aware display
-rule, and the open questions. Code follows the doc; if implementation
-disagrees, update the doc first.
+rule, and the open questions.
 
 
 ## 1. Problem statement
@@ -154,7 +153,7 @@ Non-unit factors/offsets come from the unit table: base SI units
 (factor 1, offset 0) plus `.dimfort.toml` definitions (`hPa`, `g`,
 `degC`, …) carrying their factor/offset relative to the base. The
 derived-unit schema today carries `factor` *and* `offset`;
-[default_units.toml](src/dimfort/core/default_units.toml) ships
+[default_units.toml](../../../src/dimfort/core/default_units.toml) ships
 `degC = { expr = "K", offset = "273.15" }`. `Cdeg`/`delta_degC` are
 reserved for 2b.
 
@@ -204,7 +203,7 @@ K` is fine):
 - `a * b`, `a / b`, `a ** n`: **require every operand `offset = 0`**;
   result `offset 0`. Any `offset ≠ 0` operand → **`S002`** via the
   affine-violation path (`_affine_violation` in
-  [ts_checker.py](src/dimfort/core/ts_checker.py)).
+  [ts_checker.py](../../../src/dimfort/core/ts_checker.py)).
 
 **`a + b` (check site).** After dim + factor agree, by operand kind:
 
@@ -411,17 +410,17 @@ because every surface consumes it. The rule is one sentence:
 
 | surface (scale-mode on) | rendering | source |
 |-------------------------|-----------|--------|
-| Expression tree unit column | `format_unit(u, show_factor=True)` | [expr_tree.py](src/dimfort/lsp/expr_tree.py) |
-| Scope `unitNormalized` | normalized base-SI form includes the factor | [panel.py](src/dimfort/lsp/panel.py) / `_normalized_unit` |
-| Imports `unitNormalized` (and call-site arg/return) | same | [imports.py](src/dimfort/lsp/imports.py) |
-| Hover (short and detailed) | same `show_factor=True` path | [hover.py](src/dimfort/lsp/hover.py) |
+| Expression tree unit column | `format_unit(u, show_factor=True)` | [expr_tree.py](../../../src/dimfort/lsp/expr_tree.py) |
+| Scope `unitNormalized` | normalized base-SI form includes the factor | [panel.py](../../../src/dimfort/lsp/panel.py) / `_normalized_unit` |
+| Imports `unitNormalized` (and call-site arg/return) | same | [imports.py](../../../src/dimfort/lsp/imports.py) |
+| Hover (short and detailed) | same `show_factor=True` path | [hover.py](../../../src/dimfort/lsp/hover.py) |
 
 Affine `offset` rendering is **independent of `show_factor`**: the
 offset is the only thing that distinguishes `degC` from `K`, so it is
 always shown when present (regardless of scale mode) — otherwise
 `degC` would render identically to `K` and the offset semantics would
 be invisible. See `format_unit` in
-[units.py](src/dimfort/core/units.py).
+[units.py](../../../src/dimfort/core/units.py).
 
 Worked example:
 
@@ -430,12 +429,12 @@ Worked example:
 - `degC`, either mode: `K + 273.15` (offset always shown).
 
 One rule across every surface: the display matches what the checker
-considers significant. The [panel-info.md](docs/design/panel-info.md)
+considers significant. The [panel-info.md](panel-info.md)
 refresh is the primary consumer; this section is its specification.
 
 **`_is_conflict` (the interactions consumer) is scale-mode-aware.**
 The cross-site conflict detector in
-[interactions.py](src/dimfort/core/interactions.py) treats a
+[interactions.py](../../../src/dimfort/core/interactions.py) treats a
 `dim_mismatch` as a conflict always and a `scale_mismatch` as a
 conflict only under `scale=True`. It does **not** currently treat
 `offset_mismatch` as a conflict; if Phase 3 broadens the relational
@@ -452,8 +451,8 @@ piece that makes the affine triage actually pay off.
 
 A multiplicative conversion rides on a typed `PARAMETER` because units
 compose under `*`/`/`: `play[Pa] / PA_PER_HPA[Pa/hPa] = [hPa]`. An
-**affine** conversion cannot — addition *preserves* the frame (`point
-+ vector = point`, §4.1), and there is no unit you can add that turns
+**affine** conversion cannot — addition *preserves* the frame
+(`point + vector = point`, §4.1), and there is no unit you can add that turns
 a `degC` into a `K`. So a correct `t_k = t_c + 273.15` always fires
 `S002`. We need a way to *bless* it.
 
@@ -484,7 +483,7 @@ t_k = t_c + RTT    !< @unit_affine_conversion{degC -> K}
 
 - Payload: `{ <src-unit> -> <tgt-unit> }`. Arrow form is primary; comma
   form `{src, tgt}` accepted as a synonym (see
-  [annotations.py](src/dimfort/core/annotations.py): `RawAffineConv`,
+  [annotations.py](../../../src/dimfort/core/annotations.py): `RawAffineConv`,
   `_find_affine_invocations`).
 - Applies to the **assignment statement** it annotates. One per
   statement.
@@ -523,7 +522,7 @@ here), and treat the result as cleanly `T`. Invalid ⟹ **`S003`**.
 ### 8.4 Verification algorithm
 
 Implemented as `_verify_affine_conversion` in
-[ts_checker.py](src/dimfort/core/ts_checker.py); the core reducer is
+[ts_checker.py](../../../src/dimfort/core/ts_checker.py); the core reducer is
 `_lin_reduce`.
 
 **(a) Resolve & check the units.** Look up `src`, `tgt`. Both must
@@ -629,14 +628,14 @@ assume branch is checked first in the assignment-statement handler).
 Scale mode is opt-in, threaded from three sources into `_Ctx.scale_mode`:
 
 - **`.dimfort.toml`** — `[scale] enabled = true`
-  ([config.py](src/dimfort/config.py)). Persistent per-workspace
+  ([config.py](../../../src/dimfort/config.py)). Persistent per-workspace
   setting.
 - **CLI `--scale`** — `dimfort check --scale`, `dimfort interactions
-  --scale` ([cli.py](src/dimfort/cli.py)). Per-invocation override; ORs
+  --scale` ([cli.py](../../../src/dimfort/cli.py)). Per-invocation override; ORs
   with the config value.
 - **LSP `scaleMode` initializationOption** — server-side override,
   applied after config in `_on_initialize`
-  ([lsp/server.py](src/dimfort/lsp/server.py)). Boolean.
+  ([lsp/server.py](../../../src/dimfort/lsp/server.py)). Boolean.
 
 Companion editors expose a tri-state `"auto" | "on" | "off"`: `"auto"`
 defers to `.dimfort.toml`, `"on"`/`"off"` force the LSP init option.
@@ -644,14 +643,14 @@ The cycle is bound to `:DimFortCycleScale` (and the Emacs / VSCode
 equivalents) — see panel-info.md §Commands.
 
 State on the server side lives in `state.scale_mode`
-([lsp/state.py](src/dimfort/lsp/state.py)) and is recomputed into
+([lsp/state.py](../../../src/dimfort/lsp/state.py)) and is recomputed into
 every `_Ctx` construction (one per file check, per panel query, per
 expression-tree walk).
 
 
 ## 10. Test corpus
 
-Built and present in [tests/unit/](tests/unit/):
+Built and present in [tests/unit/](../../../tests/unit/):
 
 - **Phase 1 (multiplicative)** — `test_ts_checker.py`: S001 fixtures for
   `hPa`/`Pa`, `g/kg`/`kg/kg`, and the untyped-`/100` style finding plus
@@ -661,7 +660,7 @@ Built and present in [tests/unit/](tests/unit/):
   degC`, `2 * degC`, `ΔT − degC`), the legal point − point → ΔT case
   (must NOT fire), and the `+273.15` untyped-literal caveat.
 - **Phase 2c (verified directive)** —
-  [test_affine_conversion.py](tests/unit/test_affine_conversion.py)
+  [test_affine_conversion.py](../../../tests/unit/test_affine_conversion.py)
   covers: valid `t_k = t_c + RTT` and reverse `t_c = t_k - RTT`,
   wrong-direction / wrong-constant / wrong-target / non-affine pairs
   (e.g. `{Pa -> hPa}`) / non-linear RHS / multiple-source-operand all
@@ -678,19 +677,19 @@ suite and any baseline must be byte-identical to pre-scale behaviour.
 
 ## 11. Cross-references
 
-- **[panel-info.md](docs/design/panel-info.md)** — primary consumer of
+- **[panel-info.md](panel-info.md)** — primary consumer of
   the scale-aware display rule (§7). The `unitNormalized` field, the
   Expression tree unit column, and the hover renderer all gate on
   `scale_mode`.
-- **[markers.md](docs/design/markers.md)** — `S001` / `S002` / `S003`
+- **[markers.md](markers.md)** — `S001` / `S002` / `S003`
   participate in `_MARKER_DIAG_CODES` (markers.md §2). A valid
   directive leaves the statement 🟢; an invalid one (S003) shows 🔴.
-- **[interaction-points.md](docs/design/interaction-points.md)** —
+- **[interaction-points.md](interaction-points.md)** —
   `_is_conflict` is scale-mode-aware: dimension mismatch is always a
   conflict; scale mismatch is a conflict only under `--scale`. (Offset
   mismatch is not currently surfaced as a cross-site conflict.)
-- **[symbolic-exponents.md](docs/design/symbolic-exponents.md)** /
-  **[symbolic-logwrap.md](docs/design/symbolic-logwrap.md)** —
+- **[symbolic-exponents.md](symbolic-exponents.md)** /
+  **[symbolic-logwrap.md](symbolic-logwrap.md)** —
   orthogonal axes (dimension algebra over symbolic exponents, and the
   `LogWrap`/`ExpWrap` deferral). Scale rides on `factor` / `offset` of
   the inner unit and recurses through wrappers in `compare`; the

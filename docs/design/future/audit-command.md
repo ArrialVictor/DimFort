@@ -119,9 +119,7 @@ inspection-command context.
 
 The "blessed" list of conventions the audit checks for. Each
 entry is `(shape, detector_fn, suggested_config_block)`. Initial
-catalog (derived from the survey methodology in
-`rewrite-rules-future.md` §"Survey methodology" — see §6 below
-for how it gets populated):
+catalog (populated from the survey methodology in §6 below):
 
 ```
 - bracketed:              `[…]`        →  delimiter pattern { open="[", close="]" }

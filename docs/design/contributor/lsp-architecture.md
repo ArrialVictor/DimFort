@@ -1,7 +1,7 @@
 # Language server — internal architecture
 
 How the `dimfort lsp` server is organised internally. For the *user-facing*
-feature list (what hover/inlay/diagnostics do) see [`docs/lsp.md`](../lsp.md);
+feature list (what hover/inlay/diagnostics do) see [`docs/lsp.md`](../../editor-integration/lsp-protocol.md);
 this document is for people editing the server itself.
 
 The server speaks LSP over stdio (via [pygls](https://github.com/openlawlibrary/pygls))
@@ -39,7 +39,7 @@ function in a feature module.
 | `tree_access.py` | URI↔path conversion (`_uri_to_path`, `_uri_for_path`) and workset lookups (`_trees_for` → cached parsed tree; `_build_ts_ctx` → a `ts_checker._Ctx` pre-loaded with the workset's unit tables). |
 | `tree_nav.py` | Pure tree-sitter navigation / node inspection: the identifier / enclosing-scope / expression-root under a cursor, node→LSP-range mapping, one-line node previews. No state, no checker ctx. |
 | `decl_scan.py` | Source-side declaration scanning — from the live buffer (`_scan_declarations_for_uri`) or disk (`_last_scan_declarations`). |
-| `expr_tree.py` | The diagnostic-driven **marker model** (`_self_marker` / `_node_marker` / `_diags_for_ctx`, per [`markers.md`](markers.md)) and the panel builders (`_build_expression_tree`, `_build_scope_vars`). Shared by both the panel and the hover surfaces. |
+| `expr_tree.py` | The diagnostic-driven **marker model** (`_self_marker` / `_node_marker` / `_diags_for_ctx`, per [`markers.md`](../shipped/markers.md)) and the panel builders (`_build_expression_tree`, `_build_scope_vars`). Shared by both the panel and the hover surfaces. |
 | `hover_render.py` | Pure markdown rendering for hover (unit pretty-printing, single-symbol / signature / module summaries). |
 | `markers.py` | 🟢/🟡/🔴 marker token mapping + worst-of aggregation. |
 | `ts_helpers.py` | Parser-shape-specific tree-sitter queries (walk calls / identifiers / use-statements / definitions, etc.). |

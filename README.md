@@ -35,6 +35,30 @@ force = mass * velocity            ! diagnosed: force unit is kg, expected kg*m/
 > hints, go-to-definition, code actions, completion, and a CLI that
 > accepts files or directories.
 
+## Adopting on an existing codebase
+
+Many real-world Fortran projects already document units in inline
+comments — `! [m/s]`, `! horizontal wind speed [m/s]`,
+`! tracer ratio [m^2: Andreas 1989]`. DimFort can read your
+project's own convention, so you don't rewrite every declaration
+just to opt in.
+
+Add a few lines to `.dimfort.toml`:
+
+```toml
+[parser]
+unit_comment_delimiters = [
+  { open = "@unit{", close = "}" },
+  { open = "[",      close = "]" },
+]
+```
+
+Now `! [m/s]` is a first-class unit annotation, checked exactly
+like `@unit{m/s}`. The same mechanism handles `@unit_assume` and
+`@unit_affine_conversion`, each on its own list with its own
+opt-in. Full recipe in
+[Bringing DimFort to an existing codebase](docs/quickstart/bringing-to-existing-codebase.md).
+
 ## Quick tour
 
 Want a hands-on look first? [`demos/tour.f90`](https://github.com/ArrialVictor/DimFort/blob/main/demos/tour.f90)
@@ -107,26 +131,15 @@ Exit code is `0` if no errors, `1` if any error-severity diagnostic was
 produced, `2` for usage / file / config errors. Warnings alone do not
 fail the run.
 
-Diagnostic codes split into two families:
-
-- **H-series** (`H001`–`H004`, `H010`) — homogeneity violations: the
-  math doesn't balance dimensionally. `H010` is a warning (the rest
-  are errors) and covers the implicit-cast / wrapper-untag cases
-  (D1.5, D1.6) where DimFort accepts the expression but flags a
-  smell. Wrapper-arithmetic violations (D1.2 / D1.3 / D1.4) surface
-  via the same `H001` / `H002` codes with a `(D1.x)` tag in the
-  message.
-- **U-series** (`U001`, `U002`, `U005`–`U007`, `U010`, `U-conflict`) —
-  annotation / metadata problems: something's wrong with the
-  annotations themselves, not the math.
-- **X-series** (`X001`) — cross-site findings produced only by
-  `dimfort interactions`, not by the `check` pass: a variable whose
-  use-sites make conflicting unit claims.
-
-Full reference: [docs/usage.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/usage.md).
-The wrapper-rule specification — including the rule IDs surfaced by
-`--trace` — lives at
-[docs/unit-algebra.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/unit-algebra.md).
+Diagnostics are grouped by code prefix: **H** for homogeneity,
+**U** for annotation-pipeline problems, **S** for the opt-in
+scale family, **X** for cross-site findings from `dimfort
+interactions`, and **P** for parser-skipped regions. Full
+reference (every code, severity, and trigger) lives at
+[docs/reference/diagnostic-codes.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/reference/diagnostic-codes.md).
+The unit-algebra rule taxonomy (`D1.1`–`D1.7`) that classifies
+*why* a homogeneity diagnostic fires is at
+[docs/reference/unit-algebra.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/reference/unit-algebra.md).
 
 ## Doxygen integration
 
@@ -159,7 +172,7 @@ DimFort tracks the wrapper through arithmetic: `LOG(psol) + LOG(pref)`
 types as `LOG(Pa²)`, `LOG(p1) − LOG(p2)` collapses to dimensionless
 via the pressure-ratio rule, and `EXP(LOG(psol) − ...)` cancels back
 to `Pa`. The full rule set is in
-[docs/unit-algebra.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/unit-algebra.md).
+[docs/reference/unit-algebra.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/reference/unit-algebra.md).
 
 ### Trace mode
 
@@ -181,22 +194,22 @@ per-row 🟢/🟡/🔴 markers).
   <img width="640" src="https://raw.githubusercontent.com/ArrialVictor/DimFort/main/docs/img/hover-expression-detailed-violation_light.png" alt="Detailed expression hover showing a homogeneity violation propagating up the unit-algebra tree">
 </picture>
 
-See [docs/hover-ui.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/hover-ui.md)
+See [docs/editor-integration/hover-ui.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/editor-integration/hover-ui.md)
 for the layout spec.
 
-See [docs/annotations.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/annotations.md)
+See [docs/reference/annotations.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/reference/annotations.md)
 for the full reference: unit-expression grammar, continuation-line
 forms, declaration lists, and the diagnostic codes the scanner can
 emit.
 
 ## Documentation
 
-- [Annotations](https://github.com/ArrialVictor/DimFort/blob/main/docs/annotations.md)
+- [Annotations](https://github.com/ArrialVictor/DimFort/blob/main/docs/reference/annotations.md)
 - [Usage details](https://github.com/ArrialVictor/DimFort/blob/main/docs/usage.md)
   — includes the [bringing DimFort to an existing codebase](https://github.com/ArrialVictor/DimFort/blob/main/docs/usage.md#bringing-dimfort-to-an-existing-codebase)
   guide (configurable comment delimiters, added 0.2.2).
-- [Language server](https://github.com/ArrialVictor/DimFort/blob/main/docs/lsp.md)
-- [Releases](https://github.com/ArrialVictor/DimFort/blob/main/docs/release.md)
+- [Language server](https://github.com/ArrialVictor/DimFort/blob/main/docs/editor-integration/lsp-protocol.md)
+- [Releases](https://github.com/ArrialVictor/DimFort/blob/main/docs/release-process.md)
 
 ## Editor integrations
 

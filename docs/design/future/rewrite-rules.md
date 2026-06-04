@@ -134,4 +134,4 @@ Add a real-world data point here every time an adopter U002
 report would be helped by one of these candidates. Five entries
 per rule = green light to implement.
 
-- (none yet — 0.2.2 just shipped)
+_No entries yet._
