@@ -2,6 +2,54 @@
 
 All notable changes to DimFort are documented here. Format inspired by [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.2.1] — 2026-06-04
+
+Documentation patch. No behaviour changes — the running checker,
+LSP server, and `default_units.toml`-parsed values are identical
+to 0.2.2.
+
+### Documentation overhaul
+
+The `docs/` tree was regrouped by audience into `quickstart/`,
+`reference/`, `editor-integration/`, and a three-way split of
+`design/` into `shipped/` / `future/` / `contributor/`. The flat
+top level kept only the user guide (`usage.md`), the landing page
+(`index.md`), troubleshooting, and the maintainer-only
+`release-process.md`.
+
+New pages: `quickstart/install.md`,
+`quickstart/first-check.md`,
+`quickstart/bringing-to-existing-codebase.md` (extracted from the
+previous `usage.md`), `reference/cli.md`,
+`reference/diagnostic-codes.md` (single source of truth for the
+H / U / S / X / P code catalog),
+`reference/dimfort-toml.md` (every config key),
+`reference/intrinsics.md`,
+`reference/units-file.md` (full schema for the `[units] file`
+extension), `troubleshooting.md`,
+`editor-integration/side-panel.md` (canonical description of the
+six-section side panel rendered by all three companions).
+
+Reshaped pages: `index.md` is now a real landing page;
+`usage.md` is trimmed to the feature surface and content-hash
+cache; `editor-integration/lsp-protocol.md` (was `lsp.md`) is
+rewritten against the running server — the previous version
+documented the pre-redesign hover and the legacy
+`traceHoverEnabled` key.
+
+The README gains an "Adopting on an existing codebase" section
+between the status banner and the quick tour, surfacing the
+0.2.2 configurable-delimiter feature early as the adoption
+story.
+
+### Source touch
+
+`src/dimfort/core/default_units.toml`: large integer literals
+switched to TOML's underscored form
+(`G = 1_000_000_000`, `M = 1_000_000`, `k = 1_000`,
+`bar.factor = 100_000`). Same parsed values; cosmetic
+readability change. Verified by the full test suite.
+
 ## [0.2.2] — 2026-06-03
 
 ### Add: configurable comment delimiters for the three unit directive families
