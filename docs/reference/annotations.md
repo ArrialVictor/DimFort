@@ -242,16 +242,8 @@ The full table — every code, severity, and trigger — lives at
 severity can be remapped per project under `[diagnostics]` in
 `.dimfort.toml`.
 
-Intrinsics handled:
-
-| Category          | Intrinsics                                              | Unit semantics |
-|-------------------|---------------------------------------------------------|----------------|
-| Dimensionless     | `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh` | arg must be `1`; result is `1`. H003 on violation. |
-| Transforming      | `sqrt`, `abs`                                           | result is `arg^(1/2)` for sqrt, `arg^1` for abs. |
-| Transparent       | `floor`, `ceiling`, `nint`, `int`, `real`, `dble`, `sign`, `aimag`, `anint` | result = first arg's unit. |
-| Same-unit args    | `min`, `max`, `mod`, `modulo`, `merge`                  | every arg shares one unit (merge: only first two); result is that unit. H002 on mismatch. |
-| Product           | `dot_product`, `matmul`                                 | result = `arg[0] * arg[1]`. |
-| Reduction         | `sum`, `minval`, `maxval`                               | result = element unit. |
+Fortran intrinsics whose unit semantics DimFort knows are listed at
+[reference/intrinsics.md](intrinsics.md).
 
 User-defined functions and subroutines are now checked, including
 across files. Their unit interface is inferred from the annotations on
