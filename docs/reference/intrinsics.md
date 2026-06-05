@@ -10,7 +10,7 @@ unit and emits no homogeneity diagnostic for the call.
 
 | Category | Intrinsics | Unit semantics |
 |---|---|---|
-| **Dimensionless** | `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh` | Argument must be **dimensionless** (`1`) or, for `log` / `log10` / `exp`, **appropriately wrapped** (`log(x)` accepts `x : LOG(...)` and returns the inner unit; `exp(x)` accepts `x : LOG(...)` and returns the inner unit; nested cases compose). Bare-dimensioned arguments fire `H003`. |
+| **Dimensionless** | `exp`, `log`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh` | Argument must be **dimensionless** (`1`) or, for `log` / `log2` / `log10` / `exp`, **appropriately wrapped** (`log(x)` accepts `x : LOG(...)` and returns the inner unit; `exp(x)` accepts `x : LOG(...)` and returns the inner unit; nested cases compose). Bare-dimensioned arguments fire `H003`. |
 | **Transforming** | `sqrt`, `abs` | Result is `arg^(1/2)` for `sqrt`, `arg^1` for `abs`. |
 | **Transparent** | `floor`, `ceiling`, `nint`, `int`, `real`, `dble`, `sign`, `aimag`, `anint` | Result has the same unit as the first argument. |
 | **Same-unit args** | `min`, `max`, `mod`, `modulo`, `merge` | Every argument must share one unit; result is that unit. (`merge` only constrains the first two — the mask is `logical`.) `H002` on mismatch. |
