@@ -51,7 +51,13 @@ from dimfort import __version__ as _dimfort_version
 #     seeing assume-derived U020 / U023 fires. Without this bump, v3
 #     entries written under one pattern set would replay under another
 #     and serve stale diagnostics.
-CHECKER_OUTPUT_VERSION = 4
+# v5: parametric-polymorphism M1 extends ``Unit`` with a ``tyvars`` field
+#     and accepts ``'a`` in ``@unit{...}`` annotations. A pre-v5 cache
+#     entry for a Unit serialised with no ``"v"`` key loads fine
+#     (defaults to no tyvars), but any source that uses ``'a`` would
+#     have errored under v4 and now succeeds — same source bytes,
+#     different diagnostics. Bump invalidates those stale entries.
+CHECKER_OUTPUT_VERSION = 5
 
 
 # Keys from a workspace config that affect a *file's* output and

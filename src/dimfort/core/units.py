@@ -278,6 +278,25 @@ class UnitAmbiguityWarning(UserWarning):
     pass
 
 
+def _canonicalize_tyvars(
+    items: tuple[tuple[str, Number | Exponent], ...],
+) -> tuple[tuple[str, Exponent], ...]:
+    """Aggregate, sort, drop-zero-exponent. Mirrors ``Exponent.build``.
+
+    Promotes raw ``Number`` exponents to ``Exponent.from_value``. The
+    result is a tuple of ``(name, non-zero Exponent)`` pairs sorted by
+    name — the canonical form ``Unit.tyvars`` must hold.
+    """
+    agg: dict[str, Exponent] = {}
+    for name, exp in items:
+        e = exp if isinstance(exp, Exponent) else Exponent.from_value(exp)
+        if name in agg:
+            agg[name] = agg[name] + e
+        else:
+            agg[name] = e
+    return tuple((n, agg[n]) for n in sorted(agg) if not agg[n].is_zero())
+
+
 @dataclass(frozen=True)
 class Unit:
     """Dimension vector (one Exponent per SI base slot) plus a rational
@@ -288,6 +307,14 @@ class Unit:
     linear form over Q with named opaque generators. Existing callers
     that pass ``int``/``Fraction`` slots still work — ``__post_init__``
     promotes scalar entries to ``Exponent.from_value`` automatically.
+
+    ``tyvars`` carries parametric-polymorphism type-variable exponents
+    (Kennedy-style AG-extension of the multiplicative unit algebra). Each
+    entry is ``(name, Exponent)`` — the exponent is symbolic in the same
+    way the SI slots are, so ``'a^κ`` composes with the existing
+    symbolic-exponent machinery for free. Empty by default; every
+    pre-polymorphism caller sees byte-identical behaviour. See
+    ``docs/design/future/polymorphic-units.md``.
     """
     dimension: tuple[Exponent, ...]
     factor: Fraction
@@ -299,6 +326,7 @@ class Unit:
     # callers and the multiplicative algebra are unaffected. See
     # docs/design/scale.md §3.2–§3.3.
     offset: Fraction = Fraction(0)
+    tyvars: tuple[tuple[str, Exponent], ...] = ()
 
     def __post_init__(self) -> None:
         # Coerce legacy callers passing ``Number`` per slot. After this
@@ -322,17 +350,29 @@ class Unit:
             object.__setattr__(self, "factor", Fraction(self.factor))
         if not isinstance(self.offset, Fraction):
             object.__setattr__(self, "offset", Fraction(self.offset))
+        # Canonicalize tyvars: drop zero-exponent entries, sort by name,
+        # promote any Number exponents. Equality / hash depend on the
+        # canonical form.
+        if self.tyvars:
+            canon = _canonicalize_tyvars(self.tyvars)
+            if canon != self.tyvars:
+                object.__setattr__(self, "tyvars", canon)
 
     def __mul__(self, other: Unit) -> Unit:
         return Unit(
             tuple(a + b for a, b in zip(self.dimension, other.dimension, strict=False)),
             self.factor * other.factor,
+            tyvars=self.tyvars + other.tyvars,
         )
 
     def __truediv__(self, other: Unit) -> Unit:
+        # Negate the divisor's tyvar exponents and merge. Canonicalization
+        # in __post_init__ drops anything that cancels to zero.
+        neg_tyvars = tuple((n, -e) for n, e in other.tyvars)
         return Unit(
             tuple(a - b for a, b in zip(self.dimension, other.dimension, strict=False)),
             self.factor / other.factor,
+            tyvars=self.tyvars + neg_tyvars,
         )
 
     def pow(self, exp: Number | Exponent) -> Unit:
@@ -344,11 +384,17 @@ class Unit:
         raises ``UnitError`` if the multiplication is non-linear (both
         sides have symbol terms) — the caller (``power(...)`` below)
         converts that into a D1.4 diagnostic.
+
+        Tyvar exponents are scaled by the same ``exp`` — ``('a)^k`` →
+        ``'a^k``. Symbolic ``exp`` on a tyvar whose exponent is itself
+        symbolic would be non-linear; ``Exponent.__mul__`` raises and the
+        caller falls back to D1.4 (same path as the SI-slot case).
         """
         scalar: Exponent | Number = (
             exp if isinstance(exp, Exponent) else exp
         )
         new_dim = tuple(a * scalar for a in self.dimension)
+        new_tyvars = tuple((n, e * scalar) for n, e in self.tyvars)
         if self.factor == 1:
             new_factor = Fraction(1)
         elif isinstance(exp, int):
@@ -362,7 +408,7 @@ class Unit:
                 f"non-integer exponent on prefixed/scaled unit not supported "
                 f"(factor={self.factor}, exp={exp})"
             )
-        return Unit(new_dim, new_factor)
+        return Unit(new_dim, new_factor, tyvars=new_tyvars)
 
 
 # ---------------------------------------------------------------------------
@@ -396,12 +442,19 @@ UnitExpr = Unit | LogWrap | ExpWrap
 
 
 def is_dimensionless(u: UnitExpr) -> bool:
-    """``True`` iff ``u`` is a ``Unit`` with all base exponents zero.
+    """``True`` iff ``u`` is a ``Unit`` with all base exponents zero
+    and no tyvar exponents.
 
     Wrappers around dim'less never exist post-canonicalization (R2.3),
-    so a wrapper is by definition non-dim'less.
+    so a wrapper is by definition non-dim'less. A Unit with no SI
+    exponents but a live tyvar (``'a``) is **not** dim'less — its
+    dimension is the symbolic tyvar.
     """
-    return isinstance(u, Unit) and all(d.is_zero() for d in u.dimension)
+    return (
+        isinstance(u, Unit)
+        and all(d.is_zero() for d in u.dimension)
+        and not u.tyvars
+    )
 
 
 def wrap_log(u: UnitExpr) -> UnitExpr:
@@ -554,7 +607,8 @@ def combine(
                 return _ok(
                     "R4.1",
                     Unit(a.dimension, a.factor,
-                         _result_offset(op, a.offset, b.offset)),
+                         _result_offset(op, a.offset, b.offset),
+                         tyvars=a.tyvars),
                 )
             # H010 (implicit-cast demotion) fires only when the operand
             # was a source-level numeric literal (or a PARAMETER ref
@@ -854,11 +908,12 @@ def _resolve_identifier(name: str, table: UnitTable) -> Unit:
 
 _TOKEN_RE = re.compile(
     r"""
-    \s+                          |  # whitespace
-    (?P<ID>[A-Za-z][A-Za-z0-9]*) |
-    (?P<INT>\d+)                 |
-    (?P<POW>\*\*)                |  # Fortran-style power, normalised to ^
-    (?P<OP>[*/^()\-])            |
+    \s+                              |  # whitespace
+    (?P<TYVAR>'[A-Za-z][A-Za-z0-9]*) |  # OCaml-style type variable
+    (?P<ID>[A-Za-z][A-Za-z0-9]*)     |
+    (?P<INT>\d+)                     |
+    (?P<POW>\*\*)                    |  # Fortran-style power, normalised to ^
+    (?P<OP>[*/^()\-])                |
     (?P<BAD>.)
     """,
     re.VERBOSE,
@@ -868,7 +923,12 @@ _TOKEN_RE = re.compile(
 def _tokenize(expr: str) -> list[tuple[str, str]]:
     tokens: list[tuple[str, str]] = []
     for m in _TOKEN_RE.finditer(expr):
-        if m.group("ID") is not None:
+        if m.group("TYVAR") is not None:
+            # The leading ``'`` is part of the canonical tyvar name —
+            # carrying it through avoids any ambiguity with concrete
+            # base-unit identifiers downstream.
+            tokens.append(("TYVAR", m.group("TYVAR")))
+        elif m.group("ID") is not None:
             tokens.append(("ID", m.group("ID")))
         elif m.group("INT") is not None:
             tokens.append(("INT", m.group("INT")))
@@ -966,6 +1026,12 @@ class _Parser:
                 return wrap_log(inner) if upper == "LOG" else wrap_exp(inner)
             self.consume()
             return _resolve_identifier(tok[1], self.table)
+        if tok[0] == "TYVAR":
+            # ``'a`` is a Unit with all-zero SI exponents whose only
+            # active basis element is the tyvar itself with exponent 1.
+            self.consume()
+            return Unit(ZERO_DIM, Fraction(1),
+                        tyvars=((tok[1], Exponent.from_value(1)),))
         raise UnitError(f"expected unit factor, got {tok}")
 
     def parse_exp(self) -> Number:
@@ -1057,6 +1123,22 @@ def format_unit(
         return f"EXP({inner})"
     names = base_symbols(table)
     terms: list[str] = []
+    # Tyvars render first — they are the most syntactically distinctive
+    # part of the unit (``'a·kg`` reads better than ``kg·'a``) and follow
+    # the OCaml-convention reading order. Each tyvar uses the same
+    # exponent rendering rules as the SI slots.
+    for name, exp in u.tyvars:
+        q = exp.as_fraction()
+        if q is not None:
+            if q == 1:
+                term = name
+            elif q.denominator == 1:
+                term = name + _to_super(str(int(q)))
+            else:
+                term = f"{name}^({q})"
+        else:
+            term = f"{name}^({exp})"
+        terms.append(term)
     for sym, exp in zip(names, u.dimension, strict=False):
         if exp.is_zero():
             continue
@@ -1113,6 +1195,21 @@ def format_unit_source(u: UnitExpr, *, table: UnitTable | None = None) -> str:
     names = base_symbols(table)
     pos_terms: list[str] = []
     neg_terms: list[str] = []
+    # Tyvars go first so the source form mirrors ``format_unit``:
+    # ``'a*kg`` rather than ``kg*'a``.
+    for name, exp in u.tyvars:
+        q = exp.as_fraction()
+        if q is not None:
+            mag = abs(q)
+            if mag == 1:
+                term = name
+            elif mag.denominator == 1:
+                term = f"{name}^{int(mag)}"
+            else:
+                term = f"{name}^({mag})"
+            (pos_terms if q > 0 else neg_terms).append(term)
+        else:
+            pos_terms.append(f"{name}^({exp})")
     for sym, exp in zip(names, u.dimension, strict=False):
         if exp.is_zero():
             continue
@@ -1153,12 +1250,15 @@ def parse(expr: str, table: UnitTable | None = None) -> UnitExpr:
 def equal_dim(a: UnitExpr, b: UnitExpr) -> bool:
     """Structural dimension-equality on the ``UnitExpr`` tree.
 
-    Two ``Unit`` leaves compare on their 7-tuples (factor ignored).
+    Two ``Unit`` leaves compare on their 7-tuples *and* on their tyvar
+    maps (factor / offset ignored). A free type variable is part of the
+    Unit's dimension under the AG-extension, so ``'a`` and ``'b`` are
+    NOT dim-equal even if both have zero SI slots.
     Two ``LogWrap`` (or two ``ExpWrap``) compare by recursing into
     ``inner``. A wrapper is never dim-equal to a leaf.
     """
     if isinstance(a, Unit) and isinstance(b, Unit):
-        return tuple(a.dimension) == tuple(b.dimension)
+        return tuple(a.dimension) == tuple(b.dimension) and a.tyvars == b.tyvars
     if isinstance(a, LogWrap) and isinstance(b, LogWrap):
         return equal_dim(a.inner, b.inner)
     if isinstance(a, ExpWrap) and isinstance(b, ExpWrap):
@@ -1218,7 +1318,7 @@ def compare(a: UnitExpr, b: UnitExpr) -> Verdict:
     alongside them as the scale layer's single source of truth.
     """
     if isinstance(a, Unit) and isinstance(b, Unit):
-        if tuple(a.dimension) != tuple(b.dimension):
+        if tuple(a.dimension) != tuple(b.dimension) or a.tyvars != b.tyvars:
             return Verdict("dim_mismatch")
         if a.factor != b.factor:
             return Verdict("scale_mismatch", ratio=a.factor / b.factor)
