@@ -55,7 +55,18 @@ def _coerce_factor(value: object) -> Fraction:
     if isinstance(value, str):
         return Fraction(value)
     if isinstance(value, float):
-        return Fraction(value)
+        # Floats round-trip lossy through Fraction (``Fraction(0.1)`` =
+        # 3602879701896397/36028797018963968) — the resulting prefix
+        # factor would carry that imprecision into every diagnostic
+        # message. Force the author to use the string form ``"0.1"`` /
+        # ``"1/3"`` etc. instead. The matching ``[units]`` doc comment
+        # at config.py:115 already steers users to the string form;
+        # this turns the silent footgun into a hard error.
+        raise UnitError(
+            f"prefix factor must be a string for non-integer values "
+            f"(got float {value!r}); write it as a quoted decimal or "
+            f"fraction, e.g. \"0.1\" or \"1/10\""
+        )
     raise UnitError(f"prefix factor must be number/string, got {value!r}")
 
 
