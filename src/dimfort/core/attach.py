@@ -170,6 +170,7 @@ def _assign(
     unit_text: str,
     line: int,
     column: int,
+    end_column: int,
     *,
     enclosing_type: str | None,
     scope: str | None,
@@ -210,13 +211,14 @@ def _assign(
     # consult ``var_units`` accept that ambiguity; the authoritative
     # answer lives in ``var_units_by_scope``.
     result.var_units.setdefault(name, unit_text)
-    # Token span: ``@unit{`` (6) + inner text + ``}`` (1). ``column``
-    # is the 1-based column of the leading ``@``; ``end_col`` is the
-    # exclusive 1-based end (one past ``}``) in the checker's
-    # diagnostic convention.
-    result.var_units_span.setdefault(
-        name, (line, column, column + len(unit_text) + 7)
-    )
+    # Token span: ``column`` is the 1-based column of the leading
+    # delimiter (typically ``@``); ``end_column`` is the exclusive
+    # 1-based end (one past the closing delimiter), threaded in from
+    # the RawAnnotation so configurable comment delimiters (e.g.
+    # ``[m/s]``) produce correctly-positioned U002 squiggles and LSP
+    # hover ranges. Hardcoding ``len(unit_text) + 7`` here assumed the
+    # canonical six-char ``@unit{`` + one-char ``}`` delimiters.
+    result.var_units_span.setdefault(name, (line, column, end_column))
 
 
 def attach(scan: ScanResult) -> AttachmentResult:
@@ -285,6 +287,7 @@ def attach(scan: ScanResult) -> AttachmentResult:
                 ann.unit_text,
                 ann.line,
                 ann.column,
+                ann.end_column,
                 enclosing_type=decl.enclosing_type,
                 scope=decl.scope,
             )
