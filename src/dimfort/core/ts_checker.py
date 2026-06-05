@@ -1265,6 +1265,119 @@ def _emit_h002(loc: Node, left: UnitExpr, right: UnitExpr, ctx: _Ctx) -> Diagnos
     )
 
 
+# ---------------------------------------------------------------------------
+# Polymorphism: H023 — signature contradicted by body
+# ---------------------------------------------------------------------------
+#
+# A polymorphic function's signature quantifies one or more tyvars
+# (``'a``, ``'b``, …); the spec promises that every body operation
+# preserves polymorphism. When a body operation would *force* a tyvar
+# to a concrete value — e.g. ``'a + kg`` (binds ``'a = kg``),
+# ``'a + 'a^(-1)`` (binds ``'a = {1}``) — the signature is dishonest
+# and H023 fires instead of the regular H001/H002.
+#
+# Detection is shallow at this milestone: any failing combine()/power()
+# site whose operands reference a tyvar from the enclosing function's
+# signature ⇒ H023. M3.1 extends to other operations (SIN, LOG forced
+# binding) and the structured per-tree H023 message.
+
+
+def _free_tyvars_of_sig(sig: FuncSig) -> frozenset[str]:
+    """Collect every tyvar name appearing in the signature's arg + return
+    units. Unwraps LogWrap / ExpWrap to reach the inner Unit.
+    """
+    out: set[str] = set()
+    units_iter: list[UnitExpr | None] = list(sig.arg_units)
+    units_iter.append(sig.return_unit)
+    for u in units_iter:
+        if u is None:
+            continue
+        inner = u
+        while isinstance(inner, (LogWrap, ExpWrap)):
+            inner = inner.inner
+        if isinstance(inner, Unit):
+            for name, _ in inner.tyvars:
+                out.add(name)
+    return frozenset(out)
+
+
+def _active_free_tyvars(byte_offset: int, ctx: _Ctx) -> frozenset[str]:
+    """Free tyvars of the routine enclosing ``byte_offset``.
+
+    Returns an empty frozenset for module-level offsets and for
+    non-polymorphic enclosing routines. The set is derived from
+    ``ctx.signatures`` on demand — cheap, no caching needed at this
+    scale (one set-build per emission site).
+    """
+    scope = ctx.scope_at(byte_offset)
+    if scope is None:
+        return frozenset()
+    sig = ctx.signatures.get(scope)
+    if sig is None:
+        return frozenset()
+    return _free_tyvars_of_sig(sig)
+
+
+def _tyvars_in_unit_expr(u: UnitExpr | None, active: frozenset[str]) -> frozenset[str]:
+    """Subset of ``active`` that appears in ``u``. Empty if ``u`` is None."""
+    if u is None or not active:
+        return frozenset()
+    inner = u
+    while isinstance(inner, (LogWrap, ExpWrap)):
+        inner = inner.inner
+    if not isinstance(inner, Unit):
+        return frozenset()
+    return frozenset(name for name, _ in inner.tyvars if name in active)
+
+
+def _h023_involved(
+    lu: UnitExpr | None, ru: UnitExpr | None, active: frozenset[str],
+) -> frozenset[str]:
+    """Union of active tyvars present in either operand. Empty ⇒ no H023."""
+    return _tyvars_in_unit_expr(lu, active) | _tyvars_in_unit_expr(ru, active)
+
+
+def _emit_h023(
+    loc: Node, lu: UnitExpr, ru: UnitExpr,
+    involved: frozenset[str], ctx: _Ctx,
+) -> Diagnostic:
+    start, end = _node_span(loc)
+    tyvars_str = ", ".join(sorted(involved))
+    return Diagnostic(
+        file=ctx.file, start=start, end=end,
+        severity=Severity.ERROR, code="H023",
+        message=(
+            f"Polymorphic body forces a binding on type variable "
+            f"{tyvars_str} — signature is not actually polymorphic: "
+            f"{format_unit(lu)} ≠ {format_unit(ru)}"
+        ),
+    )
+
+
+def _emit_h002_or_h023(
+    loc: Node, lu: UnitExpr, ru: UnitExpr, ctx: _Ctx,
+) -> Diagnostic:
+    """H002, or H023 when ``lu``/``ru`` reference an enclosing-function
+    free tyvar (the body would force a binding on it)."""
+    active = _active_free_tyvars(loc.start_byte, ctx)
+    involved = _h023_involved(lu, ru, active)
+    if involved:
+        return _emit_h023(loc, lu, ru, involved, ctx)
+    return _emit_h002(loc, lu, ru, ctx)
+
+
+def _emit_h001_or_h023(
+    loc: Node, lhs: UnitExpr, rhs: UnitExpr, ctx: _Ctx,
+) -> Diagnostic:
+    """H001, or H023 when ``lhs``/``rhs`` reference an enclosing-function
+    free tyvar."""
+    active = _active_free_tyvars(loc.start_byte, ctx)
+    involved = _h023_involved(lhs, rhs, active)
+    if involved:
+        return _emit_h023(loc, lhs, rhs, involved, ctx)
+    return _emit_h001(loc, lhs, rhs, ctx)
+
+
 def _emit_h010(
     loc: Node, literal_text: str, target_unit: UnitExpr, ctx: _Ctx
 ) -> Diagnostic:
@@ -1815,7 +1928,7 @@ def _walk_expressions(
         if diag is None:
             return
         if diag == "D1.1":
-            yield _emit_h002(node, lu, ru, ctx)
+            yield _emit_h002_or_h023(node, lu, ru, ctx)
         elif diag == "D1.5":
             # H010 implicit-literal-cast warning. The non-literal side
             # is the target unit (combine() returned it as ``result``).
@@ -1917,7 +2030,7 @@ def _check_same_unit_args(
             continue
         if isinstance(u, Unit) and not _is_dimensionless(u):
             if not equal_dim(u, carry):
-                yield _emit_h002(a, u, carry, ctx)
+                yield _emit_h002_or_h023(a, u, carry, ctx)
         elif _is_number_literal_node(a):
             if lit == 0:
                 continue  # literal 0 is dimension-agnostic
@@ -1925,7 +2038,7 @@ def _check_same_unit_args(
         else:
             # a genuinely dimensionless non-literal operand vs a
             # dimensioned carrying unit is a real mismatch
-            yield _emit_h002(a, u, carry, ctx)
+            yield _emit_h002_or_h023(a, u, carry, ctx)
 
 
 def _check_call_args_against_sig(
@@ -2818,7 +2931,7 @@ def check(
                     ))
                     tu = _resolve(target, ctx, source) if target is not None else None
                     if tu is not None and not equal_dim(tu, au):
-                        out.append(_emit_h001(node, tu, au, ctx))
+                        out.append(_emit_h001_or_h023(node, tu, au, ctx))
                 elif affine is not None:
                     src_text, tgt_text, aline, acol = affine
                     # The directive owns scale-checking for this statement.
@@ -2854,7 +2967,7 @@ def check(
                         # editor highlights both sides of `=`; lets the user
                         # see the offending statement at a glance instead of
                         # squinting at the LHS identifier.
-                        out.append(_emit_h001(node, tu, ru, ctx))
+                        out.append(_emit_h001_or_h023(node, tu, ru, ctx))
                     elif (
                         verdict == "autocast"
                         and out_autocast_events is not None
