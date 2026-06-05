@@ -31,6 +31,12 @@ from tree_sitter import Node, Tree
 from dimfort.core import ts_parser as _ts
 from dimfort.core import units as _units_mod
 from dimfort.core.diagnostics import AutocastEvent, Diagnostic, Position, Severity
+from dimfort.core.polymorphism import (
+    Conflict,
+    SlotEquation,
+    UnsupportedPolymorphism,
+    unify,
+)
 from dimfort.core.symbols import (
     DIMENSIONLESS_INTRINSICS,
     EXP_INTRINSICS,
@@ -1378,6 +1384,53 @@ def _emit_h001_or_h023(
     return _emit_h001(loc, lhs, rhs, ctx)
 
 
+def _emit_h020(
+    loc: Node, func_name: str, conflict: Conflict, ctx: _Ctx,
+) -> Diagnostic:
+    """Polymorphic call-site unification failure (H020).
+
+    Renders the symmetric ``(collides with arg N: name)`` trailer on
+    every contributing row. Unification has no ordering, so every slot
+    that pushed an inconsistent value is named — no "first arg wins"
+    asymmetry.
+    """
+    start, end = _node_span(loc)
+    contribs = conflict.contributions
+    # Build the symmetric collision trailer for every row: the partners
+    # are every *other* contributor whose implied value differs.
+    rows: list[str] = []
+    for c in contribs:
+        partners = [
+            p for p in contribs
+            if p.slot_index != c.slot_index and p.implied != c.implied
+        ]
+        if partners:
+            partner_label = ", ".join(
+                _arg_label(p.slot_index, p.slot_name) for p in partners
+            )
+            trailer = f"  (collides with {partner_label})"
+        else:
+            trailer = ""
+        label = _arg_label(c.slot_index, c.slot_name)
+        rows.append(
+            f"  {label}: {conflict.tyvar} = {format_unit(c.implied)}{trailer}"
+        )
+    body = "\n".join(rows)
+    return Diagnostic(
+        file=ctx.file, start=start, end=end,
+        severity=Severity.ERROR, code="H020",
+        message=(
+            f"Call to '{func_name}': type variable {conflict.tyvar} bound "
+            f"to inconsistent units at this call site\n{body}"
+        ),
+    )
+
+
+def _arg_label(index: int, name: str | None) -> str:
+    """``arg 1 (x)`` / ``arg 1`` formatting shared by H020 rows."""
+    return f"arg {index + 1} ({name})" if name else f"arg {index + 1}"
+
+
 def _emit_h010(
     loc: Node, literal_text: str, target_unit: UnitExpr, ctx: _Ctx
 ) -> Diagnostic:
@@ -2052,6 +2105,34 @@ def _check_call_args_against_sig(
     # ``strict=False``: it's normal for the call site to pass fewer
     # arguments than the signature declares (Fortran allows trailing
     # optional args). We check whichever pairs we can match.
+    free_tyvars = _free_tyvars_of_sig(sig)
+
+    if not free_tyvars:
+        # Concrete signature — per-slot dim check, identical to the
+        # pre-polymorphism behaviour.
+        for i, (expected, actual_node) in enumerate(
+            zip(sig.arg_units, arg_exprs, strict=False)
+        ):
+            if expected is None or actual_node is None:
+                continue
+            actual = _resolve(actual_node, ctx, source)
+            if actual is None:
+                continue
+            if not equal_dim(actual, expected):
+                arg_name = sig.arg_names[i] if i < len(sig.arg_names) else None
+                yield _emit_h004(
+                    call_node, func_name, i, expected, actual, ctx,
+                    arg_name=arg_name,
+                )
+        return
+
+    # Polymorphic signature — split slots and dispatch:
+    #   - slots whose formal references a free tyvar go into the unifier
+    #   - slots whose formal is concrete keep the per-slot H004 check
+    # This keeps concrete-slot mismatches as H004 (the existing UX) and
+    # routes only the genuine polymorphism failures through H020.
+    poly_equations: list[SlotEquation] = []
+    concrete_misses: list[tuple[int, UnitExpr, UnitExpr, str | None]] = []
     for i, (expected, actual_node) in enumerate(
         zip(sig.arg_units, arg_exprs, strict=False)
     ):
@@ -2060,12 +2141,50 @@ def _check_call_args_against_sig(
         actual = _resolve(actual_node, ctx, source)
         if actual is None:
             continue
-        if not equal_dim(actual, expected):
-            arg_name = sig.arg_names[i] if i < len(sig.arg_names) else None
-            yield _emit_h004(
-                call_node, func_name, i, expected, actual, ctx,
-                arg_name=arg_name,
-            )
+        arg_name = sig.arg_names[i] if i < len(sig.arg_names) else None
+        if _tyvars_in_unit_expr(expected, free_tyvars):
+            # Only Unit-vs-Unit equations are supported in Phase 1
+            # (UnsupportedPolymorphism otherwise — see polymorphism.py).
+            if isinstance(expected, Unit) and isinstance(actual, Unit):
+                poly_equations.append(SlotEquation(
+                    slot_index=i, slot_name=arg_name,
+                    formal=expected, actual=actual,
+                ))
+            else:
+                # Wrapper-typed polymorphic slot — Phase 2. Fall back to
+                # the concrete dim check so the user still gets *some*
+                # signal at this site.
+                if not equal_dim(actual, expected):
+                    concrete_misses.append((i, expected, actual, arg_name))
+        else:
+            if not equal_dim(actual, expected):
+                concrete_misses.append((i, expected, actual, arg_name))
+
+    # Emit H004 for any concrete-slot misses regardless of polymorphism
+    # outcome.
+    for i, expected, actual, arg_name in concrete_misses:
+        yield _emit_h004(
+            call_node, func_name, i, expected, actual, ctx, arg_name=arg_name,
+        )
+
+    # Run unification on the polymorphic slots.
+    if not poly_equations:
+        return
+    try:
+        result = unify(poly_equations, tuple(sorted(free_tyvars)))
+    except UnsupportedPolymorphism:
+        # Symbolic tyvar exponent or other Phase 2 shape — fall back to
+        # per-slot dim check on the polymorphic slots.
+        for eq in poly_equations:
+            if not equal_dim(eq.actual, eq.formal):
+                yield _emit_h004(
+                    call_node, func_name, eq.slot_index, eq.formal,
+                    eq.actual, ctx, arg_name=eq.slot_name,
+                )
+        return
+    if not result.ok:
+        for conflict in result.conflicts:
+            yield _emit_h020(call_node, func_name, conflict, ctx)
 
 
 # ---------------------------------------------------------------------------
