@@ -68,24 +68,36 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
     if attached is None:
         return None
 
-    found = _trees_for(uri)
-    if found is None:
+    # ``_trees_for`` just confirms a tree exists for this URI. We no
+    # longer fall back to the cached Tree on parse failure (see the
+    # comment below) — but we still want to bail when no tree has been
+    # computed for the file yet, which is what ``_trees_for is None``
+    # gates.
+    if _trees_for(uri) is None:
         return None
-    _path, cached_tree, cached_source = found
 
     # Parse the LIVE buffer so scope detection + cursor→node mapping
     # track unsaved edits (a just-typed declaration, an inserted line).
     # The cross-file unit tables in ``ctx`` still come from the last
     # workspace check — those are name-keyed and don't shift with local
     # edits — but the *structure* we navigate must match what the user
-    # sees on screen. Fall back to the cached tree if the document
-    # isn't open.
+    # sees on screen.
+    #
+    # On parse failure we **bail** rather than walking the cached
+    # workspace tree: the cached Tree is shared across all read-side
+    # LSP entry points (hover / definition / inlay), and tree-sitter
+    # walks the same Node objects without the Python GIL across
+    # concurrent traversal. Walking it here unsynchronised can crash
+    # tree-sitter natively with no Python traceback (the "permanent
+    # concurrency gotcha" recorded in the project notes). Bailing means
+    # an unparseable buffer renders nothing for this surface — strictly
+    # better than racing.
     try:
         doc = ls.workspace.get_text_document(uri)
         source_bytes = doc.source.encode("utf-8")
         tree = _ts.parse_text(source_bytes)
     except Exception:
-        tree, source_bytes = cached_tree, cached_source
+        return None
 
     line_1based = int(line) + 1
     col_1based = int(character) + 1
