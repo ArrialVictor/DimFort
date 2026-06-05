@@ -651,3 +651,42 @@ def test_power_en_base_literal_scales_inner():
 def test_power_en_base_non_literal_fires_d14():
     result, diag = power(wrap_exp(_u("K")), _u("1"), None)
     assert diag == "D1.4"
+
+
+# ---------- Audit follow-up: equal_strict + Exponent hash --------------
+
+
+def test_equal_strict_distinguishes_offset():
+    """``equal_strict`` previously omitted offset, so ``degC`` and ``K``
+    (same dim, same factor, different zero-point) compared equal —
+    contradicting ``Unit.__eq__`` which DOES include offset."""
+    from dimfort.core.units import Exponent
+    degC = Unit(
+        (Exponent.from_value(0), Exponent.from_value(0), Exponent.from_value(0),
+         Exponent.from_value(1), Exponent.from_value(0), Exponent.from_value(0),
+         Exponent.from_value(0)),
+        Fraction(1),
+        offset=Fraction(5463, 20),
+    )
+    K = Unit(
+        (Exponent.from_value(0), Exponent.from_value(0), Exponent.from_value(0),
+         Exponent.from_value(1), Exponent.from_value(0), Exponent.from_value(0),
+         Exponent.from_value(0)),
+        Fraction(1),
+    )
+    assert not equal_strict(degC, K)
+    assert degC != K
+
+
+def test_exponent_hash_matches_number_when_pure_constant():
+    """Python contract: a == b ⇒ hash(a) == hash(b). Pure-constant
+    Exponents compare equal to plain int/Fraction; their hash must
+    match."""
+    from dimfort.core.units import Exponent
+    assert Exponent.from_value(2) == 2
+    assert hash(Exponent.from_value(2)) == hash(2)
+    assert Exponent.from_value(Fraction(1, 3)) == Fraction(1, 3)
+    assert hash(Exponent.from_value(Fraction(1, 3))) == hash(Fraction(1, 3))
+    # Symbolic Exponents have no comparable Number, so the structural
+    # hash stays in use.
+    assert hash(Exponent.build({"kappa": 1})) != hash(0)

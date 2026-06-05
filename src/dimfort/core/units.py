@@ -88,6 +88,15 @@ class Exponent:
         return NotImplemented
 
     def __hash__(self) -> int:
+        # Python contract: ``a == b`` ⇒ ``hash(a) == hash(b)``. Since
+        # ``__eq__`` returns True against an ``int``/``Fraction`` for a
+        # pure-constant Exponent, the hash for that case must equal the
+        # hash of the bare Number — otherwise dict / set membership
+        # gives different answers depending on which side of the
+        # comparison is in the bucket. For non-pure (terms present),
+        # hash the full structural form.
+        if not self.terms:
+            return hash(self.constant)
         return hash((self.terms, self.constant))
 
     def __post_init__(self) -> None:
@@ -849,8 +858,16 @@ def power(
             result = base.pow(exponent_value)
             trace_step("R4.3", (base,), result)
             return result, None
-        except Exception:
-            return None, None
+        except UnitError:
+            # ``Unit.pow`` raises UnitError for non-linear / non-rational
+            # combinations the algebra can't represent (e.g. a symbolic
+            # exponent on a unit with symbolic SI dimensions). That's
+            # exactly the D1.4 "needs OQ4" surface — fire it explicitly
+            # rather than returning ``(None, None)`` which the checker
+            # would silently treat as "unknown unit, do nothing." Other
+            # exceptions (TypeError / AttributeError on a malformed
+            # input) should keep propagating — they're contract bugs.
+            return None, "D1.4"
 
     if isinstance(base, LogWrap):
         if exponent_value == 1:
@@ -1268,9 +1285,19 @@ def equal_dim(a: UnitExpr, b: UnitExpr) -> bool:
 
 
 def equal_strict(a: UnitExpr, b: UnitExpr) -> bool:
-    """Like :func:`equal_dim` but ``Unit`` leaves also compare factors."""
+    """Like :func:`equal_dim` but ``Unit`` leaves also compare factors
+    and offsets — equivalent to ``Unit.__eq__`` on the leaves. Previously
+    omitted offset, which let ``equal_strict(degC, K)`` return True even
+    though ``degC == K`` returns False; that broke the invariant the
+    rest of the codebase relies on (two Units that compare equal under
+    ``Unit.__eq__`` must compare equal under ``equal_strict`` and vice
+    versa)."""
     if isinstance(a, Unit) and isinstance(b, Unit):
-        return equal_dim(a, b) and a.factor == b.factor
+        return (
+            equal_dim(a, b)
+            and a.factor == b.factor
+            and a.offset == b.offset
+        )
     if isinstance(a, LogWrap) and isinstance(b, LogWrap):
         return equal_strict(a.inner, b.inner)
     if isinstance(a, ExpWrap) and isinstance(b, ExpWrap):
