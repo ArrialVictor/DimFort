@@ -197,9 +197,15 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
         if d.start.line <= line_1based <= d.end.line
     ]
     # Whole-file counts for a panel footer (a mini dashboard).
+    # ``info`` / ``hint`` were previously dropped, but the panel is
+    # designed to surface U020 (info) and U021 (hint) annotation-quality
+    # signals — wire-format change is backward-compatible since
+    # companions ignore unknown keys.
     file_diagnostic_counts = {
         "error": sum(1 for d in file_diags if d.severity == Severity.ERROR),
         "warning": sum(1 for d in file_diags if d.severity == Severity.WARNING),
+        "info": sum(1 for d in file_diags if d.severity == Severity.INFO),
+        "hint": sum(1 for d in file_diags if d.severity == Severity.HINT),
     }
 
     # Imported symbols visible at the cursor (``use`` clauses): names that
