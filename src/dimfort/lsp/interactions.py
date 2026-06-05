@@ -8,7 +8,10 @@ conflicting unit claims between them. See docs/design/interaction-points.md.
 
 Note: this handler parses a *fresh* tree from the live document for the cursor
 lookup, so it does not need ``state.ts_handler_lock`` (it never traverses a
-shared cached tree, except as a fallback when the fresh parse fails).
+shared cached tree). If the fresh parse fails — or ``_trees_for`` returns
+``None`` — the handler simply bails by returning ``None``; there is no
+cached-tree fallback (which would re-introduce the documented concurrency
+hazard).
 """
 from __future__ import annotations
 

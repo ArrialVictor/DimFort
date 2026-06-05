@@ -118,8 +118,9 @@ class _ServerState:
         self.project_config: DimfortConfig = DimfortConfig()
         self.external_modules: frozenset[str] = DEFAULT_EXTERNAL_MODULES
         self.max_workset_size: int = DEFAULT_MAX_WORKSET
-        # Opt-in multiplicative-scale checking (Phase 1; see
-        # docs/design/scale.md). Off ⇒ dimension-only.
+        # Opt-in scale checking (see docs/design/scale.md). When on,
+        # S001 (multiplicative) and S002 (affine) fire. Off ⇒
+        # dimension-only.
         self.scale_mode: bool = False
         # Content-hash cache (see docs/design/content-hash-cache.md). ``None``
         # means caching is disabled — the workspace check runs as it did

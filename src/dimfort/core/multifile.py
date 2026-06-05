@@ -9,14 +9,17 @@ Pipeline:
    them, and parse with tree-sitter. Runs in parallel via a thread pool;
    the tree-sitter C grammar releases the GIL during parsing.
 2. **Phase B — aggregate annotations.** Merge per-file ``var_units`` /
-   ``field_units`` tables; parse the strings to :class:`Unit` objects
-   once.
+   ``field_units`` tables; parse the unit strings to :class:`Unit`
+   objects once.
 3. **Phase C — index.** Walk every loaded tree to collect module
-   exports and function/subroutine signatures so cross-file ``use`` and
+   exports and function/subroutine signatures, plus per-file
+   scope-keyed unit tables, then compute the transitive re-export
+   closure across module ``use`` chains so cross-file lookups and
    H004 work.
-4. **Phase D — check.** Per file, apply its ``use`` clauses to splice
-   imports into a local-scope copy of ``(var_units, signatures)``, then
-   run :func:`ts_checker.check`.
+4. **Phase D — check.** Per file, re-parse its own ``var_units``
+   locally (so per-file scoping doesn't leak across files), splice
+   the closure-computed imports into a local-scope copy of
+   ``(var_units, signatures)``, then run :func:`ts_checker.check`.
 """
 from __future__ import annotations
 
@@ -584,14 +587,24 @@ def check_files(
 ) -> WorksetResult:
     """Scan, attach, and check every file in ``sources`` together.
 
-    ``overrides`` lets callers (typically the LSP) pass unsaved buffer
-    contents keyed by absolute path. ``external_modules`` is the
-    allowlist of module names treated as known-out-of-workset so their
-    unresolved ``use`` clauses don't fire U007.
+    The public entry point used by both the CLI and the LSP.
 
-    ``progress_cb`` receives ``(phase, current, total, path)`` ticks
-    during load / index / check phases so the LSP status bar stays
-    informative on large worksets.
+    - ``overrides`` — unsaved buffer contents keyed by absolute path
+      (typically passed by the LSP).
+    - ``external_modules`` — allowlist of module names treated as
+      known-out-of-workset so their unresolved ``use`` clauses don't
+      fire U007.
+    - ``cache`` / ``cache_mode`` — opt-in content-hash per-file check
+      cache (``"off"`` / ``"read-write"``).
+    - ``unit_patterns`` / ``assume_patterns`` / ``affine_patterns`` —
+      project-configurable open/close delimiters (default canonical
+      ``@unit{...}`` / ``@unit_assume{...}`` / ``@unit_affine_conversion{...}``).
+    - ``scale_mode`` — enables S001/S002 scale checking.
+    - ``cpp_defines`` / ``include_paths`` — CPP pre-processing for files
+      that need it.
+    - ``progress_cb`` — receives ``(phase, current, total, path)`` ticks
+      during load / index / check phases so the LSP status bar stays
+      informative on large worksets.
     """
     abs_sources = [Path(p).resolve() for p in sources]
     overrides_map = {Path(p).resolve(): t for p, t in (overrides or {}).items()}

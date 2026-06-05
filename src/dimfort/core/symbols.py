@@ -83,6 +83,10 @@ class FuncSig:
     unit annotation (the checker then doesn't constrain the actual).
     ``return_unit`` is ``None`` for subroutines and for functions whose
     return variable carries no annotation.
+
+    ``is_subroutine`` is ``True`` for subroutines. Consumed by
+    :func:`interactions._classify` and :func:`resolve_unit` to skip
+    user-function calls during identifier classification.
     """
 
     arg_names: tuple[str, ...]

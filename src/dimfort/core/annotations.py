@@ -20,12 +20,14 @@ Two scanners, two independent reasons for existing:
   Tree-sitter is the third (and we hope final) implementation: byte-
   exact positions, real grammar, handles every fixture we cover.
 
-Restrictions in v1 (documented; relax later if needed):
+Restrictions in v1 (apply to any configured unit pattern — the
+``@unit{...}`` token is the default, but since 0.2.2 the open/close
+delimiters are project-configurable):
 
-- ``@unit{...}`` must fit on one source line. Multi-line forms like
-  ``@unit{`` … ``}`` across ``!>`` continuation lines are not parsed.
-- At most one ``@unit{...}`` per comment line. A second one is reported
-  as :class:`MalformedAnnotation`.
+- The annotation must fit on one source line. Multi-line forms across
+  ``!>`` continuation lines are not parsed.
+- At most one unit annotation per comment line. A second one is
+  reported as :class:`MalformedAnnotation`.
 """
 from __future__ import annotations
 
@@ -60,7 +62,9 @@ class RawAnnotation:
     kind: AnnotationKind
     line: int        # 1-based physical line of the comment
     column: int      # 1-based column where `@unit{` begins
-    unit_text: str   # raw inner text between `{` and `}`, untrimmed of surrounding spaces stripped
+    # Inner capture between the matched pattern's open/close delimiters
+    # (configurable since 0.2.2), stripped of surrounding whitespace.
+    unit_text: str
     end_column: int = 0  # 1-based column one past the closing delimiter
 
 
@@ -141,8 +145,8 @@ class PatternConflict:
     disagreeing capture text (spec §8.2 → U021).
 
     The first-listed pattern's capture is the one applied to the
-    statement; this record carries enough context for the diagnostic
-    emitter (task #6) to point the user at both captures.
+    statement; this record is the input the U021 emitter uses to
+    point the user at both captures.
     """
 
     line: int
@@ -230,9 +234,8 @@ _AFFINE_DIR_NAME = "@unit_affine_conversion"
 def _open_implies_brace(pat: UnitPattern | StructuredPattern) -> bool:
     """A pattern that ends with ``{`` triggers the historical
     ``unclosed '{' in @unit`` malformed-annotation when an opener is
-    found without a closing brace. Bracket-style patterns (``[``/``]``)
-    don't fire that diagnostic — task #8 owns the rewrite-detector
-    that handles those.
+    found without a closing brace. Patterns with other closers (e.g.
+    bracket-style ``[``/``]``) don't fire that diagnostic.
     """
     return pat.open.endswith("{")
 
@@ -578,12 +581,12 @@ class ScanResult:
     routine_scopes: tuple[tuple[int, int, str], ...] = ()
     # Every ``@unit_assume{...}`` occurrence (escape-hatch directive).
     assumes: tuple[RawAssume, ...] = ()
-    # Every ``@unit_affine_conversion{...}`` occurrence (Phase 2c).
+    # Every ``@unit_affine_conversion{...}`` occurrence.
     affine_conversions: tuple[RawAffineConv, ...] = ()
     # Conflicts between configured patterns (spec §8.2). Populated when
     # more than one pattern matches a comment with disagreeing capture
     # text. Empty for the default single-pattern config. Consumed by
-    # the U021 emitter (task #6).
+    # the U021 emitter.
     pattern_conflicts: tuple[PatternConflict, ...] = ()
     # Wrong-statement-kind events (spec §8.3 → U023). A directive
     # landed on a statement of a kind it does not target; the

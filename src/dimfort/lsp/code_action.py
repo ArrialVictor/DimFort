@@ -1,11 +1,16 @@
 """Code-action provider for the LSP server.
 
-Two quick-fixes, both delegated to the editor extension via a command so the
-client can position the cursor / prompt for input:
+Three quick-fixes:
 
-- **Add `@unit{}`** on any declaration in range that has no annotation yet.
-- **Extract literal to a named PARAMETER** for each H010 (D1.5) implicit-cast
-  diagnostic in range.
+- **Add `@unit{}`** on any declaration in range that has no
+  annotation yet — delegated to the editor extension via a command so
+  the client can position the cursor and prompt for the unit text.
+- **Extract literal to a named PARAMETER** for each H010 (D1.5)
+  implicit-cast diagnostic in range — also delegated via a command so
+  the client can prompt for the PARAMETER's name.
+- **Replace with <suggestion>** for U002 diagnostics that carry a
+  ``suggested_rewrite`` — applied directly as a ``WorkspaceEdit`` (no
+  client round-trip; nothing to prompt for).
 
 ``server.py`` registers the LSP feature and delegates here.
 """

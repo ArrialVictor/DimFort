@@ -41,10 +41,11 @@ def _inside_string_literal(prefix: str) -> bool:
 
 def _comment_active(prefix: str) -> bool:
     """True iff a bare ``!`` (the canonical Fortran comment delimiter)
-    has been seen on this line *outside* a string. Configurable
-    inline-comment delimiters are a Phase-2 follow-up — the canonical
-    case covers the common annotation surface and matches the
-    user-facing trigger expectation.
+    has been seen on this line *outside* a string. Completion fires
+    only on the canonical bare ``!``, not on the project-configurable
+    unit-comment delimiters shipped in 0.2.2 — a deliberate scoping
+    choice so completion matches the user-facing trigger expectation
+    rather than every configured pattern.
     """
     in_single = False
     in_double = False
