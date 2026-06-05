@@ -209,7 +209,7 @@ emit.
 
 - [Annotations](https://github.com/ArrialVictor/DimFort/blob/main/docs/reference/annotations.md)
 - [Usage details](https://github.com/ArrialVictor/DimFort/blob/main/docs/usage.md)
-  — includes the [bringing DimFort to an existing codebase](https://github.com/ArrialVictor/DimFort/blob/main/docs/usage.md#bringing-dimfort-to-an-existing-codebase)
+  — and the [bringing DimFort to an existing codebase](https://github.com/ArrialVictor/DimFort/blob/main/docs/quickstart/bringing-to-existing-codebase.md)
   guide (configurable comment delimiters, added 0.2.2).
 - [Language server](https://github.com/ArrialVictor/DimFort/blob/main/docs/editor-integration/lsp-protocol.md)
 - [Releases](https://github.com/ArrialVictor/DimFort/blob/main/docs/release-process.md)

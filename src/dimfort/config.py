@@ -67,6 +67,12 @@ class DimfortConfig:
 
     config_path: Path | None = None
 
+    # ``True`` when ``load_config`` saw a ``.dimfort.toml`` but
+    # couldn't parse it (malformed TOML, IO error). The CLI checks
+    # this to honour the documented "exit 2 on invalid config"
+    # contract; the LSP keeps the soft path and ignores the flag.
+    load_error: str | None = None
+
     # [project]
     src_paths: tuple[Path, ...] = ()
 
@@ -159,7 +165,10 @@ def load_config(start: Path) -> DimfortConfig:
             raw = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         log.warning("could not parse %s: %s", path, exc)
-        return DimfortConfig(config_path=path)
+        # CLI consumers check ``load_error`` and exit 2 per the
+        # documented contract (cli.md "Exit codes" — invalid config →
+        # 2). LSP keeps the soft path and ignores the flag.
+        return DimfortConfig(config_path=path, load_error=str(exc))
     return _from_raw(raw, path)
 
 
@@ -219,14 +228,14 @@ def _from_raw(raw: dict[str, Any], path: Path) -> DimfortConfig:
 
     diagnostics_section = raw.get("diagnostics", {}) or {}
     diagnostic_severities: dict[str, str] = {}
-    _VALID_LEVELS = {"error", "warning", "off"}
+    _VALID_LEVELS = {"error", "warning", "info", "off"}
     for key, value in diagnostics_section.items():
         if not isinstance(key, str) or not isinstance(value, str):
             continue
         if value not in _VALID_LEVELS:
             log.warning(
                 "%s: ignoring [diagnostics] %r — value must be "
-                "'error', 'warning', or 'off', got %r",
+                "'error', 'warning', 'info', or 'off', got %r",
                 path, key, value,
             )
             continue

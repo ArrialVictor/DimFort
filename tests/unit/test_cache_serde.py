@@ -173,6 +173,86 @@ def test_module_exports():
     assert _roundtrip(dump_module_exports, load_module_exports, exports) == exports
 
 
+def test_module_exports_with_visibility_and_inner_uses():
+    """ModuleExports' inner_uses + visibility fields must round-trip
+    losslessly (previously silently dropped). The cache key bump to v7
+    invalidates any prior entry that was missing them."""
+    from dimfort.core.workspace_index import UseRef
+    u = Unit(
+        (Exponent.from_value(1),) + (Exponent.from_value(0),) * 6,
+        Fraction(1),
+    )
+    exports = ModuleExports(
+        name="mymod",
+        var_units={"alpha": u},
+        signatures={},
+        all_var_names=("alpha",),
+        inner_uses=(
+            UseRef(module="other", only=None, renames=()),
+            UseRef(module="renamed_dep", only=("x",), renames=(("y", "x"),)),
+        ),
+        default_private=True,
+        public_names=frozenset({"alpha", "f"}),
+        private_names=frozenset({"helper"}),
+    )
+    restored = _roundtrip(dump_module_exports, load_module_exports, exports)
+    assert restored == exports
+    assert restored.default_private is True
+    assert restored.public_names == frozenset({"alpha", "f"})
+
+
+def test_module_exports_omits_default_visibility_keys():
+    """A ModuleExports without visibility / inner_uses serialises to
+    the same shape it had pre-fix — no breaking key additions for the
+    common case."""
+    u = Unit(
+        (Exponent.from_value(1),) + (Exponent.from_value(0),) * 6,
+        Fraction(1),
+    )
+    exports = ModuleExports(
+        name="mymod",
+        var_units={"alpha": u},
+        signatures={},
+        all_var_names=("alpha",),
+    )
+    payload = dump_module_exports(exports)
+    for k in ("iu", "dp", "pu", "pr"):
+        assert k not in payload
+
+
+def test_diagnostic_roundtrips_suggested_rewrite():
+    """U002 populates ``suggested_rewrite`` (the CLI's 'did you mean...?'
+    + LSP code-action quick-fix). Previously the field was dropped at
+    serialise time — a cold check showed the suggestion, a warm check
+    silently lost it. v7 bumps the cache to refresh those entries."""
+    diag = Diagnostic(
+        file="x.f90",
+        start=Position(line=1, column=1),
+        end=Position(line=1, column=3),
+        severity=Severity.ERROR,
+        code="U002",
+        message="malformed unit body",
+        suggested_rewrite="m^2",
+    )
+    rt = _roundtrip(dump_diagnostic, load_diagnostic, diag)
+    assert rt.suggested_rewrite == "m^2"
+
+
+def test_diagnostic_omits_suggested_rewrite_when_none():
+    """Diagnostics without a suggested rewrite must keep the byte-shape
+    of the v6 payload — no breaking key additions in the common case."""
+    diag = Diagnostic(
+        file="x.f90",
+        start=Position(line=1, column=1),
+        end=Position(line=1, column=3),
+        severity=Severity.ERROR,
+        code="H001",
+        message="oh no",
+    )
+    payload = dump_diagnostic(diag)
+    assert "r" not in payload
+
+
 def test_diagnostic_drops_trace():
     diag = Diagnostic(
         file="x.f90",

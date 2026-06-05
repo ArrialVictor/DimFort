@@ -1085,7 +1085,7 @@ attempt to handle, soft quantity kinds:
 | **F# units of measure** | First-class unit-of-measure types; doesn't formally handle dB but the type system is the closest mainstream precedent. |
 | **Fortress** (Sun Labs research) | Had unit-of-measure types with named dim'less kinds. Discontinued. |
 | **ATS** | Dependent types subsume soft tags. Academic. |
-| **CamFort, F18 units proposal** | Homogeneity-only. Same scope as DimFort. |
+| **CamFort, F18 units proposal** | Dimension/homogeneity-only. Same scope as DimFort. |
 
 None of the *Fortran-targeted* tools handle this today. Doing it
 in DimFort would be a deliberate scope expansion that positions it
@@ -1422,9 +1422,10 @@ by design.
 
 ## References
 
-- `Homogeneity/notes/dimfort-fp-and-limitations.md` — original
-  motivating FP classes (EXP(LOG) hydrostatic idiom, `1.+speed`
-  regularization).
+- Maintainer working notes (kept outside this repo) recorded the
+  motivating false-positive classes that drove these rules: the
+  `EXP(LOG)` hydrostatic idiom, the `1.+speed` regularization, and
+  the wrapper-arithmetic shapes (D1.2 / D1.3 / D1.6).
 - An internal findings log of real-world Fortran corpus checks
-  surfaced these patterns.
+  surfaced and refined these patterns over several iterations.
 - Design conversation log: 2026-05-20 session.

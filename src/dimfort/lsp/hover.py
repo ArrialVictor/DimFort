@@ -274,21 +274,35 @@ def _resolve_hover(
                 result, source, str(resolved_path), path=resolved_path,
             )
         unit = ident_ctx.unit_for(name, ident.start_byte)
+        # Owning-diagnostic marker so an identifier flagged 🔴 doesn't
+        # render 🟢 here. ``_node_marker`` returns the worst-of of the
+        # node and its children — for a bare identifier the children
+        # are usually empty, so the marker is the node's own severity.
+        ident_marker = _node_marker(ident, ident_ctx, source)
         if unit is not None:
             unit_src = _unit_source_for(
                 result, resolved_path, name, ident_ctx.scope_at(ident.start_byte),
             )
             return (
-                _hover_text(name, _unit_pretty(unit), unit_source=unit_src),
+                _hover_text(
+                    name, _unit_pretty(unit),
+                    unit_source=unit_src, marker=ident_marker,
+                ),
                 _node_lsp_range(ident),
             )
         # Lower-case fallback for var_units keyed by original case
         # (covers names whose annotation lives only in the flat view).
         for k, u in result.merged_var_units.items():
             if k.lower() == name.lower():
-                return _hover_text(name, _unit_pretty(u)), _node_lsp_range(ident)
+                return (
+                    _hover_text(name, _unit_pretty(u), marker=ident_marker),
+                    _node_lsp_range(ident),
+                )
         return (
-            _hover_text(name, "no unit annotation", show_unit_label=False),
+            _hover_text(
+                name, "no unit annotation",
+                show_unit_label=False, marker=ident_marker,
+            ),
             _node_lsp_range(ident),
         )
 
@@ -304,7 +318,12 @@ def _resolve_hover(
         nu = ts_checker.resolve_unit(n, ctx, source)
         u_s = format_unit(nu) if nu is not None else "1"
         body = f"{_node_label(n, source)} : {u_s}"
-        text = f"**🟢 DimFort**\n\n```\n{body}\n```"
+        # Owning-diagnostic marker — same fix as the bare-identifier
+        # path: a literal sitting inside a flagged expression should
+        # show 🔴 / 🟡 / 🔵 alongside the rest of the rendered tree,
+        # not always paint 🟢.
+        n_marker = _node_marker(n, ctx, source)
+        text = f"**{n_marker} DimFort**\n\n```\n{body}\n```"
         return text, _node_lsp_range(n)
     return None
 

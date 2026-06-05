@@ -61,16 +61,23 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
     if symbol is None:
         if uri is None or position is None:
             return None
-        found = _trees_for(uri)
-        if found is None:
+        # ``_trees_for`` confirms a tree exists for this URI; we no
+        # longer fall back to the cached Tree on parse failure (see the
+        # comment below).
+        if _trees_for(uri) is None:
             return None
-        _path, cached_tree, cached_source = found
+        # Parse failure → bail rather than walking the shared cached
+        # tree. Tree-sitter Node traversal is not safe across concurrent
+        # readers (the "permanent concurrency gotcha"); racing with
+        # hover / definition / inlay can crash the parser natively.
+        # A None return here means the interactions surface renders
+        # nothing for this position — strictly better than racing.
         try:
             doc = ls.workspace.get_text_document(uri)
             source_bytes = doc.source.encode("utf-8")
             tree = _ts.parse_text(source_bytes)
         except Exception:
-            tree, source_bytes = cached_tree, cached_source
+            return None
         line = _get(position, "line")
         character = _get(position, "character")
         if line is None or character is None:

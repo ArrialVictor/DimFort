@@ -551,7 +551,9 @@ def _write_cache_entry(
         cache.write(
             key,
             {
-                "schema": 1,
+                # Payload-shape sharding lives in CHECKER_OUTPUT_VERSION;
+                # the ``schema`` key that used to ride along here was
+                # never read by any consumer, so it's dropped.
                 "deps_signature": deps_signature,
                 "diagnostics": [dump_diagnostic(d) for d in remapped_diags],
             },
@@ -616,7 +618,7 @@ def check_files(
 
     def _do_load(
         idx: int, src: Path
-    ) -> tuple[int, Path, _Loaded | None, OSError | None]:
+    ) -> tuple[int, Path, _Loaded | None, Exception | None]:
         try:
             return idx, src, _load_one(
                 src,
@@ -627,7 +629,17 @@ def check_files(
                 assume_patterns=assume_patterns,
                 affine_patterns=affine_patterns,
             ), None
-        except OSError as exc:
+        except Exception as exc:
+            # Widened from ``OSError`` only — the three pre-parse
+            # operations inside ``_load_one`` (``read_text``,
+            # ``scan_text``, ``attach``) can raise ``UnicodeDecodeError``
+            # on a binary file accidentally added to sources, or any
+            # regression in the annotation pipeline can throw an
+            # ``AttributeError`` etc.; without the wider catch a single
+            # bad file would re-raise from ``fut.result()`` and abort
+            # the entire workset check. Per-file failure is recorded
+            # as a ``FileLoadFailure`` and the rest of the workset
+            # proceeds.
             return idx, src, None, exc
 
     with ThreadPoolExecutor(max_workers=workers) as ex:

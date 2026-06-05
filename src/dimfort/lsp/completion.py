@@ -14,8 +14,48 @@ from pygls.lsp.server import LanguageServer
 
 from dimfort.core import units as _units_mod
 
-# Fires only when the cursor sits inside an unclosed ``@unit{…}``.
+# Fires only when the cursor sits inside an unclosed ``@unit{…}``
+# **inside an active Fortran comment** — without the comment guard the
+# trigger fires inside string literals containing the substring
+# (``print *, "see @unit{the docs"`` would otherwise pop the full unit
+# list).
 _UNIT_TRIGGER_RE = re.compile(r"@unit\s*\{([^}]*)$")
+
+
+def _inside_string_literal(prefix: str) -> bool:
+    """Heuristic: cursor is inside an unclosed ``'…'`` or ``"…"`` on
+    this line. Fortran lacks line-continuation inside string literals,
+    so a per-line scan suffices. Doubled quotes (Fortran's escape) are
+    treated as two separate quote events — fine for the trigger guard
+    purpose since either parity decides "in string" correctly.
+    """
+    in_single = False
+    in_double = False
+    for ch in prefix:
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+    return in_single or in_double
+
+
+def _comment_active(prefix: str) -> bool:
+    """True iff a bare ``!`` (the canonical Fortran comment delimiter)
+    has been seen on this line *outside* a string. Configurable
+    inline-comment delimiters are a Phase-2 follow-up — the canonical
+    case covers the common annotation surface and matches the
+    user-facing trigger expectation.
+    """
+    in_single = False
+    in_double = False
+    for ch in prefix:
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif ch == "!" and not (in_single or in_double):
+            return True
+    return False
 
 
 def complete(
@@ -34,8 +74,14 @@ def complete(
         else ""
     )
     prefix = line_text[: params.position.character]
-    # Only fire when the cursor is inside an unclosed `@unit{…}`.
+    # Only fire when the cursor is inside an unclosed `@unit{…}` AND
+    # the line has an active comment delimiter AND we're not inside
+    # a string literal (e.g. ``print *, "@unit{...``).
     if not _UNIT_TRIGGER_RE.search(prefix):
+        return None
+    if _inside_string_literal(prefix):
+        return None
+    if not _comment_active(prefix):
         return None
 
     items: list[lsp.CompletionItem] = []

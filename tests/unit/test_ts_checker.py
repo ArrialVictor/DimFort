@@ -1095,3 +1095,87 @@ def test_s002_untyped_literal_conversion_fires():
     S002 — a bare literal can't carry the additive offset, so the RHS stays
     degC and mismatches the K target. Pins the limitation, not a bug."""
     assert "S002" in _codes("t_k = t_c + 273.15")
+
+
+def test_abs_preserves_logwrap():
+    """``abs(log(x))`` must preserve LogWrap. Previously abs was
+    classified TRANSFORMING and routed through pow(1), which rejected
+    non-Unit operands — silently turning the wrapper into ``None`` and
+    masking downstream H001 detection. abs is now TRANSPARENT."""
+    src = (
+        "subroutine s\n"
+        "  real :: p\n"
+        "  real :: l\n"
+        "  l = abs(log(p))\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"p": "Pa", "l": "LOG(Pa)"})
+    # Must NOT fire H001 — abs(log(p)) = log(p) = LogWrap(Pa),
+    # which matches l's annotated LOG(Pa).
+    assert all(d.code != "H001" for d in diags), [
+        (d.code, d.message) for d in diags
+    ]
+
+
+def test_abs_preserves_concrete_unit():
+    """``abs(kg)`` returns kg — sanity check that the TRANSPARENT
+    reclassification doesn't break the common case."""
+    src = (
+        "subroutine s\n"
+        "  real :: x\n"
+        "  real :: y\n"
+        "  y = abs(x)\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"x": "kg", "y": "kg"})
+    assert all(d.code != "H001" for d in diags), [
+        (d.code, d.message) for d in diags
+    ]
+
+
+# ---------- Audit findings: LHS subscript + keyword args ----------------
+
+
+def test_lhs_subscript_expressions_walked():
+    """``arr(int(i+j), 1) = 1.0`` with i:m, j:s previously emitted
+    nothing — the LHS was never walked. Same expression on the RHS
+    fires H002. The walker now visits LHS subscripts."""
+    src = (
+        "subroutine s\n"
+        "  integer :: i, j\n"
+        "  real :: arr(10, 10)\n"
+        "  arr(int(i + j), 1) = 1.0\n"
+        "end subroutine\n"
+    )
+    diags = _check(src, {"i": "m", "j": "s", "arr": "kg"})
+    assert any(d.code == "H002" for d in diags), [
+        (d.code, d.message) for d in diags
+    ]
+
+
+def test_keyword_argument_binds_to_named_slot():
+    """``call f(b=x)`` should bind ``x`` to formal ``b`` and check its
+    unit against the formal's annotation. Previously keyword args were
+    dropped, silently hiding H004 / H020 / H022."""
+    src = (
+        "module mod\n"
+        "contains\n"
+        "  subroutine f(a, b)\n"
+        "    real, intent(in)  :: a\n"
+        "    real, intent(out) :: b\n"
+        "    b = a\n"
+        "  end subroutine\n"
+        "  subroutine caller(x)\n"
+        "    real, intent(in) :: x\n"
+        "    real :: out_x\n"
+        "    call f(b=out_x, a=x)\n"
+        "  end subroutine\n"
+        "end module\n"
+    )
+    diags = _check(
+        src,
+        {"a": "m", "b": "kg", "x": "m/s", "out_x": "kg"},
+    )
+    # Formal a: m, actual x: m/s — H004 on the keyword-bound slot.
+    h004 = [d for d in diags if d.code == "H004"]
+    assert h004, [(d.code, d.message) for d in diags]

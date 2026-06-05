@@ -642,9 +642,6 @@ def scan_text(
     def _line_in_decl(ln: int) -> bool:
         return ln in decl_covered
 
-    def _line_in_assignment(ln: int) -> bool:
-        return any(lo <= ln <= hi for lo, hi in assignment_ranges)
-
     for line_no, line in enumerate(lines, start=1):
         col = _comment_start(line)
         if col is None:

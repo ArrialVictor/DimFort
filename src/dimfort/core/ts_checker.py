@@ -407,6 +407,15 @@ def _assume_for_node(
     line). We scan only the node's own line span so a trailing assume on
     statement N never bleeds onto statement N+1. Returns
     ``(unit, reason, line, column, end_column)``.
+
+    Multiple ``@unit_assume`` directives on different physical lines of
+    the same ``&``-continued statement: **first wins** silently — the
+    earliest-line hit is returned and any later directive on the same
+    statement is dropped. Same-line duplicates are already caught at
+    scan time (``annotations.py:377`` emits U021); the cross-line case
+    isn't, which is a known limitation of the line-scan model and is
+    deliberately left in place for 0.3.0 (the upgrade path requires
+    threading a per-statement assume registry through the scanner).
     """
     if not ctx.assumes:
         return None
@@ -473,10 +482,9 @@ def _call_callee_name(node: Node, source: bytes) -> str | None:
 def _call_args(node: Node, source: bytes) -> list[Node]:
     """Return the positional argument expressions of a call.
 
-    Skips keyword arguments and punctuation. Keyword args are emitted
-    as ``keyword_argument`` nodes which we deliberately ignore: H004
-    matches by *positional index*, and DimFort's signatures don't
-    currently model keyword binding.
+    Skips keyword arguments and punctuation. For sites that need to
+    bind keyword arguments to their formal slot — H003/H004/H020/H022 —
+    use :func:`_call_args_aligned` instead.
     """
     arglist = next((c for c in node.children if c.type == "argument_list"), None)
     if arglist is None:
@@ -488,6 +496,76 @@ def _call_args(node: Node, source: bytes) -> list[Node]:
         if c.type == "keyword_argument":
             continue
         out.append(c)
+    return out
+
+
+def _keyword_arg_parts(node: Node, source: bytes) -> tuple[str | None, Node | None]:
+    """Pull ``(name, value)`` out of a ``keyword_argument`` AST node.
+
+    Tree-sitter Fortran emits ``keyword_argument`` as ``identifier =
+    expression`` (with the punctuation as its own child). The name is
+    returned in original case so the caller can lowercase against
+    ``sig.arg_names``; ``None`` on either side means the shape didn't
+    look like a keyword we can resolve.
+    """
+    name_node: Node | None = None
+    value_node: Node | None = None
+    seen_eq = False
+    for c in node.children:
+        if c.type == "=":
+            seen_eq = True
+            continue
+        if not seen_eq and name_node is None and c.type == "identifier":
+            name_node = c
+        elif seen_eq and value_node is None and c.type not in _SYNTACTIC_TOKEN_TYPES:
+            value_node = c
+    name = _text(name_node, source) if name_node is not None else None
+    return name, value_node
+
+
+def _call_args_aligned(
+    node: Node, source: bytes, sig: FuncSig | None,
+) -> list[Node | None]:
+    """Return a sparse per-slot list of actual-arg expressions.
+
+    The list is aligned to ``sig.arg_names``: positionals fill from
+    index 0, keyword args (``name=value``) land at the slot whose name
+    matches (case-insensitive). Slots not supplied by the call site
+    stay ``None`` (Fortran's INTENT(OPTIONAL) shape).
+
+    When ``sig`` is ``None`` (no signature available, e.g. an unknown
+    callee), falls back to plain positional behaviour — keyword args
+    are dropped, matching the legacy ``_call_args`` shape.
+    """
+    arglist = next((c for c in node.children if c.type == "argument_list"), None)
+    if arglist is None:
+        return []
+    if sig is None:
+        return list(_call_args(node, source))
+    arg_names_lc = tuple(n.lower() for n in sig.arg_names)
+    out: list[Node | None] = [None] * len(arg_names_lc)
+    positional_index = 0
+    for c in arglist.children:
+        if c.type in _SYNTACTIC_TOKEN_TYPES:
+            continue
+        if c.type == "keyword_argument":
+            name, value = _keyword_arg_parts(c, source)
+            if name is None or value is None:
+                continue
+            try:
+                slot = arg_names_lc.index(name.lower())
+            except ValueError:
+                # Unknown keyword — caller's bug, but emitting our own
+                # diagnostic for it is out of scope here. The Fortran
+                # compiler will catch it.
+                continue
+            if slot < len(out):
+                out[slot] = value
+            continue
+        # Positional arg.
+        if positional_index < len(out):
+            out[positional_index] = c
+        positional_index += 1
     return out
 
 
@@ -2100,6 +2178,46 @@ def _emit_h004(
 # ---------------------------------------------------------------------------
 
 
+def _walk_lhs_subscripts(
+    node: Node | None, ctx: _Ctx, source: bytes,
+) -> Iterable[Diagnostic]:
+    """Walk an assignment LHS for nested-expression diagnostics, skipping
+    the assignee head.
+
+    The LHS identifier / member-chain head is excluded by design — it
+    *is* the target, not an expression to typecheck. But the subscripts
+    on an array access (``arr(int(i+j), 1) = ...``) and the index
+    expressions inside member chains (``obj%data(k+1) = ...``) are
+    genuine expressions and should fire H002 etc. when they go wrong.
+
+    Previously, ``out.extend(_walk_expressions(value, ctx, source))``
+    only walked the RHS; the LHS was silently unchecked, hiding bugs
+    like ``arr(int(i+j), 1) = 1.0`` where ``i: m`` and ``j: s``.
+
+    Conservative coverage: walk only the ``argument_list`` children of
+    any call_expression that appears as part of the LHS (including
+    nested through member chains). The plain-identifier head of an
+    array access, the bare ``identifier`` LHS, and bare member-chains
+    (``obj%field`` with no subscript) all contribute nothing to walk.
+    """
+    if node is None:
+        return
+    # Find every argument_list under the LHS that decorates a
+    # call_expression (subscript / member-with-subscript) and walk its
+    # children. Each child is an actual index expression we want to
+    # typecheck.
+    for n in _ts.walk(node):
+        if n.type != "call_expression":
+            continue
+        arglist = next((c for c in n.children if c.type == "argument_list"), None)
+        if arglist is None:
+            continue
+        for c in arglist.children:
+            if c.type in _SYNTACTIC_TOKEN_TYPES:
+                continue
+            yield from _walk_expressions(c, ctx, source)
+
+
 def _walk_expressions(
     node: Node | None, ctx: _Ctx, source: bytes
 ) -> Iterable[Diagnostic]:
@@ -2281,8 +2399,12 @@ def _check_call(
     sig = ctx.signatures.get(name_lc)
     if sig is None or sig.is_subroutine:
         return
+    # Resolve keyword args (``f(a, b=x)``) by binding the named slot —
+    # without this, keyword-only callers got no H003/H004/H020/H022
+    # since plain positional ``arg_exprs`` silently dropped them.
+    aligned = _call_args_aligned(node, source, sig)
     yield from _check_call_args_against_sig(
-        sig, name_lc, arg_exprs, node, ctx, source
+        sig, name_lc, aligned, node, ctx, source
     )
 
 
@@ -2329,7 +2451,7 @@ def _check_same_unit_args(
 def _check_call_args_against_sig(
     sig: FuncSig,
     func_name: str,
-    arg_exprs: list[Node],
+    arg_exprs: list[Node] | list[Node | None],
     call_node: Node,
     ctx: _Ctx,
     source: bytes,
@@ -3320,6 +3442,10 @@ def check(
                     # conversion and its result is cleanly the target frame.
                 else:
                     out.extend(_walk_expressions(value, ctx, source))
+                    # Walk LHS subscripts (audit finding: ``arr(int(i+j),
+                    # 1) = 1.0`` with i:m, j:s previously fired nothing
+                    # — same expression on the RHS fires H002).
+                    out.extend(_walk_lhs_subscripts(target, ctx, source))
                     verdict, tu, ru = _assignment_homogeneity(
                         target, value, ctx, source,
                     )
@@ -3387,14 +3513,22 @@ def check(
                     _attach_traces_since(before_len, stmt_trace)
                     continue
                 name_lc = name.lower()
+                # Always walk positional expressions for nested diagnostics
+                # (this captures keyword arg *values* via _call_args too —
+                # see the comment in _call_args).
                 arg_exprs = _call_args(node, source)
                 for a in arg_exprs:
                     out.extend(_walk_expressions(a, ctx, source))
                 sig = ctx.signatures.get(name_lc)
                 if sig is not None and sig.is_subroutine:
+                    aligned = _call_args_aligned(node, source, sig)
+                    # Keyword-arg values also need walking for nested diags.
+                    for aligned_arg in aligned:
+                        if aligned_arg is not None and aligned_arg not in arg_exprs:
+                            out.extend(_walk_expressions(aligned_arg, ctx, source))
                     out.extend(
                         _check_call_args_against_sig(
-                            sig, name_lc, arg_exprs, node, ctx, source
+                            sig, name_lc, aligned, node, ctx, source
                         )
                     )
             _attach_traces_since(before_len, stmt_trace)

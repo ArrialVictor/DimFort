@@ -230,6 +230,13 @@ def _run_check(args: argparse.Namespace) -> int:
     # Pick up CPP defines + include paths from .dimfort.toml, anchored
     # on the first path passed on the command line (file or directory).
     config = load_config(roots[0])
+    if config.load_error is not None:
+        # Documented in docs/reference/cli.md: invalid config → exit 2.
+        sys.stderr.write(
+            f"error: invalid config at {config.config_path}: "
+            f"{config.load_error}\n"
+        )
+        return 2
     if config.units_file is not None:
         unit_config.install_default(config.units_file)
     if config.diagnostic_severities:
@@ -258,6 +265,10 @@ def _run_check(args: argparse.Namespace) -> int:
         cache_obj = CacheStore(root=cache_root)
         if clear_cache:
             cache_obj.clear()
+            # Surface the action so a ``--clear-cache`` without
+            # ``--cache=…`` (which silently wipes and then never
+            # rewrites) doesn't look like a no-op to the user.
+            sys.stderr.write(f"dimfort: cleared cache at {cache_root}\n")
 
     trace_ctx = with_trace() if getattr(args, "trace", False) else nullcontext()
     with trace_ctx:
@@ -384,6 +395,12 @@ def _run_interactions(args: argparse.Namespace) -> int:
         return 2
 
     config = load_config(roots[0])
+    if config.load_error is not None:
+        sys.stderr.write(
+            f"error: invalid config at {config.config_path}: "
+            f"{config.load_error}\n"
+        )
+        return 2
     if config.units_file is not None:
         unit_config.install_default(config.units_file)
 
@@ -475,5 +492,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_stdio()
         return 0
 
-    parser.print_help()
-    return 0
+    # No subcommand supplied — print help to stderr and exit 2
+    # (matches the documented contract: usage error → exit 2).
+    parser.print_help(sys.stderr)
+    return 2

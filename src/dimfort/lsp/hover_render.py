@@ -28,11 +28,13 @@ def _hover_text(
     *,
     show_unit_label: bool = True,
     unit_source: str | None = None,
+    marker: str | None = None,
 ) -> str:
     """Render a single-symbol hover (variable or struct member).
 
     Marker convention mirrors the trace-mode hover header:
-    🟢 = known unit, 🟡 = no annotation / unresolved.
+    🟢 = known unit, 🟡 = no annotation / unresolved, 🔴 = owning
+    diagnostic in error severity.
 
     The body sits inside a fenced code block so every DimFort hover
     surface — variable, signature, tree — uses the same visual form
@@ -45,16 +47,22 @@ def _hover_text(
     appends ``(implicit — INTEGER default)`` so the user can see the
     Fortran-type-driven default at work rather than wondering why a
     bare ``integer :: i`` is showing as dim'less.
+
+    ``marker`` overrides the default 🟢/🟡 derivation. Callers that
+    have already computed the node's marker (via
+    ``expr_tree._node_marker``) should pass it through so an LHS
+    identifier flagged 🔴 by a diagnostic doesn't render 🟢 here.
     """
     if show_unit_label:
         body = f"{name} : {unit_or_message}"
         if unit_source == "intrinsic_default":
             body += " (implicit — INTEGER default)"
-        marker = "🟢"
+        default_marker = "🟢"
     else:
         body = f"{name} — {unit_or_message}"
-        marker = "🟡"
-    return f"**{marker} DimFort**\n\n```\n{body}\n```"
+        default_marker = "🟡"
+    effective_marker = marker if marker is not None else default_marker
+    return f"**{effective_marker} DimFort**\n\n```\n{body}\n```"
 
 
 def _sig_render_md(name: str, sig: FuncSig) -> str:

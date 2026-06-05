@@ -307,3 +307,31 @@ def test_integer_field_of_derived_type_does_not_default():
     result = attach(scan_text(src))
     assert "counter" not in result.var_units
     assert ("state", "counter") not in result.field_units
+
+
+# ---------- var_units_span uses RawAnnotation.end_column ------------------
+
+
+def test_var_units_span_uses_raw_annotation_end_column():
+    """var_units_span must mirror the RawAnnotation's end_column rather
+    than re-deriving from unit_text length — otherwise configurable
+    comment delimiters (e.g. ``[m/s]``) get the wrong span and any U002
+    squiggle / LSP hover range lands in the wrong column.
+
+    The canonical ``@unit{m/s}`` ends 7 columns after the start
+    (``@unit{`` + ``m/s`` + ``}``), but a ``[m/s]`` annotation ends only
+    5 columns after the start. The span must reflect whichever
+    delimiters the scanner saw — which is exactly what
+    RawAnnotation.end_column already carries."""
+    scan = _scan(
+        annotations=[
+            RawAnnotation(
+                AnnotationKind.POST,
+                line=3, column=12, unit_text="m/s",
+                end_column=17,  # custom: 12 + len("[m/s]") - non-canonical span
+            ),
+        ],
+        declarations=[DeclarationSite(3, 3, ("v",))],
+    )
+    res = attach(scan)
+    assert res.var_units_span["v"] == (3, 12, 17)

@@ -2,9 +2,13 @@
 
 A `.dimfort.toml` file at any ancestor directory of the file being
 checked configures DimFort for that project. DimFort walks upward
-from each input file until it finds one. A missing or malformed
-file is treated as empty — defaults apply and the CLI / LSP
-never fail to start because of config.
+from the **first** path passed on the command line until it finds
+one (multi-root invocations against scattered codebases share that
+first-path-anchored config — write a wrapper or a shared parent
+config for cross-tree setups). A missing file is treated as empty;
+a malformed file now fails fast with **exit 2** so a typo or stray
+bracket isn't silently ignored. The LSP keeps the soft-degrade path
+for the same case so an editor session never dies on a bad config.
 
 Every section is optional. The example file below shows every key
 DimFort recognises:

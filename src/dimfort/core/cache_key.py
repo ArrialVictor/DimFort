@@ -63,7 +63,16 @@ from dimfort import __version__ as _dimfort_version
 #     (offset=0), which silently corrupted downstream diagnostics. v6
 #     refreshes those entries so the next check rebuilds them with
 #     the offset preserved.
-CHECKER_OUTPUT_VERSION = 6
+# v7: cache_serde now round-trips four previously-dropped ModuleExports
+#     fields (``inner_uses`` / ``default_private`` / ``public_names`` /
+#     ``private_names``) plus ``Diagnostic.suggested_rewrite``. The
+#     ModuleExports drop was latent (no consumer reads visibility on
+#     the check path *today*) but pre-empts every future visibility-
+#     aware check from quietly replaying stale cached results; the
+#     Diagnostic drop was live — a warm U002 lost its "did you mean...?"
+#     suggestion compared to a cold one. v7 refreshes both classes of
+#     entry so the next check rebuilds with all fields present.
+CHECKER_OUTPUT_VERSION = 7
 
 
 # Keys from a workspace config that affect a *file's* output and

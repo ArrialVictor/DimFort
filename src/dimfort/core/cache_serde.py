@@ -30,6 +30,7 @@ from typing import Any
 from dimfort.core.diagnostics import Diagnostic, Position, Severity
 from dimfort.core.symbols import FuncSig, ModuleExports
 from dimfort.core.units import Exponent, ExpWrap, LogWrap, Unit, UnitExpr
+from dimfort.core.workspace_index import UseRef
 
 # ---------------------------------------------------------------------------
 # Fraction
@@ -146,22 +147,63 @@ def load_funcsig(d: dict[str, Any]) -> FuncSig:
 # ---------------------------------------------------------------------------
 # ModuleExports
 
-def dump_module_exports(m: ModuleExports) -> dict[str, Any]:
+def _dump_useref(u: UseRef) -> dict[str, Any]:
+    """Serialise a single ``use`` clause reference. ``inner_uses`` is
+    typed ``tuple[Any, ...]`` on ModuleExports to dodge an import
+    cycle; in practice every element is a :class:`UseRef`."""
     return {
+        "m": u.module,
+        "o": None if u.only is None else list(u.only),
+        "r": [list(p) for p in u.renames],
+    }
+
+
+def _load_useref(d: dict[str, Any]) -> UseRef:
+    return UseRef(
+        module=d["m"],
+        only=None if d.get("o") is None else tuple(d["o"]),
+        renames=tuple(tuple(p) for p in d.get("r", [])),
+    )
+
+
+def dump_module_exports(m: ModuleExports) -> dict[str, Any]:
+    out: dict[str, Any] = {
         "_t": "Exports",
         "n": m.name,
         "v": {k: dump_unit_expr(u) for k, u in m.var_units.items()},
         "s": {k: dump_funcsig(sig) for k, sig in m.signatures.items()},
         "av": list(m.all_var_names),
     }
+    # Optional fields: emitted only when non-default so pre-existing
+    # cache entries stay byte-identical and downstream consumers that
+    # don't yet honour visibility see unchanged payload.
+    if m.inner_uses:
+        # Defensive isinstance check — the public type is
+        # ``tuple[Any, ...]`` (cycle avoidance) but the runtime invariant
+        # is UseRef. Anything else here is a bug we want to surface.
+        out["iu"] = [_dump_useref(u) for u in m.inner_uses if isinstance(u, UseRef)]
+    if m.default_private:
+        out["dp"] = True
+    if m.public_names:
+        out["pu"] = sorted(m.public_names)
+    if m.private_names:
+        out["pr"] = sorted(m.private_names)
+    return out
 
 
 def load_module_exports(d: dict[str, Any]) -> ModuleExports:
+    raw_iu = d.get("iu", [])
+    raw_pu = d.get("pu", [])
+    raw_pr = d.get("pr", [])
     return ModuleExports(
         name=d["n"],
         var_units={k: load_unit_expr(u) for k, u in d["v"].items()},
         signatures={k: load_funcsig(s) for k, s in d["s"].items()},
         all_var_names=tuple(d["av"]),
+        inner_uses=tuple(_load_useref(u) for u in raw_iu),
+        default_private=bool(d.get("dp", False)),
+        public_names=frozenset(raw_pu),
+        private_names=frozenset(raw_pr),
     )
 
 
@@ -169,7 +211,7 @@ def load_module_exports(d: dict[str, Any]) -> ModuleExports:
 # Diagnostic (sans trace)
 
 def dump_diagnostic(g: Diagnostic) -> dict[str, Any]:
-    return {
+    out: dict[str, Any] = {
         "_t": "Diag",
         "f": g.file,
         "sl": g.start.line, "sc": g.start.column,
@@ -178,6 +220,12 @@ def dump_diagnostic(g: Diagnostic) -> dict[str, Any]:
         "c": g.code,
         "m": g.message,
     }
+    # U002 populates suggested_rewrite ("did you mean m^2 not m2"); the
+    # CLI prints it and the LSP turns it into a code-action quick-fix.
+    # Omit when None so every other diagnostic stays byte-identical.
+    if g.suggested_rewrite is not None:
+        out["r"] = g.suggested_rewrite
+    return out
 
 
 def load_diagnostic(d: dict[str, Any]) -> Diagnostic:
@@ -188,4 +236,5 @@ def load_diagnostic(d: dict[str, Any]) -> Diagnostic:
         severity=Severity(d["sv"]),
         code=d["c"],
         message=d["m"],
+        suggested_rewrite=d.get("r"),
     )

@@ -136,9 +136,16 @@ class Substitution:
         if isinstance(u, Unit):
             return _apply_to_unit(u, self.bindings)
         if isinstance(u, LogWrap):
-            return LogWrap(self.apply(u.inner))
+            # Route through ``wrap_log`` so the result honours R2.1 /
+            # R2.3 canonicalization — substituting ``σ('a) = {1}`` into
+            # ``LogWrap('a)`` should collapse to ``{1}``, not a stale
+            # ``LogWrap({1})`` that would take wrong R5.x branches
+            # downstream.
+            from dimfort.core.units import wrap_log
+            return wrap_log(self.apply(u.inner))
         if isinstance(u, ExpWrap):
-            return ExpWrap(self.apply(u.inner))
+            from dimfort.core.units import wrap_exp
+            return wrap_exp(self.apply(u.inner))
         return u
 
 

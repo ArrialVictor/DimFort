@@ -283,11 +283,20 @@ def _smallest_enclosing_routine(tree: Tree, line_1based: int, col_1based: int) -
 
 
 def _routine_decl_insertion_line(routine: Node, source: bytes) -> int | None:
-    """Return the 0-based line index right after the last
-    ``variable_declaration`` direct child of ``routine``.
+    """Return the **1-based** line index right after the last
+    ``variable_declaration`` direct child of ``routine``. The caller
+    indexes the document's ``lines`` array with ``insert_line - 1`` to
+    fetch sibling indentation, which encodes the 1-based convention
+    explicitly.
 
     Fallback: the line after the routine's ``*_statement`` header. None
     if neither is locatable.
+
+    ``end_position_for`` already shifts tree-sitter's 0-based end_point
+    to 1-based, so no further conversion is needed here. (Prior versions
+    of this function carried a comment claiming the +1 came from "the
+    end_point includes the trailing newline" — wrong reason for a value
+    that turned out to be correct.)
     """
     last_decl_line = None
     header_line = None
@@ -296,12 +305,7 @@ def _routine_decl_insertion_line(routine: Node, source: bytes) -> int | None:
             header_line = _ts.end_position_for(c).line
         elif c.type == "variable_declaration":
             last_decl_line = _ts.end_position_for(c).line
-    target_1based = last_decl_line if last_decl_line is not None else header_line
-    if target_1based is None:
-        return None
-    # tree-sitter's end_point includes the trailing newline; convert to
-    # 0-based and add one so the insertion lands on the next line.
-    return target_1based
+    return last_decl_line if last_decl_line is not None else header_line
 
 
 def _comment_column(line: str) -> int | None:

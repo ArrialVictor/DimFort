@@ -10,7 +10,7 @@ unit and emits no homogeneity diagnostic for the call.
 
 | Category | Intrinsics | Unit semantics |
 |---|---|---|
-| **Dimensionless** | `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh` | Argument must be **dimensionless** (`1`) or, for `log` / `log10` / `exp`, **appropriately wrapped** (`log(x)` accepts `x : LOG(...)` and returns the inner unit; `exp(x)` accepts `x : LOG(...)` and returns the inner unit; nested cases compose). Bare-dimensioned arguments fire `H003`. |
+| **Dimensionless** | `exp`, `log`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh` | Argument must be **dimensionless** (`1`) or, for `log` / `log2` / `log10` / `exp`, **appropriately wrapped** (`log(x)` accepts `x : LOG(...)` and returns the inner unit; `exp(x)` accepts `x : LOG(...)` and returns the inner unit; nested cases compose). Bare-dimensioned arguments fire `H003`. |
 | **Transforming** | `sqrt`, `abs` | Result is `arg^(1/2)` for `sqrt`, `arg^1` for `abs`. |
 | **Transparent** | `floor`, `ceiling`, `nint`, `int`, `real`, `dble`, `sign`, `aimag`, `anint` | Result has the same unit as the first argument. |
 | **Same-unit args** | `min`, `max`, `mod`, `modulo`, `merge` | Every argument must share one unit; result is that unit. (`merge` only constrains the first two — the mask is `logical`.) `H002` on mismatch. |
@@ -34,7 +34,11 @@ tag) fire `H003`.
 
 ## Adding intrinsics
 
-The intrinsic catalog lives in `src/dimfort/core/intrinsics.py`.
+The intrinsic catalog lives in `src/dimfort/core/symbols.py`
+(grouped sets at the top of the module: `DIMENSIONLESS_INTRINSICS`,
+`TRANSFORMING_INTRINSICS`, `TRANSPARENT_INTRINSICS`,
+`SAME_UNIT_ARG_INTRINSICS`, `PRODUCT_INTRINSICS`,
+`REDUCTION_INTRINSICS`, `LOG_INTRINSICS`, `EXP_INTRINSICS`).
 Each entry pairs a name with a check / propagation rule. Coverage
 grows when a real annotation pass needs an intrinsic that isn't
 in the catalog yet — if you hit one, open an issue with the

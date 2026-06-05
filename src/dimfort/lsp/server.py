@@ -699,15 +699,24 @@ def _build_initial_index(ls: LanguageServer, roots: tuple[Path, ...]) -> None:
 
 def _update_index_for(path: Path, *, new_text: str | None = None) -> None:
     """Incrementally re-scan one file into the index. No-op when the
-    initial build hasn't completed."""
+    initial build hasn't completed.
+
+    The lock is held **across** ``update_index`` (not just across the
+    reference read) because that call mutates the underlying
+    ``modules`` / ``uses_by_file`` / ``procedures`` dicts in place.
+    Concurrent readers (``resolve_workset``, ``_check_whole_workspace``)
+    iterate those same dicts under the same lock; without holding it
+    through the mutation the readers would race on a partial-state
+    window or trip "dict changed size during iteration" mid-traverse.
+    """
     with state.workspace_index_lock:
         idx = state.workspace_index
-    if idx is None:
-        return
-    try:
-        update_index(idx, path, new_text=new_text)
-    except Exception:
-        log.exception("workspace index update failed for %s", path)
+        if idx is None:
+            return
+        try:
+            update_index(idx, path, new_text=new_text)
+        except Exception:
+            log.exception("workspace index update failed for %s", path)
 
 
 # ---------------------------------------------------------------------------
