@@ -29,6 +29,8 @@ shift between `0.x` releases.
 - [Annotations](reference/annotations.md) — `@unit{...}` grammar,
   placement rules, continuation lines, `@unit_assume` /
   `@unit_affine_conversion`, derived-type fields.
+- [Polymorphism (`'a`, `'b`, …)](reference/polymorphism.md) —
+  generic functions over arbitrary units; H020/H021/H022/H023.
 - [CLI](reference/cli.md) — `check` / `interactions` / `lsp` flags
   and exit codes.
 - [Diagnostic codes](reference/diagnostic-codes.md) — every code

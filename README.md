@@ -25,14 +25,17 @@ force = mass * velocity            ! diagnosed: force unit is kg, expected kg*m/
 > protocol are not frozen yet and may still shift between `0.x`
 > releases. End-to-end, these work today: the annotation
 > scanner, attachment pass, the full H-series checker (H001–H004 +
-> H010), the unit-algebra wrapper rules for `LOG` / `EXP`-tagged
-> quantities (D1.2 – D1.6), per-rule provenance traces, intrinsics,
-> user-defined function and subroutine calls, derived-type field
-> access, rational `**` exponents, multi-file worksets, a workspace-
-> aware LSP server with live-edit diagnostics, per-surface hover
-> (call / subroutine / expression, each Short or Detailed with a
-> formal-vs-actual pairing or full unit-algebra trace), inlay
-> hints, go-to-definition, code actions, completion, and a CLI that
+> H010 + H020–H023 polymorphism family), the unit-algebra wrapper
+> rules for `LOG` / `EXP`-tagged quantities (D1.2 – D1.6),
+> parametric polymorphism over function signatures (`'a`, `'b`, …
+> with Hindley-Milner unification per call site), per-rule
+> provenance traces, intrinsics, user-defined function and
+> subroutine calls, derived-type field access, rational `**`
+> exponents, multi-file worksets, a workspace-aware LSP server with
+> live-edit diagnostics, per-surface hover (call / subroutine /
+> expression, each Short or Detailed with a formal-vs-actual
+> pairing or full unit-algebra trace), inlay hints,
+> go-to-definition, code actions, completion, and a CLI that
 > accepts files or directories.
 
 ## Adopting on an existing codebase

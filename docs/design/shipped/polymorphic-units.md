@@ -1,9 +1,13 @@
 # Polymorphic units — design
 
-**Status:** design complete, not implemented. Awaits demand-driven scheduling.
+**Status:** shipped in 0.3.0. The implementation matches the design below;
+some Phase 1 limitations are documented inline (factor unification deferred,
+symbolic tyvar exponents not supported, wrapper-typed polymorphic slots fall
+back to concrete check). For user-facing how-to material see
+[../../reference/polymorphism.md](../../reference/polymorphism.md).
+
 Driven by concrete cases encountered during annotation of real-world Fortran
-physics codebases. See the project's working notes for the running list of
-candidate instances.
+physics codebases.
 
 ## Motivation
 
