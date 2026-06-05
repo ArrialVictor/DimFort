@@ -230,6 +230,13 @@ def _run_check(args: argparse.Namespace) -> int:
     # Pick up CPP defines + include paths from .dimfort.toml, anchored
     # on the first path passed on the command line (file or directory).
     config = load_config(roots[0])
+    if config.load_error is not None:
+        # Documented in docs/reference/cli.md: invalid config → exit 2.
+        sys.stderr.write(
+            f"error: invalid config at {config.config_path}: "
+            f"{config.load_error}\n"
+        )
+        return 2
     if config.units_file is not None:
         unit_config.install_default(config.units_file)
     if config.diagnostic_severities:
@@ -384,6 +391,12 @@ def _run_interactions(args: argparse.Namespace) -> int:
         return 2
 
     config = load_config(roots[0])
+    if config.load_error is not None:
+        sys.stderr.write(
+            f"error: invalid config at {config.config_path}: "
+            f"{config.load_error}\n"
+        )
+        return 2
     if config.units_file is not None:
         unit_config.install_default(config.units_file)
 

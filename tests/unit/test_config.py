@@ -347,3 +347,22 @@ unit_assume_comment_delimiters = [
         StructuredPatternEntry(open="@unit_assume{", close="}", sep=":"),
     )
     assert any("sep" in r.message for r in caplog.records)
+
+
+def test_malformed_toml_sets_load_error(tmp_path):
+    """Audit fix: a malformed .dimfort.toml must set ``load_error``
+    so the CLI can return exit 2 per the documented contract.
+    The previous behaviour silently logged + returned empty config —
+    breaking the cli.md promise that invalid config exits with 2."""
+    (tmp_path / ".dimfort.toml").write_text("this is = not valid [ toml\n")
+    cfg = load_config(tmp_path)
+    assert cfg.load_error is not None
+    assert cfg.config_path == tmp_path / ".dimfort.toml"
+
+
+def test_well_formed_toml_load_error_is_none(tmp_path):
+    """Sanity: a parseable .dimfort.toml must leave load_error as None
+    so the CLI keeps its exit 0 / 1 paths intact."""
+    (tmp_path / ".dimfort.toml").write_text("[project]\nsrc_paths = []\n")
+    cfg = load_config(tmp_path)
+    assert cfg.load_error is None
