@@ -1283,10 +1283,12 @@ def _emit_h002(loc: Node, left: UnitExpr, right: UnitExpr, ctx: _Ctx) -> Diagnos
 # ``'a + 'a^(-1)`` (binds ``'a = {1}``) — the signature is dishonest
 # and H023 fires instead of the regular H001/H002.
 #
-# Detection is shallow at this milestone: any failing combine()/power()
+# Detection: any failing combine() / power() / dimensionless-intrinsic
 # site whose operands reference a tyvar from the enclosing function's
-# signature ⇒ H023. M3.1 extends to other operations (SIN, LOG forced
-# binding) and the structured per-tree H023 message.
+# signature is routed through H023 instead of the regular H001 / H002 /
+# H003 / D1.4. The wrappers _emit_h001_or_h023 / _emit_h002_or_h023
+# handle the dispatch; SIN-on-tyvar and non-literal-power-on-tyvar are
+# wired inline at their respective emission sites.
 
 
 def _active_free_tyvars(byte_offset: int, ctx: _Ctx) -> frozenset[str]:
@@ -1535,7 +1537,7 @@ def _emit_h021_tyvar_positions(
     """Fire H021 for every ``@unit{'a}`` attached to a forbidden position.
 
     Allowed: dummy args, result variables, ordinary locals of a
-    SUBROUTINE/FUNCTION body. Forbidden (Phase 1 coverage):
+    SUBROUTINE/FUNCTION body. Forbidden:
 
     - Module-level / file-level variables (``ctx.scope_at`` returns
       ``None`` at the declaration site).
@@ -2381,8 +2383,10 @@ def _check_call_args_against_sig(
             if isinstance(actual, Unit) and actual.offset != 0:
                 affine_blocks.append((i, expected, actual, arg_name))
                 continue
-            # Only Unit-vs-Unit equations are supported in Phase 1
-            # (UnsupportedPolymorphism otherwise — see polymorphism.py).
+            # The unifier supports Unit-vs-Unit only; wrapper-typed
+            # polymorphic slots fall through to the concrete check
+            # below (UnsupportedPolymorphism otherwise — see
+            # polymorphism.py).
             if isinstance(expected, Unit) and isinstance(actual, Unit):
                 poly_equations.append(SlotEquation(
                     slot_index=i, slot_name=arg_name,

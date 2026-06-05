@@ -1,34 +1,33 @@
 """AG-unification over the unit algebra (Kennedy 1996).
 
 Given a list of ``(formal, actual)`` :class:`Unit` equations where the
-formals may carry free tyvars (``'a``, ``'b``, ...) and the actuals are
-concrete, find a substitution σ: tyvar → concrete Unit such that
-``σ(formal) = actual`` for every equation. The system decomposes:
-per SI dimension, the unknowns ``σ('α)``'s exponent-in-that-dim form one
-linear system over ℚ, solvable by Gaussian elimination. The 7 SI dims
-are independent, so 7 small systems are solved one at a time and the
-results stitched back into one Unit per tyvar.
+formals may carry free tyvars (``'a``, ``'b``, ...) and the actuals
+may carry tyvars too, find a substitution σ: tyvar → concrete Unit
+such that ``σ(formal) = actual`` for every equation. The system
+decomposes: per SI dimension, the unknowns ``σ('α)``'s
+exponent-in-that-dim form one linear system over ℚ, solvable by
+Gaussian elimination. The 7 SI dims are independent, so 7 small
+systems are solved one at a time and the results stitched back into
+one Unit per tyvar.
 
-This module is **pure algorithm** — no checker integration, no
-diagnostic emission. M3/M4 wire it into the body check + call-site
-resolution; M4 turns the :class:`Conflict` records below into the H020
-"collides with arg N" diagnostic.
+Per-slot net coefficients (``formal_tyvar - actual_tyvar``) make
+self-recursive polymorphic calls work cleanly: when both sides
+reference the same tyvar from the enclosing scope the net is zero and
+the tyvar stays unbound. ``Substitution.apply`` leaves unbound tyvars
+in place, so ``σ(formal) = formal = actual`` trivially.
 
-Phase 1 scope (this milestone):
+Used by :mod:`dimfort.core.ts_checker` for the call-site dispatch
+(H020) and indirectly for the body-level H023 detection.
 
-- Formal tyvar exponents must reduce to literal rationals
-  (``Exponent.as_fraction() is not None``). Symbolic-tyvar exponents
-  in signatures (``'a^κ``) raise :class:`UnsupportedPolymorphism`.
-- ``Unit.factor`` is **not** unified: each equation's factors are
-  checked for equality *after* substitution and reported as a separate
-  conflict. The multiplicative factor system would need its own
-  log-space linear solver; deferred.
-- ``LogWrap`` / ``ExpWrap`` operands fall straight through as
-  :class:`UnsupportedPolymorphism`. Wrapper-typed polymorphism would
+Known limitations (currently raise :class:`UnsupportedPolymorphism` —
+callers fall back to the concrete-check path):
+
+- Formal tyvar exponents must reduce to literal rationals. Symbolic
+  exponents on tyvars (``'a^κ``) are not supported.
+- ``Unit.factor`` is not unified. Factor mismatches with tyvars in
+  play are silently accepted.
+- ``LogWrap`` / ``ExpWrap`` operands. Wrapper-typed polymorphism would
   require unification under the wrapper.
-- Actuals may themselves carry tyvars (one polymorphic function calling
-  another). Their tyvars become opaque generators in the linear system
-  — every actual-side tyvar contributes one extra basis element.
 """
 from __future__ import annotations
 
@@ -71,9 +70,9 @@ def free_tyvars_of_sig(sig: FuncSig) -> frozenset[str]:
 
 
 class UnsupportedPolymorphism(Exception):
-    """Raised when a signature contains polymorphism the M2 algorithm
-    cannot yet handle (symbolic tyvar exponents, wrapper-typed slots,
-    etc.). Callers should fall back to treating the call site as
+    """Raised when a signature uses a polymorphism shape the unifier
+    does not yet handle (symbolic tyvar exponents, wrapper-typed slots,
+    etc.). Callers should fall back to treating the call site as a
     concrete-mismatch / U005.
     """
 
@@ -87,9 +86,9 @@ class SlotEquation:
     """One call-site equation ``formal_i ≡ actual_i``.
 
     ``slot_index`` and ``slot_name`` are carried for downstream
-    diagnostic rendering (M4 needs them for H020's "collides with arg N:
-    name" trailer); the unifier itself only uses them to label conflict
-    contributions.
+    diagnostic rendering — the checker uses them when building H020's
+    symmetric "collides with arg N: name" trailer. The unifier itself
+    only uses them to label conflict contributions.
     """
     slot_index: int
     slot_name: str | None
@@ -101,9 +100,10 @@ class SlotEquation:
 class Contribution:
     """One slot's per-tyvar implied binding.
 
-    Recorded for every slot that constrains a given tyvar in a given
-    SI dim. M4 aggregates contributions per tyvar across slots and, on
-    conflict, lists every contributing slot as a collider.
+    Recorded for every slot that constrains a given tyvar. The
+    checker aggregates contributions per tyvar across slots and, on
+    conflict, lists every contributing slot as a collider in the H020
+    message.
     """
     slot_index: int
     slot_name: str | None
@@ -180,8 +180,8 @@ def _apply_to_unit(u: Unit, bindings: dict[str, Unit]) -> Unit:
         bound = bindings[name]
         q = exp.as_fraction()
         if q is None:
-            # Symbolic tyvar exponent (e.g. 'a^κ). Phase 1 doesn't
-            # support these; surface so the caller can fall back.
+            # Symbolic tyvar exponent (e.g. 'a^κ) — not yet supported;
+            # surface so the caller can fall back.
             raise UnsupportedPolymorphism(
                 f"symbolic exponent on tyvar {name!r} not supported"
             )
@@ -216,15 +216,19 @@ def unify(
          not.
     2. Stitch the per-dim solutions into ``Substitution.bindings``.
 
-    Free tyvars that no slot constrains default to ``{1}`` (the
-    dimensionless unit) — this is the safe choice: their value never
-    matters downstream, since no body operation depends on them.
+    Free tyvars that no slot's *net* coefficient touches stay
+    **unbound** — they are absent from ``Substitution.bindings`` and
+    :meth:`Substitution.apply` leaves them in place. This is what
+    makes self-recursive polymorphic calls work cleanly: when both
+    formal and actual reference the same tyvar the net is zero, the
+    tyvar stays out of σ, and ``σ(formal) = formal = actual``
+    trivially.
 
     Conflicts are reported per-tyvar: if any SI dim's system rejected
     the value for ``'α``, the per-slot Contribution records (collected
     upstream of elimination) name every slot that pushed an inconsistent
-    value, ready for M4 to render symmetric ``(collides with arg N)``
-    trailers.
+    value, ready for the checker to render symmetric
+    ``(collides with arg N)`` trailers in H020.
     """
     # Early-out: nothing to solve.
     if not free_tyvars:
@@ -234,15 +238,17 @@ def unify(
             all_contributions={},
         )
 
-    # Reject wrapper / non-Unit operands up front. Phase 1 scope.
+    # Reject wrapper / non-Unit operands up front. Polymorphism under
+    # LogWrap / ExpWrap is not yet supported; the caller falls back to
+    # the concrete-check path.
     for eq in equations:
         if not isinstance(eq.formal, Unit) or not isinstance(eq.actual, Unit):
             raise UnsupportedPolymorphism(
-                f"wrapper-typed slot at index {eq.slot_index} "
-                "not supported in M2 phase 1"
+                f"wrapper-typed polymorphic slot at index "
+                f"{eq.slot_index} is not yet supported"
             )
 
-    # Collect per-tyvar per-slot contributions — for M4 hover rendering
+    # Collect per-tyvar per-slot contributions — for hover rendering
     # AND for conflict reporting. A slot contributes to tyvar α iff
     # α appears with non-zero exponent in eq.formal.tyvars.
     contributions: dict[str, list[Contribution]] = {
@@ -337,14 +343,13 @@ def unify(
                 )
             rows.append(row)
             rhs.append(Fraction(af) - Fraction(ff))
-        sol, _bad_rows = _solve(rows, rhs)
-        # Even when the system is inconsistent, _solve returns its
-        # best partial assignment for the pivot variables. Carry it
-        # forward — the re-validation pass below catches the real
-        # conflicts using the original equations.
-        if sol is not None:
-            for j, name in enumerate(constrained):
-                bindings_dim[name][k] = sol[j]
+        sol = _solve(rows, rhs)
+        # Even when the underlying system is inconsistent _solve
+        # returns its best partial assignment for the pivot variables;
+        # the re-validation pass below catches the real conflicts by
+        # re-applying σ to every original equation.
+        for j, name in enumerate(constrained):
+            bindings_dim[name][k] = sol[j]
 
     # Build the provisional substitution over the CONSTRAINED tyvars
     # only. Unconstrained tyvars stay absent from σ.bindings; the
@@ -433,18 +438,19 @@ def _strip_to_unit(u: Unit) -> Unit:
 
 def _solve(
     rows: list[list[Fraction]], rhs: list[Fraction],
-) -> tuple[list[Fraction] | None, list[int]]:
+) -> list[Fraction]:
     """Gauss-Jordan elimination on a rational matrix.
 
-    Returns ``(solution, bad_rows)``. ``solution`` is a list of length
-    ``n_cols`` giving one valid assignment to the unknowns (free vars
-    pinned to 0); ``bad_rows`` lists the indices of any inconsistent
-    rows (all-zero coefficients, non-zero RHS). If ``bad_rows`` is
-    non-empty, the solution may be partial — caller should treat the
-    result as failure for the affected tyvars.
+    Returns one assignment to the unknowns (pivot variables ← their
+    eliminated RHS; free variables pinned to ``0``). Inconsistent rows
+    (all coefficients zero, non-zero RHS) are NOT detected here — the
+    caller is responsible for post-validation by re-applying the
+    candidate substitution to every equation. That re-validation
+    catches Gauss row-permutation effects correctly; a parallel
+    inside-``_solve`` detection would be redundant and error-prone.
     """
     if not rows:
-        return [], []
+        return []
     n_rows = len(rows)
     n_cols = len(rows[0])
     # Copy so we don't mutate the caller's matrix.
@@ -476,17 +482,11 @@ def _solve(
         pivot_col_of_row[pivot_row] = col
         pivot_row += 1
 
-    # Detect inconsistent rows: all coefficients zero, RHS non-zero.
-    bad_rows: list[int] = []
-    for r in range(n_rows):
-        if all(m[r][c] == 0 for c in range(n_cols)) and m[r][n_cols] != 0:
-            bad_rows.append(r)
-
     # Read out one solution: pivot variables → their RHS; free vars → 0.
     solution: list[Fraction] = [Fraction(0)] * n_cols
     for r, col in pivot_col_of_row.items():
         solution[col] = m[r][n_cols]
-    return solution, bad_rows
+    return solution
 
 
 __all__ = [
