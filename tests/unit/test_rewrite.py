@@ -41,3 +41,13 @@ def test_idempotent_pipeline():
 
 def test_empty_input_returns_none():
     assert suggest_rewrite("") is None
+
+
+def test_zero_division_in_candidate_returns_none():
+    """A candidate that triggers ``ZeroDivisionError`` during parse
+    (e.g. ``m^(2/0)``) must not escape — the suggester is best-effort
+    and any failure should resolve to "no useful suggestion"."""
+    # The pipeline converts ``m2`` to ``m^2``; we craft a candidate that
+    # only exercises the parse-failure path so we don't depend on which
+    # rule produced it.
+    assert suggest_rewrite("kg2/m^(2/0)") is None

@@ -34,7 +34,11 @@ tag) fire `H003`.
 
 ## Adding intrinsics
 
-The intrinsic catalog lives in `src/dimfort/core/intrinsics.py`.
+The intrinsic catalog lives in `src/dimfort/core/symbols.py`
+(grouped sets at the top of the module: `DIMENSIONLESS_INTRINSICS`,
+`TRANSFORMING_INTRINSICS`, `TRANSPARENT_INTRINSICS`,
+`SAME_UNIT_ARG_INTRINSICS`, `PRODUCT_INTRINSICS`,
+`REDUCTION_INTRINSICS`, `LOG_INTRINSICS`, `EXP_INTRINSICS`).
 Each entry pairs a name with a check / propagation rule. Coverage
 grows when a real annotation pass needs an intrinsic that isn't
 in the catalog yet — if you hit one, open an issue with the

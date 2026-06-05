@@ -66,8 +66,14 @@ def suggest_rewrite(captured: str, table: UnitTable | None = None) -> str | None
         transformed = rule(transformed)
     if transformed == captured:
         return None
+    # Best-effort path: any parse exception (UnitError, ZeroDivisionError
+    # from ``m^(2/0)`` reductions, IndexError on malformed token streams,
+    # etc.) means the candidate isn't safely parseable; treat it as
+    # "no useful suggestion" rather than letting the failure bubble up
+    # into the U002 emission site. Repro: suggest_rewrite('kg2/m^(2/0)')
+    # would otherwise raise ZeroDivisionError.
     try:
         _units_mod.parse(transformed, active)
-    except _units_mod.UnitError:
+    except Exception:
         return None
     return transformed

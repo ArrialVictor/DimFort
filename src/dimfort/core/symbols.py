@@ -117,12 +117,15 @@ EXP_INTRINSICS: frozenset[str] = frozenset({"exp"})
 # names; values are the exponent to apply.
 TRANSFORMING_INTRINSICS: dict[str, Fraction] = {
     "sqrt": Fraction(1, 2),
-    "abs": Fraction(1),
 }
 
 # Result has the first argument's unit; remaining args (if any) don't
-# constrain it. Covers kind conversions and ``sign(a, b)``.
+# constrain it. Covers kind conversions, ``sign(a, b)``, and ``abs``
+# (which preserves the unit unconditionally — including under LogWrap /
+# ExpWrap, where the TRANSFORMING-via-``pow(1)`` path would have
+# rejected the wrapper).
 TRANSPARENT_INTRINSICS: frozenset[str] = frozenset({
+    "abs",
     "floor", "ceiling", "nint", "int", "real", "dble", "sign",
     "aimag", "anint",
 })
