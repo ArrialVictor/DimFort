@@ -1030,8 +1030,12 @@ class _Parser:
             # ``'a`` is a Unit with all-zero SI exponents whose only
             # active basis element is the tyvar itself with exponent 1.
             self.consume()
-            return Unit(ZERO_DIM, Fraction(1),
-                        tyvars=((tok[1], Exponent.from_value(1)),))
+            zero = Exponent.from_value(0)
+            return Unit(
+                (zero, zero, zero, zero, zero, zero, zero),
+                Fraction(1),
+                tyvars=((tok[1], Exponent.from_value(1)),),
+            )
         raise UnitError(f"expected unit factor, got {tok}")
 
     def parse_exp(self) -> Number:
