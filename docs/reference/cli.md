@@ -39,7 +39,7 @@ fail-the-build signal — see [Exit codes](#exit-codes).
 | `-q`, `--quiet`  | Suppress diagnostic output; only return an exit code. |
 | `--no-color`     | Disable ANSI colour. Auto-disabled outside a TTY, or when `NO_COLOR` is set. |
 | `--summary`      | After the diagnostic stream, print a per-file H/U count breakdown and total. |
-| `--timings`      | Print wall-clock seconds per pipeline phase. With a cache active, also prints hit / miss / dirty / write counts. |
+| `--timings`      | Print wall-clock seconds per pipeline phase. With a cache active (`--cache read-only` or `--cache read-write`), also prints hit / miss / dirty / write counts. `--cache` alone (without `--timings`) is silent. |
 | `--trace`        | Attach a unit-algebra rule-chain trace to each diagnostic, rendered below the message. Useful for wrapper-arithmetic diagnostics (D1.2 / D1.3 / D1.6). |
 | `--scale`        | Opt in to multiplicative-scale checking — flag operands of the same dimension but different magnitude (e.g. `hPa` vs `Pa`, `g/kg` vs `kg/kg`) as `S001`. Equivalent to `[scale] enabled = true` in `.dimfort.toml`. |
 | `--cache MODE`   | Content-hash cache mode: `off` (default), `read-only`, or `read-write`. See [Content-hash cache](../usage.md#content-hash-cache). |
