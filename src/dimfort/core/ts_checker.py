@@ -35,6 +35,7 @@ from dimfort.core.polymorphism import (
     Conflict,
     SlotEquation,
     UnsupportedPolymorphism,
+    free_tyvars_of_sig,
     unify,
 )
 from dimfort.core.symbols import (
@@ -1288,25 +1289,6 @@ def _emit_h002(loc: Node, left: UnitExpr, right: UnitExpr, ctx: _Ctx) -> Diagnos
 # binding) and the structured per-tree H023 message.
 
 
-def _free_tyvars_of_sig(sig: FuncSig) -> frozenset[str]:
-    """Collect every tyvar name appearing in the signature's arg + return
-    units. Unwraps LogWrap / ExpWrap to reach the inner Unit.
-    """
-    out: set[str] = set()
-    units_iter: list[UnitExpr | None] = list(sig.arg_units)
-    units_iter.append(sig.return_unit)
-    for u in units_iter:
-        if u is None:
-            continue
-        inner = u
-        while isinstance(inner, (LogWrap, ExpWrap)):
-            inner = inner.inner
-        if isinstance(inner, Unit):
-            for name, _ in inner.tyvars:
-                out.add(name)
-    return frozenset(out)
-
-
 def _active_free_tyvars(byte_offset: int, ctx: _Ctx) -> frozenset[str]:
     """Free tyvars of the routine enclosing ``byte_offset``.
 
@@ -1321,7 +1303,7 @@ def _active_free_tyvars(byte_offset: int, ctx: _Ctx) -> frozenset[str]:
     sig = ctx.signatures.get(scope)
     if sig is None:
         return frozenset()
-    return _free_tyvars_of_sig(sig)
+    return free_tyvars_of_sig(sig)
 
 
 def _tyvars_in_unit_expr(u: UnitExpr | None, active: frozenset[str]) -> frozenset[str]:
@@ -2209,7 +2191,7 @@ def _check_call_args_against_sig(
     # ``strict=False``: it's normal for the call site to pass fewer
     # arguments than the signature declares (Fortran allows trailing
     # optional args). We check whichever pairs we can match.
-    free_tyvars = _free_tyvars_of_sig(sig)
+    free_tyvars = free_tyvars_of_sig(sig)
 
     if not free_tyvars:
         # Concrete signature — per-slot dim check, identical to the

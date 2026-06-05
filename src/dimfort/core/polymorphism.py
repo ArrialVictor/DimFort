@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from fractions import Fraction
+from typing import TYPE_CHECKING
 
 from dimfort.core.units import (
     DIM_LEN,
@@ -43,6 +44,30 @@ from dimfort.core.units import (
     Unit,
     UnitExpr,
 )
+
+if TYPE_CHECKING:
+    from dimfort.core.symbols import FuncSig
+
+
+def free_tyvars_of_sig(sig: FuncSig) -> frozenset[str]:
+    """Collect every tyvar name appearing in a function signature's
+    arg + return units. Unwraps LogWrap / ExpWrap to reach the inner
+    Unit. Shared by the checker (call-site dispatch + H023 detection)
+    and the LSP (polymorphic-signature rendering).
+    """
+    out: set[str] = set()
+    units_iter: list[UnitExpr | None] = list(sig.arg_units)
+    units_iter.append(sig.return_unit)
+    for u in units_iter:
+        if u is None:
+            continue
+        inner = u
+        while isinstance(inner, (LogWrap, ExpWrap)):
+            inner = inner.inner
+        if isinstance(inner, Unit):
+            for name, _ in inner.tyvars:
+                out.add(name)
+    return frozenset(out)
 
 
 class UnsupportedPolymorphism(Exception):
@@ -249,29 +274,60 @@ def unify(
                 Contribution(eq.slot_index, eq.slot_name, implied),
             )
 
-    # Solve per SI dim. Unknowns are (free_tyvar α, SI-dim k); we group
-    # by k. Each group is one independent linear system over Q.
+    # Per-slot net coefficient = formal_tyvar - actual_tyvar. This is
+    # what makes self-recursive polymorphic calls work cleanly: when
+    # both formal and actual reference the SAME tyvar (the caller is
+    # inside the function being defined), the net contribution is zero
+    # and the tyvar stays unbound — σ(formal) = formal = actual,
+    # trivially satisfied.
+    #
+    # Side benefit: a tyvar that no slot mentions has net coefficient
+    # zero everywhere, so it stays unbound. ``Substitution.apply``
+    # leaves unbound tyvars in place, which is the right semantics
+    # (no slot constrains them, so their downstream behaviour is
+    # whatever the body says).
+    net_per_slot: list[dict[str, Fraction]] = []
+    for eq in equations:
+        formal_map = dict(eq.formal.tyvars)
+        actual_map = dict(eq.actual.tyvars)
+        slot_net: dict[str, Fraction] = {}
+        for name in free_tyvars:
+            fc = formal_map.get(name)
+            ac = actual_map.get(name)
+            if fc is None and ac is None:
+                continue
+            if fc is None:
+                net = -ac  # type: ignore[operator]
+            elif ac is None:
+                net = fc
+            else:
+                net = fc - ac
+            nq = net.as_fraction()
+            if nq is None:
+                raise UnsupportedPolymorphism(
+                    f"symbolic exponent on tyvar {name!r} "
+                    f"(slot {eq.slot_index}) not supported"
+                )
+            if nq != 0:
+                slot_net[name] = nq
+        net_per_slot.append(slot_net)
+
+    # The constrained set: every tyvar whose net coefficient is
+    # non-zero in at least one slot. These are the unknowns of the
+    # linear system; unconstrained tyvars stay out of σ entirely.
+    constrained: list[str] = sorted(
+        {n for slot_net in net_per_slot for n in slot_net}
+    )
+
     bindings_dim: dict[str, list[Fraction]] = {
-        name: [Fraction(0)] * DIM_LEN for name in free_tyvars
+        name: [Fraction(0)] * DIM_LEN for name in constrained
     }
     for k in range(DIM_LEN):
         rows: list[list[Fraction]] = []
         rhs: list[Fraction] = []
-        for eq in equations:
-            formal_tyvar_map = dict(eq.formal.tyvars)
-            row = []
-            for name in free_tyvars:
-                coeff = formal_tyvar_map.get(name)
-                if coeff is None:
-                    row.append(Fraction(0))
-                else:
-                    q = coeff.as_fraction()
-                    if q is None:
-                        raise UnsupportedPolymorphism(
-                            f"symbolic exponent on formal tyvar {name!r} "
-                            f"(slot {eq.slot_index}) not supported"
-                        )
-                    row.append(Fraction(q))
+        for slot_idx, eq in enumerate(equations):
+            slot_net = net_per_slot[slot_idx]
+            row = [slot_net.get(name, Fraction(0)) for name in constrained]
             af = eq.actual.dimension[k].as_fraction()
             ff = eq.formal.dimension[k].as_fraction()
             if af is None or ff is None:
@@ -287,20 +343,19 @@ def unify(
         # forward — the re-validation pass below catches the real
         # conflicts using the original equations.
         if sol is not None:
-            for j, name in enumerate(free_tyvars):
+            for j, name in enumerate(constrained):
                 bindings_dim[name][k] = sol[j]
 
-    # Build the provisional substitution and re-validate every equation
-    # under it. Mismatch attributes the conflict to every tyvar that
-    # appears in the offending formal — robust under Gauss row
-    # permutation and free of false positives for slots that don't
-    # mention the tyvar.
+    # Build the provisional substitution over the CONSTRAINED tyvars
+    # only. Unconstrained tyvars stay absent from σ.bindings; the
+    # post-validation step below uses Substitution.apply which leaves
+    # unbound tyvars unchanged in the result.
     provisional: dict[str, Unit] = {
         name: Unit(
             tuple(Exponent.from_value(bindings_dim[name][k]) for k in range(DIM_LEN)),
             Fraction(1),
         )
-        for name in free_tyvars
+        for name in constrained
     }
     sigma = Substitution(bindings=provisional)
     conflicting_tyvars: set[str] = set()
