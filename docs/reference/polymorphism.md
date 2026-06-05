@@ -1,6 +1,6 @@
 # Polymorphic units (`'a`, `'b`, …)
 
-> **Availability:** shipped in **0.3.0** (2026-06-06). Upgrade via
+> **Availability:** shipped in **0.2.3** (2026-06-06). Upgrade via
 > `pip install --upgrade dimfort` (PyPI), or install the matching
 > VSCode / Open VSX / Neovim / Emacs / Helix companion.
 

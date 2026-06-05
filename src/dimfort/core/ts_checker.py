@@ -412,7 +412,7 @@ def _assume_for_node(
     statement is dropped. Same-line duplicates are already caught at
     scan time (``annotations.py:377`` emits U021); the cross-line case
     isn't, which is a known limitation of the line-scan model and is
-    deliberately left in place for 0.3.0 (the upgrade path requires
+    deliberately left in place for 0.2.3 (the upgrade path requires
     threading a per-statement assume registry through the scanner).
     """
     if not ctx.assumes:

@@ -1,6 +1,6 @@
 # Polymorphic units — design
 
-**Status:** shipped in **0.3.0** (2026-06-06). The implementation matches
+**Status:** shipped in **0.2.3** (2026-06-06). The implementation matches
 the design below; some Phase 1 limitations are documented inline (factor
 unification deferred, symbolic tyvar exponents not supported, wrapper-typed
 polymorphic slots fall back to concrete check). For user-facing how-to

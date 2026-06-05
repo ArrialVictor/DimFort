@@ -59,9 +59,9 @@ def effective_severity(code: str, default: Severity) -> Severity | None:
     only — rule-marker (``Dx.y``) overrides aren't consulted here.
 
     Recognised override values: ``"error"``, ``"warning"``, ``"info"``,
-    ``"off"``. ``"info"`` was added in 0.3.0 (the docs at
+    ``"off"``. ``"info"`` was added in 0.2.3 (the docs at
     docs/reference/dimfort-toml.md already shipped the example, but the
-    parser silently dropped it pre-0.3.0).
+    parser silently dropped it pre-0.2.3).
     """
     override = _severity_overrides.get(code)
     if override is None:

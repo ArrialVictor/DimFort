@@ -2,7 +2,13 @@
 
 All notable changes to DimFort are documented here. Format inspired by [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.3.0] — 2026-06-06
+## [0.2.3] — 2026-06-06
+
+Largest 0.2.x shipment to date — adds parametric polymorphism (a whole
+new feature) and lands the pre-release audit fix cycle while remaining
+in beta. The wire format, diagnostic codes, and LSP protocol still
+aren't frozen; another `0.2.y` will land before the `0.x → 0.y+1`
+graduation jump.
 
 ### Added
 
