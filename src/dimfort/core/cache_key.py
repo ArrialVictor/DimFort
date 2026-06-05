@@ -57,7 +57,13 @@ from dimfort import __version__ as _dimfort_version
 #     (defaults to no tyvars), but any source that uses ``'a`` would
 #     have errored under v4 and now succeeds — same source bytes,
 #     different diagnostics. Bump invalidates those stale entries.
-CHECKER_OUTPUT_VERSION = 5
+# v6: cache_serde now round-trips ``Unit.offset`` via an optional ``"o"``
+#     key (previously dropped). Any v5 cache entry holding an affine
+#     unit (e.g. degC, offset=273.15) was loaded back lossy as K
+#     (offset=0), which silently corrupted downstream diagnostics. v6
+#     refreshes those entries so the next check rebuilds them with
+#     the offset preserved.
+CHECKER_OUTPUT_VERSION = 6
 
 
 # Keys from a workspace config that affect a *file's* output and

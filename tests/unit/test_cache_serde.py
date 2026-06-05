@@ -71,6 +71,47 @@ def test_unit_with_factor_and_symbolic_dim():
     assert _roundtrip(dump_unit_expr, load_unit_expr, u) == u
 
 
+def test_affine_unit_roundtrip_preserves_offset():
+    """A unit carrying an affine offset (e.g. degC, offset=273.15) must
+    round-trip without losing the offset — previously dropped, which
+    silently converted cached degC into K."""
+    dim = (
+        Exponent.from_value(0), Exponent.from_value(0), Exponent.from_value(0),
+        Exponent.from_value(1),  # theta — Kelvin slot
+        Exponent.from_value(0), Exponent.from_value(0), Exponent.from_value(0),
+    )
+    degC = Unit(dim, Fraction(1), offset=Fraction(5463, 20))  # 273.15
+    restored = _roundtrip(dump_unit_expr, load_unit_expr, degC)
+    assert restored == degC
+    assert restored.offset == degC.offset
+
+
+def test_non_affine_unit_payload_omits_o_key():
+    """Concrete (offset=0) units serialise without the "o" key so the
+    payload stays byte-identical to the pre-fix shape."""
+    u = Unit(
+        (Exponent.from_value(1),) + (Exponent.from_value(0),) * 6,
+        Fraction(1),
+    )
+    payload = dump_unit_expr(u)
+    assert "o" not in payload
+
+
+def test_pre_offset_payload_loads_as_offset_zero():
+    """Cache entries from before the offset-roundtrip fix (no "o" key)
+    still load — they default to offset=0, which matches the pre-fix
+    observed behaviour for non-affine units."""
+    u = Unit(
+        (Exponent.from_value(1),) + (Exponent.from_value(0),) * 6,
+        Fraction(1),
+    )
+    payload = dump_unit_expr(u)
+    payload.pop("o", None)  # simulate v5 cache entry
+    restored = load_unit_expr(payload)
+    assert restored == u
+    assert restored.offset == Fraction(0)
+
+
 def test_logwrap_and_expwrap():
     u = Unit(
         (Exponent.from_value(1),) + (Exponent.from_value(0),) * 6,
