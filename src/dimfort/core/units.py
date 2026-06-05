@@ -314,7 +314,7 @@ class Unit:
     way the SI slots are, so ``'a^κ`` composes with the existing
     symbolic-exponent machinery for free. Empty by default; every
     pre-polymorphism caller sees byte-identical behaviour. See
-    ``docs/design/future/polymorphic-units.md``.
+    ``docs/design/shipped/polymorphic-units.md``.
     """
     dimension: tuple[Exponent, ...]
     factor: Fraction

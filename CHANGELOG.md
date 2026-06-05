@@ -2,6 +2,47 @@
 
 All notable changes to DimFort are documented here. Format inspired by [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+
+- **Polymorphic units** (`'a`, `'b`, …) in `@unit{}` annotations.
+  OCaml-style type variables let a function declare a signature that
+  works for any unit — `subroutine avg(x: 'a, y: 'a, out: 'a)` accepts
+  two kg and returns a kg, or two m and returns a m. DimFort
+  Hindley-Milner-unifies the tyvars per call site (Kennedy 1996
+  AG-unification over the multiplicative unit algebra) and enforces
+  consistency at both function definition and every call site.
+  Composes cleanly with the existing symbolic-exponent and LogWrap/
+  ExpWrap machinery. See [docs/reference/polymorphism.md](docs/reference/polymorphism.md)
+  for the how-to and
+  [docs/design/shipped/polymorphic-units.md](docs/design/shipped/polymorphic-units.md)
+  for the design rationale. Four new diagnostic codes:
+  - **H020** — polymorphic call-site unification failure (symmetric
+    "collides with arg N" trailer).
+  - **H021** — type variable in a forbidden declaration position
+    (module-level, PARAMETER, derived-type component, SAVE'd local,
+    COMMON block member).
+  - **H022** — cannot bind a tyvar to an affine unit (e.g. `degC`).
+  - **H023** — polymorphic body forces a binding on a quantified
+    tyvar; the signature is dishonest. Strict (no warning form).
+- LSP signature hover prefixes polymorphic functions with `∀` for each
+  declared tyvar (sorted): `∀ 'a. avg(? : 'a, ? : 'a) : 'a`.
+
+### Fixed
+
+- `cache_serde` now round-trips `Unit.offset`. Previously dropped at
+  serialization time, silently converting cached affine units (e.g.
+  `degC`) to their base (`K`). `CHECKER_OUTPUT_VERSION` bumped 5 → 6
+  to invalidate any v5 cache holding a (silently-corrupted) affine
+  unit.
+
+### Cache
+
+- `CHECKER_OUTPUT_VERSION` 4 → 5: tyvar field in `Unit` payloads.
+- `CHECKER_OUTPUT_VERSION` 5 → 6: `Unit.offset` now round-trips
+  (see *Fixed*).
+
 ## [0.2.2.1] — 2026-06-04
 
 Documentation patch. No behaviour changes — the running checker,

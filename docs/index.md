@@ -29,6 +29,8 @@ shift between `0.x` releases.
 - [Annotations](reference/annotations.md) — `@unit{...}` grammar,
   placement rules, continuation lines, `@unit_assume` /
   `@unit_affine_conversion`, derived-type fields.
+- [Polymorphism (`'a`, `'b`, …)](reference/polymorphism.md) —
+  generic functions over arbitrary units; H020/H021/H022/H023.
 - [CLI](reference/cli.md) — `check` / `interactions` / `lsp` flags
   and exit codes.
 - [Diagnostic codes](reference/diagnostic-codes.md) — every code
@@ -59,9 +61,10 @@ end users don't need it.
 
 - `design/shipped/` — specs for shipped features (markers, scale,
   symbolic exponents, panel-info, content-hash cache, interaction
-  points, unparsed regions, unit-comment delimiters).
+  points, unparsed regions, unit-comment delimiters, polymorphic
+  units).
 - `design/future/` — proposals not yet built: `audit` command,
-  polymorphic units, rewrite rules.
+  rewrite rules.
 - `design/contributor/` — internals for people editing DimFort
   itself (core architecture, LSP architecture).
 
