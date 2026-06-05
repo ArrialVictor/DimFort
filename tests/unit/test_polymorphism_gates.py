@@ -183,6 +183,9 @@ def test_h022_message_mentions_fix(tmp_path: Path):
     h022 = next(d for d in diags if d.code == "H022")
     assert "affine" in h022.message.lower()
     assert "delta" in h022.message.lower() or "convert" in h022.message.lower()
+    # Spec wording: "cannot bind 'a to affine unit ..." — message names
+    # the specific tyvar, not the generic "type variable".
+    assert "'a" in h022.message
 
 
 # ---------------------------------------------------------------------------

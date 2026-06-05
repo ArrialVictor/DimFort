@@ -1528,11 +1528,22 @@ def _emit_h022(
     """
     start, end = _node_span(loc)
     label = _arg_label(arg_index, arg_name)
+    # Name the specific tyvar(s) the call would have bound — matches
+    # the spec example "cannot bind 'a to affine unit degC" rather
+    # than the generic "type variable".
+    inner = expected
+    while isinstance(inner, (LogWrap, ExpWrap)):
+        inner = inner.inner
+    tyvars_str = (
+        ", ".join(name for name, _ in inner.tyvars)
+        if isinstance(inner, Unit) and inner.tyvars
+        else "type variable"
+    )
     return Diagnostic(
         file=ctx.file, start=start, end=end,
         severity=Severity.ERROR, code="H022",
         message=(
-            f"Call to '{func_name}': cannot bind type variable to affine "
+            f"Call to '{func_name}': cannot bind {tyvars_str} to affine "
             f"unit {format_unit(actual)} at {label}; convert to "
             f"{format_unit(actual, show_offset=False)} at the call site, "
             f"or pass as a delta."
@@ -2027,13 +2038,24 @@ def _walk_expressions(
                 )
             _, diag = power(base, exponent_unit, exponent_value)
             if diag == "D1.4":
-                yield _emit_d14(
-                    node, ctx,
-                    detail=(
-                        f"power exponent is not a literal rational "
-                        f"(base unit: {format_unit(base)})"
-                    ),
-                )
+                # Polymorphism: a non-literal exponent on a tyvar-typed
+                # base would bind `'a = {1}` (spec table row:
+                # ``'a^x, x non-literal — binds 'a = {1}, D1.4 unchanged``
+                # — under polymorphism the bind is what makes the body
+                # dishonest, so we fire H023 instead of D1.4).
+                active = _active_free_tyvars(node.start_byte, ctx)
+                involved = _tyvars_in_unit_expr(base, active)
+                if involved:
+                    one = _units_mod.parse("1", ctx.table)
+                    yield _emit_h023(node, base, one, involved, ctx)
+                else:
+                    yield _emit_d14(
+                        node, ctx,
+                        detail=(
+                            f"power exponent is not a literal rational "
+                            f"(base unit: {format_unit(base)})"
+                        ),
+                    )
             elif diag == "D1.2":
                 yield _emit_d12(node, base, base, "**", ctx)
             elif diag == "D1.7":
@@ -2148,7 +2170,18 @@ def _check_call(
         except UnitError:
             return
         if not equal_dim(u, one):
-            yield _emit_h003(node, name_lc, u, ctx)
+            # Polymorphism: if the arg references a free tyvar from the
+            # enclosing function, the intrinsic's "must be dimensionless"
+            # rule would force `'a = {1}` — the body breaks the
+            # signature's polymorphic promise. Fire H023 (spec table
+            # row: SIN/COS/TAN/ASIN/ATAN/... bind `'a = {1}`) instead
+            # of the regular H003.
+            active = _active_free_tyvars(node.start_byte, ctx)
+            involved = _tyvars_in_unit_expr(u, active)
+            if involved:
+                yield _emit_h023(node, u, one, involved, ctx)
+            else:
+                yield _emit_h003(node, name_lc, u, ctx)
         return
 
     if name_lc in SAME_UNIT_ARG_INTRINSICS:

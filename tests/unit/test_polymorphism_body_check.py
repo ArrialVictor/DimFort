@@ -156,6 +156,62 @@ def test_h001_unchanged_in_non_polymorphic_function(tmp_path: Path):
     assert "H023" not in codes
 
 
+# ---------------------------------------------------------------------------
+# Spec table: forced-binding shapes that should fire H023
+# ---------------------------------------------------------------------------
+
+
+def test_h023_for_sin_on_tyvar(tmp_path: Path):
+    """``SIN('a)`` would force ``'a = {1}`` per the algebra table — fires
+    H023 instead of H003."""
+    src = _materialise(tmp_path, "p.f90",
+        "subroutine f(x, y)\n"
+        "  real, intent(in)  :: x  !< @unit{'a}\n"
+        "  real, intent(out) :: y  !< @unit{'a}\n"
+        "  y = sin(x)\n"
+        "end subroutine\n"
+    )
+    result = check_files([src])
+    diags = _diags(result, src)
+    codes = [d.code for d in diags]
+    assert "H023" in codes, [(d.code, d.message) for d in diags]
+    assert "H003" not in codes
+
+
+def test_h023_for_non_literal_power_on_tyvar(tmp_path: Path):
+    """``'a ** non_literal`` would force ``'a = {1}`` — fires H023
+    instead of plain D1.4."""
+    src = _materialise(tmp_path, "p.f90",
+        "subroutine f(x, p, y)\n"
+        "  real, intent(in)  :: x  !< @unit{'a}\n"
+        "  real, intent(in)  :: p  !< @unit{1}\n"
+        "  real, intent(out) :: y  !< @unit{'a}\n"
+        "  y = x ** p\n"
+        "end subroutine\n"
+    )
+    result = check_files([src])
+    diags = _diags(result, src)
+    codes = [d.code for d in diags]
+    assert "H023" in codes, [(d.code, d.message) for d in diags]
+
+
+def test_h003_unchanged_for_sin_on_concrete(tmp_path: Path):
+    """SIN on a concrete dimensioned arg in a non-polymorphic function
+    still fires H003 (existing behavior preserved)."""
+    src = _materialise(tmp_path, "p.f90",
+        "subroutine f(x, y)\n"
+        "  real, intent(in)  :: x  !< @unit{kg}\n"
+        "  real, intent(out) :: y  !< @unit{1}\n"
+        "  y = sin(x)\n"
+        "end subroutine\n"
+    )
+    result = check_files([src])
+    diags = _diags(result, src)
+    codes = [d.code for d in diags]
+    assert "H003" in codes
+    assert "H023" not in codes
+
+
 def test_h002_unchanged_in_non_polymorphic_function(tmp_path: Path):
     """Concrete + mismatch in a non-polymorphic function fires H002."""
     src = _materialise(tmp_path, "p.f90",
