@@ -1426,6 +1426,6 @@ by design.
   motivating false-positive classes that drove these rules: the
   `EXP(LOG)` hydrostatic idiom, the `1.+speed` regularization, and
   the wrapper-arithmetic shapes (D1.2 / D1.3 / D1.6).
-- An internal findings log of real-world Fortran corpus checks
-  surfaced and refined these patterns over several iterations.
+- A running log of real-world Fortran corpus checks surfaced and
+  refined these patterns over several iterations.
 - Design conversation log: 2026-05-20 session.
