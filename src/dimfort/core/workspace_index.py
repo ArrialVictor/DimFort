@@ -299,14 +299,22 @@ def _iter_fortran_files(
     include_suffixes: frozenset[str],
     exclude_patterns: tuple[str, ...],
 ) -> Iterator[Path]:
-    """Yield every Fortran source file under ``roots`` (recursive)."""
+    """Yield every Fortran source file under ``roots`` (recursive),
+    **sorted** so the iteration order is filesystem-independent.
+
+    ``Path.rglob`` returns entries in filesystem order, which differs
+    between macOS, Linux, and CI runners. First-wins ``setdefault`` on
+    duplicate procedure / module names — and ``_topo_sort`` ordering of
+    the workset — both inherit that instability. Sorting at the source
+    pins the workspace's effective composition across OSes.
+    """
     for root in roots:
         root = Path(root).resolve()
         if root.is_file():
             if root.suffix in include_suffixes and not _excluded(root, exclude_patterns):
                 yield root
             continue
-        for p in root.rglob("*"):
+        for p in sorted(root.rglob("*")):
             if not p.is_file():
                 continue
             if p.suffix not in include_suffixes:
