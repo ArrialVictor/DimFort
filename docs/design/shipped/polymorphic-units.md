@@ -1,10 +1,16 @@
 # Polymorphic units — design
 
-**Status:** shipped in 0.3.0. The implementation matches the design below;
-some Phase 1 limitations are documented inline (factor unification deferred,
-symbolic tyvar exponents not supported, wrapper-typed polymorphic slots fall
-back to concrete check). For user-facing how-to material see
+**Status:** implementation complete on `main`; ships in **0.3.0** (not yet
+released — the currently published version is 0.2.2.1). The implementation
+matches the design below; some Phase 1 limitations are documented inline
+(factor unification deferred, symbolic tyvar exponents not supported,
+wrapper-typed polymorphic slots fall back to concrete check). For
+user-facing how-to material see
 [../../reference/polymorphism.md](../../reference/polymorphism.md).
+
+> If you are reading this on a tagged release older than 0.3.0,
+> H020 / H021 / H022 / H023 are not yet available in your installed
+> version. Upgrade to 0.3.0 (or run from `main`) to use the feature.
 
 Driven by concrete cases encountered during annotation of real-world Fortran
 physics codebases.

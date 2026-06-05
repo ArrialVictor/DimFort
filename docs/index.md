@@ -61,9 +61,10 @@ end users don't need it.
 
 - `design/shipped/` — specs for shipped features (markers, scale,
   symbolic exponents, panel-info, content-hash cache, interaction
-  points, unparsed regions, unit-comment delimiters).
+  points, unparsed regions, unit-comment delimiters, polymorphic
+  units).
 - `design/future/` — proposals not yet built: `audit` command,
-  polymorphic units, rewrite rules.
+  rewrite rules.
 - `design/contributor/` — internals for people editing DimFort
   itself (core architecture, LSP architecture).
 
