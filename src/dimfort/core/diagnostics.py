@@ -43,6 +43,13 @@ def set_severity_overrides(overrides: dict[str, str]) -> None:
     _severity_overrides.update(overrides)
 
 
+_SEVERITY_BY_OVERRIDE = {
+    "error": Severity.ERROR,
+    "warning": Severity.WARNING,
+    "info": Severity.INFO,
+}
+
+
 def effective_severity(code: str, default: Severity) -> Severity | None:
     """Resolve a diagnostic *code*'s effective severity under the active
     overrides, returning ``None`` when it is overridden to ``"off"``.
@@ -50,13 +57,18 @@ def effective_severity(code: str, default: Severity) -> Severity | None:
     For non-diagnostic surfaces (panel / hover markers) that want to mirror
     the squiggle's severity without synthesising a Diagnostic. Code-level
     only — rule-marker (``Dx.y``) overrides aren't consulted here.
+
+    Recognised override values: ``"error"``, ``"warning"``, ``"info"``,
+    ``"off"``. ``"info"`` was added in 0.3.0 (the docs at
+    docs/reference/dimfort-toml.md already shipped the example, but the
+    parser silently dropped it pre-0.3.0).
     """
     override = _severity_overrides.get(code)
     if override is None:
         return default
     if override == "off":
         return None
-    return Severity.ERROR if override == "error" else Severity.WARNING
+    return _SEVERITY_BY_OVERRIDE.get(override, Severity.WARNING)
 
 
 def _extract_marker(message: str) -> str | None:
@@ -79,8 +91,8 @@ def finalize_diagnostics(diagnostics: list[Diagnostic]) -> list[Diagnostic]:
     """Apply ``[diagnostics]`` overrides to a list of diagnostics.
 
     Returns a new list; original diagnostics are unmodified (each
-    Diagnostic is frozen). Entries overridden to ``"off"`` are
-    dropped. ``"error"`` / ``"warning"`` rewrite the severity.
+    Diagnostic is frozen). Entries overridden to ``"off"`` are dropped.
+    ``"error"`` / ``"warning"`` / ``"info"`` rewrite the severity.
     """
     if not _severity_overrides:
         return diagnostics
@@ -92,7 +104,7 @@ def finalize_diagnostics(diagnostics: list[Diagnostic]) -> list[Diagnostic]:
             continue
         if override == "off":
             continue
-        target = Severity.ERROR if override == "error" else Severity.WARNING
+        target = _SEVERITY_BY_OVERRIDE.get(override, Severity.WARNING)
         out.append(dataclasses.replace(d, severity=target))
     return out
 

@@ -103,3 +103,30 @@ def test_finalize_diagnostics_is_pure():
     assert out[0].severity is Severity.WARNING
     # Original Diagnostic is frozen — unchanged.
     assert d.severity is Severity.ERROR
+
+
+def test_demote_h001_to_info():
+    """``info`` is a valid override value (added 0.3.0); previously
+    silently dropped by the config parser. Verifies both that the
+    override is honoured and that Severity.INFO is the resulting value."""
+    set_severity_overrides({"H001": "info"})
+    src = b"subroutine s\n  real :: a, b\n  a = b\n end subroutine\n"
+    diags = _check(src, {"a": "m/s", "b": "kg"})
+    h001 = next(d for d in diags if d.code == "H001")
+    assert h001.severity is Severity.INFO
+
+
+def test_config_parser_accepts_info():
+    """``[diagnostics] U021 = "info"`` — the literal example shipped in
+    docs/reference/dimfort-toml.md — must round-trip through the config
+    loader without being silently dropped."""
+    import tempfile
+    from pathlib import Path
+
+    from dimfort.config import load_config
+
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / ".dimfort.toml"
+        p.write_text('[diagnostics]\nU021 = "info"\n')
+        cfg = load_config(Path(td))
+        assert cfg.diagnostic_severities.get("U021") == "info"
