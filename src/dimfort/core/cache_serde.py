@@ -72,11 +72,17 @@ def load_exponent(d: dict[str, Any]) -> Exponent:
 
 def dump_unit_expr(u: UnitExpr) -> dict[str, Any]:
     if isinstance(u, Unit):
-        return {
+        out: dict[str, Any] = {
             "_t": "U",
             "d": [dump_exponent(x) for x in u.dimension],
             "f": dump_fraction(u.factor),
         }
+        # Tyvars only emitted when non-empty: keeps every pre-polymorphism
+        # cache entry byte-identical (smaller payload, no diff in
+        # serialised form for concrete Units).
+        if u.tyvars:
+            out["v"] = [[name, dump_exponent(exp)] for name, exp in u.tyvars]
+        return out
     if isinstance(u, LogWrap):
         return {"_t": "Log", "i": dump_unit_expr(u.inner)}
     if isinstance(u, ExpWrap):
@@ -87,9 +93,14 @@ def dump_unit_expr(u: UnitExpr) -> dict[str, Any]:
 def load_unit_expr(d: dict[str, Any]) -> UnitExpr:
     tag = d["_t"]
     if tag == "U":
+        raw_v = d.get("v", [])
+        tyvars = tuple(
+            (name, load_exponent(exp)) for name, exp in raw_v
+        )
         return Unit(
             dimension=tuple(load_exponent(x) for x in d["d"]),
             factor=load_fraction(d["f"]),
+            tyvars=tyvars,
         )
     if tag == "Log":
         return LogWrap(inner=load_unit_expr(d["i"]))
