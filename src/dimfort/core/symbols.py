@@ -264,8 +264,15 @@ def apply_use_clauses(
                 remote = rename_map.get(local, local)
                 pairs.append((local, remote))
 
+        # ``base_var_units`` is built from declarations scanned in
+        # source case (Fortran convention). The local-wins check must be
+        # case-insensitive to match Fortran's own resolution rules;
+        # otherwise an imported ``foo`` from another module would
+        # shadow a local ``Foo`` even though Fortran considers them
+        # the same name. Build a lower-case mirror once per use clause.
+        base_var_units_lc = {n.lower() for n in base_var_units}
         for local, remote in pairs:
-            if local in base_var_units:
+            if local.lower() in base_var_units_lc:
                 continue  # local declaration wins
             # Variable lookup is case-sensitive against export keys;
             # try the lower-cased name too as a fallback because the

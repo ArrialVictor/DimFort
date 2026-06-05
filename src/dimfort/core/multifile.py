@@ -551,7 +551,9 @@ def _write_cache_entry(
         cache.write(
             key,
             {
-                "schema": 1,
+                # Payload-shape sharding lives in CHECKER_OUTPUT_VERSION;
+                # the ``schema`` key that used to ride along here was
+                # never read by any consumer, so it's dropped.
                 "deps_signature": deps_signature,
                 "diagnostics": [dump_diagnostic(d) for d in remapped_diags],
             },

@@ -265,6 +265,10 @@ def _run_check(args: argparse.Namespace) -> int:
         cache_obj = CacheStore(root=cache_root)
         if clear_cache:
             cache_obj.clear()
+            # Surface the action so a ``--clear-cache`` without
+            # ``--cache=…`` (which silently wipes and then never
+            # rewrites) doesn't look like a no-op to the user.
+            sys.stderr.write(f"dimfort: cleared cache at {cache_root}\n")
 
     trace_ctx = with_trace() if getattr(args, "trace", False) else nullcontext()
     with trace_ctx:
@@ -488,5 +492,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_stdio()
         return 0
 
-    parser.print_help()
-    return 0
+    # No subcommand supplied — print help to stderr and exit 2
+    # (matches the documented contract: usage error → exit 2).
+    parser.print_help(sys.stderr)
+    return 2
