@@ -81,6 +81,55 @@ def test_h021_parameter_decl(tmp_path: Path):
     assert "H021" in codes, [(d.code, d.message) for d in diags]
 
 
+def test_h021_save_inline_attribute(tmp_path: Path):
+    """``real, save :: cache`` — SAVE'd local fires H021."""
+    src = _materialise(tmp_path, "p.f90",
+        "module mod\n"
+        "contains\n"
+        "  subroutine f()\n"
+        "    real, save :: cache  !< @unit{'a}\n"
+        "  end subroutine\n"
+        "end module\n"
+    )
+    result = check_files([src])
+    diags = _diags(result, src)
+    codes = [d.code for d in diags]
+    assert "H021" in codes, [(d.code, d.message) for d in diags]
+    h021 = next(d for d in diags if d.code == "H021")
+    assert "SAVE" in h021.message
+
+
+def test_h021_save_standalone_statement(tmp_path: Path):
+    """``save :: cache`` standalone form — also fires H021."""
+    src = _materialise(tmp_path, "p.f90",
+        "subroutine f()\n"
+        "  real :: cache  !< @unit{'a}\n"
+        "  save :: cache\n"
+        "end subroutine\n"
+    )
+    result = check_files([src])
+    diags = _diags(result, src)
+    codes = [d.code for d in diags]
+    assert "H021" in codes, [(d.code, d.message) for d in diags]
+
+
+def test_h021_common_block(tmp_path: Path):
+    """A variable declared with a tyvar AND appearing in a COMMON
+    block fires H021."""
+    src = _materialise(tmp_path, "p.f90",
+        "subroutine f()\n"
+        "  real :: shared  !< @unit{'a}\n"
+        "  common /blk/ shared\n"
+        "end subroutine\n"
+    )
+    result = check_files([src])
+    diags = _diags(result, src)
+    codes = [d.code for d in diags]
+    assert "H021" in codes, [(d.code, d.message) for d in diags]
+    h021 = next(d for d in diags if d.code == "H021")
+    assert "COMMON" in h021.message
+
+
 def test_h021_message_names_position(tmp_path: Path):
     src = _materialise(tmp_path, "p.f90",
         "module mod\n"

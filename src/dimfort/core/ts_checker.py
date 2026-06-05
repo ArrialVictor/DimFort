@@ -1455,6 +1455,80 @@ def _decl_is_parameter(node: Node, source: bytes) -> bool:
     return False
 
 
+def _decl_is_save(node: Node, source: bytes) -> bool:
+    """``True`` iff ``node`` is a ``variable_declaration`` carrying a
+    ``SAVE`` type qualifier — ``real, save :: cache``. The standalone
+    ``save :: x, y`` statement form is handled by
+    :func:`_collect_save_attribute_names` below.
+    """
+    for c in node.children:
+        if c.type == "type_qualifier" and _text(c, source).strip().lower() == "save":
+            return True
+    return False
+
+
+def _collect_common_names(tree: Tree, source: bytes) -> set[tuple[str | None, str]]:
+    """Per-routine set of ``(scope_lc, name_lc)`` for every variable
+    that appears in a ``common`` statement. Block names (the ``/blk/``
+    part) parse as ``name`` nodes, not ``identifier``, so a plain
+    descendant-walk for ``identifier`` collects the variable names
+    cleanly without false positives.
+    """
+    out: set[tuple[str | None, str]] = set()
+    # scope_at would normally need a _Ctx; replicate the bisect
+    # behaviour inline with a routine_scopes view built here. Cheaper:
+    # use a stand-alone walk that tracks the enclosing routine via
+    # the AST hierarchy directly.
+    for n in _ts.walk(tree.root_node):
+        if n.type != "common_statement":
+            continue
+        scope = _enclosing_routine_name(n, source)
+        for d in _ts.walk(n):
+            if d.type == "identifier":
+                out.add((scope, _text(d, source).lower()))
+    return out
+
+
+def _collect_save_attribute_names(
+    tree: Tree, source: bytes,
+) -> set[tuple[str | None, str]]:
+    """Per-routine set of ``(scope_lc, name_lc)`` for variables named in
+    a standalone ``save :: x, y`` statement (distinct from the
+    ``real, save :: x`` inline form, which is detected via
+    :func:`_decl_is_save` on the variable_declaration itself).
+    """
+    out: set[tuple[str | None, str]] = set()
+    for n in _ts.walk(tree.root_node):
+        if n.type != "save_statement":
+            continue
+        scope = _enclosing_routine_name(n, source)
+        for d in _ts.walk(n):
+            if d.type == "identifier":
+                out.add((scope, _text(d, source).lower()))
+    return out
+
+
+def _enclosing_routine_name(node: Node, source: bytes) -> str | None:
+    """Walk up to the enclosing SUBROUTINE/FUNCTION and return its
+    lower-cased name. Returns ``None`` for module-level / file-level
+    positions. Independent of ``_Ctx`` so it can be used during the
+    pre-pass that builds the COMMON/SAVE name sets.
+    """
+    cur = node.parent
+    while cur is not None:
+        if cur.type in ("subroutine", "function"):
+            for c in cur.children:
+                if c.type in (
+                    "subroutine_statement", "function_statement",
+                ):
+                    for cc in c.children:
+                        if cc.type == "name":
+                            return _text(cc, source).lower()
+            return None
+        cur = cur.parent
+    return None
+
+
 def _emit_h021_tyvar_positions(
     tree: Tree, ctx: _Ctx, source: bytes,
 ) -> Iterable[Diagnostic]:
@@ -1468,9 +1542,12 @@ def _emit_h021_tyvar_positions(
     - ``PARAMETER``-qualified declarations anywhere.
     - Components of a derived-type definition.
 
-    SAVE'd locals and COMMON blocks are deferred — a follow-up can
-    extend this walker.
+    SAVE'd locals (both the ``real, save :: x`` inline form and the
+    standalone ``save :: x, y`` statement) and ``COMMON`` block members
+    are forbidden too.
     """
+    common_names = _collect_common_names(tree, source)
+    save_names = _collect_save_attribute_names(tree, source)
     for n in _ts.walk(tree.root_node):
         if n.type != "variable_declaration":
             continue
@@ -1500,8 +1577,19 @@ def _emit_h021_tyvar_positions(
                 reason = "derived-type component"
             elif _decl_is_parameter(n, source):
                 reason = "PARAMETER declaration"
-            elif ctx.scope_at(byte_offset) is None:
-                reason = "module-level variable"
+            elif _decl_is_save(n, source):
+                reason = "SAVE'd local"
+            else:
+                # The standalone ``save :: x`` form and COMMON-block
+                # membership are scope-name keyed; consult the pre-pass
+                # sets once we know which scope this declaration is in.
+                key = (ctx.scope_at(byte_offset), name_text.lower())
+                if key in save_names:
+                    reason = "SAVE'd local"
+                elif key in common_names:
+                    reason = "COMMON block member"
+                elif ctx.scope_at(byte_offset) is None:
+                    reason = "module-level variable"
             if reason is None:
                 continue
 
