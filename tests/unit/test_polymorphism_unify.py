@@ -100,13 +100,17 @@ def test_tyvar_divided_by_concrete():
 # Free tyvars (declared but no slot constrains)
 
 
-def test_unconstrained_tyvar_defaults_to_dimensionless():
-    # Tyvar 'b never appears in any slot — bound to {1}.
+def test_unconstrained_tyvar_stays_unbound():
+    # Tyvar 'b never appears in any slot — the unifier leaves it
+    # unbound (not in σ.bindings). Substitution.apply preserves
+    # unbound tyvars in the result, which is the right semantics:
+    # no slot constrained 'b, so its value at the call site is
+    # genuinely undetermined.
     eqs = [_eq(0, "'a", "m")]
     result = unify(eqs, free_tyvars=("'a", "'b"))
     assert result.ok
     assert result.substitution.bindings["'a"] == parse("m")
-    assert result.substitution.bindings["'b"] == parse("1")
+    assert "'b" not in result.substitution.bindings
 
 
 # ---------------------------------------------------------------------------

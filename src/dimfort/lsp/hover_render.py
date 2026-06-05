@@ -68,14 +68,26 @@ def _sig_render_md(name: str, sig: FuncSig) -> str:
     Unannotated formal slots render as ``?``. Param names are
     intentionally omitted — physicists reading a call site want the
     dimensional interface, not the callee-internal naming.
+
+    Polymorphic signatures (any tyvar present in arg or return units)
+    prefix the rendering with ``∀ 'a.`` (one quantifier per declared
+    tyvar, in sorted order) per the polymorphism spec — the marker
+    distinguishes a generic helper from a concrete one at a glance.
     """
+    from dimfort.core.polymorphism import free_tyvars_of_sig
     arg_units = ", ".join(
         _unit_pretty(u) if u is not None else "?" for u in sig.arg_units
     )
     if sig.is_subroutine:
-        return f"{name}({arg_units}) : -"
-    ret = _unit_pretty(sig.return_unit) if sig.return_unit is not None else "?"
-    return f"{name}({arg_units}) : {ret}"
+        base = f"{name}({arg_units}) : -"
+    else:
+        ret = _unit_pretty(sig.return_unit) if sig.return_unit is not None else "?"
+        base = f"{name}({arg_units}) : {ret}"
+    tyvars = free_tyvars_of_sig(sig)
+    if tyvars:
+        prefix = " ".join(f"∀ {tv}." for tv in sorted(tyvars))
+        return f"{prefix} {base}"
+    return base
 
 
 def _hover_signature(name: str, sig: FuncSig) -> str:
