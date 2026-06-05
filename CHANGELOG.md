@@ -2,7 +2,13 @@
 
 All notable changes to DimFort are documented here. Format inspired by [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.2.3] — 2026-06-06
+
+Largest 0.2.x shipment to date — adds parametric polymorphism (a whole
+new feature) and lands the pre-release audit fix cycle while remaining
+in beta. The wire format, diagnostic codes, and LSP protocol still
+aren't frozen; another `0.2.y` will land before the `0.x → 0.y+1`
+graduation jump.
 
 ### Added
 
@@ -31,17 +37,70 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ### Fixed
 
-- `cache_serde` now round-trips `Unit.offset`. Previously dropped at
-  serialization time, silently converting cached affine units (e.g.
-  `degC`) to their base (`K`). `CHECKER_OUTPUT_VERSION` bumped 5 → 6
-  to invalidate any v5 cache holding a (silently-corrupted) affine
-  unit.
+A pre-release audit (whole-codebase, multi-agent, adversarially
+verified) surfaced and landed 25 must-fix / worth-fix items plus a
+curated subset of the green-band findings. Highlights:
+
+- `cache_serde` now round-trips `Unit.offset`, all four
+  `ModuleExports` visibility / `inner_uses` fields, and
+  `Diagnostic.suggested_rewrite`. Each was previously dropped at
+  serialization time — affine units were silently turned into their
+  base, the U002 "did you mean…?" suggestion was lost on warm runs,
+  and the visibility fields were waiting to silently mis-cache the
+  moment visibility-aware checks land.
+- `info` severity overrides are now honoured end-to-end. The literal
+  `U021 = "info"` example shipped in `dimfort-toml.md` was silently
+  rejected by the config parser and the override pipeline only had
+  `error` / `warning` arms — the documented example was unreachable.
+- LSP concurrency: `workspace_index_lock` now held across
+  `update_index`; cached-tree fallback dropped from `panel` /
+  `interactions` (matched the documented "permanent concurrency
+  gotcha" — could crash tree-sitter natively).
+- LHS subscripts now walked for nested-expression diagnostics
+  (`arr(int(i+j), 1) = 1.0` with mixed-unit indices was silent
+  before). Keyword arguments (`call f(b=x)`) now bind to the named
+  formal slot — H003 / H004 / H020 / H022 no longer silently miss
+  keyword-only call sites.
+- `attach` threads `RawAnnotation.end_column` through to
+  `var_units_span` so configurable comment delimiters (`! [m/s]`
+  etc.) get correctly-positioned U002 squiggles + LSP hover ranges.
+- Algebra: `abs()` reclassified from TRANSFORMING to TRANSPARENT
+  (preserves `LogWrap` through `abs(log(p))`); `equal_strict`
+  includes offset (matching `Unit.__eq__`); `Exponent.__hash__`
+  matches the bare-Number hash when pure-constant (honours
+  `a == b ⇒ hash(a) == hash(b)`); `power()` catches `UnitError`
+  specifically and returns D1.4 rather than silently `(None, None)`.
+- CLI: malformed `.dimfort.toml` now exits 2 per the documented
+  contract (LSP keeps the soft-degrade path); bare `dimfort` exits 2
+  with help to stderr; `--clear-cache` confirms in stderr;
+  `unit_config` rejects floats for `factor` / `offset` (forces the
+  string form so `Fraction(0.1)` doesn't poison every downstream
+  diagnostic).
+- Workspace: non-OSError exceptions during `_load_one` no longer
+  abort the whole workset (UnicodeDecodeError on a stray binary
+  file etc. is recorded per-file and the rest proceeds);
+  `_iter_fortran_files` sorts `rglob` output so first-wins
+  procedure / module winners are deterministic across OSes.
+- LSP rendering: `panel.fileDiagnosticCounts` tallies info + hint;
+  bare-identifier + numeric-literal hovers consult `_node_marker`
+  (no more 🟢-vs-🔴 cross-surface mismatch); completion trigger
+  guarded against string literals and requires an active comment.
+- `suggest_rewrite` widens to `except Exception` so a
+  `ZeroDivisionError` from a candidate like `m^(2/0)` no longer
+  escapes into the U002 emission site.
+
+See [release-prep PR
+#43](https://github.com/ArrialVictor/DimFort/pull/43) for the
+complete punch-list.
 
 ### Cache
 
 - `CHECKER_OUTPUT_VERSION` 4 → 5: tyvar field in `Unit` payloads.
 - `CHECKER_OUTPUT_VERSION` 5 → 6: `Unit.offset` now round-trips
   (see *Fixed*).
+- `CHECKER_OUTPUT_VERSION` 6 → 7: `ModuleExports.inner_uses` /
+  visibility fields + `Diagnostic.suggested_rewrite` now round-trip.
+  Refreshes any v6 entry holding a previously-truncated payload.
 
 ## [0.2.2.1] — 2026-06-04
 

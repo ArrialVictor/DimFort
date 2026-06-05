@@ -1,7 +1,20 @@
 """Unit-expression parser and algebra.
 
-- 7-slot dimension vector over SI base dimensions (M, L, T, Theta, I, N, J).
-- Scalar prefactor (``Fraction``) capturing prefixes/conversions.
+- 7-slot dimension vector over SI base dimensions (M, L, T, Theta, I, N, J),
+  with each slot a symbolic ``Exponent`` (linear form over Q with named
+  opaque generators) — supports runtime-constant exponents like the Exner
+  ``kappa``.
+- Scalar prefactor (``Fraction``) capturing prefixes/conversions, plus an
+  affine ``offset`` (``Fraction``) for absolute units like degC
+  (``x_base = factor*x + offset``).
+- ``tyvars`` carry parametric-polymorphism type-variable exponents
+  (Kennedy-style AG-extension) — ``'a^k`` composes with the symbolic
+  exponent machinery.
+- ``LogWrap`` / ``ExpWrap`` recursively tag a ``UnitExpr`` as residing in
+  log/exp space; ``wrap_log`` / ``wrap_exp`` apply R2/R3 canonicalization.
+- ``combine`` / ``power`` are the single dispatch engine over the unit
+  algebra (R1–R7 of the spec); ``Verdict`` / ``compare`` provide the
+  scale-layer comparison (dimension, factor, offset).
 - Grammar: ``unit = term ((*|/) term)*``; ``term = factor (^ exp)?``;
   ``factor = ident | (unit) | 1``; ``exp = int | (int/int) | -exp``.
 - ``/`` is left-associative, same precedence as ``*``. When a ``/`` is followed
@@ -126,9 +139,11 @@ class Exponent:
     ) -> Exponent:
         """Smart constructor: canonicalize a raw term mapping.
 
-        Drops zero coefficients, promotes ``int`` to ``Fraction``,
-        and sorts entries by name. Always use this for new Exponents
-        unless you already have a canonical input.
+        Aggregates duplicate keys by summing coefficients (callers may
+        pass a sequence of pairs with repeats), drops zero coefficients,
+        promotes ``int`` to ``Fraction`` (including the ``constant``
+        parameter), and sorts entries by name. Always use this for new
+        Exponents unless you already have a canonical input.
         """
         items = list(terms.items()) if isinstance(terms, dict) else list(terms)
         # Aggregate duplicate keys (defensive — callers may pass either
@@ -315,7 +330,15 @@ class Unit:
     As of the symbolic-exponents work, each slot is an ``Exponent``: a
     linear form over Q with named opaque generators. Existing callers
     that pass ``int``/``Fraction`` slots still work — ``__post_init__``
-    promotes scalar entries to ``Exponent.from_value`` automatically.
+    promotes scalar entries to ``Exponent.from_value`` automatically,
+    coerces ``factor``/``offset`` to ``Fraction``, and canonicalizes
+    ``tyvars`` (drop-zero, sort-by-name, promote raw exponents).
+
+    ``offset`` marks an *absolute* affine quantity (e.g. degC with
+    offset ``273.15``): conversion to base is ``x_base = factor*x + offset``.
+    ``offset == 0`` is the *ordinary* case (every non-affine unit, absolute
+    K, and every temperature *difference*), so the multiplicative algebra
+    is unaffected.
 
     ``tyvars`` carries parametric-polymorphism type-variable exponents
     (Kennedy-style AG-extension of the multiplicative unit algebra). Each
@@ -518,9 +541,8 @@ def _u(dim: Dim, factor: Number = 1) -> Unit:
 # literal cast — is handled in the checker, not here, because it
 # requires "is this operand a literal" which is an AST property.)
 #
-# Sub-step 3 implements the Regular and LogWrap rules. ExpWrap and
-# cross-cases land in sub-step 4; until then ExpWrap operands return
-# ``(None, None)`` (unknown, no diagnostic).
+# All wrapper rules are implemented — R6.* for ExpWrap operands and
+# R7.* for the LogWrap/ExpWrap cross-cases.
 
 
 def _logwrap_inner_pow(
@@ -1311,7 +1333,7 @@ class Verdict:
 
     ``kind`` is one of:
 
-    - ``"equal"`` — same dimension and ``factor`` (and, Phase 2, ``offset``).
+    - ``"equal"`` — same dimension, ``factor``, and ``offset``.
     - ``"dim_mismatch"`` — base dimensions differ (today's H001/H002 case).
     - ``"scale_mismatch"`` — same dimension, different ``factor``;
       ``ratio = a.factor / b.factor`` is the magnitude discrepancy (S001).

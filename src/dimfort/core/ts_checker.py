@@ -1,21 +1,17 @@
 """Tree-sitter unit checker.
 
-Replacement for :mod:`dimfort.core.ast_checker`. Walks a tree-sitter
-Fortran AST instead of LFortran's JSON tree and emits the same
-H001-H004 diagnostic family from the same ``var_units`` / ``field_units``
-tables produced by stage 1+2 (scan + attach).
+Walks a tree-sitter Fortran AST and emits the project's full
+diagnostic surface from the ``var_units`` / ``field_units`` tables
+produced by stage 1+2 (scan + attach):
 
-Why a parallel module instead of an in-place rewrite: the AST node
-shape is the only thing that changes between the two implementations,
-so a side-by-side port keeps the diff reviewable and lets us run both
-checkers against the same corpus before retiring the LFortran path
-(Phase 5).
+- Hard dimension fires: H001–H004, H010, H020/H022/H023.
+- Unit-table issues: U005 (unannotated-but-used), U020 (``@unit_assume``).
+- Scale-mode fires: S001 (multiplicative), S002 (affine), S003.
+- Polymorphism: P001.
+- Autocast events captured for the LSP layer.
 
-Layout mirrors ``ast_checker.py`` deliberately — every helper, emitter,
-and collector has a 1:1 counterpart so a reader can navigate by feature
-rather than by parser. The only structural difference is that
-expression / statement dispatch lives on tree-sitter ``node.type``
-strings instead of the LFortran ``node`` discriminator.
+Expression / statement dispatch is keyed on tree-sitter ``node.type``
+strings.
 """
 from __future__ import annotations
 
@@ -182,10 +178,12 @@ class _Ctx:
     # ``field_units`` is keyed in declaration case, so without this mirror
     # any type/field with an uppercase letter would never resolve.
     _field_units_lc: dict[tuple[str, str], UnitExpr] = field(default_factory=dict)
-    # Opt-in scale checking (Phase 1: multiplicative). When False (default)
-    # the checker is dimension-only — ``factor`` differences are ignored,
+    # Opt-in scale checking. When False (default) the checker is
+    # dimension-only — ``factor`` and ``offset`` differences are ignored,
     # exactly as before. When True, dim-equal-but-factor-differing operands
-    # fire S001. Dimension-only must stay first-class; see docs/design/scale.md.
+    # fire S001 (multiplicative) and offset-differing operands fire S002
+    # (affine, degC). Dimension-only must stay first-class; see
+    # docs/design/scale.md.
     scale_mode: bool = False
 
     def __post_init__(self) -> None:
@@ -414,7 +412,7 @@ def _assume_for_node(
     statement is dropped. Same-line duplicates are already caught at
     scan time (``annotations.py:377`` emits U021); the cross-line case
     isn't, which is a known limitation of the line-scan model and is
-    deliberately left in place for 0.3.0 (the upgrade path requires
+    deliberately left in place for 0.2.3 (the upgrade path requires
     threading a per-statement assume registry through the scanner).
     """
     if not ctx.assumes:
@@ -834,9 +832,11 @@ def _resolve(node: Node | None, ctx: _Ctx, source: bytes) -> UnitExpr | None:
     """Return the unit of ``node``, or ``None`` if we don't know.
 
     "Unknown" is a first-class outcome — many expression shapes
-    (intrinsics outside our six categories, casts, complex chains)
-    don't yield a useful answer, and returning ``None`` lets the caller
-    skip the check rather than risk a false positive.
+    (intrinsics outside the supported categories — DIMENSIONLESS, LOG,
+    EXP, TRANSFORMING, TRANSPARENT, SAME_UNIT_ARG, PRODUCT, REDUCTION —
+    casts, complex chains) don't yield a useful answer, and returning
+    ``None`` lets the caller skip the check rather than risk a false
+    positive.
     """
     if node is None:
         return None
@@ -1451,9 +1451,10 @@ def _emit_h020(
 ) -> Diagnostic:
     """Polymorphic call-site unification failure (H020).
 
-    Renders the symmetric ``(collides with arg N: name)`` trailer on
-    every contributing row. Unification has no ordering, so every slot
-    that pushed an inconsistent value is named — no "first arg wins"
+    Renders the symmetric ``(collides with arg N (name))`` trailer on
+    every contributing row — the parenthesized form matches
+    ``_arg_label``. Unification has no ordering, so every slot that
+    pushed an inconsistent value is named — no "first arg wins"
     asymmetry.
     """
     start, end = _node_span(loc)
@@ -2190,10 +2191,6 @@ def _walk_lhs_subscripts(
     expressions inside member chains (``obj%data(k+1) = ...``) are
     genuine expressions and should fire H002 etc. when they go wrong.
 
-    Previously, ``out.extend(_walk_expressions(value, ctx, source))``
-    only walked the RHS; the LHS was silently unchecked, hiding bugs
-    like ``arr(int(i+j), 1) = 1.0`` where ``i: m`` and ``j: s``.
-
     Conservative coverage: walk only the ``argument_list`` children of
     any call_expression that appears as part of the LHS (including
     nested through member chains). The plain-identifier head of an
@@ -2221,7 +2218,9 @@ def _walk_lhs_subscripts(
 def _walk_expressions(
     node: Node | None, ctx: _Ctx, source: bytes
 ) -> Iterable[Diagnostic]:
-    """Recurse over an expression tree, yielding H002/H003/H004."""
+    """Recurse over an expression tree, yielding any expression-level
+    diagnostic — H002/H003/H004/H010/H020/H022/H023 plus
+    D1.2/D1.3/D1.4/D1.7, and S001/S002 in scale mode."""
     if node is None:
         return
     kind = node.type
@@ -2360,7 +2359,12 @@ def _walk_expressions(
 def _check_call(
     node: Node, ctx: _Ctx, source: bytes
 ) -> Iterable[Diagnostic]:
-    """Emit H003/H004 for one ``call_expression``."""
+    """Dispatch one ``call_expression`` to its diagnostic emitters.
+
+    Routes across the dimensionless / same-unit / signature-checked
+    branches, emitting H003 / H004 / H010 / H020 / H022 / H023 (and
+    H002 from the same-unit-arg path) as appropriate.
+    """
     name = _call_callee_name(node, source)
     if name is None:
         return
@@ -3349,9 +3353,26 @@ def check(
 ) -> list[Diagnostic]:
     """Run the checker over a tree-sitter-parsed file.
 
-    Signature parallels :func:`ast_checker.check` so the same callers
-    can swap implementations. Tree-sitter requires the original
-    ``source`` bytes alongside the tree to extract identifier text.
+    Tree-sitter requires the original ``source`` bytes alongside the
+    tree to extract identifier text.
+
+    Key kwargs:
+
+    - ``var_units`` (positional) / ``var_units_by_scope`` — flat and
+      per-routine unit tables produced by stage 1+2.
+    - ``field_units`` — derived-type ``%``-field units.
+    - ``signatures`` — function/subroutine signatures for H003/H004/H020.
+    - ``routine_scopes`` — byte-range to routine-name spans, used to
+      pick the right per-scope table for a given diagnostic site.
+    - ``assumes`` — per-line ``@unit_assume`` records (drives U020).
+    - ``affine_conversions`` — per-line affine-conversion directives.
+    - ``scale_mode`` — enable S001/S002 (off by default).
+    - ``out_autocast_events`` — optional sink for autocast events the
+      LSP layer consumes.
+
+    Diagnostics walk per-statement so each entry carries just its own
+    statement's trace chain; a post-pass ``finalize_diagnostics`` applies
+    any post-walk fixups before returning.
     """
     ctx, assume_diags = _build_ctx(
         tree,

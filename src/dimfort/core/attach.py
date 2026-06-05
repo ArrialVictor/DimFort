@@ -224,14 +224,25 @@ def _assign(
 def attach(scan: ScanResult) -> AttachmentResult:
     """Match a stage-1 :class:`ScanResult`'s annotations to its declarations.
 
-    INTEGER (and LOGICAL / CHARACTER) declarations that carry no
-    explicit ``@unit{}`` annotation default to dimensionless. The
-    Fortran convention is that INTEGER variables are indices, counts,
-    iteration bounds, enumerations, or flags — all dim'less. Treating
-    them as dim'less by default keeps the U005 "missing annotation"
-    signal focused on REAL variables, where unit mismatches actually
-    matter. A user who needs a unit-bearing integer (epoch seconds,
-    say) writes the annotation explicitly.
+    Emits the full attachment surface:
+
+    - The intrinsic-default policy below — INTEGER (and LOGICAL /
+      CHARACTER) declarations that carry no explicit annotation default
+      to dimensionless. The Fortran convention is that INTEGER variables
+      are indices, counts, iteration bounds, enumerations, or flags —
+      all dim'less. Treating them as dim'less by default keeps the U005
+      "missing annotation" signal focused on REAL variables, where unit
+      mismatches actually matter. A user who needs a unit-bearing
+      integer (epoch seconds, say) writes the annotation explicitly.
+    - ``IntermediateContinuationAnnotation`` (U010) — POST annotations
+      landing strictly inside a multi-line declaration continuation.
+    - ``OrphanAnnotation`` (U023 rerouting) — annotations that don't
+      attach to any declaration, carrying ``target_line`` /
+      ``end_column`` so the LSP can re-point the squiggle.
+    - Per-scope ``ConflictingAnnotation`` handling — multiple
+      annotations on the same name within a routine scope.
+    - ``var_unit_sources`` — provenance pointer from each attached name
+      back to the originating :class:`RawAnnotation`.
     """
     result = AttachmentResult(routine_scopes=scan.routine_scopes)
     for ann in scan.annotations:

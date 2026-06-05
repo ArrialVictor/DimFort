@@ -261,9 +261,10 @@ a cold key; that's deliberate.
 - [docs/design/markers.md](markers.md) — marker glyphs are derived
   from diagnostics; cached diagnostics replay through the same
   finalisation path, so markers stay consistent with a cold run.
-- The internal findings log captures the stress-test numbers
-  (cold/warm parity over 100+ random-edit cycles) used to gate the
-  initial merge.
+- Cold/warm parity was stress-tested over 100+ random-edit cycles
+  before the initial merge; the parity result (no diagnostic
+  divergence between cold and warm runs on the same source) is the
+  gate the cache was held to.
 
 ## Open questions
 

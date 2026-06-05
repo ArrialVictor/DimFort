@@ -1,10 +1,8 @@
 # Polymorphic units (`'a`, `'b`, …)
 
-> **Availability:** ships in **0.3.0** (not yet released — the currently
-> published version on PyPI is 0.2.2.1). The feature is complete on `main`
-> and this page documents that state. If you are on a tagged release
-> older than 0.3.0, the syntax described here is not yet available in
-> your install — upgrade or run from source.
+> **Availability:** shipped in **0.2.3** (2026-06-06). Upgrade via
+> `pip install --upgrade dimfort` (PyPI), or install the matching
+> VSCode / Open VSX / Neovim / Emacs / Helix companion.
 
 A polymorphic function works for any unit. DimFort lets you declare that
 with a single OCaml-style type variable in `@unit{...}`:

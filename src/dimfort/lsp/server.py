@@ -20,6 +20,15 @@ Provides:
 - ``textDocument/publishDiagnostics`` — H-series + U-series.
 - ``textDocument/hover`` — resolved unit for the variable or
   derived-type member under the cursor.
+- ``textDocument/definition`` — go-to-definition for declared symbols.
+- ``textDocument/inlayHint`` — inferred-unit inlay hints.
+- ``textDocument/completion`` — unit-name completion inside
+  ``@unit{…}`` (and configured equivalents) on bare-``!`` comments.
+- ``textDocument/codeAction`` — quick-fixes (add ``@unit{}``,
+  extract literal to PARAMETER, U002 replace-with-suggestion).
+- ``dimfort/panelInfo`` — side-panel rendering data.
+- ``dimfort/interactions`` — read/write/contributor sites for a symbol.
+- ``dimfort.checkWorkspace`` — re-run the pipeline over the workset.
 
 This module is the *spine* of the LSP package: it owns the pygls
 ``LanguageServer`` instance and every ``@server.feature`` registration, the
@@ -867,11 +876,11 @@ _VERDICT_TO_MARKER = {
 
 
 # ---------------------------------------------------------------------------
-# Side-panel info — structured-tree builders for the dimfort/panelInfo
-# request. The two functions below mirror _render_ast_tree's resolution
-# logic but return data instead of rendered strings, so each editor's
-# side panel can lay it out in its own idiom (Nvim split, Emacs window,
-# VSCode webview). See docs/design/panel-info.md.
+# Side-panel info — thin delegations for the dimfort/panelInfo and
+# dimfort/interactions requests. The two handlers below forward to
+# ``panel.resolve`` / ``interactions.resolve`` in the extracted feature
+# modules; this file owns only the @server.feature registration and
+# the cached-state plumbing. See docs/design/panel-info.md.
 # ---------------------------------------------------------------------------
 
 

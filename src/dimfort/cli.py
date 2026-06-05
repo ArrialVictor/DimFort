@@ -110,10 +110,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--scale",
         action="store_true",
         help=(
-            "Opt-in multiplicative-scale checking (Phase 1): flag operands "
-            "of the same dimension but different magnitude (e.g. hPa vs Pa, "
-            "g/kg vs kg/kg) as S001. Dimension-only is the default. Can also "
-            "be enabled via [scale] enabled=true in .dimfort.toml."
+            "Opt-in scale checking: flag operands of the same dimension "
+            "but different magnitude (e.g. hPa vs Pa, g/kg vs kg/kg) as "
+            "S001 (multiplicative), and offset-differing operands (e.g. "
+            "K vs degC) as S002 (affine). Dimension-only is the default. "
+            "Can also be enabled via [scale] enabled=true in .dimfort.toml."
         ),
     )
 

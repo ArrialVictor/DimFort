@@ -98,8 +98,9 @@ class DimfortConfig:
     # [diagnostics] — per-rule severity overrides. Keys are diagnostic
     # codes (``H001``, ``H002``, ``H010``) or rule markers (``D1.4``,
     # ``D1.6``, ``D1.7``). Values are ``"error"`` / ``"warning"`` /
-    # ``"off"``. Rule markers take precedence over generic codes when
-    # both are configured. Empty dict ⇒ ship defaults apply.
+    # ``"info"`` / ``"off"`` (matches ``_VALID_LEVELS`` in ``_from_raw``).
+    # Rule markers take precedence over generic codes when both are
+    # configured. Empty dict ⇒ ship defaults apply.
     #
     # Example .dimfort.toml:
     #   [diagnostics]
@@ -107,11 +108,11 @@ class DimfortConfig:
     #   "D1.6" = "off"        # silence implicit wrapper untag warnings
     diagnostic_severities: dict[str, str] = field(default_factory=dict)
 
-    # [scale] — opt-in multiplicative-scale checking (Phase 1). Off by
-    # default: dimension-only checking stays first-class. When on, two
-    # operands of the same dimension but different ``factor`` (e.g.
-    # ``hPa`` vs ``Pa``, ``g/kg`` vs ``kg/kg``) fire S001. See
-    # docs/design/scale.md.
+    # [scale] — opt-in scale checking. Off by default: dimension-only
+    # checking stays first-class. When on, multiplicative S001 and
+    # affine S002 (degC) both fire — same-dimension but different
+    # ``factor`` operands (e.g. ``hPa`` vs ``Pa``, ``g/kg`` vs
+    # ``kg/kg``) and offset-differing operands. See docs/design/scale.md.
     #   [scale]
     #   enabled = true
     scale_mode: bool = False
@@ -153,9 +154,12 @@ def find_config(start: Path) -> Path | None:
 def load_config(start: Path) -> DimfortConfig:
     """Locate and parse the nearest ``.dimfort.toml``.
 
-    Returns an empty :class:`DimfortConfig` if no file is found or if
-    the file is malformed. Parse errors are logged but never raise — a
-    missing/broken config must not break the CLI or the LSP.
+    A missing file returns an empty :class:`DimfortConfig`. A *malformed*
+    file returns ``DimfortConfig(config_path=path, load_error=str(exc))``
+    so the CLI can honour its exit-2 contract for invalid configs; the
+    LSP keeps the soft path and ignores ``load_error``. Parse errors are
+    logged but never raise — a missing/broken config must not break the
+    CLI or the LSP.
     """
     path = find_config(start)
     if path is None:

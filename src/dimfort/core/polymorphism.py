@@ -131,7 +131,12 @@ class Substitution:
         ``bindings`` contributes ``σ('α)^t_α`` to the product; the
         Unit's SI dim, factor, and offset are kept. Tyvars not in
         ``bindings`` stay as-is (used when partial substitutions chain
-        in nested polymorphic calls).
+        in nested polymorphic calls). For :class:`LogWrap` /
+        :class:`ExpWrap`, recurse into the operand and re-canonicalize
+        the result via ``wrap_log`` / ``wrap_exp`` so substitutions that
+        collapse the inner to dim'less (e.g. ``σ('a) = {1}``) take the
+        R2.1 / R2.3 path and don't leave a stale ``LogWrap({1})`` /
+        ``ExpWrap({1})`` behind.
         """
         if isinstance(u, Unit):
             return _apply_to_unit(u, self.bindings)
@@ -209,19 +214,22 @@ def unify(
 ) -> UnificationResult:
     """Solve the linear system for ``free_tyvars`` against ``equations``.
 
-    Algorithm:
+    Algorithm (M6 semantics):
 
     1. For each SI dim ``k`` (0..6):
-       - Build matrix ``M[i][α] = t_{i,α}^k`` (the formal slot ``i``'s
-         tyvar-α exponent — must be a literal rational, else
-         :class:`UnsupportedPolymorphism`).
+       - Build matrix ``M[i][α] = t_{i,α}^k`` — the *net* per-slot
+         coefficient of free tyvar ``α`` at dim ``k``, one column per
+         free tyvar (not per opaque actual-side contributor).
        - Build RHS ``b[i] = (actual_i.dim[k] − formal_i.dim[k])`` —
-         the actual side may itself carry tyvars; those become extra
-         opaque columns with their own column index.
-       - Gaussian-eliminate; consistent rows fix ``s_α^k``, conflicts
-         get recorded as a row whose pivot vanishes but whose RHS does
-         not.
-    2. Stitch the per-dim solutions into ``Substitution.bindings``.
+         tyvar exponents that appear on both sides cancel into that
+         net coefficient; whatever remains on the actual side lands in
+         the RHS.
+       - Gaussian-eliminate to a provisional ``s_α^k`` per tyvar.
+    2. Stitch the per-dim solutions into a provisional ``Substitution``.
+    3. Re-apply σ to every original equation and compare against the
+       actual unit; any equation that doesn't match drives conflict
+       reporting. Conflict detection happens here in the post-validation
+       pass, **not** from vanishing-pivot rows during ``_solve``.
 
     Free tyvars that no slot's *net* coefficient touches stay
     **unbound** — they are absent from ``Substitution.bindings`` and

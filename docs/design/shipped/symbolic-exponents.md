@@ -6,7 +6,7 @@ implementation plan below) are live in `src/dimfort/core/units.py`.
 Step 4 (resolver wiring for symbolic-name PARAMETERs across modules)
 is partially live — the cross-module symbolic-PARAMETER case closes
 the Exner-kappa family of D1.4s but a Tetens-multiplier annotation
-gap was surfaced (tracked in the internal findings log).
+gap was surfaced and parked as a separate follow-up.
 
 This doc remains the authoritative spec for the data model, the
 algebraic rules, and the failure-mode tables — those parts are
