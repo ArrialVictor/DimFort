@@ -1423,15 +1423,26 @@ def _unit_expr_has_tyvars(u: UnitExpr | None) -> bool:
     return isinstance(inner, Unit) and bool(inner.tyvars)
 
 
-def _is_inside_derived_type(node: Node) -> bool:
-    """Walk up from ``node`` until we hit a derived-type definition or the
-    root. Used by H021 to flag tyvars on type components."""
+def _enclosing_derived_type_name(node: Node, source: bytes) -> str | None:
+    """Walk up from ``node`` to the enclosing ``derived_type_definition``
+    and return the type's declared name. Returns ``None`` when ``node``
+    is not inside a derived-type definition.
+
+    Used by H021 to (a) detect derived-type position and (b) reach
+    ``field_units`` for the unit lookup — derived-type fields are keyed
+    by ``(type_name, field_name)``, not by name alone.
+    """
     cur = node.parent
     while cur is not None:
-        if cur.type in ("derived_type_definition", "derived_type"):
-            return True
+        if cur.type == "derived_type_definition":
+            for ch in cur.children:
+                if ch.type == "derived_type_statement":
+                    for cc in ch.children:
+                        if cc.type == "type_name":
+                            return _text(cc, source)
+            return None
         cur = cur.parent
-    return False
+    return None
 
 
 def _decl_is_parameter(node: Node, source: bytes) -> bool:
@@ -1463,17 +1474,29 @@ def _emit_h021_tyvar_positions(
     for n in _ts.walk(tree.root_node):
         if n.type != "variable_declaration":
             continue
+        # Derived-type field unit lookups go through ``field_units`` (keyed
+        # by ``(type_name, field_name)``), not through the scoped
+        # ``unit_for`` map. Determine the enclosing type up front so the
+        # lookup branches correctly — without this, every derived-type
+        # tyvar would silently sail past the ``_unit_expr_has_tyvars``
+        # gate because ``unit_for`` returns None for type components.
+        enclosing_type = _enclosing_derived_type_name(n, source)
         for name_node in _decl_name_nodes(n):
             name_text = _ts.node_text(name_node, source)
             if not name_text:
                 continue
             byte_offset = name_node.start_byte
-            unit = ctx.unit_for(name_text, byte_offset)
+            if enclosing_type is not None:
+                unit = ctx._field_units_lc.get(
+                    (enclosing_type.lower(), name_text.lower())
+                )
+            else:
+                unit = ctx.unit_for(name_text, byte_offset)
             if not _unit_expr_has_tyvars(unit):
                 continue
 
             reason: str | None = None
-            if _is_inside_derived_type(n):
+            if enclosing_type is not None:
                 reason = "derived-type component"
             elif _decl_is_parameter(n, source):
                 reason = "PARAMETER declaration"

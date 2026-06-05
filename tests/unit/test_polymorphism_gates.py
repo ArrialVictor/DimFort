@@ -43,6 +43,26 @@ def test_h021_module_level_var(tmp_path: Path):
     assert "H021" in codes, [(d.code, d.message) for d in diags]
 
 
+def test_h021_derived_type_component(tmp_path: Path):
+    """A tyvar attached to a derived-type field has no quantifier — H021.
+    The lookup path goes through ``field_units`` (keyed by type + field
+    name), not the scoped ``unit_for`` map; this test pins down that
+    branch."""
+    src = _materialise(tmp_path, "p.f90",
+        "module mod\n"
+        "  type :: point\n"
+        "    real :: x  !< @unit{'a}\n"
+        "  end type point\n"
+        "end module\n"
+    )
+    result = check_files([src])
+    diags = _diags(result, src)
+    codes = [d.code for d in diags]
+    assert "H021" in codes, [(d.code, d.message) for d in diags]
+    h021 = next(d for d in diags if d.code == "H021")
+    assert "derived-type" in h021.message
+
+
 def test_h021_parameter_decl(tmp_path: Path):
     """``PARAMETER`` declarations carry no quantifier — H021."""
     src = _materialise(tmp_path, "p.f90",
