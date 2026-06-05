@@ -1431,6 +1431,110 @@ def _arg_label(index: int, name: str | None) -> str:
     return f"arg {index + 1} ({name})" if name else f"arg {index + 1}"
 
 
+def _unit_expr_has_tyvars(u: UnitExpr | None) -> bool:
+    """``True`` iff ``u`` references any tyvar (unwrap Log/Exp first)."""
+    if u is None:
+        return False
+    inner: UnitExpr = u
+    while isinstance(inner, (LogWrap, ExpWrap)):
+        inner = inner.inner
+    return isinstance(inner, Unit) and bool(inner.tyvars)
+
+
+def _is_inside_derived_type(node: Node) -> bool:
+    """Walk up from ``node`` until we hit a derived-type definition or the
+    root. Used by H021 to flag tyvars on type components."""
+    cur = node.parent
+    while cur is not None:
+        if cur.type in ("derived_type_definition", "derived_type"):
+            return True
+        cur = cur.parent
+    return False
+
+
+def _decl_is_parameter(node: Node, source: bytes) -> bool:
+    """``True`` iff ``node`` is a ``variable_declaration`` carrying a
+    ``PARAMETER`` type qualifier. Mirrors the detection in
+    :func:`_extract_parameter_values_from_decl`."""
+    for c in node.children:
+        if c.type == "type_qualifier" and _text(c, source).strip().lower() == "parameter":
+            return True
+    return False
+
+
+def _emit_h021_tyvar_positions(
+    tree: Tree, ctx: _Ctx, source: bytes,
+) -> Iterable[Diagnostic]:
+    """Fire H021 for every ``@unit{'a}`` attached to a forbidden position.
+
+    Allowed: dummy args, result variables, ordinary locals of a
+    SUBROUTINE/FUNCTION body. Forbidden (Phase 1 coverage):
+
+    - Module-level / file-level variables (``ctx.scope_at`` returns
+      ``None`` at the declaration site).
+    - ``PARAMETER``-qualified declarations anywhere.
+    - Components of a derived-type definition.
+
+    SAVE'd locals and COMMON blocks are deferred — a follow-up can
+    extend this walker.
+    """
+    for n in _ts.walk(tree.root_node):
+        if n.type != "variable_declaration":
+            continue
+        for name_node in _decl_name_nodes(n):
+            name_text = _ts.node_text(name_node, source)
+            if not name_text:
+                continue
+            byte_offset = name_node.start_byte
+            unit = ctx.unit_for(name_text, byte_offset)
+            if not _unit_expr_has_tyvars(unit):
+                continue
+
+            reason: str | None = None
+            if _is_inside_derived_type(n):
+                reason = "derived-type component"
+            elif _decl_is_parameter(n, source):
+                reason = "PARAMETER declaration"
+            elif ctx.scope_at(byte_offset) is None:
+                reason = "module-level variable"
+            if reason is None:
+                continue
+
+            start, end = _node_span(name_node)
+            yield Diagnostic(
+                file=ctx.file, start=start, end=end,
+                severity=Severity.ERROR, code="H021",
+                message=(
+                    f"Type variable in @unit{{...}} cannot appear in a "
+                    f"{reason}; only function signatures and their body "
+                    f"locals may quantify over 'a."
+                ),
+            )
+
+
+def _emit_h022(
+    loc: Node, func_name: str, arg_index: int,
+    expected: UnitExpr, actual: UnitExpr, ctx: _Ctx,
+    arg_name: str | None = None,
+) -> Diagnostic:
+    """Affine actual into a tyvar slot — type variables range over the
+    multiplicative unit algebra only; affine units inhabit a separate
+    layer that cannot bind ``'a``.
+    """
+    start, end = _node_span(loc)
+    label = _arg_label(arg_index, arg_name)
+    return Diagnostic(
+        file=ctx.file, start=start, end=end,
+        severity=Severity.ERROR, code="H022",
+        message=(
+            f"Call to '{func_name}': cannot bind type variable to affine "
+            f"unit {format_unit(actual)} at {label}; convert to "
+            f"{format_unit(actual, show_offset=False)} at the call site, "
+            f"or pass as a delta."
+        ),
+    )
+
+
 def _emit_h010(
     loc: Node, literal_text: str, target_unit: UnitExpr, ctx: _Ctx
 ) -> Diagnostic:
@@ -2133,6 +2237,7 @@ def _check_call_args_against_sig(
     # routes only the genuine polymorphism failures through H020.
     poly_equations: list[SlotEquation] = []
     concrete_misses: list[tuple[int, UnitExpr, UnitExpr, str | None]] = []
+    affine_blocks: list[tuple[int, UnitExpr, UnitExpr, str | None]] = []
     for i, (expected, actual_node) in enumerate(
         zip(sig.arg_units, arg_exprs, strict=False)
     ):
@@ -2143,6 +2248,13 @@ def _check_call_args_against_sig(
             continue
         arg_name = sig.arg_names[i] if i < len(sig.arg_names) else None
         if _tyvars_in_unit_expr(expected, free_tyvars):
+            # Affine actual into a tyvar slot — type variables range over
+            # the multiplicative algebra only, so an absolute affine
+            # quantity (offset != 0, e.g. degC) cannot bind one. Fire
+            # H022 instead of running unification.
+            if isinstance(actual, Unit) and actual.offset != 0:
+                affine_blocks.append((i, expected, actual, arg_name))
+                continue
             # Only Unit-vs-Unit equations are supported in Phase 1
             # (UnsupportedPolymorphism otherwise — see polymorphism.py).
             if isinstance(expected, Unit) and isinstance(actual, Unit):
@@ -2159,6 +2271,12 @@ def _check_call_args_against_sig(
         else:
             if not equal_dim(actual, expected):
                 concrete_misses.append((i, expected, actual, arg_name))
+
+    # H022 for any tyvar slot receiving an affine actual.
+    for i, expected, actual, arg_name in affine_blocks:
+        yield _emit_h022(
+            call_node, func_name, i, expected, actual, ctx, arg_name=arg_name,
+        )
 
     # Emit H004 for any concrete-slot misses regardless of polymorphism
     # outcome.
@@ -3000,6 +3118,7 @@ def check(
     out: list[Diagnostic] = []
     out.extend(assume_diags)
     out.extend(_emit_u005_for_unannotated(tree, ctx, source))
+    out.extend(_emit_h021_tyvar_positions(tree, ctx, source))
     # P001: flag regions tree-sitter couldn't parse (no unit guarantee there).
     out.extend(_emit_unparsed_regions(tree, ctx))
 
