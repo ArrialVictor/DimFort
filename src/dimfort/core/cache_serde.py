@@ -77,9 +77,14 @@ def dump_unit_expr(u: UnitExpr) -> dict[str, Any]:
             "d": [dump_exponent(x) for x in u.dimension],
             "f": dump_fraction(u.factor),
         }
-        # Tyvars only emitted when non-empty: keeps every pre-polymorphism
-        # cache entry byte-identical (smaller payload, no diff in
-        # serialised form for concrete Units).
+        # Optional fields are emitted only when non-default so a
+        # non-affine concrete Unit serialises to the byte-identical
+        # shape it had before the field existed:
+        # - "o" — affine offset (e.g. degC's 273.15); was previously
+        #   dropped entirely, silently turning a cached degC into K.
+        # - "v" — tyvar map; absent for concrete units.
+        if u.offset != 0:
+            out["o"] = dump_fraction(u.offset)
         if u.tyvars:
             out["v"] = [[name, dump_exponent(exp)] for name, exp in u.tyvars]
         return out
@@ -97,9 +102,12 @@ def load_unit_expr(d: dict[str, Any]) -> UnitExpr:
         tyvars = tuple(
             (name, load_exponent(exp)) for name, exp in raw_v
         )
+        raw_o = d.get("o")
+        offset = load_fraction(raw_o) if raw_o is not None else Fraction(0)
         return Unit(
             dimension=tuple(load_exponent(x) for x in d["d"]),
             factor=load_fraction(d["f"]),
+            offset=offset,
             tyvars=tyvars,
         )
     if tag == "Log":

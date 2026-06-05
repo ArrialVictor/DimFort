@@ -1283,10 +1283,12 @@ def _emit_h002(loc: Node, left: UnitExpr, right: UnitExpr, ctx: _Ctx) -> Diagnos
 # ``'a + 'a^(-1)`` (binds ``'a = {1}``) — the signature is dishonest
 # and H023 fires instead of the regular H001/H002.
 #
-# Detection is shallow at this milestone: any failing combine()/power()
+# Detection: any failing combine() / power() / dimensionless-intrinsic
 # site whose operands reference a tyvar from the enclosing function's
-# signature ⇒ H023. M3.1 extends to other operations (SIN, LOG forced
-# binding) and the structured per-tree H023 message.
+# signature is routed through H023 instead of the regular H001 / H002 /
+# H003 / D1.4. The wrappers _emit_h001_or_h023 / _emit_h002_or_h023
+# handle the dispatch; SIN-on-tyvar and non-literal-power-on-tyvar are
+# wired inline at their respective emission sites.
 
 
 def _active_free_tyvars(byte_offset: int, ctx: _Ctx) -> frozenset[str]:
@@ -1455,22 +1457,99 @@ def _decl_is_parameter(node: Node, source: bytes) -> bool:
     return False
 
 
+def _decl_is_save(node: Node, source: bytes) -> bool:
+    """``True`` iff ``node`` is a ``variable_declaration`` carrying a
+    ``SAVE`` type qualifier — ``real, save :: cache``. The standalone
+    ``save :: x, y`` statement form is handled by
+    :func:`_collect_save_attribute_names` below.
+    """
+    for c in node.children:
+        if c.type == "type_qualifier" and _text(c, source).strip().lower() == "save":
+            return True
+    return False
+
+
+def _collect_common_names(tree: Tree, source: bytes) -> set[tuple[str | None, str]]:
+    """Per-routine set of ``(scope_lc, name_lc)`` for every variable
+    that appears in a ``common`` statement. Block names (the ``/blk/``
+    part) parse as ``name`` nodes, not ``identifier``, so a plain
+    descendant-walk for ``identifier`` collects the variable names
+    cleanly without false positives.
+    """
+    out: set[tuple[str | None, str]] = set()
+    # scope_at would normally need a _Ctx; replicate the bisect
+    # behaviour inline with a routine_scopes view built here. Cheaper:
+    # use a stand-alone walk that tracks the enclosing routine via
+    # the AST hierarchy directly.
+    for n in _ts.walk(tree.root_node):
+        if n.type != "common_statement":
+            continue
+        scope = _enclosing_routine_name(n, source)
+        for d in _ts.walk(n):
+            if d.type == "identifier":
+                out.add((scope, _text(d, source).lower()))
+    return out
+
+
+def _collect_save_attribute_names(
+    tree: Tree, source: bytes,
+) -> set[tuple[str | None, str]]:
+    """Per-routine set of ``(scope_lc, name_lc)`` for variables named in
+    a standalone ``save :: x, y`` statement (distinct from the
+    ``real, save :: x`` inline form, which is detected via
+    :func:`_decl_is_save` on the variable_declaration itself).
+    """
+    out: set[tuple[str | None, str]] = set()
+    for n in _ts.walk(tree.root_node):
+        if n.type != "save_statement":
+            continue
+        scope = _enclosing_routine_name(n, source)
+        for d in _ts.walk(n):
+            if d.type == "identifier":
+                out.add((scope, _text(d, source).lower()))
+    return out
+
+
+def _enclosing_routine_name(node: Node, source: bytes) -> str | None:
+    """Walk up to the enclosing SUBROUTINE/FUNCTION and return its
+    lower-cased name. Returns ``None`` for module-level / file-level
+    positions. Independent of ``_Ctx`` so it can be used during the
+    pre-pass that builds the COMMON/SAVE name sets.
+    """
+    cur = node.parent
+    while cur is not None:
+        if cur.type in ("subroutine", "function"):
+            for c in cur.children:
+                if c.type in (
+                    "subroutine_statement", "function_statement",
+                ):
+                    for cc in c.children:
+                        if cc.type == "name":
+                            return _text(cc, source).lower()
+            return None
+        cur = cur.parent
+    return None
+
+
 def _emit_h021_tyvar_positions(
     tree: Tree, ctx: _Ctx, source: bytes,
 ) -> Iterable[Diagnostic]:
     """Fire H021 for every ``@unit{'a}`` attached to a forbidden position.
 
     Allowed: dummy args, result variables, ordinary locals of a
-    SUBROUTINE/FUNCTION body. Forbidden (Phase 1 coverage):
+    SUBROUTINE/FUNCTION body. Forbidden:
 
     - Module-level / file-level variables (``ctx.scope_at`` returns
       ``None`` at the declaration site).
     - ``PARAMETER``-qualified declarations anywhere.
     - Components of a derived-type definition.
 
-    SAVE'd locals and COMMON blocks are deferred — a follow-up can
-    extend this walker.
+    SAVE'd locals (both the ``real, save :: x`` inline form and the
+    standalone ``save :: x, y`` statement) and ``COMMON`` block members
+    are forbidden too.
     """
+    common_names = _collect_common_names(tree, source)
+    save_names = _collect_save_attribute_names(tree, source)
     for n in _ts.walk(tree.root_node):
         if n.type != "variable_declaration":
             continue
@@ -1500,8 +1579,19 @@ def _emit_h021_tyvar_positions(
                 reason = "derived-type component"
             elif _decl_is_parameter(n, source):
                 reason = "PARAMETER declaration"
-            elif ctx.scope_at(byte_offset) is None:
-                reason = "module-level variable"
+            elif _decl_is_save(n, source):
+                reason = "SAVE'd local"
+            else:
+                # The standalone ``save :: x`` form and COMMON-block
+                # membership are scope-name keyed; consult the pre-pass
+                # sets once we know which scope this declaration is in.
+                key = (ctx.scope_at(byte_offset), name_text.lower())
+                if key in save_names:
+                    reason = "SAVE'd local"
+                elif key in common_names:
+                    reason = "COMMON block member"
+                elif ctx.scope_at(byte_offset) is None:
+                    reason = "module-level variable"
             if reason is None:
                 continue
 
@@ -1528,11 +1618,22 @@ def _emit_h022(
     """
     start, end = _node_span(loc)
     label = _arg_label(arg_index, arg_name)
+    # Name the specific tyvar(s) the call would have bound — matches
+    # the spec example "cannot bind 'a to affine unit degC" rather
+    # than the generic "type variable".
+    inner = expected
+    while isinstance(inner, (LogWrap, ExpWrap)):
+        inner = inner.inner
+    tyvars_str = (
+        ", ".join(name for name, _ in inner.tyvars)
+        if isinstance(inner, Unit) and inner.tyvars
+        else "type variable"
+    )
     return Diagnostic(
         file=ctx.file, start=start, end=end,
         severity=Severity.ERROR, code="H022",
         message=(
-            f"Call to '{func_name}': cannot bind type variable to affine "
+            f"Call to '{func_name}': cannot bind {tyvars_str} to affine "
             f"unit {format_unit(actual)} at {label}; convert to "
             f"{format_unit(actual, show_offset=False)} at the call site, "
             f"or pass as a delta."
@@ -2027,13 +2128,24 @@ def _walk_expressions(
                 )
             _, diag = power(base, exponent_unit, exponent_value)
             if diag == "D1.4":
-                yield _emit_d14(
-                    node, ctx,
-                    detail=(
-                        f"power exponent is not a literal rational "
-                        f"(base unit: {format_unit(base)})"
-                    ),
-                )
+                # Polymorphism: a non-literal exponent on a tyvar-typed
+                # base would bind `'a = {1}` (spec table row:
+                # ``'a^x, x non-literal — binds 'a = {1}, D1.4 unchanged``
+                # — under polymorphism the bind is what makes the body
+                # dishonest, so we fire H023 instead of D1.4).
+                active = _active_free_tyvars(node.start_byte, ctx)
+                involved = _tyvars_in_unit_expr(base, active)
+                if involved:
+                    one = _units_mod.parse("1", ctx.table)
+                    yield _emit_h023(node, base, one, involved, ctx)
+                else:
+                    yield _emit_d14(
+                        node, ctx,
+                        detail=(
+                            f"power exponent is not a literal rational "
+                            f"(base unit: {format_unit(base)})"
+                        ),
+                    )
             elif diag == "D1.2":
                 yield _emit_d12(node, base, base, "**", ctx)
             elif diag == "D1.7":
@@ -2148,7 +2260,18 @@ def _check_call(
         except UnitError:
             return
         if not equal_dim(u, one):
-            yield _emit_h003(node, name_lc, u, ctx)
+            # Polymorphism: if the arg references a free tyvar from the
+            # enclosing function, the intrinsic's "must be dimensionless"
+            # rule would force `'a = {1}` — the body breaks the
+            # signature's polymorphic promise. Fire H023 (spec table
+            # row: SIN/COS/TAN/ASIN/ATAN/... bind `'a = {1}`) instead
+            # of the regular H003.
+            active = _active_free_tyvars(node.start_byte, ctx)
+            involved = _tyvars_in_unit_expr(u, active)
+            if involved:
+                yield _emit_h023(node, u, one, involved, ctx)
+            else:
+                yield _emit_h003(node, name_lc, u, ctx)
         return
 
     if name_lc in SAME_UNIT_ARG_INTRINSICS:
@@ -2260,8 +2383,10 @@ def _check_call_args_against_sig(
             if isinstance(actual, Unit) and actual.offset != 0:
                 affine_blocks.append((i, expected, actual, arg_name))
                 continue
-            # Only Unit-vs-Unit equations are supported in Phase 1
-            # (UnsupportedPolymorphism otherwise — see polymorphism.py).
+            # The unifier supports Unit-vs-Unit only; wrapper-typed
+            # polymorphic slots fall through to the concrete check
+            # below (UnsupportedPolymorphism otherwise — see
+            # polymorphism.py).
             if isinstance(expected, Unit) and isinstance(actual, Unit):
                 poly_equations.append(SlotEquation(
                     slot_index=i, slot_name=arg_name,

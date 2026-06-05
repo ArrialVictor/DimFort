@@ -390,11 +390,8 @@ class Unit:
         symbolic would be non-linear; ``Exponent.__mul__`` raises and the
         caller falls back to D1.4 (same path as the SI-slot case).
         """
-        scalar: Exponent | Number = (
-            exp if isinstance(exp, Exponent) else exp
-        )
-        new_dim = tuple(a * scalar for a in self.dimension)
-        new_tyvars = tuple((n, e * scalar) for n, e in self.tyvars)
+        new_dim = tuple(a * exp for a in self.dimension)
+        new_tyvars = tuple((n, e * exp) for n, e in self.tyvars)
         if self.factor == 1:
             new_factor = Fraction(1)
         elif isinstance(exp, int):
