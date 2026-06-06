@@ -440,6 +440,76 @@ def test_panel_marker_matrix_diagnostic_driven(tmp_path: Path):
     assert marks == ["error", "warn", "ok"]
 
 
+def test_panel_marker_paints_polymorphism_diagnostics(tmp_path: Path):
+    """H020 / H023 fire as mismatch-shaped diagnostics on a call site /
+    dishonest body. They must paint 🔴 on the offending node so the
+    panel-tree matches the Problems-panel severity (and the worst-of-
+    children rule lifts it to the assignment/call root). Regression
+    pin: before this, the polymorphism codes weren't in
+    ``_MARKER_DIAG_CODES``, so the dishonest assignment rendered 🟡
+    (resolution-axis only) alongside a 🔴 in the Problems panel —
+    a confusing UX where the hover tree didn't reflect that a hard
+    error fired."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp import server
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
+
+    src = tmp_path / "poly.f90"
+    src.write_text(
+        "module m\n"
+        "contains\n"
+        "  ! H023 — dishonest body forces 'a = kg\n"
+        "  subroutine biased_avg(x, y, mean)\n"
+        "    real, intent(in)  :: x        !< @unit{'a}\n"
+        "    real, intent(in)  :: y        !< @unit{'a}\n"
+        "    real, intent(out) :: mean     !< @unit{'a}\n"
+        "    real, parameter   :: bias_kg = 1.0  !< @unit{kg}\n"
+        "    real :: half  !< @unit{1}\n"
+        "    half = 0.5\n"
+        "    mean = half * (x + y) + bias_kg\n"   # <- H023 here
+        "  end subroutine biased_avg\n"
+        "  ! H020 — caller mixes kg + m across two 'a slots\n"
+        "  subroutine caller_mismatch(m_in, l_in, o)\n"
+        "    real, intent(in)  :: m_in   !< @unit{kg}\n"
+        "    real, intent(in)  :: l_in   !< @unit{m}\n"
+        "    real, intent(out) :: o      !< @unit{kg}\n"
+        "    call biased_avg(m_in, l_in, o)\n"     # <- H020 here
+        "  end subroutine caller_mismatch\n"
+        "end module m\n"
+    )
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    asns = [n for n in _ts.walk(tree.root_node)
+            if n.type == "assignment_statement"]
+    calls = [n for n in _ts.walk(tree.root_node)
+             if n.type == "subroutine_call"]
+
+    result = check_files([src])
+    with server.state.last_result_lock:
+        saved_result, server.state.last_result = server.state.last_result, result
+    try:
+        ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+        # The dishonest assignment is the LAST assignment in the file
+        # (line 11). The H023 owns that node; its tree must root 🔴.
+        dishonest_asn = asns[-1]
+        marker = _build_expression_tree(dishonest_asn, ctx, source)["marker"]
+        assert marker == "error", (
+            f"H023 should paint the dishonest assignment 🔴, got {marker}"
+        )
+        # The single call_expression with H020 must also root 🔴.
+        assert calls, "expected a subroutine_call in the fixture"
+        call_marker = _build_expression_tree(calls[-1], ctx, source)["marker"]
+        assert call_marker == "error", (
+            f"H020 should paint the mismatched call site 🔴, got {call_marker}"
+        )
+    finally:
+        with server.state.last_result_lock:
+            server.state.last_result = saved_result
+
+
 def test_panel_expression_shows_scale_factor_in_scale_mode(tmp_path: Path):
     """With scale mode on, the expression tree's unit column surfaces the
     multiplicative scale factor (e.g. ``100×kg·m⁻¹·s⁻²`` for ``hPa``)

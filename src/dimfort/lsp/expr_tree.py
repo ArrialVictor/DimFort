@@ -43,9 +43,20 @@ if TYPE_CHECKING:
 # The unit-consistency family — the only codes that colour a marker
 # along the severity axis (🟢/🟡/🔴). U020 is handled separately and
 # paints 🔵 ("accepted via @unit_assume") — see docs/design/markers.md
-# §4.6.
+# §4.6. The polymorphism additions (H020 unification failure at a call
+# site, H021 tyvar in forbidden position, H022 symbolic exponent on a
+# tyvar, H023 dishonest polymorphic body) are mismatch-shaped and own
+# the node they fire on; treating them as consistency-family ensures
+# the offending expression renders 🔴 in the panel/hover tree and the
+# worst-of-children propagation lifts that 🔴 up to the assignment row
+# — matching the H001/H002 mismatch UX rather than leaving them
+# invisibly 🟡 alongside a 🔴 Problems-panel entry.
 _MARKER_DIAG_CODES = frozenset(
-    {"H001", "H002", "H003", "H004", "S001", "S002", "S003"}
+    {
+        "H001", "H002", "H003", "H004",
+        "H020", "H021", "H022", "H023",
+        "S001", "S002", "S003",
+    }
 )
 
 _SEVERITY_EMOJI = {
