@@ -13,11 +13,27 @@ from dimfort.core.units import UnitExpr, format_unit
 
 
 def _unit_pretty(u: UnitExpr | None) -> str:
-    """Render a unit for the hover surfaces, delegating to the shared
-    display formatter (:func:`format_unit`) so hovers, diagnostics, and
-    the side panel all read identically — Unicode superscripts, ``·``
-    products, signed-exponent powers (``kg·m·s⁻²``), and ``LOG(...)`` /
-    ``EXP(...)`` per spec §9. ``None`` renders as ``"?"``.
+    """Render a unit expression for any hover surface.
+
+    Delegates to the shared display formatter (:func:`format_unit`) so
+    hovers, diagnostics, and the side panel all read identically:
+    Unicode superscripts, ``·`` products, signed-exponent powers
+    (``kg·m·s⁻²``), and ``LOG(...)`` / ``EXP(...)`` per spec §9.
+    ``None`` (an unannotated / unresolved unit) becomes the literal
+    ``"?"`` so caller code can substitute the rendered string into a
+    template without a ``None`` check.
+
+    Args:
+        u: Resolved unit expression for the symbol being hovered, or
+            ``None`` when no unit could be derived (unannotated
+            variable, unresolved call, etc.).
+
+    Returns:
+        Display string ready to embed in a markdown hover body.
+
+    Note:
+        Callers should NOT post-process the returned string — it is
+        already the canonical display form.
     """
     return "?" if u is None else format_unit(u)
 
@@ -32,26 +48,41 @@ def _hover_text(
 ) -> str:
     """Render a single-symbol hover (variable or struct member).
 
-    Marker convention mirrors the trace-mode hover header:
-    🟢 = known unit, 🟡 = no annotation / unresolved, 🔴 = owning
-    diagnostic in error severity.
-
     The body sits inside a fenced code block so every DimFort hover
     surface — variable, signature, tree — uses the same visual form
     across clients. Clients that tint code blocks (e.g. Neovim) get
-    consistent coloring; clients that don't (VSCode) render it as plain
-    monospace, which still aligns nicely.
+    consistent colouring; clients that don't (VSCode) render it as
+    plain monospace, which still aligns nicely.
 
-    ``unit_source`` (``"explicit"`` / ``"intrinsic_default"`` / ``None``)
-    annotates *how* the unit was determined. ``"intrinsic_default"``
-    appends ``(implicit — INTEGER default)`` so the user can see the
-    Fortran-type-driven default at work rather than wondering why a
-    bare ``integer :: i`` is showing as dim'less.
+    Marker convention mirrors the trace-mode hover header: 🟢 = known
+    unit, 🟡 = no annotation / unresolved, 🔴 = owning diagnostic in
+    error severity.
 
-    ``marker`` overrides the default 🟢/🟡 derivation. Callers that
-    have already computed the node's marker (via
-    ``expr_tree._node_marker``) should pass it through so an LHS
-    identifier flagged 🔴 by a diagnostic doesn't render 🟢 here.
+    Args:
+        name: Symbol name to display before the separator (variable,
+            struct member, derived-type field).
+        unit_or_message: Either the formatted unit string (when
+            ``show_unit_label`` is ``True``) or a short free-text
+            message (when ``False``) describing why no unit is
+            available.
+        show_unit_label: ``True`` for the "name : unit" form (known
+            unit); ``False`` for the "name — message" form (unresolved
+            / unannotated state).
+        unit_source: How the unit was determined. ``"explicit"`` for a
+            user ``@unit{}`` annotation, ``"intrinsic_default"`` for a
+            Fortran-type-driven default (which appends
+            ``(implicit — INTEGER default)`` so the reader sees the
+            default at work), ``None`` to skip the annotation entirely.
+        marker: Override the default 🟢 / 🟡 derivation. Callers that
+            have already computed a node's marker (via
+            :func:`dimfort.lsp.expr_tree._node_marker`) should pass it
+            through so an LHS identifier flagged 🔴 by a diagnostic
+            doesn't render 🟢 here.
+
+    Returns:
+        A markdown string with the bolded ``**<marker> DimFort**``
+        header and the fenced code-block body, ready to drop into an
+        LSP ``Hover`` payload.
     """
     if show_unit_label:
         body = f"{name} : {unit_or_message}"
@@ -66,21 +97,33 @@ def _hover_text(
 
 
 def _sig_render_md(name: str, sig: FuncSig) -> str:
-    """Bare dimensional-signature text for embedding (e.g. module hover
-    list items wrap it in inline backticks themselves).
+    """Render a bare dimensional-signature for embedding.
 
-    Format: ``name(u1, u2, …) : ret`` (functions) or
-    ``name(u1, u2, …) : -`` (subroutines — the ``-`` is the
-    structural-no-unit glyph, same as panel rows and call hovers, so the
-    ":" is the universal "has unit" separator across every surface).
-    Unannotated formal slots render as ``?``. Param names are
+    Used by surfaces that supply their own framing (e.g. module hover
+    list items wrap the result in inline backticks themselves), so the
+    returned string carries no fenced block, no header, and no marker.
+
+    Format is ``name(u1, u2, …) : ret`` for functions or
+    ``name(u1, u2, …) : -`` for subroutines — the ``-`` is the
+    structural-no-unit glyph, matching panel rows and call hovers, so
+    ``:`` is the universal "has unit" separator across every surface.
+    Unannotated formal slots render as ``?``. Parameter names are
     intentionally omitted — physicists reading a call site want the
     dimensional interface, not the callee-internal naming.
 
-    Polymorphic signatures (any tyvar present in arg or return units)
-    prefix the rendering with ``∀ 'a.`` (one quantifier per declared
-    tyvar, in sorted order) per the polymorphism spec — the marker
-    distinguishes a generic helper from a concrete one at a glance.
+    Polymorphic signatures (any type variable present in an arg or the
+    return unit) are prefixed with ``∀ 'a.`` (one quantifier per
+    declared tyvar, in sorted order) per the polymorphism spec, so a
+    generic helper is distinguishable from a concrete one at a glance.
+
+    Args:
+        name: Callable name to render in the signature head.
+        sig: Resolved :class:`FuncSig` carrying argument units, return
+            unit, and the subroutine flag.
+
+    Returns:
+        Display string for the signature, without surrounding markdown
+        framing.
     """
     from dimfort.core.polymorphism import free_tyvars_of_sig
     arg_units = ", ".join(
@@ -99,6 +142,24 @@ def _sig_render_md(name: str, sig: FuncSig) -> str:
 
 
 def _hover_signature(name: str, sig: FuncSig) -> str:
+    """Render a standalone signature hover for a function or subroutine.
+
+    Wraps :func:`_sig_render_md` in the standard ``**<marker>
+    DimFort**`` header + fenced code block so the signature popup
+    renders consistently with the variable and tree hovers. The marker
+    derives from the signature's completeness: 🟢 when every formal
+    arg (and the return unit, for a function) is annotated, 🟡 as
+    soon as any slot is ``None`` — matching the partial-knowledge state
+    the rendered ``?`` placeholders convey.
+
+    Args:
+        name: Callable name to render in the signature head.
+        sig: Resolved :class:`FuncSig` for the callee.
+
+    Returns:
+        Markdown hover body ready to drop into an LSP ``Hover``
+        payload.
+    """
     # 🟡 when any formal param (or the return unit, for a function)
     # has no annotation — the signature renders that arg as `?`, so
     # the header should reflect the partial-knowledge state.
@@ -127,14 +188,40 @@ def _module_hover_md(
 ) -> str:
     """Render a module summary for a ``use foo`` hover.
 
-    Three states matter to the reader:
+    Three states matter to the reader and are encoded in the
+    boolean-flag pair:
 
-    - ``external``: in the user's external-modules allowlist; we
-      know not to expect a definition in the workset.
-    - ``unresolved``: referenced by ``use`` but no module of that
-      name was loaded (typical for libraries DimFort doesn't
-      track).
-    - resolved: ``exports`` is populated; render var + sig surface.
+    - **external** (``external=True``): the module sits in the user's
+      external-modules allowlist; we know not to expect a definition
+      in the workset, and the hover says so explicitly.
+    - **unresolved** (``unresolved=True`` or ``exports is None``):
+      referenced by ``use`` but no module of that name was loaded
+      (typical for libraries DimFort doesn't track).
+    - **resolved**: ``exports`` is populated; render the variable and
+      procedure-signature surfaces.
+
+    For the resolved branch the variable list is split into annotated
+    rows (showing the unit) followed by unannotated rows (with a
+    placeholder), which doubles the hover as a TODO list of what still
+    needs ``@unit{}``. Both lists are capped (see
+    :data:`_MODULE_HOVER_VAR_LIMIT` and
+    :data:`_MODULE_HOVER_SIG_LIMIT`) with a ``… N more`` tail so a
+    pathological re-export module can't blow up the popup.
+
+    Args:
+        module_name: Module name as written by the user at the ``use``
+            site, used verbatim in the unresolved / external messages.
+        exports: Resolved :class:`ModuleExports` for the module, or
+            ``None`` when the module couldn't be loaded.
+        external: ``True`` if the module is on the external-modules
+            allowlist.
+        unresolved: ``True`` if the module was referenced but no
+            definition was found in the workset.
+
+    Returns:
+        Markdown hover body for the ``use`` statement, including the
+        ``**<marker> DimFort**`` header and the variable / procedure
+        sections.
     """
     if external:
         return (

@@ -27,6 +27,19 @@ def _uri_for_path(path: Path) -> str:
 
     Falls back to ``Path.as_uri()`` for files the editor hasn't opened
     yet (cross-file diagnostics on closed files).
+
+    Args:
+        path: Resolved filesystem path of the file whose URI is needed.
+
+    Returns:
+        The URI string the editor used when opening ``path`` if
+        recorded, otherwise the synthesised ``file://`` URI from
+        :meth:`Path.as_uri`.
+
+    Note:
+        Reads ``state.opened_uris`` under ``state.opened_uris_lock``;
+        thread-safe against concurrent ``didOpen`` / ``didClose``
+        updates.
     """
     with state.opened_uris_lock:
         known = state.opened_uris.get(path)
@@ -36,6 +49,25 @@ def _uri_for_path(path: Path) -> str:
 
 
 def _uri_to_path(uri: str) -> Path | None:
+    """Convert an editor URI to a filesystem :class:`Path`.
+
+    Honours the Windows ``file:///C:/...`` quirk where the URL-path
+    leading slash is an artefact, not part of the filesystem path:
+    detects the leading-slash-before-drive-letter pattern and strips
+    the slash so a workset keyed by ``Path("C:/...")`` is reachable
+    from a URI of either shape. POSIX paths are untouched.
+
+    Args:
+        uri: Editor URI; only ``file:`` schemes are recognised.
+
+    Returns:
+        A :class:`Path` for ``uri``, or ``None`` for non-``file:``
+        schemes (e.g. ``untitled:``, ``vscode-remote:``).
+
+    Note:
+        Does not call ``.resolve()`` on the path — callers that need
+        the canonical form do so themselves (see :func:`_trees_for`).
+    """
     if not uri.startswith("file:"):
         return None
     path = unquote(urlparse(uri).path)
@@ -52,7 +84,22 @@ def _uri_to_path(uri: str) -> Path | None:
 
 
 def _trees_for(uri: str) -> tuple[Path, Tree, bytes] | None:
-    """Return ``(resolved_path, tree, source_bytes)`` for ``uri`` if loaded."""
+    """Return the cached parse for ``uri`` if one is loaded.
+
+    Args:
+        uri: Editor URI for the file to look up.
+
+    Returns:
+        A tuple ``(resolved_path, tree, source_bytes)`` keyed by the
+        resolved on-disk path; ``None`` when no workset result is
+        loaded, the URI cannot be mapped to a path, or no entry
+        exists for that path in ``result.trees``.
+
+    Note:
+        Reads ``state.last_result`` under ``state.last_result_lock``.
+        Callers that traverse the returned tree must hold
+        ``state.ts_handler_lock`` themselves.
+    """
     with state.last_result_lock:
         result = state.last_result
     if result is None:
@@ -82,6 +129,33 @@ def _build_ts_ctx(
     byte_offset)`` honours the cursor's enclosing subroutine. Without
     ``path`` we degrade to flat ``merged_var_units`` (same behaviour
     as before scope-aware lookups existed).
+
+    Args:
+        result: Active :class:`WorksetResult` whose merged unit tables
+            and signatures seed the context.
+        source: Source bytes of the file being inspected. Stored on
+            the context for callers that need byte-offset lookups.
+        file: Display name (typically a path string) used in any
+            diagnostics emitted via the returned context.
+        path: Optional resolved on-disk path. When provided, the
+            per-file scoped annotation table and routine byte-ranges
+            are spliced in and ``scope_aware`` is set to ``True``.
+
+    Returns:
+        A freshly-built :class:`ts_checker.Ctx` ready for identifier-
+        and member-chain resolution. ``var_types`` and
+        ``type_field_types`` are left empty; callers populate them
+        per-tree on demand.
+
+    Raises:
+        AssertionError: When :data:`dimfort.core.units.DEFAULT_TABLE`
+            has not been initialised (call
+            ``import dimfort.core.unit_config`` to populate it).
+
+    Note:
+        Honours ``state.scale_mode`` so on-demand features reason
+        consistently with the diagnostic pipeline. The default off
+        means dimension-only checking.
     """
     table = _units_mod.DEFAULT_TABLE
     assert table is not None, (

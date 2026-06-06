@@ -63,9 +63,39 @@ def resolve(
     *,
     hover_mode: str,
 ) -> tuple[str, lsp.Range] | None:
-    """Resolve the hover at ``(line, col)``: specific surfaces first, then
-    the expression-context fallback. ``hover_mode`` is the live verbosity
-    (``"short"`` / ``"detailed"``) the server read off its ``_features``.
+    """Resolve the hover payload for a cursor position.
+
+    Dispatches to :func:`_resolve_hover` first, which handles the
+    tightest-fit surfaces (use statement, function header, member
+    access, call callee, bare identifier, numeric literal). If no
+    specific surface matches, falls back to
+    :func:`_expression_hover_for`, which renders the enclosing
+    assignment / relational / sub-expression as a unit-algebra tree.
+
+    Args:
+        uri: LSP document URI of the file under the cursor.
+        line_1based: One-based line number of the cursor position
+            (LSP wire format).
+        col_1based: One-based column number of the cursor position.
+        source_text: Raw source text from the editor buffer. Accepted
+            for caller compatibility; the current implementation
+            re-reads from the tree-sitter cache and ignores it.
+        hover_mode: Live verbosity toggle the server reads off its
+            ``_features``. ``"short"`` collapses to a one-line summary
+            or a depth-one tree; ``"detailed"`` expands the full
+            unit-algebra tree.
+
+    Returns:
+        A ``(markdown_text, range)`` pair when a hover applies at the
+        cursor, or ``None`` when no surface matched. The ``range``
+        anchors the hover to a precise syntactic span so the editor
+        can position the popup and surface the "Go to Definition"
+        affordance.
+
+    Note:
+        ``server.py`` holds ``state.ts_handler_lock`` across this
+        call; the hover renderer must not reach back into
+        ``server.py`` for live feature state.
     """
     hit = _resolve_hover(uri, line_1based, col_1based, source_text, hover_mode=hover_mode)
     if hit is None:
@@ -81,26 +111,44 @@ def _resolve_hover(
     *,
     hover_mode: str = "short",
 ) -> tuple[str, lsp.Range] | None:
-    """Return ``(markdown_text, range)`` for the hover at ``(line, col)``.
+    """Return the hover for tightest-fit surfaces only.
 
-    Returning the range alongside the text is what lets VSCode display
-    the "Go to Definition" / "Peek" affordances at the bottom of the
-    hover popup. Without it, VSCode doesn't know which symbol the
-    hover is for and suppresses those links.
+    Returning the range alongside the text is what lets the editor
+    display the "Go to Definition" / "Peek" affordances at the
+    bottom of the hover popup. Without it, the editor doesn't know
+    which symbol the hover is for and suppresses those links.
 
     Dispatch order, tightest-fit wins inside each category:
 
-    1. **Function/Subroutine definition header** — the cursor is on the
+    0. ``use`` statement — cursor on a module-name token renders a
+       module summary (exports + signatures).
+    1. Function / subroutine definition header — cursor on the
        ``name`` token of a function or subroutine declaration.
-    2. **Derived-type member access** (``a%b``) — show the field's unit.
-    3. **Call expression / subroutine call** — show the callee's signature.
-    4. **Plain identifier** — variable reference; show its unit.
+    2. Derived-type member access (``a%b``) — show the field's unit.
+    3. Call expression / subroutine call — show the callee's
+       signature, optionally as a call-argument tree.
+    4. Plain identifier — variable reference; show its unit.
+    5. Numeric literal — dimensionless by construction.
 
-    Less specific matches (assignment LHS/RHS hovers, BinOp hovers
-    showing the resolved expression unit) used to live here on the
-    LFortran-AST path. They are intentionally not ported in this pass:
-    they degrade gracefully (no hover at that exact position) and the
-    diagnostic-driven information is unchanged.
+    Args:
+        uri: LSP document URI of the file under the cursor.
+        line_1based: One-based cursor line number.
+        col_1based: One-based cursor column number.
+        source_text: Accepted for caller compatibility; unused. The
+            renderer reads source bytes off the tree-sitter cache.
+        hover_mode: ``"short"`` or ``"detailed"`` verbosity passed
+            through to the call-tree renderer for the call branch.
+
+    Returns:
+        A ``(markdown_text, range)`` pair on a hit, or ``None`` when
+        no tightest-fit surface matched (the caller then falls back
+        to expression-context rendering).
+
+    Note:
+        Less specific matches (assignment LHS/RHS hovers, BinOp
+        hovers showing the resolved expression unit) used to live
+        here on the older AST path; they are intentionally handled
+        by :func:`_expression_hover_for` now instead.
     """
     found = _trees_for(uri)
     if found is None:
@@ -331,13 +379,30 @@ def _resolve_hover(
 def _unit_source_for(
     result: WorksetResult, resolved_path: Path, name: str, scope_lc: str | None,
 ) -> str | None:
-    """Return the provenance tag (``"explicit"`` / ``"intrinsic_default"``)
-    for a variable's annotation, or ``None`` if unknown.
+    """Return the provenance tag for a variable's unit annotation.
 
     Looks up the file's :class:`AttachmentResult` via the workset
-    result; falls back to ``None`` for variables that came in through
-    a ``use`` clause (the source-file tag isn't accessible at the
-    consumer site without a deeper rewrite).
+    result and consults its ``var_unit_sources`` map. Scope-aware
+    lookup first, then module-level, then any-scope as a last
+    resort so a hover never paints a misleading tag.
+
+    Args:
+        result: Latest workset result computed by the checker;
+            holds the per-file :class:`AttachmentResult` map.
+        resolved_path: Resolved path of the file whose attachment
+            should be consulted (the canonical workset key).
+        name: Variable name to look up (case-sensitive against
+            the attachment's stored keys).
+        scope_lc: Lower-cased enclosing routine name, or ``None``
+            for module-level lookups. Drives the scope-aware tier
+            of the lookup chain.
+
+    Returns:
+        The provenance tag string (currently ``"explicit"`` or
+        ``"intrinsic_default"``), or ``None`` when the attachment
+        isn't available, the variable came in through a ``use``
+        clause (source-file tag isn't accessible at the consumer
+        site), or the name simply isn't registered.
     """
     attached = result.attachments.get(resolved_path)
     if attached is None:
@@ -367,16 +432,35 @@ def _expression_hover_for(
     *,
     hover_mode: str = "short",
 ) -> tuple[str, lsp.Range] | None:
-    """Expression hover. Fires when no more-specific hover matched
-    (i.e. cursor isn't on an identifier or callee). Renders Short or
-    Detailed depending on ``hover_mode``.
+    """Render the expression-context hover.
+
+    Fires when no more-specific hover surface matched (i.e. the
+    cursor isn't on an identifier, callee, member-access, or
+    function header). The shape of the rendered tree depends on
+    ``hover_mode``: short collapses to the root + immediate
+    children; detailed expands the full unit-algebra sub-tree.
 
     Surfaces handled:
 
+    - Math-operator at cursor (``+`` / ``-`` / ``*`` / ``/`` /
+      ``**``) — reports the sub-expression's resolved unit, with
+      ``+``/``-`` carrying the homogeneity verdict on operands.
     - Enclosing assignment (cursor on ``=``, operator, whitespace).
-    - Enclosing relational expression (homogeneity check on operands).
-    - Computed sub-expression (call arg, IF/DO/WHERE condition, ...).
+    - Enclosing relational expression.
+    - Computed sub-expression (call arg, IF/DO/WHERE condition,
+      SELECT CASE selector).
     - Numeric literal.
+
+    Args:
+        uri: LSP document URI of the file under the cursor.
+        line_1based: One-based cursor line number.
+        col_1based: One-based cursor column number.
+        hover_mode: ``"short"`` or ``"detailed"`` verbosity.
+
+    Returns:
+        A ``(markdown_text, range)`` pair when an expression context
+        applies at the cursor, or ``None`` when nothing matched
+        (e.g. cursor on whitespace outside any expression).
     """
     found = _trees_for(uri)
     if found is None:
@@ -515,12 +599,32 @@ def _expression_hover_for_context(
     *,
     hover_mode: str = "short",
 ) -> tuple[str, lsp.Range] | None:
-    """Trace-mode hover for non-assignment contexts.
+    """Render a hover for non-assignment expression contexts.
 
-    Fires when the cursor sits inside a call argument, IF/ELSEIF/WHERE
-    condition, DO loop bound, or SELECT CASE selector. Renders the
-    sub-expression as a unit-algebra tree with a neutral 🟡 marker —
-    no LHS to compare against, so there's no homogeneity verdict.
+    Fires when the cursor sits inside a call argument,
+    IF/ELSEIF/WHERE condition, DO loop bound, or SELECT CASE
+    selector. Walks outward to the smallest enclosing context node,
+    descends through wrapper nodes (parens, argument lists, loop
+    control, case selector) via :func:`_pick_trace_subexpr`, then
+    renders the sub-expression as a unit-algebra tree. There's no
+    LHS to compare against, so no homogeneity verdict overlay; the
+    header marker reflects the worst row marker in the tree.
+
+    Args:
+        tree: Cached tree-sitter parse for the file.
+        source: Raw source bytes (used for node text resolution).
+        resolved_path: Resolved path of the file under the cursor.
+        result: Latest workset result the checker computed.
+        line_1based: One-based cursor line number.
+        col_1based: One-based cursor column number.
+        hover_mode: ``"short"`` (root + immediate children only)
+            or ``"detailed"`` (full sub-tree).
+
+    Returns:
+        A ``(markdown_text, range)`` pair on success, or ``None``
+        when no eligible context surrounds the cursor or the
+        cursor sits directly on a callee identifier (handled by
+        :func:`_resolve_hover` via the call-tree path instead).
     """
     ctx = _ts_h.smallest_enclosing(
         (n for n in _ts.walk(tree.root_node) if n.type in _TRACE_CONTEXT_TYPES),
@@ -581,9 +685,19 @@ _MATH_OP_TYPES = frozenset({"+", "-", "*", "/", "**"})
 def _math_op_at_cursor(tree: Tree, line: int, col: int) -> tuple[Node, Node] | None:
     """Find a math-expression operator token at the cursor.
 
-    Returns ``(op_node, parent_math_expression)`` if the cursor sits
-    directly on a ``+``/``-``/``*``/``/``/``**`` token whose parent
-    is a ``math_expression``, else ``None``.
+    Walks every node in the tree, picking the first ``+`` / ``-``
+    / ``*`` / ``/`` / ``**`` token that contains the cursor and
+    whose parent is a ``math_expression`` (so a stray ``-`` in a
+    declaration or a ``*`` inside a format spec doesn't match).
+
+    Args:
+        tree: Cached tree-sitter parse for the file.
+        line: One-based cursor line number.
+        col: One-based cursor column number.
+
+    Returns:
+        A ``(op_node, parent_math_expression)`` pair when a math
+        operator sits under the cursor, or ``None`` otherwise.
     """
     for n in _ts.walk(tree.root_node):
         if n.type not in _MATH_OP_TYPES:
@@ -600,8 +714,28 @@ def _math_op_at_cursor(tree: Tree, line: int, col: int) -> tuple[Node, Node] | N
 def _expression_hover_render_tree(
     root: Node, ctx: ts_checker.Ctx, source: bytes, *, range_node: Node,
 ) -> tuple[str, lsp.Range] | None:
-    """Detailed-mode tree render rooted at ``root``. Shared by the
-    operator-specific path and the generic expression-context path."""
+    """Render a detailed-mode unit-algebra tree rooted at ``root``.
+
+    Shared by the operator-specific path and the generic
+    expression-context path so both surfaces compute label / unit
+    column widths the same way and emit the same markdown frame.
+    The header marker is the worst-of all row markers.
+
+    Args:
+        root: Tree-sitter node to render the unit-algebra tree
+            from. Recursion happens via :func:`_render_ast_tree`.
+        ctx: Tree-sitter checker context resolved for this file.
+        source: Raw source bytes.
+        range_node: Node whose range is returned alongside the
+            text. Often the same as ``root``, but split so an
+            operator hover can render the parent sub-expression
+            while anchoring the range to the parent itself.
+
+    Returns:
+        A ``(markdown_text, range)`` pair, or ``None`` when the
+        recursion produced no rows (defensive — should not happen
+        for any valid node).
+    """
     rows: list[_TreeRow] = []
     _render_ast_tree(
         root, ctx, source,
@@ -633,12 +767,23 @@ def _expression_hover_render_tree(
 def _render_subexpr_short(
     expr: Node, ctx: ts_checker.Ctx, source: bytes
 ) -> tuple[str, lsp.Range] | None:
-    """Short hover for a computed sub-expression or a numeric literal:
-    render the same root-plus-immediate-children tree shape as the
-    call hover, so every short hover means "root unit, with one level
-    of how it got there". Bare leaves (identifiers, literals) collapse
-    to a single row naturally because `_render_ast_tree` returns early
-    on those node types — no children to enumerate.
+    """Render the short-mode hover for a computed sub-expression.
+
+    Emits the same root-plus-immediate-children tree shape as the
+    call hover, so every short hover means "root unit, with one
+    level of how it got there." Bare leaves (identifiers,
+    literals) collapse to a single row naturally because
+    :func:`_render_ast_tree` returns early on those node types —
+    no children to enumerate.
+
+    Args:
+        expr: Tree-sitter node to render at the root of the tree.
+        ctx: Tree-sitter checker context.
+        source: Raw source bytes.
+
+    Returns:
+        A ``(markdown_text, range)`` pair on success, or ``None``
+        when no rows were produced (defensive guard).
     """
     rows: list[_TreeRow] = []
     _render_ast_tree(
@@ -658,21 +803,35 @@ def _render_call_tree(
     call_node: Node, rctx: ts_checker.Ctx, source: bytes,
     *, max_depth: int | None,
 ) -> str | None:
-    """Render a call hover as a tree rooted at the call node.
+    """Render a call hover as a unit-algebra tree.
 
-    Same shape and renderer as the side panel's Expression section, so
-    the two surfaces are guaranteed to agree. The root row reads
-    ``name(arg1, arg2, …) : ret  🟢/🟡/🔴`` (subroutines have no unit
-    column on the root) and each immediate child is one actual
-    argument; computed actuals expand under their row when
-    ``max_depth`` permits.
+    Same shape and renderer as the side panel's Expression
+    section, so the two surfaces are guaranteed to agree. The
+    root row reads ``name(arg1, arg2, ...) : ret  <marker>``
+    (subroutines have no unit column on the root) and each
+    immediate child is one actual argument; computed actuals
+    expand under their row when ``max_depth`` permits. The
+    per-arg ``(expected ...)`` annotation, the demote-to-yellow
+    marker override on a homogeneity mismatch, the H020
+    polymorphic-conflict trailer, and the assume-overlay tier
+    all come from :func:`_render_ast_tree`; nothing call-specific
+    lives here beyond depth selection and outer markdown
+    wrapping.
 
-    ``max_depth=1`` gives the short call hover (call + immediate
-    arguments only); ``max_depth=None`` gives the detailed view (full
-    sub-tree under each computed actual). The per-arg `(expected …)`
-    annotation and the 🟡-on-expected marker override both come from
-    :func:`_render_ast_tree`; nothing call-specific lives in this
-    function beyond depth selection and outer markdown wrapping.
+    Args:
+        call_node: Tree-sitter ``call_expression`` or
+            ``subroutine_call`` node to render.
+        rctx: Tree-sitter checker context resolved for the file.
+        source: Raw source bytes.
+        max_depth: Recursion cap. ``1`` produces the short call
+            hover (call + immediate arguments only); ``None``
+            produces the detailed view (full sub-tree under each
+            computed actual).
+
+    Returns:
+        The rendered markdown string, or ``None`` when no rows
+        were produced (defensive — should not happen for any
+        valid call node).
     """
     rows: list[_TreeRow] = []
     _render_ast_tree(
@@ -688,13 +847,27 @@ def _render_call_tree(
 
 
 def _trace_section_for(uri: str, line_1based: int, col_1based: int) -> str | None:
-    """Render the unit-algebra trace as an ASCII tree of the RHS expression.
+    """Render the unit-algebra trace section for a hover popup.
 
-    Walks the tree, finds the smallest enclosing ``assignment_statement``
-    around ``(line, col)``, then renders the RHS as a tree where each
-    node carries its resolved unit and the rule that produced it. The
-    tree mirrors the source's nesting so readers can map each step to
-    a subexpression visually.
+    Walks the tree, finds the smallest enclosing
+    ``assignment_statement`` around ``(line, col)``, then renders
+    the RHS as a tree where each node carries its resolved unit
+    and a marker. The tree mirrors the source's nesting so
+    readers can map each step to a subexpression visually.
+    When the enclosing assignment carries an ``@unit_assume``
+    directive, the RHS tree's root row picks up the assumed-unit
+    overlay (asserted unit + reason).
+
+    Args:
+        uri: LSP document URI of the file under the cursor.
+        line_1based: One-based cursor line number.
+        col_1based: One-based cursor column number.
+
+    Returns:
+        The rendered markdown trace block, or ``None`` when no
+        assignment surrounds the cursor, when the parse / workset
+        result isn't ready, or when the RHS couldn't be picked
+        off the assignment's children.
     """
     found = _trees_for(uri)
     if found is None:
@@ -747,16 +920,28 @@ def _trace_section_for(uri: str, line_1based: int, col_1based: int) -> str | Non
 def _format_tree_rows(rows: list[_TreeRow]) -> str:
     """Render tree rows with global column alignment.
 
-    Shared between the call hover and the unit-algebra trace section so
-    both render with identical width math — same source of truth as the
-    panel companions, just rendered server-side as markdown for the
-    hover surfaces.
+    Shared between the call hover and the unit-algebra trace
+    section so both render with identical width math — same
+    source of truth as the panel companions, just rendered
+    server-side as markdown for the hover surfaces.
 
-    ``unit`` of ``""`` marks a row that should not display a unit at all
-    (e.g. the assignment_statement row — a statement, not an
-    expression). Column widths are computed only over rows that DO show
-    a unit; unit-less rows skip the ``: unit`` block entirely so the
-    marker still aligns.
+    A ``unit`` value of ``""`` marks a row that should not
+    display a unit at all (e.g. the ``assignment_statement`` row,
+    which is a statement, not an expression). Column widths are
+    computed only over rows that DO show a unit; unit-less rows
+    skip the ``: unit`` block entirely so the marker still
+    aligns under its column.
+
+    Args:
+        rows: Row tuples of the form
+            ``(label, unit, marker, extra)``. ``unit`` may be
+            ``""`` (no unit column) or any rendered glyph /
+            formatted unit string.
+
+    Returns:
+        The newline-joined block of right-padded, marker-aligned
+        rows. The caller is responsible for wrapping it in a
+        fenced code block.
     """
     max_label = max(len(r[0]) for r in rows)
     units_present = [r[1] for r in rows if r[1]]
@@ -773,7 +958,24 @@ def _format_tree_rows(rows: list[_TreeRow]) -> str:
 
 
 def _worst_marker(rows: list[_TreeRow]) -> str:
-    """Header marker for a tree: worst-of all row markers."""
+    """Compute the header marker for a tree as worst-of all rows.
+
+    The hover popup's bold ``DimFort`` header carries one marker
+    summarising the whole tree. Severity ladder follows
+    ``docs/design/markers.md``: red beats yellow, yellow beats
+    everything else; green is the default when nothing worse
+    appeared.
+
+    Args:
+        rows: Row tuples in the same shape used by
+            :func:`_format_tree_rows`. Only the marker column
+            (index 2) is consulted.
+
+    Returns:
+        One of the marker glyphs — the worst severity present
+        among the rows, defaulting to the green check when no
+        row carries red or yellow.
+    """
     found = {r[2] for r in rows}
     if "🔴" in found:
         return "🔴"
@@ -819,13 +1021,32 @@ _SKIP_TRACE_CHILD_TYPES = frozenset({
 
 
 def _pick_trace_subexpr(ctx_node: Node, line: int, col: int) -> Node | None:
-    """Find the cursor-containing sub-expression inside a trace context.
+    """Find the cursor-containing sub-expression inside a context node.
 
     Descends through wrapper nodes (parens, argument lists, loop
     control, case selector) so the rendered tree starts at the
     user-visible expression rather than the syntactic shell.
-    Returns ``None`` if the cursor sits on a keyword or in an
-    assignment_statement (which is handled by the primary trace path).
+    Statement keywords (``if``, ``then``, ``do``, ``where``,
+    ``select``, ``case``, block markers, ...) are filtered out of
+    the candidate set so a cursor on the keyword itself doesn't
+    trigger a trace; the function returns ``None`` in that case.
+
+    When ``ctx_node`` is a call (``call_expression`` /
+    ``subroutine_call``) and the cursor sits on the callee
+    identifier, the whole call is returned as the trace root so
+    each argument shows up as a branch.
+
+    Args:
+        ctx_node: Enclosing trace-context node found by the
+            caller (one of :data:`_TRACE_CONTEXT_TYPES`).
+        line: One-based cursor line number.
+        col: One-based cursor column number.
+
+    Returns:
+        The sub-expression node to render, or ``None`` when the
+        cursor sits on a keyword, on a nested
+        ``assignment_statement`` (handled by the primary trace
+        path), or outside any rendered child.
     """
     target = ctx_node
     is_call = ctx_node.type in ("call_expression", "subroutine_call")
@@ -872,30 +1093,82 @@ def _render_ast_tree(
     max_depth: int | None = None,
     _depth: int = 0,
 ) -> None:
-    """Recursively collect ``(label, unit, mark, extra)`` rows for the tree.
+    """Recursively collect rows for the unit-algebra tree render.
 
-    The caller pads each column to the global max so the marker and the
-    trailing annotation align vertically across nodes.
+    Each row is a ``(label, unit, marker, extra)`` tuple appended
+    to ``rows`` in pre-order. The caller pads each column to the
+    global max so the marker and the trailing annotation align
+    vertically across nodes. Wrapper-only nodes (parenthesised
+    expressions with a single inner child) are peeled through so
+    the rendered tree doesn't explode with structural-only
+    intermediates.
 
-    ``target_unit_for_literal`` carries the initialization-autocast
-    target down the recursion: when we recurse into the RHS of an
-    assignment whose RHS is a bare literal, the literal node uses
-    this unit and a 🟢 marker (matching the checker's leniency rule).
+    Unit-column rendering follows ``docs/design/markers.md`` §4.5:
+    ``-`` for structural-no-unit (assignments, relations,
+    subroutine calls), the formatted unit when resolution
+    succeeded, ``?`` for unknown. H020 polymorphic-conflict
+    rows render ``<formal> = <actual>`` with a ``(collides with
+    arg N)`` trailer; clean polymorphic returns whose unifier
+    failed to bind render ``'a = ?`` rather than a bare ``?``.
 
-    ``expected_unit`` is the formal unit this node is expected to satisfy
-    (only set when this node is an argument of a call whose callee
-    signature is known). When the resolved unit doesn't match, the row
-    gets an ``(expected <formal>)`` annotation so the reader can see
-    what the call-site demanded without round-tripping through the
-    diagnostic message.
+    Args:
+        node: Tree-sitter node to render at this depth.
+        ctx: Tree-sitter checker context resolved for the file.
+        source: Raw source bytes.
+        prefix: Indentation prefix carried from the parent for
+            ASCII tree alignment (``"    "`` / ``"|   "``-style).
+        is_last: ``True`` when this node is the parent's last
+            child; selects the elbow vs. tee connector glyph.
+        is_root: ``True`` for the top-level call; suppresses the
+            connector and keeps the prefix unchanged.
+        rows: Accumulator the recursion appends to. Caller passes
+            an empty list and reads the result back.
+        target_unit_for_literal: Initialization-autocast target
+            carried down the recursion. When we recurse into the
+            RHS of an assignment whose RHS is a bare literal (or
+            a pure-numeric-constant subtree per
+            :func:`ts_checker.is_pure_numeric_constant`), the
+            literal adopts this unit and a clean marker (the
+            checker's R4.4 leniency rule).
+        expected_unit: Formal unit this node is expected to
+            satisfy. Set only when this node is an argument of a
+            call whose callee signature is known, or the RHS of
+            an assignment whose LHS unit is known. A dimensional
+            mismatch surfaces an ``(expected <formal>)`` trailer
+            (suppressed when the formal is polymorphic — the
+            unifier decides).
+        assumed_overlay: ``(asserted_unit_str, reason)`` pair
+            from the ``@unit_assume`` directive on this node's
+            parent assignment. Only the RHS child of an assumed
+            assignment receives it; the row displays the
+            asserted unit, paints the overlay-tier marker
+            (markers.md §4.6), and gets an
+            ``(assumed: <reason>)`` row tail. The assignment row
+            itself never carries the overlay.
+        polymorphism_conflict_row: When the enclosing call fires
+            an H020 unification conflict, the per-slot
+            ``(binding_text, partner_indices)`` payload extracted
+            from the diagnostic. Forces the row's unit column to
+            ``<formal> = <actual>`` and the trailer to
+            ``(collides with arg N)``. See
+            ``docs/design/shipped/polymorphic-units.md`` §H020.
+        max_depth: Recursion cap. ``1`` gives a root + immediate
+            children render (short call hover);
+            ``None`` is unbounded (detailed).
+        _depth: Internal recursion counter compared against
+            ``max_depth``. Caller leaves at the default.
 
-    ``assumed_overlay`` is the ``(asserted_unit_str, reason)`` pair
-    from the ``@unit_assume`` directive on this node's parent
-    assignment. Only the **RHS child** of an assumed assignment
-    receives it; the row displays the asserted unit, paints 🔵 (the
-    overlay tier — markers.md §4.6), and gets a
-    ``(assumed: <reason>)`` row tail. The assignment row itself
-    never carries the overlay.
+    Returns:
+        ``None``. Output is collected into the caller's ``rows``
+        accumulator.
+
+    Note:
+        Per-child ``expected_unit`` propagation has two sources:
+        positional call arguments (formal slots from
+        ``ctx.signatures``), and the RHS of an assignment (LHS
+        unit). H020 conflict data is threaded per-slot to the
+        child render so each contributing arg renders the spec's
+        ``(collides with arg N)`` trailer.
     """
     # Skip wrapper-only nodes (parenthesised exprs) so the tree doesn't
     # explode with structural-only intermediate nodes — descend straight

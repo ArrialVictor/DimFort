@@ -30,6 +30,17 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
   `Args:` / `Returns:` / `Raises:` / `Note:`), bringing the file in
   line with the rest of `core/`. No new docstrings (those were added
   in the prior pass). No code changes; behaviour unchanged.
+- **`lsp/` docstring sweep**: same treatment applied across all 17
+  populated modules under `src/dimfort/lsp/` (`__init__.py` is empty
+  and was unchanged). ~98 existing docstrings reshaped to full Google
+  form and ~35 added to previously-undocumented callables (including
+  private helpers and nested closures). LSP handler docstrings now
+  call out the LSP method they implement (e.g. "Implements
+  ``textDocument/hover``."). Two small staleness corrections: a
+  VSCode-specific reference in `hover.py` generalised to "the editor"
+  (LSP serves all four companions); a `docs/design/panel-info.md`
+  pointer in `server.py` updated to the canonical
+  `docs/design/side-panel.md`. No code changes; behaviour unchanged.
 
 ## [0.2.3.1] — 2026-06-07
 

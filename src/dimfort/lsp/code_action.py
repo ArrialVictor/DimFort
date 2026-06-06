@@ -31,6 +31,34 @@ from dimfort.lsp.tree_access import _trees_for, _uri_to_path
 
 
 def resolve(ls: LanguageServer, params: lsp.CodeActionParams) -> list[lsp.CodeAction] | None:
+    """Resolve LSP ``textDocument/codeAction`` requests into quick-fixes.
+
+    The entry point for the LSP server's code-action feature.
+    Builds three families of quick-fix in order: add ``@unit{}``
+    on every unannotated declaration overlapping the request range;
+    extract-literal-to-PARAMETER for each H010 (D1.5) implicit-cast
+    diagnostic in the request range; and U002 suggested-rewrite
+    replacements when the diagnostic carries a parsed candidate.
+
+    The first two families dispatch through the editor extension
+    (via custom ``dimfort.*`` commands) so the client can prompt the
+    user for the unit string or the parameter name before applying
+    the edit. The U002 rewrite is applied directly as a
+    ``WorkspaceEdit`` — no client round-trip.
+
+    Args:
+        ls: The active ``LanguageServer`` instance, used to look up
+            the open text document for the requested URI.
+        params: The LSP request parameters, carrying the
+            ``text_document`` URI, the request ``range``, and the
+            ``context.diagnostics`` overlapping the selection.
+
+    Returns:
+        A list of ``lsp.CodeAction`` objects, or ``None`` when no
+        actions can be offered (cached result missing, attachment
+        missing, document not openable, no overlapping decls or
+        diagnostics).
+    """
     with state.last_result_lock:
         result = state.last_result
     if result is None:
@@ -133,13 +161,31 @@ _H010_CAST_RE = re.compile(
 def _u002_rewrite_actions(
     params: lsp.CodeActionParams, doc: Any,
 ) -> list[lsp.CodeAction]:
-    """Build "Replace with `<suggestion>`" actions for U002
-    diagnostics whose payload includes a parsed rewrite candidate.
+    """Build "Replace with <suggestion>" actions for U002 diagnostics.
 
-    The diagnostic's range covers the directive token (e.g.
-    ``@unit{m2/s}``); we replace just the inner captured text — the
-    substring between the first ``{`` and the matching ``}`` within
-    the range — so the directive itself stays intact.
+    Each U002 diagnostic whose ``data["suggested_rewrite"]`` carries
+    a parsed rewrite candidate becomes a single ``WorkspaceEdit``
+    code action. The diagnostic's range covers the whole directive
+    token (e.g. ``@unit{m2/s}``); the edit replaces only the inner
+    captured text — the substring between the first ``{`` and the
+    matching ``}`` inside the range — so the directive delimiters
+    themselves stay intact.
+
+    Diagnostics are skipped when: the code isn't U002; ``data``
+    isn't a dict; ``suggested_rewrite`` is missing or non-string;
+    the range spans multiple lines (defensive — the directive sits
+    on one line); the source line index is out of range; or the
+    open/close braces can't be located inside the range.
+
+    Args:
+        params: The full code-action request parameters; we read
+            ``params.context.diagnostics`` and the text-document
+            URI from it.
+        doc: The open text document, queried for source lines.
+
+    Returns:
+        A list of ``lsp.CodeAction`` quick-fixes, one per usable
+        U002 diagnostic. Empty when no diagnostics qualify.
     """
     out: list[lsp.CodeAction] = []
     diagnostics = params.context.diagnostics or []
@@ -188,14 +234,39 @@ def _u002_rewrite_actions(
 def _h010_extract_to_parameter_actions(
     params: lsp.CodeActionParams, doc: Any, resolved_path: Path,
 ) -> list[lsp.CodeAction]:
-    """Build the 'extract literal to PARAMETER' action for each H010 D1.5
-    diagnostic in the requested range.
+    """Build "Extract literal to PARAMETER" actions for H010 D1.5 fires.
 
-    The action edits two places: the literal use-site is replaced with
-    a generated parameter name, and a ``REAL, PARAMETER :: <name> =
-    <literal>   !< @unit{<target>}`` declaration is inserted at the
-    end of the enclosing routine's declaration block so the new symbol
-    is visible to the executable section under ``IMPLICIT NONE``.
+    Walks the H010 diagnostics in ``params.context.diagnostics``,
+    keeps those whose message matches the D1.5 implicit-cast shape
+    (literal-to-target-unit), and emits one quick-fix per match.
+    Each action edits two places: the literal use-site is replaced
+    with a generated PARAMETER name, and a ``REAL, PARAMETER ::
+    <name> = <literal>   !< @unit{<target>}`` declaration is
+    inserted at the end of the enclosing routine's declaration
+    block — chosen so the new symbol is visible to the executable
+    section under ``IMPLICIT NONE``.
+
+    The action is dispatched through the
+    ``dimfort.extractToParameter`` editor command so the client can
+    prompt the user (via ``showInputBox``) for the PARAMETER name
+    before applying both edits in one undo step. The default name
+    encodes the diagnostic line so successive applications produce
+    distinct names.
+
+    Args:
+        params: The full code-action request parameters; carries
+            the diagnostics list and the text-document URI.
+        doc: The open text document, queried for sibling
+            indentation at the insertion line.
+        resolved_path: Resolved filesystem path of the document,
+            kept on the signature for parity with attachment
+            lookups (currently unused by the body — the routine
+            location comes from the live tree-sitter tree).
+
+    Returns:
+        A list of ``lsp.CodeAction`` quick-fixes, one per H010
+        D1.5 diagnostic with a recoverable enclosing routine and
+        insertion line. Empty when no diagnostics qualify.
     """
     out: list[lsp.CodeAction] = []
     diagnostics = params.context.diagnostics or []
@@ -270,9 +341,23 @@ def _h010_extract_to_parameter_actions(
 
 
 def _smallest_enclosing_routine(tree: Tree, line_1based: int, col_1based: int) -> Node | None:
-    """Return the innermost ``subroutine`` / ``function`` node enclosing
-    the position, or ``None`` if the position isn't inside any routine
-    (file-level / module-level code)."""
+    """Return the innermost routine node enclosing a 1-based position.
+
+    Walks every ``subroutine`` and ``function`` node in the tree,
+    keeps those whose 1-based span encloses the cursor, and picks
+    the one with the smallest byte length (the most deeply nested
+    match wins).
+
+    Args:
+        tree: Parsed tree-sitter ``Tree`` for the current document.
+        line_1based: 1-based line number of the position.
+        col_1based: 1-based column number of the position.
+
+    Returns:
+        The innermost ``subroutine`` / ``function`` ``Node``
+        enclosing the position, or ``None`` when the position sits
+        outside every routine (file-level or module-level code).
+    """
     best = None
     best_size = None
     for n in _ts.walk(tree.root_node):
@@ -288,20 +373,41 @@ def _smallest_enclosing_routine(tree: Tree, line_1based: int, col_1based: int) -
 
 
 def _routine_decl_insertion_line(routine: Node, source: bytes) -> int | None:
-    """Return the **1-based** line index right after the last
-    ``variable_declaration`` direct child of ``routine``. The caller
-    indexes the document's ``lines`` array with ``insert_line - 1`` to
-    fetch sibling indentation, which encodes the 1-based convention
-    explicitly.
+    """Pick the insertion line for a generated PARAMETER declaration.
 
-    Fallback: the line after the routine's ``*_statement`` header. None
-    if neither is locatable.
+    Returns the **1-based** line index immediately after the last
+    ``variable_declaration`` direct child of ``routine`` — i.e. the
+    line on which the new declaration should be written so it lands
+    flush with the routine's existing decl block. Callers index the
+    document's ``lines`` array as ``doc.lines[insert_line - 1]``
+    when fetching sibling indentation, which encodes the 1-based
+    convention explicitly.
 
-    ``end_position_for`` already shifts tree-sitter's 0-based end_point
-    to 1-based, so no further conversion is needed here. (Prior versions
-    of this function carried a comment claiming the +1 came from "the
-    end_point includes the trailing newline" — wrong reason for a value
-    that turned out to be correct.)
+    When the routine has no ``variable_declaration`` children
+    (empty routine, or one whose declarations failed to parse), the
+    helper falls back to the line right after the routine's
+    ``*_statement`` header. When neither anchor is locatable it
+    returns ``None`` and the caller skips the action.
+
+    Args:
+        routine: A ``subroutine`` or ``function`` definition
+            ``Node``.
+        source: Raw source bytes (kept on the signature for
+            consistency with other helpers; the body relies only on
+            node spans).
+
+    Returns:
+        The 1-based line index where a new declaration should be
+        inserted, or ``None`` when neither a declaration nor a
+        header anchor is found.
+
+    Note:
+        ``end_position_for`` already shifts tree-sitter's 0-based
+        ``end_point`` to 1-based, so no further conversion is
+        needed here. A historical comment on this function used to
+        claim the offset came from "the end_point includes the
+        trailing newline" — wrong reason for a value that turned
+        out to be correct.
     """
     last_decl_line = None
     header_line = None
@@ -314,7 +420,26 @@ def _routine_decl_insertion_line(routine: Node, source: bytes) -> int | None:
 
 
 def _comment_column(line: str) -> int | None:
-    """Find the column where the line's `!` comment starts, or None."""
+    """Find the column where a Fortran ``!`` comment starts on a line.
+
+    Walks the line character-by-character tracking whether we are
+    inside a single- or double-quoted string literal so a ``!``
+    inside a string does not trigger a false positive. Doubled
+    quotes inside a string literal (``''`` / ``""``) are recognised
+    as the Fortran escape form and do not close the string.
+
+    Used by the "Add ``@unit{}``" code action to splice the
+    snippet before any existing trailing comment instead of after
+    it, which would otherwise commit the new directive into the
+    comment text.
+
+    Args:
+        line: A single source line, without trailing newline.
+
+    Returns:
+        The 0-based column index of the first ``!`` that starts a
+        comment, or ``None`` when the line has no comment.
+    """
     in_quote: str | None = None
     i = 0
     while i < len(line):

@@ -20,6 +20,29 @@ from dimfort.lsp.tree_access import _build_ts_ctx, _trees_for
 
 
 def resolve(params: lsp.InlayHintParams) -> list[lsp.InlayHint] | None:
+    """Compute inlay hints for the editor's visible range.
+
+    Walks the cached tree-sitter tree for the URI in ``params``,
+    resolving each member access, call, and identifier use through
+    ``ts_checker`` and emitting a ``[unit]`` hint anchored at the
+    node's end column whenever a unit is known. The same resolver
+    powers diagnostics, so the rendered unit matches what ``check``
+    would report at that site.
+
+    Args:
+        params: LSP ``InlayHintParams`` carrying the document URI and
+            the zero-based visible-line range.
+
+    Returns:
+        List of :class:`lsp.InlayHint` records for sites that fall
+        inside the visible range; empty list when no workset result
+        or no tree is loaded for the URI.
+
+    Note:
+        The caller in ``server.py`` holds ``state.ts_handler_lock``
+        around this call — the tree-sitter traversal is not safe
+        across concurrent readers (the documented concurrency gotcha).
+    """
     found = _trees_for(params.text_document.uri)
     if found is None:
         return []
@@ -41,6 +64,22 @@ def resolve(params: lsp.InlayHintParams) -> list[lsp.InlayHint] | None:
     hints: list[lsp.InlayHint] = []
 
     def _emit(node: Node, unit: UnitExpr | None) -> None:
+        """Append one ``[unit]`` hint anchored at the node's end column.
+
+        Args:
+            node: Tree-sitter node whose end position anchors the hint.
+                Typically an ``identifier``, ``call_expression``, or
+                ``derived_type_member_expression``.
+            unit: Resolved unit for the node, or ``None`` when the
+                resolver could not assign one. ``None`` is a silent
+                no-op — no hint is emitted.
+
+        Note:
+            Deduplicates against ``seen`` so the same ``(line, end_col)``
+            anchor never receives two hints (matters when identifier
+            walks overlap with call walks). Skips nodes whose end line
+            falls outside ``visible_start_line..visible_end_line``.
+        """
         if unit is None:
             return
         # Anchor on the node's last column so the hint sits flush against

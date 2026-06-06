@@ -96,15 +96,35 @@ _NO_UNIT_GLYPH = "-"
 
 
 def _diags_for_ctx(ctx: ts_checker.Ctx) -> tuple[Diagnostic, ...]:
-    """This file's diagnostics from the last cached workspace result, keyed
-    by ``ctx.file``. The single source the markers read — no per-render
-    threading: hover/panel already populate ``state.last_result`` (and the
-    publish path keeps it current). Empty when nothing's cached.
+    """Return this file's diagnostics from the last cached workspace result.
+
+    Keyed by ``ctx.file``. The single source the markers read — no
+    per-render threading: hover/panel already populate
+    ``state.last_result`` (and the publish path keeps it current). Empty
+    when nothing is cached.
 
     The expensive ``Path.resolve()`` (a disk stat) is cached on the ctx
     object — fresh per render, so no cross-render staleness — while the
-    current ``state.last_result`` is always re-read (the diagnostics axis must
-    never go stale)."""
+    current ``state.last_result`` is always re-read (the diagnostics
+    axis must never go stale).
+
+    Args:
+        ctx: The checker context for the file being rendered. Its
+            ``file`` attribute is the source path; a private
+            ``_resolved_file`` attribute is stashed on it for cache
+            reuse when the dataclass permits dynamic attribute set.
+
+    Returns:
+        Tuple of :class:`Diagnostic` instances owned by ``ctx.file`` in
+        the cached workspace result. Empty tuple when no result is
+        cached, when the path can't be resolved, or when the file has
+        no diagnostics.
+
+    Note:
+        Acquires ``state.last_result_lock`` only long enough to snapshot
+        the reference; iteration runs lock-free against the immutable
+        result object.
+    """
     with state.last_result_lock:
         result = state.last_result
     if result is None:
@@ -126,23 +146,34 @@ def _diags_for_ctx(ctx: ts_checker.Ctx) -> tuple[Diagnostic, ...]:
 def _assumed_for(
     node: Node, ctx: ts_checker.Ctx,
 ) -> tuple[str, str] | None:
-    """Return ``(asserted_unit_str, reason)`` for the ``@unit_assume``
-    on ``node`` (an ``assignment_statement``), or ``None`` if none.
+    """Return the ``@unit_assume`` assertion on an assignment, if any.
 
     ``@unit_assume`` is a **statement-level** directive — only
     ``assignment_statement`` nodes can own its U020 diagnostic. The
-    diagnostic's source position is the ``@unit_assume`` token in
-    the trailing comment, which sits *outside* the assignment's
-    tree-sitter span, so we can't use :func:`_span_within` here.
-    Match by line instead: a U020 on the assignment's line range
-    owns it.
+    diagnostic's source position is the ``@unit_assume`` token in the
+    trailing comment, which sits *outside* the assignment's tree-sitter
+    span, so :func:`_span_within` can't be used here. Match by line
+    instead: a U020 fired on the assignment's line range owns it.
 
-    The 🔵 overlay and the ``(assumed: <reason>)`` row tail then
+    The blue overlay and the ``(assumed: <reason>)`` row tail then
     surface on the assignment's **RHS** child — the directive's
-    syntactic subject — not on the assignment itself. The
-    assignment's homogeneity check (LHS vs the asserted RHS unit)
-    runs in :mod:`ts_checker`; if it fails, H001 fires on the
-    assignment node and shows 🔴 there independently.
+    syntactic subject — not on the assignment itself. The assignment's
+    homogeneity check (LHS vs the asserted RHS unit) runs in
+    :mod:`ts_checker`; if it fails, H001 fires on the assignment node
+    and shows red there independently.
+
+    Args:
+        node: Tree-sitter node to test. Only ``assignment_statement``
+            nodes can carry a U020; any other type returns ``None``
+            immediately.
+        ctx: Checker context whose cached diagnostics are scanned.
+
+    Returns:
+        ``(asserted_unit_str, reason)`` extracted from the U020 message
+        when one fires on this assignment, or ``None`` when no
+        ``@unit_assume`` covers the node. The tuple ``("?", "")`` is
+        returned defensively if a U020 fires but its message doesn't
+        match the expected wire form.
     """
     if node.type != "assignment_statement":
         return None
@@ -165,16 +196,33 @@ def _assumed_for(
 
 
 def _self_marker(node: Node, kid_nodes: list[Node], ctx: ts_checker.Ctx, source: bytes) -> str:
-    """The node's own marker (pre-aggregation): resolution-axis base worst-of
-    the consistency-family diagnostics that *own* this node. A diagnostic owns
-    the node when its range sits within the node's span but not within any
-    child's span (tightest-enclosing); upward propagation is the caller's
-    worst-of-children. See docs/design/markers.md §2–§4.
+    """Compute a node's own marker, pre-aggregation.
 
-    Severity-only: returns 🟢/🟡/🔴. The 🔵 ``@unit_assume`` overlay
-    is applied later, at render time on the assignment's RHS child —
-    see :func:`_assumed_for`, ``_build_expression_tree`` and
-    ``_render_ast_tree``."""
+    Resolution-axis base worst-of the consistency-family diagnostics
+    that *own* this node. A diagnostic owns the node when its range
+    sits within the node's span but not within any child's span
+    (tightest-enclosing); upward propagation is the caller's
+    worst-of-children. See docs/design/markers.md sections 2–4.
+
+    Severity-only: returns the green/yellow/red emoji glyph. The blue
+    ``@unit_assume`` overlay is applied later, at render time on the
+    assignment's RHS child — see :func:`_assumed_for`,
+    :func:`_build_expression_tree` and the hover renderer.
+
+    Args:
+        node: Tree-sitter node to score.
+        kid_nodes: The node's interesting children, precomputed by the
+            caller so the span scan can exclude diagnostics owned by a
+            child (tightest-enclosing rule).
+        ctx: Checker context — the unit resolver and the diagnostic
+            cache both flow through it.
+        source: Source bytes; forwarded to
+            :func:`ts_checker.resolve_unit` for label-bearing nodes.
+
+    Returns:
+        One of ``"🟢"``, ``"🟡"`` or ``"🔴"`` — never blue, which is a
+        render-time overlay, not a diagnostic-axis verdict.
+    """
     if node.type in _NO_UNIT_NODE_TYPES:
         base = "🟢"  # statement/relation: no unit of its own
     else:
@@ -197,22 +245,34 @@ def _self_marker(node: Node, kid_nodes: list[Node], ctx: ts_checker.Ctx, source:
 
 
 def _node_marker(node: Node, ctx: ts_checker.Ctx, source: bytes) -> str:
-    """Aggregated marker for a node: its own marker worst-of its children,
-    recursively. Used where rows are emitted top-down (the detailed-hover
-    tree, the short hovers) and built child payloads aren't on hand.
-    ``_build_expression_tree`` aggregates inline from child payloads
-    instead, but both reduce to the same §2 model.
+    """Aggregate a node's marker with worst-of over its descendants.
 
-    Returns severity only (🟢/🟡/🔴) — 🔵 is a render-time overlay,
-    not part of aggregation (see docs/design/markers.md §4.6).
+    The node's own marker worst-of its children, recursively. Used
+    where rows are emitted top-down (the detailed-hover tree, the
+    short hovers) and built child payloads aren't on hand.
+    :func:`_build_expression_tree` aggregates inline from child
+    payloads instead, but both reduce to the same model in
+    docs/design/markers.md section 2.
 
     For an ``@unit_assume`` assignment, the directive's contract is
     "trust me on the unit, ignore the inside." The **RHS** child's
-    severity therefore contributes as 🟢 (it was accepted) to the
+    severity therefore contributes as green (it was accepted) to the
     parent's worst-of; the rest of the subtree (LHS, descendants of
     the RHS) contributes normally. The assignment row still picks up
-    🔴/🟡 from H001 etc. that own the assignment node itself —
-    declared-unit conflicts with the assumed unit aren't masked."""
+    red/yellow from H001 etc. that own the assignment node itself —
+    declared-unit conflicts with the assumed unit are not masked.
+
+    Args:
+        node: Tree-sitter node to score.
+        ctx: Checker context routing through both unit resolution and
+            the diagnostic cache.
+        source: Source bytes used by the unit resolver.
+
+    Returns:
+        Severity emoji only — ``"🟢"``, ``"🟡"`` or ``"🔴"``. Blue
+        (``@unit_assume``) is a render-time overlay, not part of
+        aggregation (see docs/design/markers.md section 4.6).
+    """
     kids = _interesting_children(node)
     m = _self_marker(node, kids, ctx, source)
     asm = _assumed_for(node, ctx) if node.type == "assignment_statement" else None
@@ -228,15 +288,31 @@ def _node_marker(node: Node, ctx: ts_checker.Ctx, source: bytes) -> str:
 def _h020_conflict_map_for_call(
     node: Node, ctx: ts_checker.Ctx,
 ) -> dict[int, tuple[str, tuple[int, ...]]] | None:
-    """If an H020 diagnostic owns this call node, return a mapping
+    """Map H020 conflict slots to their binding text and partner args.
+
+    If an H020 diagnostic owns this call node, return a mapping
     ``{slot_index: (binding_text, partner_indices)}`` derived from the
-    diagnostic's :attr:`Diagnostic.polymorphism_conflict` field. Used by
-    :func:`_build_expression_tree` to render each conflicting arg row
-    in the spec form ``'a = unit — collides with arg N`` instead of the
-    generic ``(expected 'a)`` trailer reserved for the concrete-signature
-    H004 mismatch path. ``None`` when no H020 fires on this call (the
-    common case), or when an H020 fires but predates the structured
-    field (defensive — server.py never emits a wire-form rewrite).
+    diagnostic's :attr:`Diagnostic.polymorphism_conflict` field. Used
+    by :func:`_build_expression_tree` to render each conflicting arg
+    row in the spec form ``'a = unit — collides with arg N`` instead
+    of the generic ``(expected 'a)`` trailer reserved for the
+    concrete-signature H004 mismatch path.
+
+    Args:
+        node: Tree-sitter call node (``call_expression`` /
+            ``subroutine_call``). Non-call nodes will simply not match
+            any H020 and return ``None``.
+        ctx: Checker context whose cached diagnostics are scanned.
+
+    Returns:
+        Dict keyed by zero-based arg slot index. Each value is a
+        tuple ``(binding_text, partner_indices)`` where
+        ``binding_text`` is the pretty-printed unit the slot would
+        force on the tyvar and ``partner_indices`` is a tuple of the
+        other slot indices it collides with. ``None`` when no H020
+        fires on this call (the common case), or when an H020 fires
+        but predates the structured field (defensive — server.py
+        never emits a wire-form rewrite).
     """
     diags = _diags_for_ctx(ctx)
     if not diags:
@@ -263,7 +339,7 @@ def _build_expression_tree(
     *, expected_unit: UnitExpr | None = None,
     polymorphism_conflict_row: tuple[str, tuple[int, ...]] | None = None,
 ) -> dict[str, Any] | None:
-    """Build a structured ExpressionNode for the panel.
+    """Build a structured ExpressionNode payload for the panel.
 
     Recursive: each node carries its resolved unit, a marker token, and
     its children. Leaf nodes (identifiers, literals) have an empty
@@ -273,18 +349,37 @@ def _build_expression_tree(
     ``expected`` field renders it pretty so the panel can append
     ``(expected …)`` to the row.
 
-    ``polymorphism_conflict_row`` is the per-arg row of an H020
-    (polymorphic call-site unification failure) when this node is one of
-    the conflicting slots, threaded down by the parent call. When set,
-    the unit column renders the spec's ``'a = <actual> — collides with
-    arg N, arg M`` form (single string), the marker hard-pins to
-    ``error``, and the generic ``(expected 'a)`` trailer is suppressed —
-    avoiding a `(expected 'a) — collides with arg N` double-trailer that
-    duplicates the same fact two ways. ``None`` for every non-H020 row.
-
     Defers all assignment-specific logic (verdict, autocast detection)
-    to :func:`ts_checker.assignment_homogeneity` — the single source
-    of truth shared with the checker and the in-buffer hover.
+    to :func:`ts_checker.assignment_homogeneity` — the single source of
+    truth shared with the checker and the in-buffer hover.
+
+    Args:
+        node: Root of the subtree to render. ``None`` short-circuits to
+            ``None`` so callers can plumb optional nodes through
+            without guarding.
+        ctx: Checker context (unit resolver, signatures, scale_mode,
+            diagnostics cache).
+        source: Source bytes; forwarded to label/unit helpers.
+        expected_unit: When the node is a positional argument of a
+            call with a known signature, the formal's expected
+            :class:`UnitExpr`. ``None`` otherwise. Drives the
+            ``(expected …)`` trailer on dimensional mismatches against
+            a concrete formal.
+        polymorphism_conflict_row: Per-arg row of an H020
+            (polymorphic call-site unification failure) when this node
+            is one of the conflicting slots, threaded down by the
+            parent call. When set, the unit column renders the spec's
+            ``'a = <actual>`` form, the marker hard-pins to ``error``,
+            and the generic ``(expected 'a)`` trailer is suppressed —
+            avoiding an ``(expected 'a) — collides with arg N``
+            double-trailer that duplicates the same fact two ways.
+            ``None`` for every non-H020 row.
+
+    Returns:
+        Dict payload with keys ``label``, ``unit``, ``marker``,
+        ``expected``, ``assumed``, ``collides`` and ``children``,
+        ready to ship over the wire to the panel. ``None`` when
+        ``node`` itself is ``None``.
     """
     if node is None:
         return None
@@ -571,14 +666,31 @@ _ROUTINE_SCOPE_TYPES = ("subroutine", "function")
 
 
 def _name_on_first_line(decl: DeclarationSite, source_lines: list[str]) -> bool:
-    """Robustness guard: tree-sitter error recovery on a half-typed
+    """Check whether at least one declared name appears on the decl's first line.
+
+    Robustness guard: tree-sitter error recovery on a half-typed
     declaration (``real ::`` before a name is typed) scavenges an
-    identifier from the *following* statement into ``decl.names``, with
-    a span that runs into that next line. Such a decl has none of its
-    names on its own first physical line — drop it so the panel doesn't
-    flash a bogus row mid-typing. Valid multi-line continuations always
-    have at least the first name on the type-spec line, so they survive
-    this check."""
+    identifier from the *following* statement into ``decl.names``,
+    with a span that runs into that next line. Such a decl has none
+    of its names on its own first physical line — drop it so the
+    panel doesn't flash a bogus row mid-typing. Valid multi-line
+    continuations always have at least the first name on the
+    type-spec line, so they survive this check.
+
+    Args:
+        decl: The declaration site under inspection. Its
+            ``line_start`` (1-based) selects the line to scan, and
+            ``names`` provides the identifiers to look for.
+        source_lines: The source split into physical lines (no
+            trailing newlines), indexed 0-based.
+
+    Returns:
+        ``True`` when any of ``decl.names`` is found as a word match
+        on the first line of the declaration, or when the line index
+        is out of range (defensive: keep rather than drop on a
+        verification failure). ``False`` otherwise — the caller drops
+        the decl.
+    """
     idx = decl.line_start - 1
     if not (0 <= idx < len(source_lines)):
         return True  # can't verify — keep
@@ -596,9 +708,31 @@ def _decl_rows(
     *,
     scale_mode: bool = False,
 ) -> list[dict[str, Any]]:
-    """One ScopeVar row per name on a declaration, tagged annotated /
-    error / unannotated. Shared by the node-based and span-based scope
-    builders so both emit identical row shapes."""
+    """Emit one ScopeVar row per name on a declaration.
+
+    Each row is tagged ``annotated`` / ``error`` / ``unannotated``.
+    Shared by the node-based and span-based scope builders so both
+    emit identical row shapes.
+
+    Args:
+        decl: Declaration site providing the name list and source
+            line. All names on the declaration share its line and
+            unit-text source.
+        var_units: Map from variable name to its attached unit text,
+            as resolved by the attachment pass. Missing keys mark a
+            name as unannotated.
+        unparseable: Set of lower-cased names whose ``@unit{}`` text
+            failed to parse — drives the ``error`` kind tag.
+        scale_mode: When ``True``, the normalized unit column shows
+            the dimensional form including any multiplicative factor
+            (e.g. ``hPa`` → ``100*Pa``). When ``False``, the bare
+            dimensional form is emitted. See docs/design/scale.md.
+
+    Returns:
+        List of row dicts with keys ``name``, ``unit``,
+        ``unitNormalized``, ``line`` and ``kind``, in declaration
+        order. Empty when ``decl.names`` is empty.
+    """
     rows: list[dict[str, Any]] = []
     for vname in decl.names:
         unit_text = var_units.get(vname)
@@ -639,14 +773,36 @@ def _proc_rows(
     *,
     scale_mode: bool,
 ) -> list[dict[str, Any]]:
-    """Procedure rows for a module/program scope: every function/subroutine
-    defined inside the scope's line span [sp, ep]. Same shape as a
-    scope-var row so the existing renderer needs no changes — name is
-    pre-formatted as ``gravity_at(m)``, unit is the return (or ``-`` for
-    subroutines), kind drives the marker, line jumps to the header.
-    Procedures of a module are visible from anywhere within the module
-    by Fortran scope rules (host association), so they belong in Scope
-    the same way imported procs belong in Imports.
+    """Build procedure rows for a module/program scope.
+
+    Lists every function/subroutine defined inside the scope's line
+    span ``[sp, ep]``. Same shape as a scope-var row so the existing
+    renderer needs no changes — name is pre-formatted as
+    ``gravity_at(m)``, unit is the return (or ``-`` for subroutines),
+    kind drives the marker, line jumps to the header. Procedures of a
+    module are visible from anywhere within the module by Fortran
+    scope rules (host association), so they belong in Scope the same
+    way imported procs belong in Imports.
+
+    Args:
+        sp: Inclusive 1-based start line of the enclosing scope.
+        ep: Inclusive 1-based end line of the enclosing scope.
+        tree: The file's tree-sitter :class:`Tree`. ``None`` short-
+            circuits to an empty list — no tree, no procedures to
+            walk.
+        signatures: Map from lower-cased routine name to
+            :class:`FuncSig`. Falsy values short-circuit to an empty
+            list since each row needs the cached signature.
+        source: Source bytes used to recover function-definition
+            names.
+        scale_mode: Forwarded to :func:`format_unit` and
+            :func:`_normalized_unit` so the returned unit text
+            matches the surrounding panel's scale convention.
+
+    Returns:
+        List of row dicts (same keys as :func:`_decl_rows` plus a
+        formatted ``name``) in file order. Empty when no procedures
+        fall inside ``[sp, ep]``.
     """
     if tree is None or not signatures:
         return []
@@ -709,15 +865,40 @@ def _build_scope_vars(
     ``unparseable``), or ``unannotated`` (no annotation).
 
     Matching strategy:
-    - For ``subroutine`` / ``function``: ``DeclarationSite.scope`` is
+
+    * For ``subroutine`` / ``function``: ``DeclarationSite.scope`` is
       the routine name, so filter by name.
-    - For ``module`` / ``program``: module-level decls carry
+    * For ``module`` / ``program``: module-level decls carry
       ``scope = None``; filter by ``scope is None`` AND the decl
       falling inside the scope node's line span (so nested routines'
       decls — which have a non-None scope — are excluded).
 
     Type-field decls inside a ``type :: T`` block are filtered out —
     they're shown via field hover on the parent variable.
+
+    Args:
+        scope_node: Tree-sitter node for the enclosing scope
+            (module, program, subroutine or function). ``None``
+            short-circuits to an empty list.
+        scan_decls: Iterable of :class:`DeclarationSite` from the
+            attachment pass. ``None`` short-circuits to an empty
+            list.
+        attached: The full attachment result; ``var_units`` is the
+            only field consumed. ``None`` is treated as "no units
+            attached" (every name renders as unannotated).
+        source: Source bytes (for splitting into lines and resolving
+            the scope name).
+        unparseable: Set of lower-cased names whose ``@unit{}`` text
+            failed to parse — surfaces as the ``error`` kind tag.
+        scale_mode: Forwarded to :func:`_decl_rows` and
+            :func:`_proc_rows` for normalized-unit rendering.
+        tree: The file's tree-sitter :class:`Tree`. Only used to walk
+            for procedure rows in module/program scopes.
+        signatures: Routine signature cache; same.
+
+    Returns:
+        List of row dicts in declaration / definition order,
+        suitable for direct shipment to the panel.
     """
     if scope_node is None or scan_decls is None:
         return []
@@ -789,13 +970,27 @@ def recover_scopes(tree: Any, source: bytes) -> list[tuple[str, str, int, int]]:
     """Reconstruct enclosing scopes when tree-sitter has no scope node.
 
     A single unparseable statement makes tree-sitter wrap the whole
-    routine in an ``ERROR`` node, so ``_enclosing_scopes`` finds nothing
-    and the panel's Scope section would blank. But the routine's *header*
-    statement still survives inside the ERROR, so we recover each scope's
-    name + kind from the surviving headers and pair them with the closing
-    ``end`` lines (line-based, since the ``end`` may have been absorbed by
-    the error region). Returns ``(kind, name, start_line, end_line)``
-    tuples (1-based, inclusive), one per recovered scope.
+    routine in an ``ERROR`` node, so ``_enclosing_scopes`` finds
+    nothing and the panel's Scope section would blank. But the
+    routine's *header* statement still survives inside the ERROR, so
+    each scope's name + kind is recovered from the surviving headers
+    and paired with the closing ``end`` lines (line-based, since the
+    ``end`` may have been absorbed by the error region).
+
+    Args:
+        tree: The file's tree-sitter :class:`Tree`. The root node is
+            walked once to harvest scope-header statements.
+        source: Source bytes; split into lines to locate the matching
+            ``end`` for each header.
+
+    Returns:
+        List of ``(kind, name, start_line, end_line)`` tuples,
+        1-based and inclusive on both endpoints, one entry per
+        recovered scope. Scopes left open (no matching ``end``) run
+        to the last line of the file. Order reflects the order in
+        which scopes *close* (innermost first within a routine);
+        callers that need an enclosing-scope query use
+        :func:`_innermost_scope_idx`.
     """
     headers: dict[int, tuple[str, str]] = {}  # start_line -> (kind, name)
     for n in _ts.walk(tree.root_node):
@@ -830,7 +1025,20 @@ def recover_scopes(tree: Any, source: bytes) -> list[tuple[str, str, int, int]]:
 def _innermost_scope_idx(
     line: int, scopes: list[tuple[str, str, int, int]]
 ) -> int | None:
-    """Index of the smallest recovered scope containing ``line``, or None."""
+    """Return the index of the smallest recovered scope containing a line.
+
+    Args:
+        line: 1-based source line to locate.
+        scopes: Recovered-scope list as returned by
+            :func:`recover_scopes`.
+
+    Returns:
+        Index into ``scopes`` of the entry whose ``[start, end]``
+        range contains ``line`` and has the smallest extent. ``None``
+        when no recovered scope covers the line. Ties are broken by
+        first appearance, which matches the close-order semantics of
+        :func:`recover_scopes`.
+    """
     best: int | None = None
     best_size: int | None = None
     for idx, (_kind, _name, s, e) in enumerate(scopes):
@@ -853,12 +1061,35 @@ def build_scope_vars_by_span(
     tree: Tree | None = None,
     signatures: dict[str, FuncSig] | None = None,
 ) -> list[dict[str, Any]]:
-    """Span-based scope variables for a recovered scope (the ERROR-node
-    fallback). A declaration belongs to the recovered scope that most
-    tightly encloses it, so a module section excludes its contained
-    routines' locals (and sibling routines don't bleed into each other).
-    Matches by line span because the ERROR collapse strips
-    ``DeclarationSite.scope`` to ``None``."""
+    """Build scope-variable rows for a recovered scope (ERROR fallback).
+
+    A declaration belongs to the recovered scope that most tightly
+    encloses it, so a module section excludes its contained
+    routines' locals (and sibling routines don't bleed into each
+    other). Matches by line span because the ERROR collapse strips
+    ``DeclarationSite.scope`` to ``None``.
+
+    Args:
+        scope_idx: Index into ``recovered`` selecting the scope to
+            build rows for.
+        recovered: Recovered-scope list from :func:`recover_scopes`.
+        scan_decls: Iterable of :class:`DeclarationSite`. ``None``
+            short-circuits to an empty list.
+        attached: Attachment result; only ``var_units`` is consumed.
+            ``None`` is treated as "no units attached."
+        source: Source bytes; split into lines for the
+            first-line-name guard.
+        unparseable: Set of lower-cased names whose ``@unit{}`` text
+            failed to parse.
+        scale_mode: Forwarded to :func:`_decl_rows` and
+            :func:`_proc_rows`.
+        tree: The file's tree-sitter :class:`Tree`, only used for
+            module/program procedure rows.
+        signatures: Routine signature cache; same.
+
+    Returns:
+        List of row dicts in declaration / definition order.
+    """
     if scan_decls is None:
         return []
     var_units = attached.var_units if attached is not None else {}

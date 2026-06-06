@@ -30,6 +30,23 @@ if TYPE_CHECKING:
 
 
 def _serialize_interaction_point(p: InteractionPoint) -> dict[str, Any]:
+    """Flatten an :class:`InteractionPoint` into a JSON-friendly dict.
+
+    Args:
+        p: One interaction point produced by
+            :func:`dimfort.core.interactions.collect_interactions`.
+
+    Returns:
+        A dict with stable string keys (``file``, ``line``, ``column``,
+        ``scope``, ``kind``, ``unit``, ``snippet``) ready to ship over
+        the LSP wire to a companion. ``unit`` is the rendered string
+        form (``"?"`` for unknown), not a :class:`UnitExpr`.
+
+    Note:
+        Schema matches the contract documented in
+        ``docs/design/interaction-points.md``; companions parse on
+        these field names.
+    """
     return {
         "file": p.file,
         "line": p.line,
@@ -42,7 +59,55 @@ def _serialize_interaction_point(p: InteractionPoint) -> dict[str, Any]:
 
 
 def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
+    """Run the interactions report for the symbol under the cursor.
+
+    Resolves the target symbol from either an explicit ``symbol``
+    parameter or, when absent, the identifier sitting under
+    ``position`` in the live document. Runs
+    :func:`dimfort.core.interactions.collect_interactions` over the
+    cached workset and packages the result for the panel/CLI wire.
+
+    Args:
+        ls: Active :class:`LanguageServer` whose workspace exposes the
+            live document text used for the cursor-driven identifier
+            lookup.
+        params: Loosely-typed request payload. Recognised keys (either
+            attribute or dict form): ``textDocument``/``text_document``
+            (with ``uri``), ``position`` (with ``line`` / ``character``),
+            ``symbol`` (explicit override), and ``scale`` (bool).
+
+    Returns:
+        A dict with keys ``symbol``, ``points`` (list of serialised
+        interaction points), ``conflicts`` (list of conflict records),
+        and ``hasConflict`` (bool). Returns ``None`` when no workset
+        result is loaded, the URI cannot be located, the fresh parse
+        fails, or no symbol could be identified.
+
+    Note:
+        Parses a fresh tree from the live document for the cursor
+        lookup, so the handler does **not** need ``state.ts_handler_lock``.
+        On any failure (no tree, no symbol) it bails with ``None``
+        rather than falling back to the shared cached tree — the
+        documented concurrency hazard makes the fallback unsafe.
+    """
     def _get(obj: Any, key: str) -> Any:
+        """Read ``key`` from either an attribute-style object or a dict.
+
+        Args:
+            obj: Source object — may expose ``key`` as an attribute
+                (pygls/lsprotocol dataclass) or as a dict entry
+                (raw JSON payload).
+            key: Field name to look up.
+
+        Returns:
+            The field's value, or ``None`` when neither lookup form
+            yields one.
+
+        Note:
+            Used to keep this handler tolerant of both wire shapes
+            seen in practice: lsprotocol-typed params from pygls and
+            plain dict payloads from companion clients.
+        """
         if hasattr(obj, key):
             return getattr(obj, key)
         if isinstance(obj, dict):
