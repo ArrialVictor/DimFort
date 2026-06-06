@@ -115,11 +115,36 @@ server = LanguageServer("dimfort", __version__)
 
 
 def _notify(ls: LanguageServer | None, message: str, *, toast: bool = False) -> None:
-    """Surface a progress message to both the Python logger and the
-    LSP client's output channel. Pygls filters ``log.info`` below
-    WARNING by default, so user-relevant events would otherwise be
-    invisible in VSCode's "DimFort Language Server" output channel.
-    Pass ``toast=True`` for unblock signals worth a status-bar popup.
+    """Surface a progress message to the Python logger and the LSP client.
+
+    Mirrors a single line of operational text into two channels: the
+    project's ``dimfort.lsp`` logger (so it lands wherever Python
+    logging is configured) and the client's output panel via
+    ``window/logMessage``. Pygls filters ``log.info`` below WARNING by
+    default, so user-relevant events would otherwise be invisible in
+    VSCode's "DimFort Language Server" output channel.
+
+    Failures from the client-side calls are swallowed: a stuck or
+    half-initialised client must never crash a background worker.
+
+    Args:
+        ls: Active language server instance, or ``None`` when the
+            caller has no handle (e.g. early lifecycle paths). In the
+            ``None`` case only the Python logger sees the message.
+        message: Human-readable text. Should already be prefixed with
+            ``DimFort:`` for output-channel consistency.
+        toast: When ``True``, additionally emit ``window/showMessage``
+            so a status-bar popup appears for unblock signals worth
+            interrupting the user (e.g. "workspace index ready").
+
+    Returns:
+        None. All side effects are out-of-band notifications.
+
+    Note:
+        Both ``window_log_message`` and ``window_show_message`` are
+        wrapped in a broad ``try/except`` because pygls raises on a
+        disconnected client and we never want a notification path to
+        propagate.
     """
     log.info(message)
     if ls is None:
@@ -143,6 +168,34 @@ def _notify(ls: LanguageServer | None, message: str, *, toast: bool = False) -> 
 
 
 class _FeatureToggles:
+    """Per-feature on/off (and hover verbosity) flags resolved at initialize-time.
+
+    The ``initialize`` handler reads ``initializationOptions`` and
+    flips these fields once; every feature handler reads them on the
+    hot path to decide whether to do any work. Defaults are
+    on-for-everything so a client that ignores ``initializationOptions``
+    still gets the full feature set.
+
+    Attributes:
+        inlay_hints: When ``False``, ``textDocument/inlayHint`` returns
+            ``None`` without touching the tree.
+        completion: When ``False``, ``textDocument/completion`` returns
+            ``None`` (no unit-name suggestions inside ``@unit{...}``).
+        code_actions: When ``False``, ``textDocument/codeAction``
+            returns ``None`` (no quick-fixes).
+        goto_definition: When ``False``, ``textDocument/definition``
+            returns ``None``.
+        hover: Tri-state verbosity (``"disabled"`` / ``"short"`` /
+            ``"detailed"``) applied uniformly to every hover surface
+            (call pairing, expression, variable). The side panel is
+            unaffected — it is always detailed, governed only by its
+            own open/closed state.
+
+    Note:
+        This is a class-level state holder, not a dataclass; mutation
+        happens via the module-level ``_features`` singleton.
+    """
+
     inlay_hints: bool = True
     completion: bool = True
     code_actions: bool = True
@@ -175,19 +228,40 @@ def _cap_workset(
     paths: list[Path], active: Path, limit: int,
     *, must_keep: frozenset[Path] = frozenset(),
 ) -> list[Path]:
-    """Trim a workset down to ``limit`` entries while keeping the active
-    file and any explicit ``must_keep`` entries.
+    """Trim a workset to ``limit`` entries while pinning load-bearing files.
 
-    Topo order alone isn't enough on real codebases: a direct
-    callee that DimFort pulled in via the procedure index can sit
-    early in the topo sort (its own deps are shallow) and get
-    dropped by a naive ``paths[-limit:]`` cap, even though it's
-    semantically central to the active file. ``must_keep`` lets the
-    caller pin those entries.
+    Topo order alone isn't enough on real codebases: a direct callee
+    that DimFort pulled in via the procedure index can sit early in
+    the topo sort (its own deps are shallow) and get dropped by a
+    naive ``paths[-limit:]`` cap, even though it's semantically
+    central to the active file. ``must_keep`` lets the caller pin
+    those entries.
 
     Algorithm: keep the active file plus every ``must_keep`` entry,
     then fill the remaining budget from the topo-last entries that
-    aren't already pinned.
+    aren't already pinned. The returned list preserves the input
+    topo order so downstream consumers (``multifile.check_files``)
+    process dependencies before their users.
+
+    Args:
+        paths: Candidate workset in dependency-first topo order.
+        active: The file currently focused in the editor; always
+            retained.
+        limit: Maximum number of paths allowed in the returned list;
+            must be a positive integer.
+        must_keep: Optional frozenset of additional paths that must
+            survive the cap (e.g. directly-used modules, direct
+            callees). Entries outside ``paths`` are ignored.
+
+    Returns:
+        A list of paths, length at most ``limit`` (or larger if the
+        pinned set alone already exceeds ``limit``), preserving the
+        original topo ordering.
+
+    Note:
+        When the pinned set already exceeds ``limit``, every pin is
+        kept and the cap is effectively widened — soundness trumps
+        the soft budget.
     """
     if len(paths) <= limit:
         return paths
@@ -213,6 +287,24 @@ def _cap_workset(
 
 
 def _remember_uri(uri: str) -> None:
+    """Record that ``uri`` is currently open in the editor.
+
+    Maintains ``state.opened_uris`` (resolved-path → original-URI
+    mapping) under ``state.opened_uris_lock``. The map is used by the
+    post-index-build refresh to know which buffers to re-check, and
+    by close-handling to forget URIs cleanly.
+
+    No-ops silently when the URI cannot be turned into a real
+    filesystem path or when ``Path.resolve`` raises ``OSError``
+    (e.g. a network share that just went away).
+
+    Args:
+        uri: The ``textDocument.uri`` from a didOpen/didChange/didSave
+            notification.
+
+    Returns:
+        None.
+    """
     p = _uri_to_path(uri)
     if p is None:
         return
@@ -225,6 +317,18 @@ def _remember_uri(uri: str) -> None:
 
 
 def _forget_uri(uri: str) -> None:
+    """Remove ``uri`` from the opened-URI map.
+
+    The inverse of :func:`_remember_uri`. Called from the
+    ``textDocument/didClose`` handler. Silently no-ops when the URI
+    isn't a real path or when ``Path.resolve`` raises.
+
+    Args:
+        uri: The ``textDocument.uri`` from a didClose notification.
+
+    Returns:
+        None.
+    """
     p = _uri_to_path(uri)
     if p is None:
         return
@@ -242,6 +346,31 @@ def _forget_uri(uri: str) -> None:
 
 
 def _to_lsp_diagnostic(d: Diagnostic) -> lsp.Diagnostic:
+    """Convert a DimFort core diagnostic into an LSP wire-format diagnostic.
+
+    Bridges the two coordinate systems: DimFort cores are 1-based
+    (line/column from tree-sitter), LSP is 0-based. Also ensures a
+    minimum one-character range so the squiggle is visible even when
+    the source span is degenerate (start == end).
+
+    The ``suggested_rewrite`` payload, when present, is forwarded via
+    the LSP ``data`` field. The code-action provider reads it back
+    out of ``params.context.diagnostics`` to materialise a
+    "Replace with ..." quick-fix (spec §12 + task #9).
+
+    Args:
+        d: A DimFort core :class:`Diagnostic` instance carrying
+            source position, severity, code, message, and an optional
+            ``suggested_rewrite`` payload.
+
+    Returns:
+        An :class:`lsprotocol.types.Diagnostic` ready for inclusion
+        in a ``textDocument/publishDiagnostics`` payload.
+
+    Note:
+        Unknown severities fall back to ``Error`` rather than being
+        dropped — silent dropping would mask checker bugs.
+    """
     start_line = max(d.start.line - 1, 0)
     start_col = max(d.start.column - 1, 0)
     end_line = max(d.end.line - 1, 0)
@@ -273,7 +402,29 @@ def _to_lsp_diagnostic(d: Diagnostic) -> lsp.Diagnostic:
 
 
 def _discover_fortran_files(roots: list[Path]) -> list[Path]:
-    """Walk every workspace folder and collect Fortran sources."""
+    """Walk every workspace folder and collect Fortran source files.
+
+    Recursively descends each root and gathers files whose suffix
+    appears in ``_FORTRAN_EXTS`` (the canonical Fortran-extension
+    set from ``core._source_io``). Deduplicates by resolved path so
+    a folder that is itself a symlink target doesn't double-count.
+
+    Non-directory roots are silently skipped — callers may pass a
+    mixed list without filtering up-front.
+
+    Args:
+        roots: Absolute or relative directories to scan. Entries
+            that aren't directories are ignored.
+
+    Returns:
+        A list of resolved, deduplicated Fortran source paths in
+        first-seen order across roots.
+
+    Note:
+        This is the fallback discovery path; the primary discovery
+        flow uses ``scan_workspace`` to also build the use/module
+        index. Kept for handlers that just need the file list.
+    """
     out: list[Path] = []
     seen: set[Path] = set()
     for root in roots:
@@ -291,15 +442,39 @@ def _discover_fortran_files(roots: list[Path]) -> list[Path]:
 
 
 def _workset_for(ls: LanguageServer, active_uri: str) -> tuple[list[Path], Path | None]:
-    """Return the workset of paths plus the active path (if known).
+    """Return the workset of paths plus the active path for ``active_uri``.
 
     Uses the workspace index to follow ``use``-statement dependencies
     from the active file when the index is ready. Falls back to the
-    whole-workspace scan otherwise (initial-check window before the
-    index finishes building, or no workspace folders configured).
+    single-file workset (active alone) when the index hasn't been
+    built yet — that's strictly better than feeding every file in
+    the workspace to the checker, which would SIGKILL the LSP via
+    macOS jetsam on ~2400-file workspaces.
 
-    Always includes the active file even if it lives outside any
-    workspace folder (e.g. the user opened a loose ``.f90``).
+    The active file is always present in the returned workset, even
+    when it lives outside any indexed workspace root (e.g. the user
+    opened a loose ``.f90``). The function also pins directly-used
+    modules and called procedures so the workset cap can't drop
+    them mid-topo.
+
+    Args:
+        ls: Active language server, passed through to
+            :func:`_notify` for the optional "workset capped"
+            heads-up.
+        active_uri: ``textDocument.uri`` for the file the user is
+            focused on.
+
+    Returns:
+        A ``(paths, active)`` tuple. ``paths`` is the topo-ordered
+        workset (possibly capped). ``active`` is the resolved
+        :class:`Path` for ``active_uri``, or ``None`` when the URI
+        doesn't map to a file on disk.
+
+    Note:
+        Reads ``state.workspace_index`` under
+        ``state.workspace_index_lock``; the lock is released before
+        the resolve call so we don't hold it across the
+        :func:`resolve_workset` traversal.
     """
     active = _uri_to_path(active_uri)
     if active is None or not active.is_file():
@@ -360,6 +535,38 @@ def _workset_for(ls: LanguageServer, active_uri: str) -> tuple[list[Path], Path 
 
 
 def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None = None) -> None:
+    """Run the pipeline for ``uri``'s workset and publish per-file diagnostics.
+
+    Builds the workset via :func:`_workset_for`, runs
+    :func:`check_files` with all current project settings (CPP
+    defines, include paths, cache, units file, severity overrides,
+    scale mode, comment-delimiter patterns), stores the result in
+    ``state.last_result`` for later cached reads (didClose, panel,
+    interactions), then publishes one ``publishDiagnostics`` payload
+    per file in the workset.
+
+    Files with no diagnostics still receive an empty publish so
+    stale squiggles clear immediately.
+
+    Args:
+        ls: Active language server (used for the publish and for
+            ``_workset_for``'s notification path).
+        uri: URI of the currently-active document driving the
+            workset computation.
+        override_text: When non-``None``, supplies the in-memory
+            buffer text for the active file (used by didChange so
+            unsaved edits flow through the pipeline). Other files in
+            the workset are read from disk.
+
+    Returns:
+        None. All output goes through ``publishDiagnostics``.
+
+    Note:
+        Swallows pipeline exceptions after logging them; a single
+        checker crash must not take down the LSP. The caller is
+        expected to hold ``state.check_lock`` so concurrent
+        publishes don't race on shared state.
+    """
     paths, active = _workset_for(ls, uri)
     if active is None:
         return
@@ -421,21 +628,75 @@ def _refresh_inlay_hints(ls: LanguageServer) -> None:
     ``state.last_result``; that early request returns empty and the
     client caches "no hints". Without this nudge the user has to
     perform a buffer edit to coax the client into re-querying. The
-    method is opt-in via the LSP spec (``workspace.inlayHint.refreshSupport``),
-    so we fire it unconditionally and let the framework drop it when
-    the client didn't advertise support.
+    method is opt-in via the LSP spec
+    (``workspace.inlayHint.refreshSupport``), so we fire it
+    unconditionally and let the framework drop it when the client
+    didn't advertise support.
+
+    Args:
+        ls: Active language server instance.
+
+    Returns:
+        None.
+
+    Note:
+        Implements ``workspace/inlayHint/refresh``. Errors are
+        swallowed via ``contextlib.suppress`` because not every
+        client supports the request, and a refusal must not
+        propagate.
     """
     with contextlib.suppress(Exception):
         ls.workspace_inlay_hint_refresh(None)
 
 
 def _bump_version(uri: str) -> int:
+    """Increment and return the per-URI document version counter.
+
+    Used by the debounced didChange handler to detect superseded
+    keystrokes: each call returns a strictly-increasing version
+    number, and :func:`_is_current` checks whether a previously
+    captured version is still the latest.
+
+    Args:
+        uri: ``textDocument.uri`` of the buffer being edited.
+
+    Returns:
+        The new (post-increment) version number, starting at 1.
+
+    Note:
+        Holds ``state.doc_versions_lock`` for the read-modify-write
+        cycle so concurrent didChange notifications can't collide.
+    """
     with state.doc_versions_lock:
         state.doc_versions[uri] = state.doc_versions.get(uri, 0) + 1
         return state.doc_versions[uri]
 
 
 def _is_current(uri: str, version: int) -> bool:
+    """Return whether ``version`` is still the latest seen for ``uri``.
+
+    The debounced didChange path captures the version returned by
+    :func:`_bump_version`, sleeps for the debounce interval, then
+    calls this to decide whether to fire a check or bail out as
+    superseded by a later keystroke. Checked twice (before and
+    inside the ``state.check_lock`` critical section) so a keystroke
+    that arrives while the worker is waiting on the lock doesn't get
+    a stale publish.
+
+    Args:
+        uri: ``textDocument.uri`` of the buffer in question.
+        version: A version number previously returned by
+            :func:`_bump_version`.
+
+    Returns:
+        ``True`` when ``version`` equals the current stored version
+        for ``uri``, ``False`` otherwise (including when the URI was
+        never recorded).
+
+    Note:
+        Holds ``state.doc_versions_lock`` for the duration of the
+        read.
+    """
     with state.doc_versions_lock:
         return state.doc_versions.get(uri) == version
 
@@ -448,18 +709,33 @@ def _is_current(uri: str, version: int) -> bool:
 def _ensure_uri_loaded(ls: LanguageServer, uri: str) -> None:
     """Re-publish for ``uri`` if its tree isn't in ``state.last_result``.
 
-    The LSP keeps a single global ``state.last_result``, updated on every
-    didOpen / didSave / didChange. When the user navigates between
-    open tabs, VSCode doesn't fire any LSP event — but the last
-    publish may have been for a *different* active file whose
+    The LSP keeps a single global ``state.last_result``, updated on
+    every didOpen / didSave / didChange. When the user navigates
+    between open tabs, VSCode doesn't fire any LSP event — but the
+    last publish may have been for a *different* active file whose
     workset doesn't include the now-active one (typical when the
-    user jumped from a caller to a callee via goto-def: the
-    callee's workset is downward-only and doesn't loop back).
+    user jumped from a caller to a callee via goto-def: the callee's
+    workset is downward-only and doesn't loop back).
 
-    Detect that by asking ``_trees_for`` and, if it returns None
-    for what's actually a known Fortran file, fire a synchronous
-    publish for the URI so the next hover / goto-def / inlay
-    request sees fresh trees.
+    Detect that by asking :func:`_trees_for` and, if it returns
+    ``None`` for what's actually a known Fortran file, fire a
+    synchronous publish for the URI so the next hover / goto-def /
+    inlay request sees fresh trees.
+
+    Args:
+        ls: Active language server, forwarded to
+            :func:`_publish_for_uri`.
+        uri: ``textDocument.uri`` for which fresh trees are needed.
+
+    Returns:
+        None. Either no-ops or performs a synchronous workspace
+        check.
+
+    Note:
+        Acquires ``state.check_lock`` around the publish to serialise
+        with the debounced didChange path. Skips entirely when the
+        URI does not resolve to an on-disk Fortran source (non-file
+        URIs, non-Fortran extensions).
     """
     if _trees_for(uri) is not None:
         return
@@ -479,6 +755,31 @@ def _ensure_uri_loaded(ls: LanguageServer, uri: str) -> None:
 
 @server.feature(lsp.INITIALIZE)
 def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
+    """Implements ``initialize``: capture workspace + apply client settings.
+
+    Reads the workspace folders (or legacy ``root_uri``) into
+    ``state.workspace_folders``, loads ``.dimfort.toml`` from the
+    first folder, then layers ``initializationOptions`` on top per
+    the documented precedence (config < init-options < CLI).
+    Installs project-specific unit tables, the process-wide
+    severity overrides, the feature toggles, the external-modules
+    allowlist, the workset cap, the scale-mode flag, and (when
+    requested) the content-hash cache.
+
+    Args:
+        ls: Active language server.
+        params: LSP ``InitializeParams`` carrying workspace folders
+            and ``initializationOptions``.
+
+    Returns:
+        None. All effects mutate module-level ``state`` /
+        ``_features`` singletons.
+
+    Note:
+        Accepts legacy hover keys (``traceHoverEnabled``,
+        ``hoverFunctionCalls`` etc.) defensively for pre-1.x
+        clients. The modern key is a single ``hover`` tri-state.
+    """
     folders: list[Path] = []
     if params.workspace_folders:
         for folder in params.workspace_folders:
@@ -584,13 +885,30 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
 
 @server.feature(lsp.INITIALIZED)
 def _initialized(ls: LanguageServer, params: lsp.InitializedParams) -> None:
-    """Kick off the workspace scan once the client is ready.
+    """Implements ``initialized``: kick off the background workspace scan.
 
     The workspace scan needs to send server-to-client requests
-    (``window/workDoneProgress/create``); these are only valid after the
-    client has sent the ``initialized`` notification. Spawning earlier —
-    e.g. from inside the ``initialize`` handler — races against the
-    client's readiness and produces JsonRpcMethodNotFound responses.
+    (``window/workDoneProgress/create``); these are only valid after
+    the client has sent the ``initialized`` notification. Spawning
+    earlier — e.g. from inside the ``initialize`` handler — races
+    against the client's readiness and produces
+    ``JsonRpcMethodNotFound`` responses.
+
+    Picks scan roots from ``.dimfort.toml``'s ``[project].src_paths``
+    when configured (useful on large monorepos where only a few
+    subtrees concern DimFort); otherwise falls back to every
+    workspace folder.
+
+    Args:
+        ls: Active language server.
+        params: LSP ``InitializedParams`` (no payload of interest).
+
+    Returns:
+        None. Spawns the ``dimfort-workspace-scan`` daemon thread.
+
+    Note:
+        No-ops when there are no workspace folders (single-file
+        mode).
     """
     folders = state.workspace_folders
     if not folders:
@@ -613,11 +931,31 @@ def _initialized(ls: LanguageServer, params: lsp.InitializedParams) -> None:
 
 
 def _build_initial_index(ls: LanguageServer, roots: tuple[Path, ...]) -> None:
-    """Background scan; assigns the result to the module-level index.
+    """Background workspace scan; populates ``state.workspace_index``.
 
-    Emits ``$/progress`` notifications so VSCode shows a status-bar
-    spinner with per-file detail. Reports are throttled to ~10/sec so
-    a 2435-file scan doesn't flood the wire.
+    Walks ``roots`` via :func:`scan_workspace` to build the
+    ``WorkspaceIndex`` (modules, procedures, uses-by-file,
+    calls-by-file). Emits ``$/progress`` notifications so VSCode
+    shows a status-bar spinner with per-file detail; reports are
+    throttled to ~10/sec so a 2435-file scan doesn't flood the
+    wire. After the index lands, every currently-open buffer is
+    re-checked so files that opened during the scan get their
+    cross-file deps surfaced (otherwise their use-deps would stay
+    as bogus U007s until the next keystroke).
+
+    Args:
+        ls: Active language server, used for progress + notify.
+        roots: Workspace roots (resolved earlier from
+            ``state.project_config.src_paths`` or the workspace
+            folders).
+
+    Returns:
+        None. Mutates ``state.workspace_index`` under
+        ``state.workspace_index_lock``.
+
+    Note:
+        Pipeline crashes are logged but do not propagate — a broken
+        index is bad, a crashed LSP process is worse.
     """
     token = f"dimfort-scan-{int(time.time() * 1000)}"
     progress = ls.work_done_progress
@@ -639,6 +977,22 @@ def _build_initial_index(ls: LanguageServer, roots: tuple[Path, ...]) -> None:
     last_report_at = 0.0
 
     def on_progress(scanned: int, total: int, path: Path) -> None:
+        """Forward a per-file scan tick to the LSP progress channel.
+
+        Args:
+            scanned: Number of files processed so far (1-based at
+                the first tick).
+            total: Total file count for the scan.
+            path: The file currently being processed.
+
+        Returns:
+            None.
+
+        Note:
+            Throttles to roughly 10 reports per second; always
+            emits the final tick (``scanned == total``) so the
+            spinner closes cleanly.
+        """
         nonlocal last_report_at
         if not progress_started:
             return
@@ -707,16 +1061,34 @@ def _build_initial_index(ls: LanguageServer, roots: tuple[Path, ...]) -> None:
 
 
 def _update_index_for(path: Path, *, new_text: str | None = None) -> None:
-    """Incrementally re-scan one file into the index. No-op when the
-    initial build hasn't completed.
+    """Incrementally re-scan one file into the workspace index.
 
-    The lock is held **across** ``update_index`` (not just across the
-    reference read) because that call mutates the underlying
+    No-ops when the initial scan hasn't completed (the file will be
+    covered when the full build finishes).
+
+    The lock is held **across** :func:`update_index` (not just across
+    the reference read) because that call mutates the underlying
     ``modules`` / ``uses_by_file`` / ``procedures`` dicts in place.
-    Concurrent readers (``resolve_workset``, ``_check_whole_workspace``)
-    iterate those same dicts under the same lock; without holding it
-    through the mutation the readers would race on a partial-state
-    window or trip "dict changed size during iteration" mid-traverse.
+    Concurrent readers (:func:`resolve_workset`,
+    :func:`_check_whole_workspace`) iterate those same dicts under
+    the same lock; without holding it through the mutation the
+    readers would race on a partial-state window or trip "dict
+    changed size during iteration" mid-traverse.
+
+    Args:
+        path: Absolute path of the file to re-scan.
+        new_text: When non-``None``, supplies in-memory buffer text
+            (used by didChange so a freshly-added ``use M`` is
+            picked up on the same keystroke). When ``None``, the
+            file is re-read from disk.
+
+    Returns:
+        None.
+
+    Note:
+        Failures inside :func:`update_index` are logged but
+        swallowed — a partial-state index is preferable to a
+        crashed LSP.
     """
     with state.workspace_index_lock:
         idx = state.workspace_index
@@ -735,10 +1107,38 @@ def _update_index_for(path: Path, *, new_text: str | None = None) -> None:
 
 @server.feature(lsp.TEXT_DOCUMENT_DID_OPEN)
 def _did_open(ls: LanguageServer, params: lsp.DidOpenTextDocumentParams) -> None:
+    """Implements ``textDocument/didOpen``: record + check the new buffer.
+
+    Remembers the URI in ``state.opened_uris`` (so the post-index
+    refresh knows to re-check it) and spawns a daemon worker that
+    runs the pipeline under ``state.check_lock`` so it serialises
+    with other checks.
+
+    Args:
+        ls: Active language server.
+        params: LSP ``DidOpenTextDocumentParams``.
+
+    Returns:
+        None.
+
+    Note:
+        The publish happens off the main asyncio loop so the LSP
+        stays responsive on first-open of a deep workspace.
+    """
     uri = params.text_document.uri
     _remember_uri(uri)
 
     def worker() -> None:
+        """Run the pipeline for ``uri`` under ``state.check_lock``.
+
+        Returns:
+            None.
+
+        Note:
+            Logs and swallows pipeline crashes so they don't take
+            down the daemon thread (and, on Python 3.14, the
+            process).
+        """
         with state.check_lock:
             try:
                 _publish_for_uri(ls, uri)
@@ -750,6 +1150,25 @@ def _did_open(ls: LanguageServer, params: lsp.DidOpenTextDocumentParams) -> None
 
 @server.feature(lsp.TEXT_DOCUMENT_DID_SAVE)
 def _did_save(ls: LanguageServer, params: lsp.DidSaveTextDocumentParams) -> None:
+    """Implements ``textDocument/didSave``: re-index + re-check on save.
+
+    Updates the workspace index for the saved file (so a new
+    ``use`` clause becomes resolvable from siblings) and spawns a
+    daemon worker that re-runs the pipeline for the saved file's
+    workset.
+
+    Args:
+        ls: Active language server.
+        params: LSP ``DidSaveTextDocumentParams``.
+
+    Returns:
+        None.
+
+    Note:
+        The index update reads from disk; the buffer text isn't
+        consulted because save semantics imply the disk state is
+        canonical.
+    """
     uri = params.text_document.uri
     _remember_uri(uri)
     saved = _uri_to_path(uri)
@@ -757,6 +1176,15 @@ def _did_save(ls: LanguageServer, params: lsp.DidSaveTextDocumentParams) -> None
         _update_index_for(saved.resolve())
 
     def worker() -> None:
+        """Run the pipeline for ``uri`` under ``state.check_lock``.
+
+        Returns:
+            None.
+
+        Note:
+            Mirrors the didOpen worker; failures are logged and
+            swallowed.
+        """
         with state.check_lock:
             try:
                 _publish_for_uri(ls, uri)
@@ -768,6 +1196,25 @@ def _did_save(ls: LanguageServer, params: lsp.DidSaveTextDocumentParams) -> None
 
 @server.feature(lsp.TEXT_DOCUMENT_DID_CLOSE)
 def _did_close(ls: LanguageServer, params: lsp.DidCloseTextDocumentParams) -> None:
+    """Implements ``textDocument/didClose``: republish cached diagnostics.
+
+    DimFort is a workspace-wide checker, so a file's diagnostics
+    remain true after the user closes it — the bugs are still
+    there. Rather than clear the Problems panel (the LSP default),
+    republish the cached workspace-check diagnostics so the entries
+    stay visible. Clears only if we have nothing on file (e.g. a
+    single-file workset whose entry no longer applies).
+
+    Args:
+        ls: Active language server.
+        params: LSP ``DidCloseTextDocumentParams``.
+
+    Returns:
+        None.
+
+    Note:
+        Reads ``state.last_result`` under ``state.last_result_lock``.
+    """
     uri = params.text_document.uri
     path = _uri_to_path(uri)
     _forget_uri(uri)
@@ -801,6 +1248,27 @@ _DEBOUNCE_SECONDS = 0.4
 
 @server.feature(lsp.TEXT_DOCUMENT_DID_CHANGE)
 def _did_change(ls: LanguageServer, params: lsp.DidChangeTextDocumentParams) -> None:
+    """Implements ``textDocument/didChange``: debounced live check.
+
+    Bumps the per-URI version counter, captures the current buffer
+    text, and spawns a daemon worker that sleeps for
+    ``_DEBOUNCE_SECONDS`` before re-checking under
+    ``state.check_lock``. The version check inside the worker
+    discards stale keystrokes so only the latest debounced edit
+    fires a publish.
+
+    Args:
+        ls: Active language server.
+        params: LSP ``DidChangeTextDocumentParams``.
+
+    Returns:
+        None.
+
+    Note:
+        The in-memory buffer text is also fed to
+        :func:`_update_index_for` so a freshly-added ``use M`` is
+        picked up before the publish runs.
+    """
     uri = params.text_document.uri
     _remember_uri(uri)
     version = _bump_version(uri)
@@ -810,6 +1278,16 @@ def _did_change(ls: LanguageServer, params: lsp.DidChangeTextDocumentParams) -> 
     text = doc.source
 
     def delayed() -> None:
+        """Sleep through the debounce window, then re-check if still current.
+
+        Returns:
+            None.
+
+        Note:
+            Version is checked twice — once after the sleep, once
+            inside ``state.check_lock`` — because a later keystroke
+            may arrive while the worker is waiting for the lock.
+        """
         time.sleep(_DEBOUNCE_SECONDS)
         if not _is_current(uri, version):
             return  # superseded by a later keystroke
@@ -838,6 +1316,27 @@ def _did_change(ls: LanguageServer, params: lsp.DidChangeTextDocumentParams) -> 
 
 @server.feature(lsp.TEXT_DOCUMENT_HOVER)
 def _hover(ls: LanguageServer, params: lsp.HoverParams) -> Any:
+    """Implements ``textDocument/hover``: resolved unit at the cursor.
+
+    Returns ``None`` when hover is disabled, when the requested
+    position has no unit-bearing token, or when the file isn't
+    loaded yet (after a synchronous re-publish attempt via
+    :func:`_ensure_uri_loaded`).
+
+    Args:
+        ls: Active language server.
+        params: LSP ``HoverParams`` carrying ``textDocument.uri``
+            and ``position``.
+
+    Returns:
+        An :class:`lsprotocol.types.Hover` with Markdown contents
+        and a range, or ``None`` when nothing is reportable.
+
+    Note:
+        Acquires ``state.ts_handler_lock`` because the underlying
+        tree-sitter traversal is not thread-safe; serialises with
+        definition + inlay handlers.
+    """
     # Hover disabled entirely (the panel is the unit surface). Bail
     # before doing any work.
     if _features.hover == "disabled":
@@ -888,23 +1387,54 @@ _VERDICT_TO_MARKER = {
 
 @server.feature("dimfort/panelInfo")
 def _panel_info(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
-    """Return the side-panel payload for ``(uri, position)``.
+    """Implements ``dimfort/panelInfo``: side-panel payload at the cursor.
 
-    See docs/design/panel-info.md for the data model. Stateless:
-    reads from the last cached WorksetResult, computes the response
-    on the fly.
+    Stateless from the server's perspective: reads from the last
+    cached ``WorksetResult`` (``state.last_result``) and computes
+    the response on the fly. See ``docs/design/side-panel.md`` for
+    the data model.
+
+    Args:
+        ls: Active language server.
+        params: Custom request params; an object with at least
+            ``uri`` and ``position`` (forwarded to
+            :func:`panel.resolve`).
+
+    Returns:
+        A JSON-serialisable dict describing the panel sections
+        (scope, imports, hover, interactions), or ``None`` when no
+        payload applies.
+
+    Note:
+        No tree-sitter lock needed: :mod:`panel` parses fresh trees
+        rather than reading the cached one.
     """
     return panel.resolve(ls, params)
 
 
 @server.feature("dimfort/interactions")
 def _interactions(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
-    """Cross-site unit analysis for the symbol under the cursor.
+    """Implements ``dimfort/interactions``: cross-site unit analysis for a symbol.
 
     Resolves the identifier at ``(uri, position)`` (or an explicit
-    ``symbol`` param), then runs :func:`collect_interactions` over the
-    cached workset and returns the report. See
-    docs/design/interaction-points.md.
+    ``symbol`` param), then runs :func:`collect_interactions` over
+    the cached workset and returns the report. See
+    ``docs/design/interaction-points.md`` for the data model.
+
+    Args:
+        ls: Active language server.
+        params: Custom request params; an object with ``uri`` plus
+            either ``position`` or an explicit ``symbol``.
+
+    Returns:
+        A JSON-serialisable dict listing every read/write/contributor
+        site for the resolved symbol, tagged with the unit each site
+        requires or contributes, or ``None`` when no symbol could be
+        identified.
+
+    Note:
+        Delegates to :func:`interactions.resolve`; no tree-sitter
+        lock needed because that path parses fresh trees.
     """
     return interactions.resolve(ls, params)
 
@@ -921,12 +1451,28 @@ def _interactions(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
 def _inlay_hint(
     ls: LanguageServer, params: lsp.InlayHintParams
 ) -> list[lsp.InlayHint] | None:
-    """Inlay hints (``[unit]`` ghost text) at variable uses, calls, and member accesses.
+    """Implements ``textDocument/inlayHint``: ghost-text units in the buffer.
 
-    Walks the visible range only — VSCode requests inlays in the
-    currently-on-screen range — and pulls each candidate node through
-    the ts_checker resolver so the unit-text matches what the
-    diagnostic pipeline computes.
+    Renders ``[unit]`` ghost text at variable uses, calls, and
+    member accesses. Walks the visible range only — VSCode requests
+    inlays in the currently-on-screen range — and pulls each
+    candidate node through the ts_checker resolver so the unit text
+    matches what the diagnostic pipeline computes.
+
+    Args:
+        ls: Active language server.
+        params: LSP ``InlayHintParams`` carrying ``textDocument.uri``
+            and the visible ``range``.
+
+    Returns:
+        A list of :class:`lsprotocol.types.InlayHint`, or ``None``
+        when inlays are disabled.
+
+    Note:
+        Acquires ``state.ts_handler_lock`` because tree-sitter's C
+        traversal is not thread-safe. Calls
+        :func:`_ensure_uri_loaded` first to handle the tab-switch
+        case where the workset hasn't been published yet.
     """
     # Tab-switch safety: re-publish if the URI isn't currently loaded.
     _ensure_uri_loaded(ls, params.text_document.uri)
@@ -951,6 +1497,27 @@ def _inlay_hint(
 def _completion(
     ls: LanguageServer, params: lsp.CompletionParams
 ) -> lsp.CompletionList | None:
+    """Implements ``textDocument/completion``: unit-name completions.
+
+    Fires inside ``@unit{...}`` (and configured equivalents) on
+    bare-``!`` comments. Trigger characters cover the unit-algebra
+    punctuation (``{ space / * ^``) so the list refreshes as the
+    user types compound expressions like ``kg/m^3``.
+
+    Args:
+        ls: Active language server.
+        params: LSP ``CompletionParams`` carrying ``textDocument.uri``
+            and ``position``.
+
+    Returns:
+        A :class:`lsprotocol.types.CompletionList` of candidates, or
+        ``None`` when completion is disabled or the cursor isn't in
+        a unit comment.
+
+    Note:
+        Delegates entirely to :func:`completion.complete`; this
+        wrapper only handles the feature-flag short-circuit.
+    """
     if not _features.completion:
         return None
     return completion.complete(ls, params)
@@ -965,12 +1532,29 @@ def _completion(
 def _definition(
     ls: LanguageServer, params: lsp.DefinitionParams
 ) -> list[lsp.Location] | None:
-    """Go-to-definition.
+    """Implements ``textDocument/definition``: jump to a symbol's declaration.
 
     Resolves identifiers and call-callees to their declaration site,
-    searching every loaded file's tree-sitter tree. Returns the first
-    match — F90's case-insensitive name resolution is implemented by
-    a lower-cased compare on both ends.
+    searching every loaded file's tree-sitter tree. Returns the
+    first match — F90's case-insensitive name resolution is
+    implemented by a lower-cased compare on both ends.
+
+    Args:
+        ls: Active language server.
+        params: LSP ``DefinitionParams`` carrying ``textDocument.uri``
+            and ``position``.
+
+    Returns:
+        A list with a single :class:`lsprotocol.types.Location` when
+        the declaration is found, or ``None`` when goto-definition
+        is disabled or the symbol can't be resolved.
+
+    Note:
+        Acquires ``state.ts_handler_lock`` — Cmd-hover fires hover
+        and definition simultaneously, and the tree-sitter C
+        library is not thread-safe for concurrent traversal
+        (history: this combination was triggering native-level
+        crashes before the lock was introduced).
     """
     # Tab-switch safety: re-publish if the URI isn't currently loaded.
     _ensure_uri_loaded(ls, params.text_document.uri)
@@ -996,6 +1580,28 @@ def _definition(
 def _code_action(
     ls: LanguageServer, params: lsp.CodeActionParams
 ) -> list[lsp.CodeAction] | None:
+    """Implements ``textDocument/codeAction``: quick-fixes for DimFort diagnostics.
+
+    Surfaces three quick-fix families: insert a ``!< @unit{}``
+    skeleton on annotation-less declarations, extract a bare
+    literal to a typed PARAMETER (for H001/H002/U007 lifts), and
+    apply the U002 "Replace with ..." suggestion carried via the
+    diagnostic's ``data.suggested_rewrite`` payload.
+
+    Args:
+        ls: Active language server.
+        params: LSP ``CodeActionParams`` carrying the editor
+            selection range and the diagnostics in context.
+
+    Returns:
+        A list of :class:`lsprotocol.types.CodeAction`, or ``None``
+        when code actions are disabled.
+
+    Note:
+        Code action kinds are restricted to ``QuickFix``.
+        Delegates to :func:`code_action.resolve` for the actual
+        quick-fix synthesis.
+    """
     if not _features.code_actions:
         return None
     return code_action.resolve(ls, params)
@@ -1003,14 +1609,27 @@ def _code_action(
 
 @server.command("dimfort.checkWorkspace")
 def _cmd_check_workspace(ls: LanguageServer, *_args: Any) -> None:
-    """Run the active checker backend over every file in the workspace
-    index, publishing diagnostics for each. Triggered from the client
-    via ``workspace/executeCommand`` (palette command "DimFort: Check
-    Whole Workspace").
+    """Implements ``workspace/executeCommand dimfort.checkWorkspace``.
 
-    The work runs on a daemon thread so the LSP stays responsive. The
-    server-wide ``state.check_lock`` is held for the duration to avoid
-    racing with per-file didOpen/didSave/didChange checks.
+    Runs the checker over every file in the workspace index,
+    publishing diagnostics for each. Triggered from the client via
+    the palette command "DimFort: Check Whole Workspace".
+
+    The work runs on a daemon thread so the LSP stays responsive.
+    The server-wide ``state.check_lock`` is held for the duration to
+    avoid racing with per-file didOpen/didSave/didChange checks.
+
+    Args:
+        ls: Active language server.
+        *_args: Forwarded command arguments (none expected).
+
+    Returns:
+        None. The actual work + notifications happen on the
+        ``dimfort-check-workspace`` daemon thread.
+
+    Note:
+        No-ops gracefully when the index hasn't been built yet
+        (see :func:`_check_whole_workspace`).
     """
     threading.Thread(
         target=_check_whole_workspace,
@@ -1021,6 +1640,27 @@ def _cmd_check_workspace(ls: LanguageServer, *_args: Any) -> None:
 
 
 def _check_whole_workspace(ls: LanguageServer) -> None:
+    """Worker for ``dimfort.checkWorkspace``: run the pipeline over every indexed file.
+
+    Pulls the file list from ``state.workspace_index.uses_by_file``,
+    fires a ``$/progress`` notification, runs
+    :func:`check_files` with the full configured environment, then
+    publishes per-file diagnostics. Reports a final toast summarising
+    H/U counts, total time, and (when caching is on) cache hit/miss
+    stats.
+
+    Args:
+        ls: Active language server.
+
+    Returns:
+        None.
+
+    Note:
+        Holds ``state.check_lock`` across the whole run so per-file
+        didOpen/didSave/didChange checks can't interleave. When the
+        index isn't ready, surfaces a heads-up via :func:`_notify`
+        and returns without running the pipeline.
+    """
     with state.workspace_index_lock:
         idx = state.workspace_index
     if idx is None:
@@ -1067,6 +1707,24 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
     }
 
     def on_load_progress(phase: str, scanned: int, total: int, path: Path) -> None:
+        """Forward a per-phase pipeline tick to the LSP progress channel.
+
+        Args:
+            phase: Pipeline phase identifier (``"load"`` /
+                ``"index"`` / ``"check"``); used to pick a
+                human-readable label.
+            scanned: Files completed for the phase so far.
+            total: Total files in the phase.
+            path: File currently being processed.
+
+        Returns:
+            None.
+
+        Note:
+            Throttled to ~10/sec; the final tick of each phase
+            always emits so the spinner advances visibly between
+            phases on a 2400-file workspace.
+        """
         if not progress_started:
             return
         now = time.monotonic()
@@ -1178,6 +1836,24 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
 
 
 def run_stdio() -> None:
+    """Entry point: start the DimFort LSP on stdio.
+
+    Raises DimFort's own log level to INFO so progress messages
+    emitted via ``log.info`` reach handlers (pygls's root threshold
+    is WARNING; without this, namespace-scoped INFO logs would be
+    silently dropped before reaching the client's output channel),
+    installs the crash-trace hook so silent stdio deaths leave a
+    file behind for the next debugging pass, and hands control to
+    pygls's ``start_io`` event loop.
+
+    Returns:
+        None. Blocks until the LSP transport closes.
+
+    Note:
+        Used by the console script declared in ``pyproject.toml``
+        (``dimfort-lsp``). Should be the only public callable in
+        this module.
+    """
     # Raise DimFort's own log level so progress messages emitted via
     # ``log.info`` reach handlers. Pygls's root threshold is WARNING;
     # without this, namespace-scoped INFO logs would be silently
@@ -1202,9 +1878,21 @@ def _install_crash_trace_hook() -> None:
     Most pygls feature handlers run on the asyncio loop, so an
     unhandled exception there typically dies via the loop's default
     handler which prints to stderr. If a future crash isn't caught
-    by sys.excepthook + threading.excepthook, the next step is to
-    wrap individual feature handlers in try/except locally rather
-    than instrument the loop globally.
+    by ``sys.excepthook`` + ``threading.excepthook``, the next step
+    is to wrap individual feature handlers in try/except locally
+    rather than instrument the loop globally.
+
+    Also attaches an ERROR-level handler to the ``pygls`` and
+    ``asyncio`` loggers so feature-handler exceptions (which pygls
+    catches and converts to JSON-RPC errors) get mirrored to the
+    crash file.
+
+    Returns:
+        None. Side effects only.
+
+    Note:
+        Env-var contract: unset → default path; empty string →
+        feature disabled; any other value → use as the path.
     """
     import os
     import sys
@@ -1220,6 +1908,22 @@ def _install_crash_trace_hook() -> None:
         path = env
 
     def _write(header: str, body: str) -> None:
+        """Append a header + body section to the crash log file.
+
+        Args:
+            header: Short label identifying the source of the
+                traceback (e.g. ``"sys.excepthook"``, a thread
+                name, or a pygls logger label).
+            body: Formatted traceback text.
+
+        Returns:
+            None.
+
+        Note:
+            Silently swallows IO errors: this is the diagnostic
+            path of last resort, so a write failure can't be
+            allowed to raise further.
+        """
         try:
             with open(path, "a") as f:
                 f.write(f"\n=== {header} ===\n{body}\n")
@@ -1232,6 +1936,16 @@ def _install_crash_trace_hook() -> None:
         exc_value: BaseException,
         exc_tb: TracebackType | None,
     ) -> None:
+        """Format and persist an uncaught exception from ``sys.excepthook``.
+
+        Args:
+            exc_type: Exception class.
+            exc_value: Exception instance.
+            exc_tb: Traceback object (may be ``None``).
+
+        Returns:
+            None.
+        """
         _write(
             "sys.excepthook",
             "".join(traceback.format_exception(exc_type, exc_value, exc_tb)),
@@ -1243,6 +1957,19 @@ def _install_crash_trace_hook() -> None:
     # excepthook on older Pythons.
     if hasattr(threading, "excepthook"):
         def _thread_hook(args: threading.ExceptHookArgs) -> None:
+            """Format and persist an uncaught exception from a daemon thread.
+
+            Args:
+                args: The standard library's bundle of
+                    ``(exc_type, exc_value, exc_traceback, thread)``.
+
+            Returns:
+                None.
+
+            Note:
+                Older Pythons don't route worker-thread exceptions
+                to ``sys.excepthook``; this closes that gap.
+            """
             _write(
                 f"thread {args.thread.name if args.thread else '?'}",
                 "".join(traceback.format_exception(
@@ -1258,7 +1985,31 @@ def _install_crash_trace_hook() -> None:
     # handler that mirrors ERROR-level logs into our crash file so
     # we capture them too.
     class _CrashFileHandler(logging.Handler):
+        """Logging handler that mirrors records into the crash log file.
+
+        Attached to the ``pygls`` and ``asyncio`` loggers so feature
+        handler exceptions — which pygls intercepts and converts to
+        JSON-RPC error responses, bypassing ``sys.excepthook`` —
+        still leave a trace on disk.
+
+        Note:
+            Inherits :class:`logging.Handler`; only :meth:`emit` is
+            overridden.
+        """
+
         def emit(self, record: logging.LogRecord) -> None:
+            """Format and append one log record to the crash file.
+
+            Args:
+                record: Standard ``LogRecord`` instance.
+
+            Returns:
+                None.
+
+            Note:
+                Falls back to ``record.getMessage()`` if formatting
+                raises (e.g. a misformed extra-args payload).
+            """
             try:
                 msg = self.format(record)
             except Exception:  # noqa: BLE001

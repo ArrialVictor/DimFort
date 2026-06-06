@@ -25,6 +25,21 @@ def _marker_token(mark: str) -> str:
     Severity glyphs (🟢/🟡/🔴) map to ``ok``/``warn``/``error``. The
     provenance overlay 🔵 maps to ``assumed`` — companions render it
     as 🔵, but it never participates in worst-of aggregation.
+
+    Args:
+        mark: Single-glyph marker string. Recognised values are
+            ``"🟢"``, ``"🟡"``, ``"🔴"``, and the provenance overlay
+            ``"🔵"``.
+
+    Returns:
+        The matching wire token (``"ok"``, ``"warn"``, ``"error"``, or
+        ``"assumed"``). Unknown glyphs degrade to ``"warn"`` so a
+        stray marker never silently turns into clean.
+
+    Note:
+        Used by the panel/hover renderers when serialising rows for
+        companion clients; companions paint the glyph back from the
+        token.
     """
     return {
         "🟢": "ok", "🔵": "assumed", "🟡": "warn", "🔴": "error",
@@ -41,6 +56,22 @@ def _worst_token(*tokens: str) -> str:
     ``assumed`` overlay is **not** ranked — callers strip it before
     invoking this helper (typically by mapping ``assumed`` → ``ok``
     in their aggregation step).
+
+    Args:
+        *tokens: One or more wire-format severity tokens (``"ok"``,
+            ``"warn"``, ``"error"``). Unknown tokens are ranked as
+            ``"warn"`` so a typo never silently degrades a worst-of
+            comparison.
+
+    Returns:
+        The single token with the highest severity rank.
+
+    Raises:
+        ValueError: When called with zero arguments (``max`` of an
+            empty iterable).
+
+    Note:
+        Pure helper; no module state, safe to call from any thread.
     """
     return max(tokens, key=lambda t: _MARKER_TOKEN_RANK.get(t, 1))
 
@@ -49,8 +80,28 @@ _MARKER_EMOJI_RANK = {"🟢": 0, "🟡": 1, "🔴": 2}
 
 
 def _worst_emoji(*marks: str) -> str:
-    """Worst (highest-severity) of a set of 🟢/🟡/🔴 markers. 🔵 is
-    unranked and treated as 🟢 for aggregation."""
+    """Worst (highest-severity) of a set of 🟢/🟡/🔴 markers.
+
+    Three-tier emoji-domain analogue of :func:`_worst_token`. 🔵 is
+    unranked and treated as 🟢 for aggregation purposes — the overlay
+    glyph never beats a clean parent nor masks a 🟡/🔴 elsewhere.
+
+    Args:
+        *marks: One or more severity glyphs. Unknown glyphs are
+            ranked as 🟢 so a stray character never escalates the
+            aggregate.
+
+    Returns:
+        The single glyph with the highest severity rank.
+
+    Raises:
+        ValueError: When called with zero arguments (``max`` of an
+            empty iterable).
+
+    Note:
+        Pure helper; mirrors the wire-token aggregator but stays in
+        glyph space for renderers that haven't tokenised yet.
+    """
     return max(marks, key=lambda m: _MARKER_EMOJI_RANK.get(m, 0))
 
 
@@ -59,6 +110,17 @@ def _aggregate_marker(marks: Iterable[str]) -> str:
 
     🔵 is unranked overlay — ignored here; callers that want to surface
     it use the root-row's marker directly instead of this aggregate.
+
+    Args:
+        marks: Iterable of severity glyphs to fold. May be empty.
+
+    Returns:
+        🔴 if any input is 🔴; else 🟡 if any input is 🟡; else 🟢
+        (including the empty-iterable case).
+
+    Note:
+        Short-circuits on the first 🔴 seen, so the iterable is not
+        guaranteed to be fully consumed.
     """
     worst = "🟢"
     for m in marks:

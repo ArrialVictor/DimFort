@@ -45,11 +45,27 @@ def _resolve_decl_location(
 
     Searches the workset's loaded trees for the module's defining file,
     then for the declaration site inside it — a variable's declaration
-    identifier, or (``want_procedure``) the function/subroutine
-    definition's name — the same walks go-to-definition uses. Returns a
-    1-based ``{file, line, column}`` or ``None`` when the module or the
-    declaration can't be located (the caller falls back to the ``use``
-    site)."""
+    identifier, or (when ``want_procedure`` is set) the function or
+    subroutine definition's name. Reuses the same walks
+    ``definition.py`` uses for go-to-definition, so a row in the panel
+    navigates exactly where ``F12`` on the symbol would.
+
+    Args:
+        result: Cached :class:`WorksetResult` carrying the loaded
+            tree-sitter trees and source bytes keyed by file path.
+        module_lc: Lower-cased module name to search for.
+        remote_name: Symbol name to locate inside the module — looked
+            up case-insensitively against the declaration site.
+        want_procedure: When ``True``, look for a function /
+            subroutine definition whose name matches; when ``False``,
+            look for a variable declaration identifier.
+
+    Returns:
+        A 1-based ``{"file", "line", "column"}`` dict pointing at the
+        declaration, or ``None`` when the module file isn't loaded or
+        the declaration can't be located. The caller falls back to the
+        ``use`` site when ``None`` is returned.
+    """
     remote_lc = remote_name.lower()
     for tree_path, (other_tree, other_source) in result.trees.items():
         if not any(
@@ -83,14 +99,59 @@ def build_imports(
     *,
     scale_mode: bool = False,
 ) -> list[dict[str, Any]]:
-    """Build the in-scope imported-variable rows for the panel.
+    """Build the in-scope imported-symbol rows for the side panel.
 
-    ``cursor_line`` is 1-based. ``local_names_lc`` is the set of
-    lower-cased names declared locally in the file (a local declaration
-    shadows an import, so those are dropped from the Imports list — they
-    already appear under Scope). One row per imported variable visible at
-    the cursor, each ``{name, unit, unitNormalized, module, kind, file?,
-    line?, column?}``."""
+    Mirrors Fortran ``use``-clause visibility: a clause at module level
+    is visible to every procedure in the module, while a routine-level
+    ``use`` is visible only in that routine. A clause is considered in
+    scope for the cursor when the innermost scope containing the clause
+    also contains the cursor (scope spans come from
+    :func:`recover_scopes`).
+
+    For each in-scope ``use`` the function walks the module's
+    transitive-export closure (variables and procedure signatures),
+    skips any name shadowed by a local declaration, and emits one row
+    per surviving symbol. Each row's location points at the *original*
+    declaration site (resolved via :func:`_resolve_decl_location`) when
+    available, so a click on a re-exported name lands on the module
+    that actually declared it; the ``use`` line is used as the
+    fallback.
+
+    Args:
+        tree: Tree-sitter ``program``-rooted :class:`Tree` for the
+            current buffer, used for scope recovery and ``use``
+            statement extraction.
+        source: UTF-8 source bytes for the same buffer; passed to the
+            tree-sitter helpers for text extraction.
+        cursor_line: 1-based cursor line. Visibility is computed
+            against this line.
+        result: Cached :class:`WorksetResult` carrying module exports,
+            transitive closures, and loaded trees for cross-file
+            declaration lookup.
+        local_names_lc: Lower-cased names declared locally in any
+            scope enclosing the cursor. These shadow imports of the
+            same name, so they are dropped from the Imports list (they
+            already appear under Scope).
+        scale_mode: Forwarded to the unit-normalisation helper so the
+            ``unitNormalized`` field reflects the active scale-mode
+            toggle.
+
+    Returns:
+        One ``dict`` per imported symbol in source order. Variable
+        rows carry ``{name, unit, unitNormalized, module, kind,
+        callable=False, file?, line, column}``. Procedure rows add
+        ``callable=True`` and a ``signature`` string of comma-joined
+        argument units. Both add ``viaModule`` when the symbol is
+        transitively re-exported (``module`` is the origin, ``viaModule``
+        is the directly-used module).
+
+    Note:
+        Only the ``WorksetResult`` trees are read here; the live buffer
+        ``tree`` is used solely for cursor-relative scope detection. No
+        tree-sitter handler lock is acquired because the live tree is
+        freshly parsed by the caller (``panel.resolve``) and the
+        workset trees are accessed read-only by name lookup.
+    """
     recovered = recover_scopes(tree, source)
     enclosing = {
         i for i, (_k, _n, s, e) in enumerate(recovered) if s <= cursor_line <= e

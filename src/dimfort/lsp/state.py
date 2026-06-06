@@ -74,9 +74,88 @@ class _ServerState:
     module references the one shared instance, attribute assignment is visible
     everywhere and there is no ``global`` keyword and no stale-reference
     footgun. Always hold the matching lock when touching a guarded field.
+
+    The class is instantiated exactly once at import time; the resulting
+    ``state`` module-level object is the only handle every LSP feature
+    module imports.
+
+    Attributes:
+        check_lock: Serialises pipeline runs across ``didOpen`` /
+            ``didSave`` / ``didChange`` so a tab-restore burst can't fork
+            N concurrent LFortran subprocesses and trip macOS jetsam.
+        last_result_lock: Guards reads and writes of :attr:`last_result`.
+        workspace_index_lock: Guards reads and writes of
+            :attr:`workspace_index`.
+        ts_handler_lock: Serialises tree-sitter tree traversal across
+            feature handlers (hover, definition, inlay, …). The Python
+            bindings call into a C library that is not thread-safe for
+            concurrent traversal of the same ``Tree``; without this lock
+            two near-simultaneous Cmd-hover requests can crash the
+            native layer with no Python traceback. Every tree-walking
+            handler MUST hold this lock.
+        doc_versions_lock: Guards :attr:`doc_versions`.
+        opened_uris_lock: Guards :attr:`opened_uris`.
+        doc_versions: Per-URI monotonically increasing version counter
+            used to debounce ``didChange``. A scheduled re-check
+            compares the version under the lock before running, so a
+            burst of keystrokes only re-runs the last one.
+        opened_uris: Every file the client currently has open, keyed by
+            resolved :class:`~pathlib.Path` so we can recover the exact
+            URI the editor uses (its normalisation may differ from
+            ours — symlinks, case, percent-encoding). Publishing back to
+            the editor's URI is what makes squiggles appear.
+        workspace_folders: Workspace folder roots captured at
+            ``initialize`` time.
+        last_result: Last successful workset check result, consulted by
+            every read-side feature (hover, panel, inlay). ``None``
+            until the first check completes.
+        workspace_index: Module index built once at ``initialize`` on a
+            background thread (it can take several seconds on large
+            codebases) and updated incrementally on ``didChange`` /
+            ``didSave``. ``None`` until the initial scan completes;
+            callers fall back to a whole-workspace check while ``None``.
+        project_config: Resolved ``.dimfort.toml`` configuration.
+            Loaded once at ``initialize`` time; an LSP restart is
+            required to re-read.
+        external_modules: Lower-cased set of modules the workspace
+            treats as known-external (silently dropped from the
+            dep-chain rather than producing a missing-module
+            diagnostic). Initialised from
+            :data:`DEFAULT_EXTERNAL_MODULES`.
+        max_workset_size: Cap on how many files a single check may
+            include (defaults to :data:`DEFAULT_MAX_WORKSET`). Overrides
+            come from ``maxWorksetSize`` in ``initializationOptions``.
+        scale_mode: Opt-in scale checking. When ``True``, S001
+            (multiplicative) and S002 (affine) fire; when ``False``,
+            dimension-only checking is performed. See
+            ``docs/design/scale.md``.
+        cache: Content-hash cache used to skip re-checking files whose
+            text hasn't changed. ``None`` means caching is disabled and
+            the workspace check runs as it did before the cache landed.
+            See ``docs/design/content-hash-cache.md``.
+        cache_mode: One of ``"off"`` / ``"read-only"`` /
+            ``"read-write"`` matching the CLI flag, surfaced for
+            diagnostics and tests.
+
+    Note:
+        :attr:`project_config`, :attr:`external_modules`,
+        :attr:`max_workset_size`, :attr:`scale_mode`, :attr:`cache`,
+        and :attr:`cache_mode` are written once inside
+        ``server._initialize`` before any ``textDocument/*`` request can
+        arrive, so the write happens-before every worker-thread read
+        and needs no lock. Do not add code paths that read them before
+        ``initialize`` returns.
     """
 
     def __init__(self) -> None:
+        """Initialise every lock, mutable container, and reassignable scalar.
+
+        Called exactly once at import time. All fields start in their
+        empty / disabled / ``None`` state; the LSP ``initialize``
+        handler fills in :attr:`project_config`, :attr:`workspace_index`,
+        and the cache fields before the first ``textDocument/*`` request
+        is allowed to run.
+        """
         # --- locks ---
         # Serialises pipeline runs (didOpen / didSave / didChange).
         self.check_lock = threading.Lock()

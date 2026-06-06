@@ -23,11 +23,26 @@ _UNIT_TRIGGER_RE = re.compile(r"@unit\s*\{([^}]*)$")
 
 
 def _inside_string_literal(prefix: str) -> bool:
-    """Heuristic: cursor is inside an unclosed ``'…'`` or ``"…"`` on
+    """Detect whether the cursor sits inside an unclosed string literal.
+
+    Heuristic: cursor is inside an unclosed ``'…'`` or ``"…"`` on
     this line. Fortran lacks line-continuation inside string literals,
     so a per-line scan suffices. Doubled quotes (Fortran's escape) are
     treated as two separate quote events — fine for the trigger guard
     purpose since either parity decides "in string" correctly.
+
+    Args:
+        prefix: Substring of the current line up to (but not including)
+            the cursor column.
+
+    Returns:
+        ``True`` when an odd number of single or double quotes precedes
+        the cursor (so the cursor is inside an open literal); ``False``
+        otherwise.
+
+    Note:
+        Used as a guard so the unit completion does not fire inside a
+        ``print *, "see @unit{the docs"`` style string.
     """
     in_single = False
     in_double = False
@@ -40,12 +55,27 @@ def _inside_string_literal(prefix: str) -> bool:
 
 
 def _comment_active(prefix: str) -> bool:
-    """True iff a bare ``!`` (the canonical Fortran comment delimiter)
+    """Decide whether a Fortran comment is active at the cursor.
+
+    True iff a bare ``!`` (the canonical Fortran comment delimiter)
     has been seen on this line *outside* a string. Completion fires
     only on the canonical bare ``!``, not on the project-configurable
     unit-comment delimiters shipped in 0.2.2 — a deliberate scoping
     choice so completion matches the user-facing trigger expectation
     rather than every configured pattern.
+
+    Args:
+        prefix: Substring of the current line up to (but not including)
+            the cursor column.
+
+    Returns:
+        ``True`` when a bare ``!`` outside any string literal appears
+        in ``prefix``; ``False`` otherwise.
+
+    Note:
+        Honours string-literal context (``'…'`` and ``"…"``) so a
+        ``!`` inside a string does not falsely arm the completion
+        trigger.
     """
     in_single = False
     in_double = False
@@ -62,6 +92,32 @@ def _comment_active(prefix: str) -> bool:
 def complete(
     ls: LanguageServer, params: lsp.CompletionParams
 ) -> lsp.CompletionList | None:
+    """Offer unit-token completions inside an ``@unit{…}`` annotation.
+
+    Fires only when all three guards pass: the cursor sits inside an
+    unclosed ``@unit{…}``, an active comment delimiter is present on
+    the line, and the cursor is not inside a string literal. When
+    armed, returns the catalogue of base units, derived units, and SI
+    prefixes drawn from ``DEFAULT_TABLE`` so the editor's completion
+    popup suggests valid tokens for the annotation.
+
+    Args:
+        ls: Active :class:`LanguageServer` whose workspace exposes the
+            live document text.
+        params: LSP ``CompletionParams`` carrying the document URI and
+            the cursor position.
+
+    Returns:
+        A :class:`lsp.CompletionList` (with ``is_incomplete=False``)
+        when the trigger fires; ``None`` when the default unit table
+        is unset, when the document cannot be read, or when any guard
+        rejects the trigger context.
+
+    Note:
+        Only the canonical bare ``!`` arms the completion — the
+        project-configurable unit-comment delimiters shipped in 0.2.2
+        are intentionally not honoured here.
+    """
     table = _units_mod.DEFAULT_TABLE
     if table is None:
         return None

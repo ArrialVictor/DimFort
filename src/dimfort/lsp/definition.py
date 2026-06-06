@@ -20,6 +20,34 @@ from dimfort.lsp.tree_access import _trees_for, _uri_for_path
 
 
 def resolve(params: lsp.DefinitionParams) -> list[lsp.Location] | None:
+    """Resolve the identifier under the cursor to its declaration site.
+
+    Classifies the token under the cursor as a ``use`` module name, a
+    call callee, or a plain identifier (in that priority order), then
+    walks every loaded tree in the cached workset for the matching
+    module definition, function/subroutine definition, or variable
+    declaration. F90's case-insensitive name resolution is honoured by
+    lower-casing both sides of the compare.
+
+    Args:
+        params: LSP ``DefinitionParams`` carrying the document URI and
+            the cursor position.
+
+    Returns:
+        A single-element list of :class:`lsp.Location` pointing at the
+        declaration's name node, or ``None`` when no tree is loaded
+        for the URI, no workset result exists, no identifier sits
+        under the cursor, or no matching declaration is found across
+        the workset.
+
+    Note:
+        Caller in ``server.py`` holds ``state.ts_handler_lock`` around
+        this call — the tree-sitter traversal is not safe across
+        concurrent readers. When the cursor was on a "callable", the
+        walk falls through to variable declarations because ``a(1)``
+        is syntactically ambiguous (array index vs function call) in
+        Fortran.
+    """
     found = _trees_for(params.text_document.uri)
     if found is None:
         return None
@@ -75,6 +103,24 @@ def resolve(params: lsp.DefinitionParams) -> list[lsp.Location] | None:
     target_lc = target_name.lower()
 
     def _name_node_location(tree_path: Path, name_node: Node) -> lsp.Location:
+        """Build an :class:`lsp.Location` pointing at a declaration name node.
+
+        Args:
+            tree_path: Absolute filesystem path of the tree that
+                contains ``name_node``; used to look up the editor's
+                original URI (or synthesise one).
+            name_node: Tree-sitter identifier node whose start/end
+                points anchor the returned range.
+
+        Returns:
+            An :class:`lsp.Location` whose URI matches the editor's
+            view of ``tree_path`` and whose range tightly brackets
+            the identifier text.
+
+        Note:
+            Closes over the resolver's :func:`_uri_for_path` lookup
+            so opened-by-editor URIs win over synthetic file URIs.
+        """
         sr, sc = name_node.start_point
         er, ec = name_node.end_point
         return lsp.Location(

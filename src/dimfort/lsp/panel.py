@@ -35,10 +35,67 @@ from dimfort.lsp.tree_nav import (
 
 
 def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
+    """Resolve the ``dimfort/panelInfo`` payload for the cursor position.
+
+    Stateless cursor-following entry point: parses a fresh tree from
+    the live buffer for cursor→node mapping, but pulls every
+    cross-file unit table from the cached :class:`WorksetResult` (so
+    name-keyed lookups don't shift under unsaved edits). Assembles
+    five top-level sections — the expression tree at the cursor, one
+    ``vars`` table per enclosing scope, the cursor-line diagnostics,
+    whole-file diagnostic counts, and the in-scope imports — plus
+    legacy ``scope`` / ``scopeVars`` / ``routine`` / ``routineVars``
+    keys mirroring the innermost scope for single-section consumers.
+
+    On any of the early bail conditions (missing fields in ``params``,
+    URI that doesn't map to a path, no cached check result, no tree
+    yet for this URI, or a fresh-parse failure on the live buffer) the
+    function returns ``None`` and the panel renders nothing. The
+    parse-failure bail is deliberate: walking the cached workset
+    :class:`~tree_sitter.Tree` here would race the read-side handlers
+    that share it (the permanent concurrency gotcha recorded in
+    ``state.ts_handler_lock``), so an unparseable buffer is the safer
+    no-op.
+
+    Args:
+        ls: pygls :class:`LanguageServer` instance, used only to
+            recover the live :class:`TextDocument` for the URI under
+            the cursor.
+        params: Raw LSP custom-method params object. Treated dict-
+            or attribute-accessibly so we don't depend on a specific
+            pygls wrapper class. Expected to carry ``textDocument``
+            (with ``uri``) and ``position`` (with ``line`` /
+            ``character``, both 0-based per LSP).
+
+    Returns:
+        A dict matching the ``panelInfo`` wire format documented in
+        ``docs/design/panel-info.md`` (``expression``, ``scopes``,
+        ``imports``, back-compat ``scope`` / ``routine`` mirrors,
+        ``diagnostics``, ``fileDiagnosticCounts``) or ``None`` when
+        any precondition fails.
+
+    Note:
+        Unlike the hover and inlay handlers this function does NOT
+        acquire :attr:`state.ts_handler_lock` — every tree-sitter walk
+        is over the freshly parsed live-buffer tree (not the shared
+        workset tree), so there is no cross-handler race to serialise.
+    """
     # pygls passes custom-method params as a plain dict-like object.
     # Accept either attribute access (TypedDict-style) or dict access
     # so we don't depend on a specific wrapper class.
     def _get(obj: Any, key: str) -> Any:
+        """Read ``key`` off ``obj`` as either an attribute or dict entry.
+
+        Args:
+            obj: The wrapped LSP params object (TypedDict-style with
+                attribute access, plain ``dict``, or ``None``).
+            key: Field name to look up.
+
+        Returns:
+            The field value when present, or ``None`` when ``obj`` is
+            ``None``, the attribute is missing, or the dict has no
+            entry for ``key``.
+        """
         if hasattr(obj, key):
             return getattr(obj, key)
         if isinstance(obj, dict):
