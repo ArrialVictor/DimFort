@@ -84,10 +84,18 @@ def _outer_unary_sign(node: Node) -> int:
     """Walk up the AST from ``node``, counting enclosing unary minuses.
 
     Peels ``unary_expression(-)`` and ``parenthesized_expression``
-    layers; stops at the first other parent. Returns +1 or -1. Used
-    by the math_expression resolver to propagate an outer ``-`` sign
-    to the literal coefficient of an inner ``*`` / ``/`` so R5.4
-    receives the correct ``k``.
+    layers; stops at the first other parent. Used by the
+    math_expression resolver to propagate an outer ``-`` sign to the
+    literal coefficient of an inner ``*`` / ``/`` so R5.4 receives the
+    correct ``k``.
+
+    Args:
+        node: Inner tree-sitter expression node whose enclosing unary
+            sign chain we want to collapse.
+
+    Returns:
+        ``+1`` when the number of enclosing unary ``-`` layers is even
+        (including zero); ``-1`` when it is odd.
     """
     sign = 1
     parent = node.parent
@@ -116,7 +124,37 @@ _RATIONAL_EXPONENT_MAX_DENOMINATOR = 100
 
 @dataclass
 class _Ctx:
-    """Static context for one file's check pass."""
+    """Static context for one file's check pass.
+
+    Bundles the annotation tables, signature index, derived-type field
+    map, parameter literal values, ``@unit_assume`` /
+    ``@unit_affine_conversion`` directives, scope ranges, and the
+    scale-mode toggle into a single object so resolvers and emitters
+    don't have to thread half a dozen arguments through every call.
+    Constructed once per file via :func:`build_context`.
+
+    Attributes:
+        file: Source path used to stamp diagnostic origins.
+        var_units: Flat first-seen ``name -> unit`` map (compat layer).
+        table: Project :class:`UnitTable` resolved by the config loader.
+        signatures: ``name_lc -> FuncSig`` user-defined callable index.
+        var_types: ``varname_lc -> derived-type-name`` for ``type(T) :: x``.
+        type_field_types: ``(type_lc, field_lc) -> field-struct-name``
+            for nested derived-type fields.
+        field_units: ``(type, field) -> unit`` for unit-annotated fields.
+        parameter_values: Lower-cased PARAMETER names mapped to their
+            literal values for ``**`` exponent recovery.
+        assumes: 1-based line ``-> (unit, reason, column, end_column)``
+            covering each ``@unit_assume`` directive.
+        affine_conversions: 1-based line ``-> (src_text, tgt_text,
+            column)`` covering each ``@unit_affine_conversion`` directive.
+        scope_aware: ``True`` when the caller populated the by-scope
+            table; disables the flat fallback.
+        var_units_by_scope: Scope-aware annotation table.
+        routine_scopes: Sorted byte ranges plus name of every
+            SUBROUTINE/FUNCTION in this file.
+        scale_mode: ``True`` to enable S001/S002 emission.
+    """
 
     file: str
     var_units: dict[str, UnitExpr]
@@ -202,6 +240,9 @@ class _Ctx:
         from their case-preserving counterparts the first time the
         context is constructed; later mutations of the source tables are
         not reflected (the context is treated as immutable post-build).
+
+        Returns:
+            None. Mutates the mirror dicts in place.
         """
         if self.var_units and not self._var_units_lc:
             for k, v in self.var_units.items():
@@ -216,12 +257,22 @@ class _Ctx:
                 self._field_units_lc.setdefault((t.lower(), fld.lower()), v)
 
     def scope_at(self, byte_offset: int) -> str | None:
-        """Innermost enclosing routine scope name (lower-cased) for ``byte_offset``.
+        """Innermost enclosing routine scope name for ``byte_offset``.
 
-        ``None`` if the offset isn't inside any routine (module-level
-        or file-level). The byte ranges are nested-tolerant: a
-        CONTAINS-nested procedure's range is fully contained in its
-        parent's, so the innermost match wins.
+        Bisects ``routine_scopes`` for the rightmost range whose start
+        is at or before ``byte_offset``, then walks backward through any
+        earlier ranges that also contain it so that CONTAINS-nested
+        procedures (whose ranges are fully inside the parent's) win
+        over the parent.
+
+        Args:
+            byte_offset: 0-based UTF-8 byte position of the node being
+                resolved, taken from ``node.start_byte``.
+
+        Returns:
+            The enclosing routine name (already lower-cased at build
+            time), or ``None`` when ``byte_offset`` sits at module or
+            file scope.
         """
         if not self.routine_scopes:
             return None
@@ -242,9 +293,21 @@ class _Ctx:
     def unit_for(self, name: str, byte_offset: int) -> UnitExpr | None:
         """Resolve ``name`` at ``byte_offset`` honouring subroutine scope.
 
-        Order: enclosing routine's scope → file/module-level scope →
-        flat fallback (so callers that didn't populate the scoped
-        table keep working).
+        Lookup order in scope-aware mode: enclosing routine's scope →
+        file/module-level scope (``(None, name)`` layer). In flat mode
+        the case-insensitive ``var_units`` mirror is queried directly.
+        Scope-aware mode deliberately drops the flat fallback (finding
+        #018: a flat fallback let an unannotated parameter absorb a
+        same-named symbol from an unrelated routine).
+
+        Args:
+            name: Identifier text as it appears in source (any case).
+            byte_offset: 0-based UTF-8 byte position used to locate the
+                enclosing routine scope.
+
+        Returns:
+            The annotated :class:`UnitExpr` if known, or ``None`` when
+            ``name`` is unannotated in the relevant scope.
         """
         name_lc = name.lower()
         if self.scope_aware:
@@ -287,27 +350,64 @@ _SYNTACTIC_TOKEN_TYPES = frozenset({
 
 
 def _position(node: Node) -> Position:
-    """Convert a tree-sitter node's start to a 1-based ``Position``."""
+    """Convert a tree-sitter node's start to a 1-based ``Position``.
+
+    Args:
+        node: Any tree-sitter node; only its start point is read.
+
+    Returns:
+        A :class:`Position` whose ``line`` and ``column`` are 1-based
+        — matching the LSP / DimFort diagnostic coordinate convention.
+    """
     sp = _ts.position_for(node)
     return Position(sp.line, sp.column)
 
 
 def _text(node: Node, source: bytes) -> str:
-    """Source text spanned by ``node`` as ``str`` (UTF-8 tolerant)."""
+    """Source text spanned by ``node`` as ``str`` (UTF-8 tolerant).
+
+    Args:
+        node: Tree-sitter node whose ``start_byte`` / ``end_byte`` range
+            spans the slice we want.
+        source: Full file contents as raw bytes.
+
+    Returns:
+        The decoded substring. Invalid UTF-8 bytes are tolerated by
+        :func:`dimfort.core.ts_parser.node_text`.
+    """
     return _ts.node_text(node, source)
 
 
 def _content_children(node: Node) -> list[Node]:
-    """Children that carry data, not punctuation/keywords."""
+    """Children that carry data, not punctuation/keywords.
+
+    Filters out tokens listed in ``_SYNTACTIC_TOKEN_TYPES`` (parens,
+    commas, operators, ``call`` / ``end`` keywords, etc.) so callers can
+    iterate operand-shaped children without minding tree-sitter's
+    syntactic noise.
+
+    Args:
+        node: Any tree-sitter node whose children are to be filtered.
+
+    Returns:
+        The data-bearing children, in source order.
+    """
     return [c for c in node.children if c.type not in _SYNTACTIC_TOKEN_TYPES]
 
 
 def _math_op(node: Node) -> str | None:
-    """Operator symbol of a ``math_expression``: ``+``, ``-``, ``*``, ``/``, ``**``.
+    """Operator symbol of a ``math_expression``.
 
     The operator is exposed as its own child with the operator string
-    as its ``type``; we just look for the first non-content child
-    whose type is one of those symbols.
+    as its ``type``; we just look for the first non-content child whose
+    type is one of those symbols.
+
+    Args:
+        node: Tree-sitter ``math_expression`` node.
+
+    Returns:
+        One of ``"+"``, ``"-"``, ``"*"``, ``"/"``, ``"**"``, or
+        ``None`` when no operator child is present (malformed shape).
     """
     ops = {"+", "-", "*", "/", "**"}
     for c in node.children:
@@ -317,7 +417,16 @@ def _math_op(node: Node) -> str | None:
 
 
 def _math_operands(node: Node) -> tuple[Node | None, Node | None]:
-    """Return ``(lhs, rhs)`` of a binary ``math_expression``."""
+    """Return ``(lhs, rhs)`` of a binary ``math_expression``.
+
+    Args:
+        node: Tree-sitter ``math_expression`` node.
+
+    Returns:
+        ``(lhs, rhs)`` with both operand nodes when the expression has
+        at least two data-bearing children; otherwise ``(None, None)``
+        for malformed / partial shapes.
+    """
     operands = _content_children(node)
     if len(operands) >= 2:
         return operands[0], operands[1]
@@ -325,14 +434,30 @@ def _math_operands(node: Node) -> tuple[Node | None, Node | None]:
 
 
 def _unary_operand(node: Node) -> Node | None:
-    """Return the operand of a ``unary_expression``."""
+    """Return the operand of a ``unary_expression``.
+
+    Args:
+        node: Tree-sitter ``unary_expression`` node.
+
+    Returns:
+        The first data-bearing child (the operand), or ``None`` if no
+        such child exists.
+    """
     for c in _content_children(node):
         return c
     return None
 
 
 def _assignment_sides(node: Node) -> tuple[Node | None, Node | None]:
-    """Return ``(lhs, rhs)`` of an ``assignment_statement``."""
+    """Return ``(lhs, rhs)`` of an ``assignment_statement``.
+
+    Args:
+        node: Tree-sitter ``assignment_statement`` node.
+
+    Returns:
+        ``(lhs, rhs)`` of the assignment, or ``(None, None)`` when the
+        statement has fewer than two data-bearing children.
+    """
     parts = _content_children(node)
     if len(parts) >= 2:
         return parts[0], parts[1]
@@ -366,25 +491,36 @@ def _assignment_homogeneity(
     ctx: _Ctx,
     source: bytes,
 ) -> tuple[AssignmentVerdict, UnitExpr | None, UnitExpr | None]:
-    """Decide what an assignment's homogeneity status is — and what
-    units it has after applying the initialization-autocast rule R4.4.
+    """Classify an assignment's homogeneity status and its effective units.
 
-    Returns ``(verdict, lhs_unit, effective_rhs_unit)``. ``effective_
-    rhs_unit`` equals ``lhs_unit`` when the verdict is ``"autocast"``
-    or ``"homogeneous"``; otherwise it's whatever ``_resolve`` returned
-    for the RHS.
-
-    This function is the *single source of truth* for what an
-    assignment looks like to any consumer:
+    Applies the initialization-autocast rule R4.4 and the implicit
+    wrapper-untag rule D1.6. This function is the *single source of
+    truth* for what an assignment looks like to any consumer:
 
     - The checker calls it to drive diagnostic emission and to record
-      :class:`AutocastEvent`s.
+      :class:`AutocastEvent` s.
     - The LSP renderers (panel, hover) call it to decide the marker
       and the units they display.
 
-    Keep the autocast detection here only. Renderers must never
-    detect autocast locally — that's how the marker disagreed with
+    Keep the autocast detection here only. Renderers must never detect
+    autocast locally — that drift caused the marker to disagree with
     the diagnostic stream before this refactor.
+
+    Args:
+        target: Tree-sitter LHS expression node, or ``None`` when the
+            assignment shape couldn't be peeled.
+        value: Tree-sitter RHS expression node, or ``None`` likewise.
+        ctx: Per-file :class:`_Ctx` carrying the annotation tables.
+        source: Full file contents (raw bytes) for sub-resolver text
+            lookups.
+
+    Returns:
+        ``(verdict, lhs_unit, effective_rhs_unit)`` where
+        ``effective_rhs_unit`` equals ``lhs_unit`` for ``"autocast"``
+        and ``"homogeneous"`` verdicts, and is the resolver's raw RHS
+        unit otherwise. Possible verdicts: ``"unresolved"``,
+        ``"homogeneous"``, ``"autocast"``, ``"wrapper_untag"``,
+        ``"mismatch"``.
     """
     if target is None or value is None:
         return "unresolved", None, None
@@ -418,18 +554,28 @@ def _assume_for_node(
 
     The directive is written as a trailing ``!< @unit_assume{...}`` on
     the statement (single-line: same line; continued: the last physical
-    line). We scan only the node's own line span so a trailing assume on
-    statement N never bleeds onto statement N+1. Returns
-    ``(unit, reason, line, column, end_column)``.
+    line). We scan only the node's own line span so a trailing assume
+    on statement N never bleeds onto statement N+1.
 
-    Multiple ``@unit_assume`` directives on different physical lines of
-    the same ``&``-continued statement: **first wins** silently — the
-    earliest-line hit is returned and any later directive on the same
-    statement is dropped. Same-line duplicates are already caught at
-    scan time (``annotations.py:377`` emits U021); the cross-line case
-    isn't, which is a known limitation of the line-scan model and is
-    deliberately left in place for 0.2.3 (the upgrade path requires
-    threading a per-statement assume registry through the scanner).
+    Args:
+        node: Tree-sitter statement-level node whose source line span
+            is scanned.
+        ctx: Per-file context; the search is keyed off
+            ``ctx.assumes``.
+
+    Returns:
+        ``(unit, reason, line, column, end_column)`` of the matching
+        directive, or ``None`` when no assume covers ``node``.
+
+    Note:
+        Multiple ``@unit_assume`` directives on different physical
+        lines of the same ``&``-continued statement: **first wins**
+        silently — the earliest-line hit is returned and any later
+        directive on the same statement is dropped. Same-line
+        duplicates are already caught at scan time
+        (``annotations.py:377`` emits U021); the cross-line case isn't,
+        a known limitation of the line-scan model deliberately left in
+        place for 0.2.3.
     """
     if not ctx.assumes:
         return None
@@ -446,11 +592,20 @@ def _assume_for_node(
 def _affine_conv_for_node(
     node: Node, ctx: _Ctx
 ) -> tuple[str, str, int, int] | None:
-    """Return the ``@unit_affine_conversion`` directive covering ``node``,
-    or ``None``. Returns ``(src_text, tgt_text, line, column)``.
+    """Return the ``@unit_affine_conversion`` covering ``node``, or ``None``.
 
-    Same line-span scan as :func:`_assume_for_node` so a trailing directive
-    on statement N never bleeds onto N+1.
+    Same line-span scan as :func:`_assume_for_node` so a trailing
+    directive on statement N never bleeds onto N+1.
+
+    Args:
+        node: Tree-sitter statement-level node whose source line span
+            is scanned.
+        ctx: Per-file context; the search is keyed off
+            ``ctx.affine_conversions``.
+
+    Returns:
+        ``(src_text, tgt_text, line, column)`` of the matching
+        directive, or ``None`` when no conversion covers ``node``.
     """
     if not ctx.affine_conversions:
         return None
@@ -467,7 +622,19 @@ def _affine_conv_for_node(
 def _build_autocast_event(
     value_node: Node, lhs_unit: UnitExpr, file: str, source: bytes,
 ) -> AutocastEvent:
-    """Construct an :class:`AutocastEvent` for an R4.4 fire at ``value_node``."""
+    """Construct an :class:`AutocastEvent` for an R4.4 fire at ``value_node``.
+
+    Args:
+        value_node: Tree-sitter RHS expression that took on the LHS
+            unit under R4.4.
+        lhs_unit: The unit the literal was implicitly cast into.
+        file: Source path used to stamp the event's ``file`` field.
+        source: Full file contents (raw bytes) for literal-text extraction.
+
+    Returns:
+        A fully-populated :class:`AutocastEvent` ready to be appended
+        to the per-file event stream consumed by the LSP layer.
+    """
     start, end = _node_span(value_node)
     return AutocastEvent(
         file=file,
@@ -485,6 +652,16 @@ def _call_callee_name(node: Node, source: bytes) -> str | None:
     The callee is always the first ``identifier`` child of the call.
     Subroutine call nodes additionally carry a leading ``call`` keyword
     that we filter out via ``_content_children``.
+
+    Args:
+        node: Tree-sitter ``call_expression`` or ``subroutine_call``
+            node.
+        source: Full file contents (raw bytes) for identifier-text
+            extraction.
+
+    Returns:
+        The callee name in original source case, or ``None`` when the
+        first content child isn't an identifier (unknown shape).
     """
     for c in _content_children(node):
         if c.type == "identifier":
@@ -497,8 +674,18 @@ def _call_args(node: Node, source: bytes) -> list[Node]:
     """Return the positional argument expressions of a call.
 
     Skips keyword arguments and punctuation. For sites that need to
-    bind keyword arguments to their formal slot — H003/H004/H020/H022 —
-    use :func:`_call_args_aligned` instead.
+    bind keyword arguments to their formal slot — H003/H004/H020/H022
+    — use :func:`_call_args_aligned` instead.
+
+    Args:
+        node: Tree-sitter ``call_expression`` or ``subroutine_call``
+            node.
+        source: Full file contents (raw bytes); accepted for signature
+            uniformity with peer helpers (currently unused).
+
+    Returns:
+        Positional argument expression nodes in source order. Empty
+        when the call has no ``argument_list`` child.
     """
     arglist = next((c for c in node.children if c.type == "argument_list"), None)
     if arglist is None:
@@ -517,10 +704,19 @@ def _keyword_arg_parts(node: Node, source: bytes) -> tuple[str | None, Node | No
     """Pull ``(name, value)`` out of a ``keyword_argument`` AST node.
 
     Tree-sitter Fortran emits ``keyword_argument`` as ``identifier =
-    expression`` (with the punctuation as its own child). The name is
-    returned in original case so the caller can lowercase against
-    ``sig.arg_names``; ``None`` on either side means the shape didn't
-    look like a keyword we can resolve.
+    expression`` (with the punctuation as its own child).
+
+    Args:
+        node: Tree-sitter ``keyword_argument`` node.
+        source: Full file contents (raw bytes) for identifier-text
+            extraction.
+
+    Returns:
+        ``(name, value_node)`` where ``name`` is the keyword in
+        original source case (the caller lowercases against
+        ``sig.arg_names``) and ``value_node`` is the right-hand
+        expression. Either side is ``None`` when the shape didn't look
+        like a keyword we can resolve.
     """
     name_node: Node | None = None
     value_node: Node | None = None
@@ -547,9 +743,19 @@ def _call_args_aligned(
     matches (case-insensitive). Slots not supplied by the call site
     stay ``None`` (Fortran's INTENT(OPTIONAL) shape).
 
-    When ``sig`` is ``None`` (no signature available, e.g. an unknown
-    callee), falls back to plain positional behaviour — keyword args
-    are dropped, matching the legacy ``_call_args`` shape.
+    Args:
+        node: Tree-sitter ``call_expression`` or ``subroutine_call``
+            node.
+        source: Full file contents (raw bytes) for keyword-name
+            extraction.
+        sig: Callee signature; when ``None`` (unknown callee), falls
+            back to plain positional behaviour and keyword args are
+            dropped, matching the legacy :func:`_call_args` shape.
+
+    Returns:
+        A list of length ``len(sig.arg_names)`` (or the call's
+        positional count when ``sig`` is ``None``) where each entry is
+        the argument expression for that slot or ``None`` if absent.
     """
     arglist = next((c for c in node.children if c.type == "argument_list"), None)
     if arglist is None:
@@ -584,7 +790,17 @@ def _call_args_aligned(
 
 
 def _unwrap_parens(node: Node) -> Node:
-    """Strip outer ``parenthesized_expression`` layers."""
+    """Strip outer ``parenthesized_expression`` layers.
+
+    Args:
+        node: Any tree-sitter expression node; may already be
+            unwrapped.
+
+    Returns:
+        The innermost non-``parenthesized_expression`` node. Returns
+        ``node`` unchanged when the structure is empty parens or there
+        was no wrapping to peel.
+    """
     while node.type == "parenthesized_expression":
         inner = _content_children(node)
         if not inner:
@@ -594,12 +810,21 @@ def _unwrap_parens(node: Node) -> Node:
 
 
 def _is_number_literal_node(node: Node) -> bool:
-    """True if ``node`` is a bare numeric literal (parens/unary +/- ok).
+    """Return ``True`` if ``node`` is a bare numeric literal.
 
     Detects literal-ness structurally rather than via
-    ``_resolve_constant_value`` — the latter returns ``None`` for values
-    it can't rationalise (e.g. E-notation like ``2.546E-5``), which must
-    still be treated as a numeric literal for implicit-cast purposes.
+    :func:`_resolve_constant_value` — the latter returns ``None`` for
+    values it can't rationalise (e.g. E-notation like ``2.546E-5``),
+    which must still be treated as a numeric literal for implicit-cast
+    purposes. Parens and a single unary ``+``/``-`` around the literal
+    are tolerated.
+
+    Args:
+        node: Tree-sitter expression node.
+
+    Returns:
+        ``True`` when ``node`` peels down to a ``number_literal``,
+        ``False`` otherwise.
     """
     n = _unwrap_parens(node)
     if n.type == "number_literal":
@@ -620,8 +845,17 @@ def _flatten_member_chain(
     sequence ``("o", ["inner", "x"])`` so the rest of the resolver can
     treat all chain depths uniformly.
 
-    Returns ``(None, [])`` if the structure isn't a clean variable-
-    rooted chain (e.g. it bottoms out in a call or array index).
+    Args:
+        node: Tree-sitter ``derived_type_member_expression`` node.
+        source: Full file contents (raw bytes) for identifier-text
+            extraction.
+
+    Returns:
+        ``(base, path)`` where ``base`` is the root identifier (in
+        original case) and ``path`` is the source-order list of field
+        names walking outward. Returns ``(None, [])`` when the
+        structure isn't a clean variable-rooted chain (e.g. bottoms
+        out in a call or array index).
     """
     fields: list[str] = []
     cur = node
@@ -643,7 +877,21 @@ def _flatten_member_chain(
 
 
 def _is_real_literal(node: Node, source: bytes) -> bool:
-    """``number_literal`` is real if its text has ``.`` or scientific notation."""
+    """Return ``True`` when a ``number_literal`` carries a real value.
+
+    A literal is treated as real (vs integer) when its source text
+    contains a decimal point or a scientific-notation exponent marker
+    (``e`` / ``E`` / ``d`` / ``D``).
+
+    Args:
+        node: Tree-sitter ``number_literal`` node.
+        source: Full file contents (raw bytes) for literal-text
+            extraction.
+
+    Returns:
+        ``True`` for real literals, ``False`` for plain integer
+        literals.
+    """
     text = _text(node, source)
     return "." in text or "e" in text.lower() or "d" in text.lower()
 
@@ -654,16 +902,26 @@ def _resolve_constant_value(
     """Resolve a node to a constant rational value.
 
     Handles:
-    - A bare ``number_literal`` (possibly wrapped in unary ``-``/``+`` /
-      parens) — same as the legacy ``_constant_exponent``.
-    - A reference to a PARAMETER whose initialiser collapses to a rational
-      (via ``ctx.parameter_values``). Enables ``p ** kappa`` patterns
-      (Exner, etc.) to recover a literal-rational exponent.
-    - Simple constant-folded arithmetic over the above: ``2./7.``,
-      ``RD/RCPD`` (where both are PARAMETERs), ``-kappa`` etc.
 
-    Returns ``None`` when any sub-expression isn't known. Safe to call
-    with ``ctx=None``; PARAMETER lookup is then skipped.
+    - A bare ``number_literal`` (possibly wrapped in unary ``-``/``+``
+      or parens) — same as the legacy ``_constant_exponent``.
+    - A reference to a PARAMETER whose initialiser collapses to a
+      rational (via ``ctx.parameter_values``). Enables ``p ** kappa``
+      patterns (Exner, etc.) to recover a literal-rational exponent.
+    - Simple constant-folded arithmetic over the above: ``2./7.``,
+      ``RD/RCPD`` (where both are PARAMETERs), ``-kappa``, etc.
+
+    Args:
+        node: Tree-sitter expression node to fold, or ``None``.
+        ctx: Per-file context; safe to pass ``None`` (PARAMETER lookup
+            is then skipped).
+        source: Full file contents (raw bytes) for literal-text and
+            identifier-text extraction.
+
+    Returns:
+        The folded ``int`` or :class:`~fractions.Fraction` value, or
+        ``None`` when any sub-expression isn't known, the node is
+        ``None``, or division by zero would have occurred.
     """
     if node is None:
         return None
@@ -711,28 +969,37 @@ def _resolve_constant_value(
 def _resolve_symbolic_exponent(
     node: Node | None, ctx: _Ctx | None, source: bytes,
 ) -> Exponent | None:
-    """Resolve a node to a symbolic Exponent (linear form over named
-    dim'less generators + a rational constant).
+    """Resolve a node to a symbolic :class:`Exponent`.
 
-    Used by the ``**`` resolver as a fallback when the exponent is
-    *not* a literal rational. Returns ``None`` if the expression isn't
-    representable as a linear Exponent — the caller then falls back to
-    the existing D1.4 path.
+    Reduces an expression to the linear form ``a*s + b`` over named
+    dim'less generators plus a rational constant. Used by the ``**``
+    resolver as a fallback when the exponent is *not* a literal
+    rational; falling back to ``None`` lets the caller emit D1.4.
 
     Allowed shapes (the linear-form fragment):
 
     - Literal rational / PARAMETER reference (delegates to
-      ``_resolve_constant_value``, then promotes to a constant
+      :func:`_resolve_constant_value`, then promotes to a constant
       Exponent).
     - Bare identifier whose annotated unit is dim'less (becomes an
       opaque symbol named after the identifier).
-    - Unary ``-``/``+``.
-    - ``+`` / ``-`` of two sub-Exponents (sum or difference).
+    - Unary ``-`` / ``+``.
+    - ``+`` / ``-`` of two sub-Exponents.
     - ``*`` of two sub-Exponents where at least one side is
       pure-constant (scalar multiplication; symbol×symbol is
       non-linear and surfaces ``None``).
     - ``/`` of any sub-Exponent by a *constant* sub-Exponent
       (scalar division). Symbol-in-denominator is non-linear.
+
+    Args:
+        node: Tree-sitter expression node, or ``None``.
+        ctx: Per-file context; pass ``None`` to skip identifier-based
+            symbol lookups.
+        source: Full file contents (raw bytes).
+
+    Returns:
+        An :class:`Exponent` when the expression is representable as a
+        linear form, or ``None`` otherwise.
     """
     if node is None:
         return None
@@ -796,12 +1063,24 @@ def _resolve_symbolic_exponent(
 
 
 def _constant_exponent(node: Node, source: bytes) -> int | Fraction | None:
-    """Decode an expression used as a power exponent into ``int`` or ``Fraction``.
+    """Decode a power exponent expression into ``int`` or ``Fraction``.
 
-    Accepts ``number_literal`` directly, or a ``unary_expression`` /
+    Accepts a ``number_literal`` directly, or a ``unary_expression`` /
     ``parenthesized_expression`` wrapping a number literal (so
-    ``b ** -2`` and ``b ** (-2)`` both work). Anything else → ``None``,
-    meaning "we don't know the exponent" so the caller stops resolving.
+    ``b ** -2`` and ``b ** (-2)`` both work). Real literals are
+    rationalised with a denominator cap of
+    ``_RATIONAL_EXPONENT_MAX_DENOMINATOR``.
+
+    Args:
+        node: Tree-sitter expression node used as the right-hand side
+            of a ``**``.
+        source: Full file contents (raw bytes) for literal-text
+            extraction.
+
+    Returns:
+        The decoded ``int`` or :class:`~fractions.Fraction`, or
+        ``None`` when the shape isn't a literal we can rationalise
+        ("we don't know the exponent" — caller stops resolving).
     """
     node = _unwrap_parens(node)
     sign = 1
@@ -847,12 +1126,26 @@ def _constant_exponent(node: Node, source: bytes) -> int | Fraction | None:
 def _resolve(node: Node | None, ctx: _Ctx, source: bytes) -> UnitExpr | None:
     """Return the unit of ``node``, or ``None`` if we don't know.
 
+    Dispatches on ``node.type``: identifier lookup, numeric-literal
+    neutral element, unary peel, full ``math_expression`` arithmetic
+    (with rational + symbolic literal recovery and outer-unary-minus
+    sign propagation), ``call_expression`` (intrinsic + user-defined),
+    and ``derived_type_member_expression`` chain resolution.
+
     "Unknown" is a first-class outcome — many expression shapes
-    (intrinsics outside the supported categories — DIMENSIONLESS, LOG,
-    EXP, TRANSFORMING, TRANSPARENT, SAME_UNIT_ARG, PRODUCT, REDUCTION —
-    casts, complex chains) don't yield a useful answer, and returning
-    ``None`` lets the caller skip the check rather than risk a false
-    positive.
+    (intrinsics outside the supported categories, casts, complex
+    chains) don't yield a useful answer, and returning ``None`` lets
+    the caller skip the check rather than risk a false positive.
+
+    Args:
+        node: Tree-sitter expression node to resolve, or ``None``.
+        ctx: Per-file context.
+        source: Full file contents (raw bytes).
+
+    Returns:
+        The :class:`UnitExpr` of ``node``, or ``None`` when ``node``
+        is ``None``, when its shape is unsupported, or when a
+        sub-expression resolved to ``None``.
     """
     if node is None:
         return None
@@ -950,6 +1243,17 @@ def _resolve_member_chain(
     For ``o%inner%x``: look up ``var_types["o"]`` → T1, step
     ``type_field_types[(T1, "inner")]`` → T2, then return
     ``field_units[(T2, "x")]``. Any unknown step short-circuits.
+
+    Args:
+        node: Tree-sitter ``derived_type_member_expression`` node.
+        ctx: Per-file context carrying the type/field tables.
+        source: Full file contents (raw bytes).
+
+    Returns:
+        The :class:`UnitExpr` annotated on the leaf field, or
+        ``None`` when the chain isn't variable-rooted, the base
+        variable's type is unknown, an intermediate field's type is
+        unknown, or the leaf field is unannotated.
     """
     base, path = _flatten_member_chain(node, source)
     if base is None or not path:
@@ -967,12 +1271,24 @@ def _resolve_member_chain(
 
 
 def _resolve_call(node: Node, ctx: _Ctx, source: bytes) -> UnitExpr | None:
-    """Resolve a ``call_expression``'s result unit.
+    """Resolve a ``call_expression`` result unit.
 
-    Dispatches in order: intrinsic categories first, then the user-
-    defined signature table, then a fallback that treats the name as
-    an array index (``arr(i)`` and ``f(x)`` are syntactically
-    identical in Fortran).
+    Dispatches in order: intrinsic categories first
+    (DIMENSIONLESS / LOG / EXP / TRANSFORMING / TRANSPARENT /
+    SAME_UNIT_ARG / PRODUCT / REDUCTION), then the user-defined
+    signature table (with polymorphism), then a fallback that treats
+    the name as an array index (``arr(i)`` and ``f(x)`` are
+    syntactically identical in Fortran).
+
+    Args:
+        node: Tree-sitter ``call_expression`` node.
+        ctx: Per-file context carrying intrinsic + user signatures.
+        source: Full file contents (raw bytes).
+
+    Returns:
+        The call's result :class:`UnitExpr`, or ``None`` when the
+        callee is unknown, an argument resolves to ``None``, or the
+        result of an intrinsic-specific computation isn't expressible.
     """
     name = _call_callee_name(node, source)
     if name is None:
@@ -1081,8 +1397,16 @@ def _node_span(node: Node) -> tuple[Position, Position]:
     """Return ``(start, end)`` positions in DimFort 1-based coordinates.
 
     Using the full extent (not just the start) gives VSCode a real
-    range to draw the squiggle over, instead of widening a zero-length
-    point to a single character.
+    range to draw the squiggle over, instead of widening a
+    zero-length point to a single character.
+
+    Args:
+        node: Tree-sitter node whose ``start_point`` / ``end_point``
+            are read.
+
+    Returns:
+        ``(start, end)`` :class:`Position` pair spanning the node's
+        source range with line/column 1-based.
     """
     sr, sc = node.start_point
     er, ec = node.end_point
@@ -1092,34 +1416,51 @@ def _node_span(node: Node) -> tuple[Position, Position]:
 def _emit_unparsed_regions(tree: Tree, ctx: _Ctx) -> list[Diagnostic]:
     """Emit one P001 (INFO) per contiguous region tree-sitter couldn't parse.
 
-    The honesty marker: where the parser left ``ERROR`` / ``missing`` nodes the
-    checker resolves nothing, so we say so rather than implying the lines are
-    clean. Nested error nodes for one bad construct are coalesced by line span
-    into a single region. See docs/design/unparsed-regions.md.
+    The honesty marker: where the parser left ``ERROR`` / ``missing``
+    nodes the checker resolves nothing, so we say so rather than
+    implying the lines are clean. Nested error nodes for one bad
+    construct are coalesced by line span into a single region. See
+    docs/design/unparsed-regions.md.
 
-    Only the *innermost* error nodes are reported: tree-sitter often wraps a
-    single bad statement in an outer ``ERROR`` node spanning the whole enclosing
-    construct (e.g. the entire subroutine), so an error node that contains
-    another error node is dropped — otherwise one stray line would blue-underline
-    a whole routine.
+    Only the *innermost* error nodes are reported: tree-sitter often
+    wraps a single bad statement in an outer ``ERROR`` node spanning
+    the whole enclosing construct, so an error node that contains
+    another error node is dropped — otherwise one stray line would
+    blue-underline a whole routine.
 
-    Each surviving ERROR is then widened to its smallest ``*_statement`` (or
-    ``subroutine_call``) ancestor with ``has_error=True``: tree-sitter's error
-    recovery commonly swallows the immediately-following clean statement into
-    the bad statement's parse node (the parent assignment_statement spans both
-    lines with ``has_error=True``), so the panel produces degraded results on
-    the swallowed line too. Widening the P001 to that ancestor honestly marks
-    the full untrustworthy range; otherwise users see a single blue line plus
-    a silently-empty Expression panel one line below.
+    Each surviving ERROR is then widened to its smallest
+    ``*_statement`` (or ``subroutine_call``) ancestor with
+    ``has_error=True``: tree-sitter's error recovery commonly swallows
+    the immediately-following clean statement into the bad statement's
+    parse node (the parent assignment_statement spans both lines with
+    ``has_error=True``), so the panel produces degraded results on the
+    swallowed line too. Widening the P001 to that ancestor honestly
+    marks the full untrustworthy range; otherwise users see a single
+    blue line plus a silently-empty Expression panel one line below.
+
+    Args:
+        tree: Tree-sitter parse :class:`Tree` for the file.
+        ctx: Per-file context; only ``ctx.file`` is read (to stamp the
+            diagnostic).
+
+    Returns:
+        Zero or more P001 :class:`Diagnostic` s, one per coalesced
+        unparsed region.
     """
     def _statement_ancestor_with_error(node: Node) -> Node | None:
         """Return the smallest enclosing erroring statement-level ancestor.
 
         Walks up parents looking for a ``*_statement`` or
         ``subroutine_call`` whose ``has_error`` is set. Used to widen
-        a P001 region from the bare error node out to the
-        full statement tree-sitter recovery considered untrustworthy.
-        Returns ``None`` if no such ancestor exists.
+        a P001 region from the bare error node out to the full
+        statement tree-sitter recovery considered untrustworthy.
+
+        Args:
+            node: Tree-sitter ERROR node whose ancestor we want.
+
+        Returns:
+            The widened statement ancestor, or ``None`` when no
+            erroring statement-level ancestor exists.
         """
         cur = node.parent
         while cur is not None:
@@ -1180,7 +1521,7 @@ def _emit_unparsed_regions(tree: Tree, ctx: _Ctx) -> list[Diagnostic]:
 def _emit_u005_for_unannotated(
     tree: Tree, ctx: _Ctx, source: bytes,
 ) -> list[Diagnostic]:
-    """Emit U005 on declarations whose names are used in a checked context but unannotated.
+    """Emit U005 on unannotated declarations referenced in checked contexts.
 
     "Checked context" = the identifier appears as an operand of an
     assignment, a binary expression, a unary expression, or as a call
@@ -1198,6 +1539,17 @@ def _emit_u005_for_unannotated(
     we cross-reference queried names against recorded declarations.
     Avoids the two-pass tree walk an earlier revision had — the
     second pass alone was visible on profiles of large workspaces.
+
+    Args:
+        tree: Tree-sitter parse :class:`Tree` for the file.
+        ctx: Per-file context; ``ctx.var_units`` is used to filter out
+            already-annotated names.
+        source: Full file contents (raw bytes) for identifier-text
+            extraction.
+
+    Returns:
+        Zero or more U005 :class:`Diagnostic` s, at most one per
+        (declaration line, name) pair.
     """
     queried: set[str] = set()
     first_use: dict[str, tuple[int, int]] = {}
@@ -1212,6 +1564,14 @@ def _emit_u005_for_unannotated(
         Updates the closure's ``queried`` set and tracks the earliest
         usage position for each name so the U005 message can cite a
         representative usage line.
+
+        Args:
+            ident: Tree-sitter ``identifier`` node found at an operand
+                position.
+
+        Returns:
+            None. Mutates the enclosing ``queried`` / ``first_use``
+            state.
         """
         name = _ts.node_text(ident, source)
         if not name:
@@ -1226,12 +1586,21 @@ def _emit_u005_for_unannotated(
             first_use[key] = (sr, sc)
 
     def _walk_operands(expr: Node | None) -> None:
-        """Recurse over operand-shaped children of ``expr``, marking identifiers.
+        """Recurse over operand-shaped children of ``expr``.
 
-        Walks only structural operand kinds (identifier / math_expression
-        / unary_expression / parenthesized_expression / member-chain /
-        call_expression) so noise nodes (qualifiers, punctuation) don't
-        leak into the queried set.
+        Walks only structural operand kinds (identifier /
+        math_expression / unary_expression / parenthesized_expression /
+        member-chain / call_expression) so noise nodes (qualifiers,
+        punctuation) don't leak into the queried set.
+
+        Args:
+            expr: Tree-sitter expression node, or ``None`` (the latter
+                is a no-op so callers can pass either side of an
+                assignment unconditionally).
+
+        Returns:
+            None. Identifiers encountered are forwarded to
+            :func:`_mark_identifier`.
         """
         if expr is None:
             return
@@ -1313,6 +1682,14 @@ def _decl_name_nodes(decl: Node) -> Iterator[Node]:
 
     Same logic as :func:`_collect_decl_names`, but yields the nodes so
     the caller can read their positions.
+
+    Args:
+        decl: Tree-sitter ``variable_declaration`` node.
+
+    Yields:
+        ``identifier`` :class:`Node` s, one per declared name. Names
+        wrapped in a declarator (``init_declarator`` etc.) are unwrapped
+        via :func:`_declarator_leading_node`.
     """
     for c in decl.children:
         if c.type == "identifier":
@@ -1328,8 +1705,14 @@ def _declarator_leading_node(node: Node) -> Node | None:
 
     Descends through nested ``_DECLARATOR_WRAPPERS`` shapes (e.g.
     ``init_declarator``, ``sized_declarator``) until an ``identifier``
-    child is found; returns ``None`` if the structure doesn't bottom out
-    in one.
+    child is found.
+
+    Args:
+        node: Tree-sitter declarator-wrapper node.
+
+    Returns:
+        The leading ``identifier`` :class:`Node`, or ``None`` when the
+        structure doesn't bottom out in one.
     """
     for c in node.children:
         if c.type == "identifier":
@@ -1342,15 +1725,22 @@ def _declarator_leading_node(node: Node) -> Node | None:
 
 
 def _is_pure_numeric_constant(node: Node | None) -> bool:
-    """Return True if ``node`` is a literal number or a constant
-    expression composed entirely of literal numbers.
+    """Return ``True`` if ``node`` is a literal-only constant expression.
 
-    Used to suppress H001 on initialisations like ``g = 9.81`` or
-    ``omega = 2.0 * 3.14159 / 86400.0``: a unit-bearing variable
-    being given a numeric default value is the standard Fortran
-    idiom for declaring a physical constant, not a unit error. The
-    literal IS the constant; treating it as dimensionless and firing
-    H001 produces noise on every model-initialisation file.
+    Accepts a bare number/complex/BOZ literal, a unary or parenthesised
+    wrapper around one, or a math_expression whose operands are all
+    themselves pure numeric constants. Used to suppress H001 on
+    initialisations like ``g = 9.81`` or ``omega = 2.0 * 3.14159 /
+    86400.0``: a unit-bearing variable being given a numeric default
+    value is the standard Fortran idiom for declaring a physical
+    constant, not a unit error.
+
+    Args:
+        node: Tree-sitter expression node, or ``None``.
+
+    Returns:
+        ``True`` when every leaf is a numeric literal; ``False``
+        otherwise (including ``None``).
     """
     if node is None:
         return False
@@ -1439,10 +1829,18 @@ def _emit_h002(loc: Node, left: UnitExpr, right: UnitExpr, ctx: _Ctx) -> Diagnos
 def _active_free_tyvars(byte_offset: int, ctx: _Ctx) -> frozenset[str]:
     """Free tyvars of the routine enclosing ``byte_offset``.
 
-    Returns an empty frozenset for module-level offsets and for
-    non-polymorphic enclosing routines. The set is derived from
-    ``ctx.signatures`` on demand — cheap, no caching needed at this
-    scale (one set-build per emission site).
+    The set is derived from ``ctx.signatures`` on demand — cheap, no
+    caching needed at this scale (one set-build per emission site).
+
+    Args:
+        byte_offset: 0-based UTF-8 byte position; resolved to the
+            enclosing routine name via :meth:`_Ctx.scope_at`.
+        ctx: Per-file context carrying the signature index.
+
+    Returns:
+        The free tyvars of the enclosing routine's signature, or an
+        empty :class:`frozenset` for module-level offsets and for
+        non-polymorphic enclosing routines.
     """
     scope = ctx.scope_at(byte_offset)
     if scope is None:
@@ -1454,7 +1852,20 @@ def _active_free_tyvars(byte_offset: int, ctx: _Ctx) -> frozenset[str]:
 
 
 def _tyvars_in_unit_expr(u: UnitExpr | None, active: frozenset[str]) -> frozenset[str]:
-    """Subset of ``active`` that appears in ``u``. Empty if ``u`` is None."""
+    """Subset of ``active`` that appears in ``u``.
+
+    Unwraps any ``LogWrap`` / ``ExpWrap`` layers before reading
+    ``Unit.tyvars``; non-Unit inner expressions contribute nothing.
+
+    Args:
+        u: :class:`UnitExpr` to inspect, or ``None``.
+        active: Names considered "active" — typically the enclosing
+            routine's free tyvars.
+
+    Returns:
+        The intersection of ``active`` with the tyvars referenced in
+        ``u``. Empty when ``u`` is ``None`` or ``active`` is empty.
+    """
     if u is None or not active:
         return frozenset()
     inner = u
@@ -1468,7 +1879,17 @@ def _tyvars_in_unit_expr(u: UnitExpr | None, active: frozenset[str]) -> frozense
 def _h023_involved(
     lu: UnitExpr | None, ru: UnitExpr | None, active: frozenset[str],
 ) -> frozenset[str]:
-    """Union of active tyvars present in either operand. Empty ⇒ no H023."""
+    """Union of active tyvars present in either operand.
+
+    Args:
+        lu: Left operand's :class:`UnitExpr`, or ``None``.
+        ru: Right operand's :class:`UnitExpr`, or ``None``.
+        active: Names of the enclosing routine's free tyvars.
+
+    Returns:
+        Union of active tyvars referenced in either operand. An empty
+        result means H023 does not apply at this site.
+    """
     return _tyvars_in_unit_expr(lu, active) | _tyvars_in_unit_expr(ru, active)
 
 
@@ -1507,8 +1928,22 @@ def _emit_h023(
 def _emit_h002_or_h023(
     loc: Node, lu: UnitExpr, ru: UnitExpr, ctx: _Ctx,
 ) -> Diagnostic:
-    """H002, or H023 when ``lu``/``ru`` reference an enclosing-function
-    free tyvar (the body would force a binding on it)."""
+    """Emit H002, or H023 when operands reference an enclosing free tyvar.
+
+    Routes a ``+`` / ``-`` operand mismatch to H023 when either operand
+    references one of the enclosing function's free tyvars (the body
+    would force a binding on it), otherwise falls back to plain H002.
+
+    Args:
+        loc: AST node spanning the offending binary expression.
+        lu: Resolved unit of the left operand.
+        ru: Resolved unit of the right operand.
+        ctx: Active check context.
+
+    Returns:
+        An error-severity :class:`Diagnostic` carrying either the H002
+        or H023 code.
+    """
     active = _active_free_tyvars(loc.start_byte, ctx)
     involved = _h023_involved(lu, ru, active)
     if involved:
@@ -1519,8 +1954,22 @@ def _emit_h002_or_h023(
 def _emit_h001_or_h023(
     loc: Node, lhs: UnitExpr, rhs: UnitExpr, ctx: _Ctx,
 ) -> Diagnostic:
-    """H001, or H023 when ``lhs``/``rhs`` reference an enclosing-function
-    free tyvar."""
+    """Emit H001, or H023 when sides reference an enclosing free tyvar.
+
+    Routes an assignment-mismatch to H023 when either side references
+    one of the enclosing function's free tyvars; otherwise falls back
+    to plain H001.
+
+    Args:
+        loc: AST node spanning the offending assignment.
+        lhs: Resolved unit of the assignment target.
+        rhs: Resolved unit of the assignment value.
+        ctx: Active check context.
+
+    Returns:
+        An error-severity :class:`Diagnostic` carrying either the H001
+        or H023 code.
+    """
     active = _active_free_tyvars(loc.start_byte, ctx)
     involved = _h023_involved(lhs, rhs, active)
     if involved:
@@ -1531,12 +1980,12 @@ def _emit_h001_or_h023(
 def _emit_h020(
     loc: Node, func_name: str, conflict: Conflict, ctx: _Ctx,
 ) -> Diagnostic:
-    """Polymorphic call-site unification failure (H020).
+    """Build an H020 polymorphic call-site unification-failure diagnostic.
 
     Renders the symmetric ``— collides with arg N`` trailer on every
     contributing row. Partner labels use the bare ``arg N`` form (no
-    ``(name)`` parenthetical) — the partner's own row carries the name
-    already, so duplicating it bloats the message without adding
+    ``(name)`` parenthetical) — the partner's own row carries the
+    name already, so duplicating it bloats the message without adding
     information. Unification has no ordering, so every slot that
     pushed an inconsistent value is named — no "first arg wins"
     asymmetry.
@@ -1546,6 +1995,17 @@ def _emit_h020(
     render the spec's ``'a = unit — collides with arg N`` form on each
     conflicting arg row instead of the generic ``(expected 'a)``
     fallback. See docs/design/shipped/polymorphic-units.md §H020.
+
+    Args:
+        loc: AST node spanning the call site.
+        func_name: Callee name (original case) used in the message.
+        conflict: :class:`Conflict` produced by :func:`unify` carrying
+            the tyvar name and the per-slot contributions.
+        ctx: Active check context.
+
+    Returns:
+        An error-severity :class:`Diagnostic` carrying the H020 code
+        and the structured contributor data.
     """
     start, end = _node_span(loc)
     contribs = conflict.contributions
@@ -1587,12 +2047,35 @@ def _emit_h020(
 
 
 def _arg_label(index: int, name: str | None) -> str:
-    """``arg 1 (x)`` / ``arg 1`` formatting shared by H020 rows."""
+    """Render an ``arg N`` / ``arg N (name)`` label.
+
+    Shared by the H020 rows so the formatting stays consistent across
+    every contributor row.
+
+    Args:
+        index: 0-based slot index; rendered 1-based.
+        name: Optional parameter name; when ``None`` the bare
+            ``arg N`` form is used.
+
+    Returns:
+        The rendered label.
+    """
     return f"arg {index + 1} ({name})" if name else f"arg {index + 1}"
 
 
 def _unit_expr_has_tyvars(u: UnitExpr | None) -> bool:
-    """``True`` iff ``u`` references any tyvar (unwrap Log/Exp first)."""
+    """Return ``True`` iff ``u`` references any tyvar.
+
+    Unwraps any ``LogWrap`` / ``ExpWrap`` layers before reading the
+    inner ``Unit.tyvars``.
+
+    Args:
+        u: :class:`UnitExpr` to inspect, or ``None``.
+
+    Returns:
+        ``True`` when the inner unit is a :class:`Unit` carrying at
+        least one tyvar; ``False`` otherwise.
+    """
     if u is None:
         return False
     inner: UnitExpr = u
@@ -1602,13 +2085,22 @@ def _unit_expr_has_tyvars(u: UnitExpr | None) -> bool:
 
 
 def _enclosing_derived_type_name(node: Node, source: bytes) -> str | None:
-    """Walk up from ``node`` to the enclosing ``derived_type_definition``
-    and return the type's declared name. Returns ``None`` when ``node``
-    is not inside a derived-type definition.
+    """Return the declared name of the enclosing derived type, or ``None``.
 
     Used by H021 to (a) detect derived-type position and (b) reach
-    ``field_units`` for the unit lookup — derived-type fields are keyed
-    by ``(type_name, field_name)``, not by name alone.
+    ``field_units`` for the unit lookup — derived-type fields are
+    keyed by ``(type_name, field_name)``, not by name alone.
+
+    Args:
+        node: Tree-sitter node sitting (potentially) inside a
+            ``derived_type_definition``.
+        source: Full file contents (raw bytes) for identifier-text
+            extraction.
+
+    Returns:
+        The enclosing type's declared name in original source case, or
+        ``None`` when ``node`` is not inside a derived-type definition
+        (or the definition has no ``type_name`` child).
     """
     cur = node.parent
     while cur is not None:
@@ -1624,9 +2116,20 @@ def _enclosing_derived_type_name(node: Node, source: bytes) -> str | None:
 
 
 def _decl_is_parameter(node: Node, source: bytes) -> bool:
-    """``True`` iff ``node`` is a ``variable_declaration`` carrying a
-    ``PARAMETER`` type qualifier. Mirrors the detection in
-    :func:`_extract_parameter_values_from_decl`."""
+    """Return ``True`` iff ``node`` is a PARAMETER declaration.
+
+    Mirrors the detection in
+    :func:`_extract_parameter_values_from_decl`.
+
+    Args:
+        node: Tree-sitter ``variable_declaration`` node.
+        source: Full file contents (raw bytes) for type-qualifier text
+            extraction.
+
+    Returns:
+        ``True`` when ``node`` carries a ``PARAMETER`` type qualifier,
+        ``False`` otherwise.
+    """
     for c in node.children:
         if c.type == "type_qualifier" and _text(c, source).strip().lower() == "parameter":
             return True
@@ -1634,10 +2137,20 @@ def _decl_is_parameter(node: Node, source: bytes) -> bool:
 
 
 def _decl_is_save(node: Node, source: bytes) -> bool:
-    """``True`` iff ``node`` is a ``variable_declaration`` carrying a
-    ``SAVE`` type qualifier — ``real, save :: cache``. The standalone
-    ``save :: x, y`` statement form is handled by
-    :func:`_collect_save_attribute_names` below.
+    """Return ``True`` iff ``node`` carries an inline ``SAVE`` qualifier.
+
+    Detects the ``real, save :: cache`` shape. The standalone ``save
+    :: x, y`` statement form is handled by
+    :func:`_collect_save_attribute_names`.
+
+    Args:
+        node: Tree-sitter ``variable_declaration`` node.
+        source: Full file contents (raw bytes) for type-qualifier text
+            extraction.
+
+    Returns:
+        ``True`` when ``node`` carries a ``SAVE`` type qualifier,
+        ``False`` otherwise.
     """
     for c in node.children:
         if c.type == "type_qualifier" and _text(c, source).strip().lower() == "save":
@@ -1646,11 +2159,20 @@ def _decl_is_save(node: Node, source: bytes) -> bool:
 
 
 def _collect_common_names(tree: Tree, source: bytes) -> set[tuple[str | None, str]]:
-    """Per-routine set of ``(scope_lc, name_lc)`` for every variable
-    that appears in a ``common`` statement. Block names (the ``/blk/``
-    part) parse as ``name`` nodes, not ``identifier``, so a plain
-    descendant-walk for ``identifier`` collects the variable names
-    cleanly without false positives.
+    """Collect ``(scope_lc, name_lc)`` for every COMMON-block variable.
+
+    Block names (the ``/blk/`` part) parse as ``name`` nodes, not
+    ``identifier``, so a plain descendant-walk for ``identifier``
+    collects the variable names cleanly without false positives.
+
+    Args:
+        tree: Tree-sitter parse :class:`Tree` for the file.
+        source: Full file contents (raw bytes) for identifier-text
+            extraction.
+
+    Returns:
+        A set of ``(enclosing-routine-name-lower, variable-name-lower)``
+        pairs; the enclosing routine is ``None`` for module/file scope.
     """
     out: set[tuple[str | None, str]] = set()
     # scope_at would normally need a _Ctx; replicate the bisect
@@ -1670,10 +2192,20 @@ def _collect_common_names(tree: Tree, source: bytes) -> set[tuple[str | None, st
 def _collect_save_attribute_names(
     tree: Tree, source: bytes,
 ) -> set[tuple[str | None, str]]:
-    """Per-routine set of ``(scope_lc, name_lc)`` for variables named in
-    a standalone ``save :: x, y`` statement (distinct from the
-    ``real, save :: x`` inline form, which is detected via
-    :func:`_decl_is_save` on the variable_declaration itself).
+    """Collect ``(scope_lc, name_lc)`` for variables in standalone SAVE.
+
+    Distinct from the ``real, save :: x`` inline form, which is
+    detected via :func:`_decl_is_save` on the variable_declaration
+    itself.
+
+    Args:
+        tree: Tree-sitter parse :class:`Tree` for the file.
+        source: Full file contents (raw bytes) for identifier-text
+            extraction.
+
+    Returns:
+        A set of ``(enclosing-routine-name-lower, variable-name-lower)``
+        pairs collected from every ``save_statement``.
     """
     out: set[tuple[str | None, str]] = set()
     for n in _ts.walk(tree.root_node):
@@ -1687,10 +2219,20 @@ def _collect_save_attribute_names(
 
 
 def _enclosing_routine_name(node: Node, source: bytes) -> str | None:
-    """Walk up to the enclosing SUBROUTINE/FUNCTION and return its
-    lower-cased name. Returns ``None`` for module-level / file-level
-    positions. Independent of ``_Ctx`` so it can be used during the
-    pre-pass that builds the COMMON/SAVE name sets.
+    """Return the lower-cased name of the enclosing SUBROUTINE/FUNCTION.
+
+    Independent of :class:`_Ctx` so it can be used during the pre-pass
+    that builds the COMMON/SAVE name sets.
+
+    Args:
+        node: Tree-sitter node whose enclosing routine we want.
+        source: Full file contents (raw bytes) for identifier-text
+            extraction.
+
+    Returns:
+        The lower-cased routine name, or ``None`` for module-level /
+        file-level positions and for routines whose ``*_statement``
+        child lacks a ``name``.
     """
     cur = node.parent
     while cur is not None:
@@ -1719,10 +2261,19 @@ def _emit_h021_tyvar_positions(
       ``None`` at the declaration site).
     - ``PARAMETER``-qualified declarations anywhere.
     - Components of a derived-type definition.
+    - SAVE'd locals (both inline ``real, save :: x`` and the standalone
+      ``save :: x, y`` statement).
+    - ``COMMON`` block members.
 
-    SAVE'd locals (both the ``real, save :: x`` inline form and the
-    standalone ``save :: x, y`` statement) and ``COMMON`` block members
-    are forbidden too.
+    Args:
+        tree: Tree-sitter parse :class:`Tree` for the file.
+        ctx: Per-file context; ``ctx.unit_for`` / ``ctx._field_units_lc``
+            supply the annotation, ``ctx.scope_at`` gates module-level
+            detection.
+        source: Full file contents (raw bytes).
+
+    Yields:
+        One H021 :class:`Diagnostic` per offending declaration name.
     """
     common_names = _collect_common_names(tree, source)
     save_names = _collect_save_attribute_names(tree, source)
@@ -1788,9 +2339,24 @@ def _emit_h022(
     expected: UnitExpr, actual: UnitExpr, ctx: _Ctx,
     arg_name: str | None = None,
 ) -> Diagnostic:
-    """Affine actual into a tyvar slot — type variables range over the
-    multiplicative unit algebra only; affine units inhabit a separate
-    layer that cannot bind ``'a``.
+    """Build an H022 affine-actual-into-tyvar-slot diagnostic.
+
+    Type variables range over the multiplicative unit algebra only;
+    affine units inhabit a separate layer that cannot bind ``'a``.
+
+    Args:
+        loc: AST node spanning the call site argument.
+        func_name: Callee name (original case) used in the message.
+        arg_index: 0-based slot index; rendered 1-based via
+            :func:`_arg_label`.
+        expected: The tyvar-bearing formal slot type.
+        actual: The affine unit supplied by the caller.
+        ctx: Active check context.
+        arg_name: Optional parameter name forwarded to
+            :func:`_arg_label`.
+
+    Returns:
+        An error-severity :class:`Diagnostic` carrying the H022 code.
     """
     start, end = _node_span(loc)
     label = _arg_label(arg_index, arg_name)
@@ -1820,12 +2386,22 @@ def _emit_h022(
 def _emit_h010(
     loc: Node, literal_text: str, target_unit: UnitExpr, ctx: _Ctx
 ) -> Diagnostic:
-    """Implicit-literal-cast warning (D1.5).
+    """Build an H010 implicit-literal-cast warning (D1.5).
 
-    Fires when ``+``/``-`` mixes a dim'less numeric literal with a
+    Fires when ``+`` / ``-`` mixes a dim'less numeric literal with a
     unitful operand. The literal is auto-cast to the target unit; the
     expression types successfully. The warning surfaces the smell and
     suggests promoting the literal to a named PARAMETER.
+
+    Args:
+        loc: AST node spanning the offending operand.
+        literal_text: Source text of the literal as it appears.
+        target_unit: Unit the literal was implicitly cast into.
+        ctx: Active check context.
+
+    Returns:
+        A warning-severity :class:`Diagnostic` carrying the H010 code
+        plus a parseable ``@unit{}`` suggestion text.
     """
     start, end = _node_span(loc)
     target = format_unit(target_unit)
@@ -1855,13 +2431,25 @@ def _emit_s001(
     ratio: Fraction | None,
     ctx: _Ctx,
 ) -> Diagnostic:
-    """Scale mismatch (S001): same dimension, different magnitude factor.
+    """Build an S001 scale-mismatch diagnostic.
 
-    Opt-in — emitted only when ``ctx.scale_mode`` is on. Warning severity,
-    overridable via ``[diagnostics] S001``. A *missing* conversion is a
-    real bug; a *correct-but-untyped* conversion is fixed by carrying the
-    factor on a typed PARAMETER (e.g. ``100. !< @unit{Pa/hPa}``). See
+    Same dimension, different magnitude factor. Opt-in — emitted only
+    when ``ctx.scale_mode`` is on. Warning severity, overridable via
+    ``[diagnostics] S001``. A *missing* conversion is a real bug; a
+    *correct-but-untyped* conversion is fixed by carrying the factor on
+    a typed PARAMETER (e.g. ``100. !< @unit{Pa/hPa}``). See
     docs/design/scale.md.
+
+    Args:
+        loc: AST node spanning the offending binary expression.
+        left: Resolved unit of the left operand.
+        right: Resolved unit of the right operand.
+        ratio: Factor ratio between the two operands when known, else
+            ``None`` (rendered as "an unknown factor").
+        ctx: Active check context.
+
+    Returns:
+        A warning-severity :class:`Diagnostic` carrying the S001 code.
     """
     start, end = _node_span(loc)
     # Both sides share a dimension, so format_unit renders them identically
@@ -1884,20 +2472,39 @@ def _emit_s001(
 
 
 def _scale_mismatch_ratio(a: UnitExpr, b: UnitExpr) -> Fraction | None:
-    """Return the factor ratio if ``a``/``b`` are dim-equal but scale-differ,
-    else ``None``. Thin wrapper over :func:`compare` for the emit sites."""
+    """Return the factor ratio when ``a``/``b`` differ only in scale.
+
+    Thin wrapper over :func:`compare` for the emit sites.
+
+    Args:
+        a: Left :class:`UnitExpr`.
+        b: Right :class:`UnitExpr`.
+
+    Returns:
+        The :class:`~fractions.Fraction` factor ratio when ``a`` and
+        ``b`` are dim-equal but disagree in magnitude, ``None``
+        otherwise (including when dims differ outright).
+    """
     v = compare(a, b)
     return v.ratio if v.kind == "scale_mismatch" else None
 
 
 def _emit_s002(loc: Node, reason: str, ctx: _Ctx) -> Diagnostic:
-    """Affine offset violation (S002, Phase 2).
+    """Build an S002 affine-offset-violation diagnostic.
 
     Opt-in (``ctx.scale_mode``), warning severity, overridable via
     ``[diagnostics] S002``. Covers both detection paths: a boundary
-    ``offset_mismatch`` (``K = degC``) and an operation ill-defined on an
-    absolute temperature (``degC + degC``, ``2 * degC``). ``reason`` is the
-    pre-formatted specifics. See docs/design/scale.md §3.3, §5.
+    ``offset_mismatch`` (``K = degC``) and an operation ill-defined on
+    an absolute temperature (``degC + degC``, ``2 * degC``). See
+    docs/design/scale.md §3.3, §5.
+
+    Args:
+        loc: AST node spanning the offending operation.
+        reason: Pre-formatted specifics appended to the message.
+        ctx: Active check context.
+
+    Returns:
+        A warning-severity :class:`Diagnostic` carrying the S002 code.
     """
     start, end = _node_span(loc)
     return Diagnostic(
@@ -1911,19 +2518,41 @@ def _emit_s002(loc: Node, reason: str, ctx: _Ctx) -> Diagnostic:
 
 
 def _offset_mismatch_delta(a: UnitExpr, b: UnitExpr) -> Fraction | None:
-    """Return the offset delta if ``a``/``b`` are dim+factor-equal but
-    differ in zero-point (S002 path 1, boundary), else ``None``."""
+    """Return the zero-point delta when ``a``/``b`` differ only in offset.
+
+    S002 path 1 (boundary): dim+factor-equal but disagreeing on the
+    affine zero point.
+
+    Args:
+        a: Left :class:`UnitExpr`.
+        b: Right :class:`UnitExpr`.
+
+    Returns:
+        The :class:`~fractions.Fraction` offset delta when ``compare``
+        reports ``offset_mismatch``, ``None`` otherwise.
+    """
     v = compare(a, b)
     return v.delta if v.kind == "offset_mismatch" else None
 
 
 def _affine_violation(op: str, lu: UnitExpr, ru: UnitExpr) -> str | None:
-    """Reason string if ``lu <op> ru`` is an affine-invalid operation
-    (S002 path 2), else ``None``. Encodes the §3.3 algebra: an absolute
-    operand (``offset != 0``) cannot be multiplied/divided/raised; two
-    absolutes cannot be added; a difference minus an absolute (or
-    absolutes in different zero-points) is ill-defined. Offsets only live
-    on Regular ``Unit`` leaves, so wrappers are out of scope (return None).
+    """Return an S002 reason string for ``lu <op> ru``, or ``None``.
+
+    Encodes the §3.3 algebra: an absolute operand (``offset != 0``)
+    cannot be multiplied/divided/raised; two absolutes cannot be
+    added; a difference minus an absolute (or absolutes in different
+    zero-points) is ill-defined. Offsets only live on Regular
+    ``Unit`` leaves, so wrappers are out of scope (return ``None``).
+
+    Args:
+        op: Operator symbol — one of ``"+"``, ``"-"``, ``"*"``,
+            ``"/"``.
+        lu: Left operand :class:`UnitExpr`.
+        ru: Right operand :class:`UnitExpr`.
+
+    Returns:
+        A human-readable reason string when the operation is
+        affine-invalid, ``None`` otherwise.
     """
     if not isinstance(lu, Unit) or not isinstance(ru, Unit):
         return None
@@ -1948,13 +2577,22 @@ def _affine_violation(op: str, lu: UnitExpr, ru: UnitExpr) -> str | None:
 
 
 def _emit_s003(loc: Node, reason: str, ctx: _Ctx) -> Diagnostic:
-    """Invalid ``@unit_affine_conversion`` directive (S003, Phase 2c).
+    """Build an S003 invalid-affine-conversion diagnostic (Phase 2c).
 
-    Unlike S001/S002 (warnings, style nudges) this defaults to **error**: a
-    *claimed* conversion that the arithmetic doesn't actually perform is a
-    bug, not a smell. Overridable via ``[diagnostics] S003``. A *valid*
-    directive emits nothing (and suppresses the S002 the statement would
-    otherwise raise). See docs/design/scale.md §11.5.
+    Unlike S001/S002 (warnings, style nudges) this defaults to
+    **error**: a *claimed* conversion that the arithmetic doesn't
+    actually perform is a bug, not a smell. Overridable via
+    ``[diagnostics] S003``. A *valid* directive emits nothing (and
+    suppresses the S002 the statement would otherwise raise). See
+    docs/design/scale.md §11.5.
+
+    Args:
+        loc: AST node spanning the offending assignment.
+        reason: Pre-formatted specifics appended to the message.
+        ctx: Active check context.
+
+    Returns:
+        An error-severity :class:`Diagnostic` carrying the S003 code.
     """
     start, end = _node_span(loc)
     return Diagnostic(
@@ -1970,19 +2608,29 @@ def _emit_s003(loc: Node, reason: str, ctx: _Ctx) -> Diagnostic:
 def _lin_reduce(
     node: Node | None, src: Unit, ctx: _Ctx, source: bytes,
 ) -> tuple[Fraction, Fraction, int] | None:
-    """Reduce an expression to its affine-linear form ``a*s + b`` in the
-    single source operand ``s`` (a quantity of unit ``src``).
+    """Reduce an expression to affine-linear form ``a*s + b``.
 
-    Returns ``(a, b, n_src)`` where ``a``/``b`` are exact ``Fraction``
-    coefficients and ``n_src`` is the number of ``src``-typed operands seen
-    (the caller requires exactly one). Returns ``None`` when the expression
-    is not affine-linear in ``s`` with constant coefficients (a non-source
-    variable with no resolvable value, a non-linear product, division by a
-    non-constant, an unhandled node shape). See scale.md §11.4(c).
+    The single source operand ``s`` is a quantity of unit ``src``. See
+    scale.md §11.4(c).
 
     Resolution order at a leaf matters: a ``src``-typed operand is the
-    source (``a=1``) even though it may also be a PARAMETER with a value;
-    only a *non*-source node is folded to a constant ``b``.
+    source (``a=1``) even though it may also be a PARAMETER with a
+    value; only a *non*-source node is folded to a constant ``b``.
+
+    Args:
+        node: Tree-sitter expression node, or ``None``.
+        src: The source unit ``s`` is typed against.
+        ctx: Per-file context.
+        source: Full file contents (raw bytes).
+
+    Returns:
+        ``(a, b, n_src)`` where ``a``/``b`` are exact
+        :class:`~fractions.Fraction` coefficients and ``n_src`` counts
+        the ``src``-typed operands encountered (the caller requires
+        exactly one). ``None`` when the expression is not affine-linear
+        in ``s`` with constant coefficients (non-source variable
+        without a resolvable value, non-linear product, division by a
+        non-constant, unhandled node shape).
     """
     if node is None:
         return None
@@ -2053,9 +2701,24 @@ def _verify_affine_conversion(
     ctx: _Ctx,
     source: bytes,
 ) -> Diagnostic | None:
-    """Verify an ``@unit_affine_conversion{src -> tgt}`` directive on an
-    assignment. Returns an ``S003`` diagnostic if invalid, else ``None``
-    (valid → the caller suppresses the statement's S002). See scale.md §11.
+    """Verify an ``@unit_affine_conversion{src -> tgt}`` directive.
+
+    Checks the directive against the assignment's arithmetic and the
+    unique src→tgt conversion law. See scale.md §11.
+
+    Args:
+        node: Tree-sitter assignment node carrying the directive.
+        target: LHS expression node, or ``None`` when unresolvable.
+        value: RHS expression node, or ``None``.
+        src_text: Source-frame unit text as written in the directive.
+        tgt_text: Target-frame unit text as written in the directive.
+        ctx: Per-file context.
+        source: Full file contents (raw bytes).
+
+    Returns:
+        An ``S003`` :class:`Diagnostic` when the directive is invalid;
+        ``None`` when valid (the caller then suppresses the
+        statement's S002).
     """
     # (a) Resolve the directive's units; both must exist and share dimension.
     try:
@@ -2126,7 +2789,16 @@ def _verify_affine_conversion(
 
 
 def _fmt_frac(x: Fraction) -> str:
-    """Render a Fraction as a compact decimal when exact, else as a ratio."""
+    """Render a :class:`~fractions.Fraction` as a compact string.
+
+    Args:
+        x: The fraction to render.
+
+    Returns:
+        A bare integer literal when ``x`` is whole, a decimal
+        rendering when ``float(x)`` round-trips exactly, otherwise the
+        ``num/den`` ratio form.
+    """
     if x.denominator == 1:
         return str(x.numerator)
     dec = float(x)
@@ -2134,9 +2806,18 @@ def _fmt_frac(x: Fraction) -> str:
 
 
 def _is_dimensionless(u: UnitExpr) -> bool:
-    """Return True if ``u`` is the dim'less unit (all base exponents zero).
+    """Return ``True`` if ``u`` is the dim'less unit.
 
-    LOG/EXP wrappers carry no SI dimension, so they count as dimensionless.
+    All base exponents zero; LOG/EXP wrappers carry no SI dimension
+    so they count as dimensionless.
+
+    Args:
+        u: :class:`UnitExpr` to test.
+
+    Returns:
+        ``True`` for a non-:class:`Unit` (i.e. a wrapper) or a
+        :class:`Unit` whose dimension vector is entirely zero;
+        ``False`` otherwise.
     """
     if not isinstance(u, Unit):
         return True
@@ -2144,7 +2825,21 @@ def _is_dimensionless(u: UnitExpr) -> bool:
 
 
 def _emit_d12(loc: Node, left: UnitExpr, right: UnitExpr, op: str, ctx: _Ctx) -> Diagnostic:
-    """D1.2 — undefined wrapper operation (e.g. LOG(p) × LOG(q))."""
+    """Build a D1.2 (H002-coded) undefined-wrapper-operation diagnostic.
+
+    Example offender: ``LOG(p) * LOG(q)``.
+
+    Args:
+        loc: AST node spanning the offending binary expression.
+        left: Resolved unit of the left operand.
+        right: Resolved unit of the right operand.
+        op: Operator symbol used in the message.
+        ctx: Active check context.
+
+    Returns:
+        An error-severity :class:`Diagnostic` coded ``H002`` with the
+        D1.2 marker in the message.
+    """
     start, end = _node_span(loc)
     return Diagnostic(
         file=ctx.file, start=start, end=end,
@@ -2158,7 +2853,21 @@ def _emit_d12(loc: Node, left: UnitExpr, right: UnitExpr, op: str, ctx: _Ctx) ->
 
 
 def _emit_d13(loc: Node, left: UnitExpr, right: UnitExpr, op: str, ctx: _Ctx) -> Diagnostic:
-    """D1.3 — undefined sum involving a wrapper (e.g. LOG(p) + Pa)."""
+    """Build a D1.3 (H002-coded) undefined-wrapper-sum diagnostic.
+
+    Example offender: ``LOG(p) + Pa``.
+
+    Args:
+        loc: AST node spanning the offending binary expression.
+        left: Resolved unit of the left operand.
+        right: Resolved unit of the right operand.
+        op: Operator symbol used in the message (``"+"`` or ``"-"``).
+        ctx: Active check context.
+
+    Returns:
+        An error-severity :class:`Diagnostic` coded ``H002`` with the
+        D1.3 marker in the message.
+    """
     start, end = _node_span(loc)
     return Diagnostic(
         file=ctx.file, start=start, end=end,
@@ -2171,8 +2880,21 @@ def _emit_d13(loc: Node, left: UnitExpr, right: UnitExpr, op: str, ctx: _Ctx) ->
 
 
 def _emit_d14(loc: Node, ctx: _Ctx, *, detail: str) -> Diagnostic:
-    """D1.4 — unit depends on a runtime-only quantity (non-literal exponent
-    or non-literal scalar on a LogWrap)."""
+    """Build a D1.4 (H001-coded) runtime-dependent-unit diagnostic.
+
+    Fires when the unit depends on a runtime-only quantity (e.g. a
+    non-literal exponent, or a non-literal scalar multiplied into a
+    ``LogWrap``).
+
+    Args:
+        loc: AST node spanning the offending expression.
+        ctx: Active check context.
+        detail: Pre-formatted specifics appended to the message.
+
+    Returns:
+        An error-severity :class:`Diagnostic` coded ``H001`` with the
+        D1.4 marker in the message.
+    """
     start, end = _node_span(loc)
     return Diagnostic(
         file=ctx.file, start=start, end=end,
@@ -2184,17 +2906,27 @@ def _emit_d14(loc: Node, ctx: _Ctx, *, detail: str) -> Diagnostic:
 def _emit_d17(
     loc: Node, base: UnitExpr, exp_unit: UnitExpr | None, ctx: _Ctx
 ) -> Diagnostic:
-    """D1.7 — exponent must be dimensionless (default WARNING).
+    """Build a D1.7 (H010-coded) exponent-must-be-dim'less diagnostic.
 
-    Fires when an expression of the form ``base ^ exponent`` has an
+    Fires when an expression of the form ``base ** exponent`` has an
     exponent whose unit is non-dim'less. The wrapper algebra would
     formally type this as ``ExpWrap(exp_unit)`` via the ``a^b =
     exp(b·log(a))`` derivation, but in practice such expressions are
     virtually always bugs in scientific Fortran code (``2.0 ** speed``
     style typos). Default severity is WARNING so the rare intentional
-    case ("I really want exp-tagged space") isn't blocking; projects
-    can promote to ERROR or suppress entirely via the
-    ``[diagnostics]`` section of ``.dimfort.toml``.
+    case isn't blocking; projects can promote to ERROR or suppress
+    entirely via the ``[diagnostics]`` section of ``.dimfort.toml``.
+
+    Args:
+        loc: AST node spanning the offending ``**`` expression.
+        base: Resolved unit of the base operand.
+        exp_unit: Resolved unit of the exponent operand, or ``None``
+            when unresolved.
+        ctx: Active check context.
+
+    Returns:
+        A warning-severity :class:`Diagnostic` coded ``H010`` with the
+        D1.7 marker in the message.
     """
     start, end = _node_span(loc)
     return Diagnostic(
@@ -2213,7 +2945,7 @@ def _emit_d17(
 def _emit_d16_untag(
     loc: Node, lhs: UnitExpr, rhs: UnitExpr, ctx: _Ctx
 ) -> Diagnostic:
-    """D1.6 — implicit wrapper untag at assignment (H010 warning).
+    """Build a D1.6 (H010-coded) implicit-wrapper-untag warning.
 
     Fires when the LHS is a Regular unit and the RHS is a ``LogWrap`` /
     ``ExpWrap`` whose inner unit dimensionally matches the LHS. The
@@ -2221,6 +2953,16 @@ def _emit_d16_untag(
     of a unitful quantity is just a numerical value with the same
     dimensions, but flagged so the user can decide whether the untag
     was intentional.
+
+    Args:
+        loc: AST node spanning the offending assignment.
+        lhs: Resolved unit of the assignment target (a Regular Unit).
+        rhs: Resolved unit of the assignment value (a wrapper).
+        ctx: Active check context.
+
+    Returns:
+        A warning-severity :class:`Diagnostic` coded ``H010`` with the
+        D1.6 marker and a suggested ``@unit{}`` rewrite.
     """
     start, end = _node_span(loc)
     return Diagnostic(
@@ -2306,20 +3048,29 @@ def _emit_h004(
 def _walk_lhs_subscripts(
     node: Node | None, ctx: _Ctx, source: bytes,
 ) -> Iterable[Diagnostic]:
-    """Walk an assignment LHS for nested-expression diagnostics, skipping
-    the assignee head.
+    """Walk an LHS for nested-expression diagnostics, skipping the head.
 
     The LHS identifier / member-chain head is excluded by design — it
-    *is* the target, not an expression to typecheck. But the subscripts
-    on an array access (``arr(int(i+j), 1) = ...``) and the index
-    expressions inside member chains (``obj%data(k+1) = ...``) are
-    genuine expressions and should fire H002 etc. when they go wrong.
+    *is* the target, not an expression to typecheck. But the
+    subscripts on an array access (``arr(int(i+j), 1) = ...``) and
+    the index expressions inside member chains (``obj%data(k+1) =
+    ...``) are genuine expressions and should fire H002 etc. when
+    they go wrong.
 
-    Conservative coverage: walk only the ``argument_list`` children of
-    any call_expression that appears as part of the LHS (including
+    Conservative coverage: walk only the ``argument_list`` children
+    of any call_expression that appears as part of the LHS (including
     nested through member chains). The plain-identifier head of an
     array access, the bare ``identifier`` LHS, and bare member-chains
     (``obj%field`` with no subscript) all contribute nothing to walk.
+
+    Args:
+        node: Tree-sitter LHS expression node, or ``None``.
+        ctx: Per-file context.
+        source: Full file contents (raw bytes).
+
+    Yields:
+        Expression-level :class:`Diagnostic` s emitted from subscript
+        index expressions, by way of :func:`_walk_expressions`.
     """
     if node is None:
         return
@@ -2342,9 +3093,20 @@ def _walk_lhs_subscripts(
 def _walk_expressions(
     node: Node | None, ctx: _Ctx, source: bytes
 ) -> Iterable[Diagnostic]:
-    """Recurse over an expression tree, yielding any expression-level
-    diagnostic — H002/H003/H004/H010/H020/H022/H023 plus
-    D1.2/D1.3/D1.4/D1.7, and S001/S002 in scale mode."""
+    """Recurse over an expression tree, yielding any diagnostic.
+
+    Covers H002 / H003 / H004 / H010 / H020 / H022 / H023 plus
+    D1.2 / D1.3 / D1.4 / D1.7, and S001 / S002 in scale mode.
+
+    Args:
+        node: Tree-sitter expression node, or ``None``.
+        ctx: Per-file context.
+        source: Full file contents (raw bytes).
+
+    Yields:
+        :class:`Diagnostic` s emitted by the walker; descends into
+        nested expressions and ``call_expression`` arguments.
+    """
     if node is None:
         return
     kind = node.type
@@ -2488,6 +3250,15 @@ def _check_call(
     Routes across the dimensionless / same-unit / signature-checked
     branches, emitting H003 / H004 / H010 / H020 / H022 / H023 (and
     H002 from the same-unit-arg path) as appropriate.
+
+    Args:
+        node: Tree-sitter ``call_expression`` node.
+        ctx: Per-file context.
+        source: Full file contents (raw bytes).
+
+    Yields:
+        :class:`Diagnostic` s for the call site itself; argument
+        sub-expressions are walked separately by the caller.
     """
     name = _call_callee_name(node, source)
     if name is None:
@@ -2541,11 +3312,20 @@ def _check_same_unit_args(
 ) -> Iterable[Diagnostic]:
     """Validate MAX/MIN-style intrinsics whose args must share a unit.
 
-    Mirrors the ``+``/``-`` operand rules: a dimensionless numeric literal
-    is auto-cast to the carrying (dimensioned) unit and warns via H010
-    (unless its value is 0, which is dimension-agnostic and silent); a
-    genuinely dimensioned operand that disagrees with the carrying unit
-    fires H002.
+    Mirrors the ``+`` / ``-`` operand rules: a dimensionless numeric
+    literal is auto-cast to the carrying (dimensioned) unit and warns
+    via H010 (unless its value is 0, which is dimension-agnostic and
+    silent); a genuinely dimensioned operand that disagrees with the
+    carrying unit fires H002.
+
+    Args:
+        arg_exprs: Positional argument expression nodes from the call.
+        ctx: Per-file context.
+        source: Full file contents (raw bytes).
+
+    Yields:
+        H002 (or H023 under polymorphism) and H010
+        :class:`Diagnostic` s for offending operands.
     """
     if len(arg_exprs) < 2:
         return
@@ -2582,30 +3362,40 @@ def _resolve_polymorphic_return(
     ctx: _Ctx,
     source: bytes,
 ) -> UnitExpr | None:
-    """Return ``sig.return_unit`` with the call-site unifier's
-    substitution applied — so a polymorphic function whose return is
-    ``'a`` resolves to the bound unit at this call (e.g. ``m`` when
-    ``'a`` was bound to ``m`` by the args), not the formal ``'a``.
+    """Apply the call-site unifier's substitution to ``sig.return_unit``.
 
-    For a concrete signature (no free tyvars), returns ``sig.
-    return_unit`` directly. When the call-site unifier rejects (the
-    H020 case — every contributing arg pushed a different binding),
-    returns ``None`` so the call's resolved unit is "unknown" and
-    downstream checks (LHS-vs-RHS homogeneity on an assignment,
-    nested expression resolution) skip rather than fire a *second*
-    error on top of H020's. The H020 diagnostic + the 🔴 marker on
-    the call node already convey the failure; the assignment row
-    inherits 🔴 via worst-of-children, no spurious H001 needed.
+    A polymorphic function whose return is ``'a`` resolves to the
+    bound unit at this call (e.g. ``m`` when ``'a`` was bound to ``m``
+    by the args), not the formal ``'a``.
 
-    When unification raises :class:`UnsupportedPolymorphism` (symbolic
-    tyvar exponent, etc.), also returns ``None`` — Phase 2 scope; the
-    caller treats this call as unresolvable.
+    For a concrete signature (no free tyvars), returns
+    ``sig.return_unit`` directly. When the call-site unifier rejects
+    (the H020 case — every contributing arg pushed a different
+    binding), returns ``None`` so the call's resolved unit is
+    "unknown" and downstream checks (LHS-vs-RHS homogeneity on an
+    assignment, nested expression resolution) skip rather than fire a
+    *second* error on top of H020's. The H020 diagnostic plus the
+    marker on the call node already convey the failure; the assignment
+    row inherits the worst-of-children severity, no spurious H001
+    needed.
 
-    Regression target: before this, ``_resolve`` returned ``sig.
-    return_unit`` directly. For a polymorphic function ``r = f(m, m)``
-    where ``f`` returns ``'a``, the resolved RHS unit was ``'a`` —
-    which then failed the assignment homogeneity check against the
-    concrete LHS ``r : m`` and fired a spurious H001.
+    Regression target: before this, ``_resolve`` returned
+    ``sig.return_unit`` directly. For a polymorphic function ``r =
+    f(m, m)`` where ``f`` returns ``'a``, the resolved RHS unit was
+    ``'a`` — which then failed the assignment homogeneity check
+    against the concrete LHS ``r : m`` and fired a spurious H001.
+
+    Args:
+        sig: Callee signature.
+        arg_exprs: Per-slot argument expression nodes (sparse;
+            ``None`` entries are skipped).
+        ctx: Per-file context.
+        source: Full file contents (raw bytes).
+
+    Returns:
+        The substituted return unit, or ``None`` when ``sig`` has no
+        declared return, the call-site unifier rejects, or
+        unification raises :class:`UnsupportedPolymorphism`.
     """
     if sig.return_unit is None:
         return None
@@ -2785,13 +3575,20 @@ def _decl_type_name(decl: Node, source: bytes) -> str | None:
     Tree-sitter's Fortran grammar wraps the declared type differently
     depending on whether it's intrinsic or derived:
 
-    - ``real :: x``         → ``intrinsic_type`` child, no ``type_name``.
+    - ``real :: x``         → ``intrinsic_type`` child, no
+      ``type_name``.
     - ``type(particle) :: p`` → ``derived_type`` child containing a
       ``type_name`` child. The ``derived_type`` wrapper is what trips
       up a direct-children scan for ``type_name``.
 
-    Returns the type name (case preserved) when the declaration uses
-    a derived type, or ``None`` for intrinsic types.
+    Args:
+        decl: Tree-sitter ``variable_declaration`` node.
+        source: Full file contents (raw bytes) for identifier-text
+            extraction.
+
+    Returns:
+        The type name (case preserved) when ``decl`` uses a derived
+        type, or ``None`` for intrinsic types and malformed shapes.
     """
     for c in decl.children:
         if c.type == "derived_type":
@@ -2808,7 +3605,22 @@ def _decl_type_name(decl: Node, source: bytes) -> str | None:
 def _extract_parameter_values_from_decl(
     n: Node, source: bytes, out: dict[str, Fraction | int],
 ) -> None:
-    """If ``n`` is a PARAMETER ``variable_declaration``, populate ``out``."""
+    """Populate ``out`` from ``n`` when it is a PARAMETER declaration.
+
+    Inspects ``n`` for a ``type_qualifier`` reading "parameter"; if
+    present, walks every ``init_declarator`` child and adds an entry
+    for each name whose initialiser resolves to a literal rational.
+
+    Args:
+        n: Tree-sitter ``variable_declaration`` node.
+        source: Full file contents (raw bytes).
+        out: Output map; mutated in place with ``name_lc -> value``
+            entries.
+
+    Returns:
+        None. Non-PARAMETER declarations and unresolvable initialisers
+        are silently skipped.
+    """
     is_parameter = False
     for c in n.children:
         if c.type == "type_qualifier" and _text(c, source).strip().lower() == "parameter":
@@ -2844,17 +3656,25 @@ def _extract_parameter_values_from_decl(
 def collect_parameter_values(
     tree: Tree, source: bytes,
 ) -> dict[str, Fraction | int]:
-    """Return ``{name_lc: value}`` for every PARAMETER declaration whose
-    initialiser collapses to a rational.
+    """Collect ``name_lc -> value`` for every literal-folding PARAMETER.
 
     A PARAMETER declaration is a ``variable_declaration`` with a
-    ``type_qualifier`` child reading "parameter". Each ``init_declarator``
-    pairs an identifier with a value expression; we evaluate the value
-    expression via ``_resolve_constant_value`` (without a ctx — so only
-    literals and simple arithmetic, no chained PARAMETER lookup here).
-    A two-pass version that resolves chained PARAMETERs is straightforward
-    to add when needed; for now the common ``kappa = 2./7.`` style is
-    literal-only and that's what this covers.
+    ``type_qualifier`` child reading "parameter". Each
+    ``init_declarator`` pairs an identifier with a value expression;
+    we evaluate it via :func:`_resolve_constant_value` (without a
+    ``ctx`` — so only literals and simple arithmetic, no chained
+    PARAMETER lookup here). A two-pass version that resolves chained
+    PARAMETERs is straightforward to add when needed; for now the
+    common ``kappa = 2./7.`` style is literal-only and that's what
+    this covers.
+
+    Args:
+        tree: Tree-sitter parse :class:`Tree` for the file.
+        source: Full file contents (raw bytes).
+
+    Returns:
+        Dict from lower-cased PARAMETER name to its
+        :class:`~fractions.Fraction` or ``int`` value.
     """
     out: dict[str, Fraction | int] = {}
     for n in _ts.walk(tree.root_node):
@@ -2865,7 +3685,20 @@ def collect_parameter_values(
 
 
 def collect_var_types(tree: Tree, source: bytes) -> dict[str, str]:
-    """Return ``{varname_lc: type_name_lc}`` for every ``type(NAME) :: …`` decl."""
+    """Collect ``varname_lc -> type_name_lc`` for derived-type variables.
+
+    Walks every ``variable_declaration`` and records the lower-cased
+    declared type for each name. Intrinsic-type declarations (``real
+    :: x``) contribute nothing.
+
+    Args:
+        tree: Tree-sitter parse :class:`Tree` for the file.
+        source: Full file contents (raw bytes).
+
+    Returns:
+        Dict from lower-cased variable name to its lower-cased
+        derived-type name.
+    """
     out: dict[str, str] = {}
     for n in _ts.walk(tree.root_node):
         if n.type != "variable_declaration":
@@ -2882,11 +3715,19 @@ def collect_var_types(tree: Tree, source: bytes) -> dict[str, str]:
 def collect_type_field_types(
     tree: Tree, source: bytes
 ) -> dict[tuple[str, str], str]:
-    """Return ``{(struct_lc, field_lc): field_struct_lc}`` for fields of derived type.
+    """Collect derived-type-typed field type names.
 
-    Only fields whose declared type is itself a derived type appear in
-    the map; fields of intrinsic type (``real :: m``) are not — the
-    resolver uses ``field_units`` for those instead.
+    Only fields whose declared type is itself a derived type appear
+    in the map; fields of intrinsic type (``real :: m``) are not —
+    the resolver uses ``field_units`` for those instead.
+
+    Args:
+        tree: Tree-sitter parse :class:`Tree` for the file.
+        source: Full file contents (raw bytes).
+
+    Returns:
+        Dict from ``(struct_name_lc, field_name_lc)`` to the
+        lower-cased name of the field's own derived type.
     """
     out: dict[tuple[str, str], str] = {}
     for n in _ts.walk(tree.root_node):
@@ -2917,7 +3758,23 @@ def collect_function_signatures(
     var_units: dict[str, UnitExpr],
     source: bytes,
 ) -> dict[str, FuncSig]:
-    """Return ``{name_lc: FuncSig}`` for every ``function`` and ``subroutine``."""
+    """Collect ``name_lc -> FuncSig`` for every routine in the tree.
+
+    Walks every ``function`` / ``subroutine`` node and resolves each
+    argument's unit via a case-insensitive view of ``var_units``. The
+    return unit is read from the ``result(...)`` clause if present,
+    falling back to the function's own name (the F90 implicit-result
+    convention).
+
+    Args:
+        tree: Tree-sitter parse :class:`Tree` for the file.
+        var_units: Flat annotation map to resolve argument/result
+            units against. Case-insensitive views are built internally.
+        source: Full file contents (raw bytes).
+
+    Returns:
+        Dict from lower-cased routine name to its :class:`FuncSig`.
+    """
     out: dict[str, FuncSig] = {}
     # Case-insensitive view: a header arg may differ in case from its
     # declaration (Fortran identifiers are case-insensitive).
@@ -2976,12 +3833,22 @@ def collect_module_exports(
     var_units: dict[str, UnitExpr],
     source: bytes,
 ) -> dict[str, ModuleExports]:
-    """Return ``{module_name_lc: ModuleExports}`` for every ``module`` node.
+    """Collect ``module_name_lc -> ModuleExports`` for every module.
 
     Treats every module-level declaration as exported (no ``private``
-    honouring — matches the LFortran-side Phase 2 behaviour). Contained
-    procedures' signatures are collected by re-running the signature
-    collector against the module's children.
+    honouring at this layer — visibility is applied downstream via
+    :func:`_extract_visibility`). Contained procedures' signatures are
+    collected by re-running the signature collector against the
+    module's children.
+
+    Args:
+        tree: Tree-sitter parse :class:`Tree` for the file.
+        var_units: Flat annotation map; case-insensitive views are
+            built internally.
+        source: Full file contents (raw bytes).
+
+    Returns:
+        Dict from lower-cased module name to its :class:`ModuleExports`.
     """
     out: dict[str, ModuleExports] = {}
     for n in _ts.walk(tree.root_node):
@@ -3052,11 +3919,20 @@ def collect_var_types_type_fields_and_parameter_values(
     dict[tuple[str, str], str],
     dict[str, Fraction | int],
 ]:
-    """Produce var-type, type-field-type, and parameter-value maps in one walk.
+    """Produce var-type, type-field-type, and parameter-value maps.
 
-    Equivalent to ``collect_var_types`` + ``collect_type_field_types`` +
-    ``collect_parameter_values`` back-to-back, thirded. Used inside ``check``
-    so the per-file context only walks the tree once for all three maps.
+    Single-walk equivalent of
+    :func:`collect_var_types` + :func:`collect_type_field_types` +
+    :func:`collect_parameter_values`. Used inside :func:`check` so the
+    per-file context only walks the tree once for all three maps.
+
+    Args:
+        tree: Tree-sitter parse :class:`Tree` for the file.
+        source: Full file contents (raw bytes).
+
+    Returns:
+        ``(var_types, type_field_types, parameter_values)`` triple with
+        the same shapes as the standalone collectors above.
     """
     var_types: dict[str, str] = {}
     type_field_types: dict[tuple[str, str], str] = {}
@@ -3095,7 +3971,19 @@ def collect_var_types_type_fields_and_parameter_values(
 def collect_var_types_and_type_field_types(
     tree: Tree, source: bytes,
 ) -> tuple[dict[str, str], dict[tuple[str, str], str]]:
-    """Back-compat shim — returns var-types + type-field-types only."""
+    """Back-compat shim returning the var-types + type-field-types pair.
+
+    Drops the parameter-values third return of
+    :func:`collect_var_types_type_fields_and_parameter_values`.
+
+    Args:
+        tree: Tree-sitter parse :class:`Tree` for the file.
+        source: Full file contents (raw bytes).
+
+    Returns:
+        ``(var_types, type_field_types)`` — same shapes as the
+        respective standalone collectors.
+    """
     var_types, type_field_types, _ = (
         collect_var_types_type_fields_and_parameter_values(tree, source)
     )
@@ -3106,21 +3994,29 @@ def _make_scoped_lookup(
     var_units: dict[str, UnitExpr],
     var_units_by_scope: dict[tuple[str | None, str], UnitExpr] | None,
 ) -> _ScopedLookup:
-    """Build a ``(name, scope_lc) -> Unit | None`` lookup.
+    """Build a ``(name, scope_lc) -> UnitExpr | None`` lookup.
 
-    Semantics distinguish None from empty dict:
+    Semantics distinguish ``None`` from empty dict:
 
     - ``var_units_by_scope is None``: caller has only flat data (the
       back-compat path for legacy standalone collectors). Fall back
       to ``var_units.get(name)``, which conflates same-named symbols
       across files but matches pre-scope-aware behaviour.
-    - ``var_units_by_scope`` (possibly empty dict): scope-aware
-      mode. Try ``(scope, name)`` then ``(None, name)``; return
-      ``None`` if neither matches. **No flat fallback** — otherwise an
-      unannotated parameter of a generic wrapper (e.g. a NetCDF
-      ``put_var(...,v)``) would absorb the unit of an unrelated
-      same-named variable elsewhere in the workset (e.g. a wind
-      ``v: m/s``), producing spurious H004 diagnostics.
+    - ``var_units_by_scope`` (possibly empty dict): scope-aware mode.
+      Try ``(scope, name)`` then ``(None, name)``; return ``None`` if
+      neither matches. **No flat fallback** — otherwise an unannotated
+      parameter of a generic wrapper would absorb the unit of an
+      unrelated same-named variable elsewhere in the workset,
+      producing spurious H004 diagnostics.
+
+    Args:
+        var_units: Flat first-seen annotation map.
+        var_units_by_scope: Scope-aware annotation map, or ``None`` to
+            enable the flat fallback path.
+
+    Returns:
+        A :class:`_ScopedLookup` callable resolving names case-
+        insensitively.
     """
     # Fortran identifiers are case-insensitive. Build lowercased views so a
     # header arg / use-import / field reference resolves its declaration
@@ -3141,8 +4037,16 @@ def _make_scoped_lookup(
     def lookup(name: str, scope: str | None) -> UnitExpr | None:
         """Resolve ``name`` in ``scope`` then the module-level layer.
 
-        Lowercases both inputs before lookup. Returns ``None`` when
-        neither the per-scope nor the ``(None, name)`` entry matches.
+        Lowercases both inputs before lookup.
+
+        Args:
+            name: Identifier text in any case.
+            scope: Enclosing routine name (any case), or ``None`` for
+                module-level / file-level positions.
+
+        Returns:
+            The annotated :class:`UnitExpr`, or ``None`` when neither
+            the per-scope nor the ``(None, name)`` entry matches.
         """
         name_lc = name.lower()
         if scope is not None:
@@ -3161,18 +4065,27 @@ def collect_function_signatures_and_module_exports(
     *,
     var_units_by_scope: dict[tuple[str | None, str], UnitExpr] | None = None,
 ) -> tuple[dict[str, FuncSig], dict[str, ModuleExports]]:
-    """Produce both function/subroutine signatures *and* module exports
-    in a single tree walk.
+    """Collect routine signatures and module exports in one tree walk.
 
-    Equivalent to running ``collect_function_signatures`` and
-    ``collect_module_exports`` back-to-back, but visits the tree once
-    instead of twice. Profiling a large workspace showed those two walks
-    accounted for ~6-7s in the index phase; consolidating saves about
-    half. Public collectors are kept for back-compat (LSP hover etc.).
+    Equivalent to :func:`collect_function_signatures` and
+    :func:`collect_module_exports` back-to-back, but visits the tree
+    once instead of twice. Profiling a large workspace showed those
+    two walks accounted for ~6-7s in the index phase; consolidating
+    saves about half. Public collectors are kept for back-compat (LSP
+    hover etc.).
 
-    When ``var_units_by_scope`` is supplied, argument units are looked
-    up per-routine so two subroutines declaring the same name with
-    different units no longer alias.
+    Args:
+        tree: Tree-sitter parse :class:`Tree` for the file.
+        var_units: Flat annotation map.
+        source: Full file contents (raw bytes).
+        var_units_by_scope: Optional scope-aware annotation map. When
+            supplied, argument units are looked up per-routine so two
+            subroutines declaring the same name with different units
+            no longer alias.
+
+    Returns:
+        ``(signatures, module_exports)`` mirroring the standalone
+        collectors' shapes.
     """
     lookup = _make_scoped_lookup(var_units, var_units_by_scope)
     signatures: dict[str, FuncSig] = {}
@@ -3197,10 +4110,17 @@ def _signature_for_node(
     lookup: _ScopedLookup,
     source: bytes,
 ) -> tuple[str, FuncSig] | None:
-    """Extract a single ``FuncSig`` from a ``function`` / ``subroutine`` node.
+    """Extract a single :class:`FuncSig` from a routine node.
 
-    Returns ``(name_lc, FuncSig)`` or ``None`` when the node lacks the
-    expected ``*_statement`` / ``name`` children (malformed parse).
+    Args:
+        node: Tree-sitter ``function`` or ``subroutine`` node.
+        lookup: Scoped unit lookup callable.
+        source: Full file contents (raw bytes).
+
+    Returns:
+        ``(name_lc, FuncSig)``, or ``None`` when ``node`` lacks the
+        expected ``*_statement`` / ``name`` children (malformed
+        parse).
     """
     is_subroutine = node.type == "subroutine"
     stmt_type = "subroutine_statement" if is_subroutine else "function_statement"
@@ -3248,7 +4168,21 @@ def _module_exports_for_node(
     lookup: _ScopedLookup,
     source: bytes,
 ) -> tuple[str, ModuleExports] | None:
-    """Extract ``ModuleExports`` from a single ``module`` node."""
+    """Extract :class:`ModuleExports` from a single ``module`` node.
+
+    Walks the module's direct children to collect variable
+    declarations, contained-procedure signatures, ``use`` clauses, and
+    ``public`` / ``private`` visibility statements.
+
+    Args:
+        node: Tree-sitter ``module`` node.
+        lookup: Scoped unit lookup callable.
+        source: Full file contents (raw bytes).
+
+    Returns:
+        ``(name_lc, ModuleExports)``, or ``None`` when ``node`` lacks
+        the expected ``module_statement`` / ``name`` children.
+    """
     stmt = next((c for c in node.children if c.type == "module_statement"), None)
     if stmt is None:
         return None
@@ -3305,9 +4239,16 @@ def _module_exports_for_node(
 def _extract_inner_uses(node: Node, source: bytes) -> tuple[Any, ...]:
     """Return the ``UseRef`` tuple for every ``use`` directly in a module.
 
-    Reuses :func:`workspace_index.extract_uses` on the module's source
-    slice — cheaper than re-walking the tree and guarantees identical
-    parsing of ``only:`` / rename lists.
+    Reuses :func:`dimfort.core.workspace_index.extract_uses` on the
+    module's source slice — cheaper than re-walking the tree and
+    guarantees identical parsing of ``only:`` / rename lists.
+
+    Args:
+        node: Tree-sitter ``module`` node.
+        source: Full file contents (raw bytes).
+
+    Returns:
+        Tuple of ``UseRef`` entries in source order.
     """
     from dimfort.core.workspace_index import extract_uses
     text = source[node.start_byte:node.end_byte].decode("utf-8", "replace")
@@ -3319,9 +4260,17 @@ def _extract_visibility(
 ) -> tuple[bool, frozenset[str], frozenset[str]]:
     """Parse module-level ``private`` / ``public`` statements.
 
-    Returns ``(default_private, public_names_lc, private_names_lc)``.
     A bare ``private`` flips the default; ``public :: a, b`` /
     ``private :: a, b`` override individual names.
+
+    Args:
+        node: Tree-sitter ``module`` node.
+        source: Full file contents (raw bytes) for identifier-text
+            extraction.
+
+    Returns:
+        ``(default_private, public_names_lc, private_names_lc)`` —
+        the latter two as :class:`frozenset` s of lower-cased names.
     """
     default_private = False
     public_names: set[str] = set()
@@ -3346,10 +4295,22 @@ def _signatures_for_subtree(
     lookup: _ScopedLookup,
     source: bytes,
 ) -> dict[str, FuncSig]:
-    """Run :func:`collect_function_signatures` over a sub-tree only.
+    """Collect signatures over a single sub-tree.
 
-    The main collector walks from the root; we need to scope to a single
-    module's children. Reuse the inner loop by manually iterating.
+    The main collector walks from the root; we need to scope to a
+    single module's children. Reuses the inner loop by manually
+    iterating.
+
+    Args:
+        node: Tree-sitter ``function`` / ``subroutine`` node rooted
+            inside a module's children.
+        lookup: Scoped unit lookup callable.
+        source: Full file contents (raw bytes).
+
+    Returns:
+        Dict from lower-cased routine name to its :class:`FuncSig`.
+        Empty when ``node`` isn't a routine or lacks the expected
+        ``*_statement`` / ``name`` children.
     """
     out: dict[str, FuncSig] = {}
     if node.type not in ("function", "subroutine"):
@@ -3436,6 +4397,14 @@ def _declarator_leading_identifier(node: Node, source: bytes) -> str | None:
     Sister of :func:`_declarator_leading_node` that returns the text
     rather than the node — used by the collectors that don't need to
     keep node positions.
+
+    Args:
+        node: Tree-sitter declarator-wrapper node.
+        source: Full file contents (raw bytes).
+
+    Returns:
+        The leading identifier text in original case, or ``None``
+        when the structure doesn't bottom out in an ``identifier``.
     """
     for c in node.children:
         if c.type == "identifier":
@@ -3469,10 +4438,41 @@ def _build_ctx(
 ) -> tuple[_Ctx, list[Diagnostic]]:
     """Build the static :class:`_Ctx` for one file's pass.
 
-    Shared by :func:`check` and :func:`dimfort.core.interactions` so the
-    fragile table-parsing / collector setup lives in exactly one place.
-    Returns ``(ctx, assume_diags)`` — ``assume_diags`` carries the U002s
-    raised by un-parseable ``@unit_assume`` units (empty for most files).
+    Shared by :func:`check` and
+    :func:`dimfort.core.interactions` so the fragile table-parsing /
+    collector setup lives in exactly one place.
+
+    Args:
+        tree: Tree-sitter parse :class:`Tree` for the file.
+        var_units: Flat annotation map; values may be raw unit strings
+            (parsed via :func:`_units_mod.parse`) or already-parsed
+            :class:`UnitExpr` objects.
+        source: Full file contents (raw bytes).
+        file: Source path stamped onto every diagnostic.
+        table: Unit table used to parse string annotations; defaults
+            to ``_units_mod.DEFAULT_TABLE``.
+        signatures: Optional pre-computed signature index; collected
+            from ``tree`` when omitted.
+        field_units: Optional ``(type, field) -> unit`` map.
+        var_units_by_scope: Optional scope-aware annotation map; when
+            supplied activates scope-aware mode on the context.
+        routine_scopes: Sorted byte ranges + names of every routine in
+            the file.
+        assumes: Raw ``@unit_assume`` records keyed by 1-based line.
+        affine_conversions: Raw ``@unit_affine_conversion`` records
+            keyed by 1-based line.
+        scale_mode: Pass-through for the context's ``scale_mode``
+            flag.
+
+    Returns:
+        ``(ctx, assume_diags)`` — ``assume_diags`` carries the U002s
+        raised by un-parseable ``@unit_assume`` units (empty for most
+        files).
+
+    Raises:
+        RuntimeError: When no unit table is available (the default
+            table hasn't been initialised by
+            ``dimfort.core.unit_config``).
     """
     active_table = table if table is not None else _units_mod.DEFAULT_TABLE
     if active_table is None:
@@ -3593,23 +4593,40 @@ def check(
     Tree-sitter requires the original ``source`` bytes alongside the
     tree to extract identifier text.
 
-    Key kwargs:
+    Diagnostics walk per-statement so each entry carries just its
+    own statement's trace chain; a post-pass ``finalize_diagnostics``
+    applies any post-walk fixups before returning.
 
-    - ``var_units`` (positional) / ``var_units_by_scope`` — flat and
-      per-routine unit tables produced by stage 1+2.
-    - ``field_units`` — derived-type ``%``-field units.
-    - ``signatures`` — function/subroutine signatures for H003/H004/H020.
-    - ``routine_scopes`` — byte-range to routine-name spans, used to
-      pick the right per-scope table for a given diagnostic site.
-    - ``assumes`` — per-line ``@unit_assume`` records (drives U020).
-    - ``affine_conversions`` — per-line affine-conversion directives.
-    - ``scale_mode`` — enable S001/S002 (off by default).
-    - ``out_autocast_events`` — optional sink for autocast events the
-      LSP layer consumes.
+    Args:
+        tree: Tree-sitter parse :class:`Tree` for the file.
+        var_units: Flat annotation map produced by stage 1+2; values
+            may be strings or already-parsed :class:`UnitExpr` objects.
+        source: Full file contents (raw bytes).
+        file: Source path stamped onto every diagnostic.
+        table: Unit table to parse string annotations against;
+            defaults to the package-default table.
+        signatures: Pre-computed signature index. Collected from
+            ``tree`` when omitted.
+        field_units: Derived-type ``%``-field units, keyed
+            ``(type, field)``.
+        var_units_by_scope: Per-routine unit table; enables
+            scope-aware lookup when supplied.
+        routine_scopes: Byte-range-to-routine-name spans used to pick
+            the right per-scope table for a given diagnostic site.
+        out_autocast_events: Optional sink for :class:`AutocastEvent`
+            records consumed by the LSP layer.
+        assumes: Per-line ``@unit_assume`` records (drives U020).
+        affine_conversions: Per-line affine-conversion directives.
+        scale_mode: Enable S001/S002 emission (off by default).
 
-    Diagnostics walk per-statement so each entry carries just its own
-    statement's trace chain; a post-pass ``finalize_diagnostics`` applies
-    any post-walk fixups before returning.
+    Returns:
+        A list of :class:`Diagnostic` s ordered by emission. Includes
+        any U002 produced by :func:`_build_ctx` for un-parseable
+        ``@unit_assume`` units.
+
+    Raises:
+        RuntimeError: Propagated from :func:`_build_ctx` when no unit
+            table is available.
     """
     ctx, assume_diags = _build_ctx(
         tree,
@@ -3640,9 +4657,18 @@ def check(
     def _attach_traces_since(start_idx: int, trace_obj: Trace | None) -> None:
         """Backfill ``trace`` onto every diagnostic appended since ``start_idx``.
 
-        The checker walks per-statement so each statement opens a fresh
-        trace; this snapshots it and replaces the affected diagnostics
-        with copies carrying the trace chain. No-op when tracing is off.
+        The checker walks per-statement so each statement opens a
+        fresh trace; this snapshots it and replaces the affected
+        diagnostics with copies carrying the trace chain.
+
+        Args:
+            start_idx: Index into ``out`` marking the first diagnostic
+                appended during the current statement.
+            trace_obj: Trace context to attach, or ``None`` when
+                tracing is off (no-op).
+
+        Returns:
+            None. Mutates ``out`` in place.
         """
         if trace_obj is None:
             return
@@ -3656,7 +4682,13 @@ def check(
     from contextlib import AbstractContextManager, nullcontext
 
     def _stmt_trace_ctx() -> AbstractContextManager[Trace | None]:
-        """Return a fresh per-statement trace context, or a no-op when tracing is off."""
+        """Return a fresh per-statement trace context manager.
+
+        Returns:
+            A :class:`with_trace` context when tracing is active for
+            this run, otherwise :class:`contextlib.nullcontext` (which
+            yields ``None``).
+        """
         return with_trace() if tracing_on else nullcontext()
 
     for node in _ts.walk(tree.root_node):

@@ -22,11 +22,14 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
   where appropriate; rich inline per-field comments are preserved
   when richer than an `Attributes:` block could carry. Every claim
   was verified against current behaviour; no stale docstring was
-  found. `core/ts_checker.py` received a lighter pass — its existing
-  one-line docstrings on AST-dispatch helpers were already
-  behaviour-accurate, so the sweep only added 16 missing docstrings
-  rather than reshaping the existing prose. No code changes;
-  behaviour unchanged.
+  found. No code changes; behaviour unchanged.
+- **`core/ts_checker.py` heavier follow-up pass**: the prior pass
+  left the 3.7k-line checker's existing one-line docstrings on
+  AST-dispatch helpers in their original prose form. This follow-up
+  reshapes ~65 of them into multi-section Google form (explicit
+  `Args:` / `Returns:` / `Raises:` / `Note:`), bringing the file in
+  line with the rest of `core/`. No new docstrings (those were added
+  in the prior pass). No code changes; behaviour unchanged.
 
 ## [0.2.3.1] — 2026-06-07
 
