@@ -225,10 +225,32 @@ def dump_diagnostic(g: Diagnostic) -> dict[str, Any]:
     # Omit when None so every other diagnostic stays byte-identical.
     if g.suggested_rewrite is not None:
         out["r"] = g.suggested_rewrite
+    # H020 populates polymorphism_conflict with structured per-arg
+    # binding/partner data the LSP panel reads to render the spec's
+    # ``'a = unit — collides with arg N`` form. Each row is
+    # ``(slot_index, slot_name, binding_text, partner_indices)``.
+    # Tuples serialise to JSON lists; ``load_diagnostic`` converts
+    # back. Omit when None so non-H020 diagnostics stay byte-identical.
+    if g.polymorphism_conflict is not None:
+        out["pc"] = [
+            [slot_idx, slot_name, binding, list(partners)]
+            for slot_idx, slot_name, binding, partners in g.polymorphism_conflict
+        ]
     return out
 
 
 def load_diagnostic(d: dict[str, Any]) -> Diagnostic:
+    raw_pc = d.get("pc")
+    polymorphism_conflict: tuple[
+        tuple[int, str | None, str, tuple[int, ...]], ...
+    ] | None
+    if raw_pc is None:
+        polymorphism_conflict = None
+    else:
+        polymorphism_conflict = tuple(
+            (row[0], row[1], row[2], tuple(row[3]))
+            for row in raw_pc
+        )
     return Diagnostic(
         file=d["f"],
         start=Position(line=d["sl"], column=d["sc"]),
@@ -237,4 +259,5 @@ def load_diagnostic(d: dict[str, Any]) -> Diagnostic:
         code=d["c"],
         message=d["m"],
         suggested_rewrite=d.get("r"),
+        polymorphism_conflict=polymorphism_conflict,
     )

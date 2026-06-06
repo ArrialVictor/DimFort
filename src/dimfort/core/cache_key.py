@@ -72,7 +72,20 @@ from dimfort import __version__ as _dimfort_version
 #     Diagnostic drop was live — a warm U002 lost its "did you mean...?"
 #     suggestion compared to a cold one. v7 refreshes both classes of
 #     entry so the next check rebuilds with all fields present.
-CHECKER_OUTPUT_VERSION = 7
+# v8: 0.2.3.1 added ``Diagnostic.polymorphism_conflict`` (structured
+#     conflict data the LSP panel reads to render H020's spec-faithful
+#     ``'a = unit — collides with arg N`` form) and reformatted H020's
+#     message text (multi-line, em-dash separator, bare ``arg N``
+#     partner labels). Both fields are part of the cached ``Diagnostic``
+#     record. v7 entries written before the rewrite would replay the
+#     old single-line message with no structured field, so the panel
+#     would fall back to the generic ``(expected 'a)`` trailer on a
+#     warm cache hit — masking the very UX fix this release ships.
+#     The package version string did not change (cache invalidates by
+#     ``(__version__, CHECKER_OUTPUT_VERSION)``; bumping the latter is
+#     how we invalidate cleanly within a patch release that ships a
+#     diagnostic-shape change).
+CHECKER_OUTPUT_VERSION = 8
 
 
 # Keys from a workspace config that affect a *file's* output and
