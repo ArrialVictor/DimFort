@@ -30,7 +30,12 @@ CONFIG_FILENAME = ".dimfort.toml"
 
 @dataclass(frozen=True)
 class UnitPatternEntry:
-    """One configured ``@unit{}``-family delimiter pair."""
+    """One configured ``@unit{}``-family delimiter pair.
+
+    Attributes:
+        open: Opening delimiter text (e.g. ``"@unit{"``).
+        close: Closing delimiter text (e.g. ``"}"``).
+    """
 
     open: str
     close: str
@@ -38,9 +43,14 @@ class UnitPatternEntry:
 
 @dataclass(frozen=True)
 class StructuredPatternEntry:
-    """One configured ``@unit_assume{}`` / ``@unit_affine_conversion{}``
-    delimiter triple. ``sep`` separates the unit text from the
-    directive-specific payload (reason / target unit).
+    """One configured ``@unit_assume{}`` / ``@unit_affine_conversion{}`` delimiter triple.
+
+    Attributes:
+        open: Opening delimiter text (e.g. ``"@unit_assume{"``).
+        close: Closing delimiter text (e.g. ``"}"``).
+        sep: Separator between the unit text and the directive-specific
+            payload (reason for ``@unit_assume``, target unit for
+            ``@unit_affine_conversion``).
     """
 
     open: str
@@ -61,8 +71,14 @@ DEFAULT_UNIT_AFFINE_COMMENT_DELIMITERS: tuple[StructuredPatternEntry, ...] = (
 
 @dataclass(frozen=True)
 class DimfortConfig:
-    """Resolved configuration. ``None`` means "not set, fall through to
-    the next layer." Empty tuples mean "explicitly empty."
+    """Resolved project configuration, frozen.
+
+    A ``None`` on an optional field means "not set, fall through to the
+    next layer" (per the precedence chain documented at module level).
+    Empty tuples mean "explicitly empty" — for instance, an explicit
+    empty ``cpp_defines`` list in ``.dimfort.toml``.
+
+    Per-field semantics are documented inline beside each field.
     """
 
     config_path: Path | None = None
@@ -135,9 +151,15 @@ class DimfortConfig:
 def find_config(start: Path) -> Path | None:
     """Walk upward from ``start`` looking for a ``.dimfort.toml``.
 
-    Returns the absolute path on first hit, or ``None`` if none is found
-    before reaching a filesystem root. ``start`` may point at either a
-    file or a directory.
+    Args:
+        start: Path to begin the search from. May point at either a file
+            or a directory; if a file, its parent directory is used as
+            the starting point.
+
+    Returns:
+        Absolute path to the first ``.dimfort.toml`` encountered, or
+        ``None`` if the walk reaches a filesystem root without finding
+        one.
     """
     cur = Path(start).resolve()
     if cur.is_file():
@@ -154,12 +176,21 @@ def find_config(start: Path) -> Path | None:
 def load_config(start: Path) -> DimfortConfig:
     """Locate and parse the nearest ``.dimfort.toml``.
 
-    A missing file returns an empty :class:`DimfortConfig`. A *malformed*
-    file returns ``DimfortConfig(config_path=path, load_error=str(exc))``
-    so the CLI can honour its exit-2 contract for invalid configs; the
-    LSP keeps the soft path and ignores ``load_error``. Parse errors are
-    logged but never raise — a missing/broken config must not break the
-    CLI or the LSP.
+    Args:
+        start: Path to begin the upward search from (see
+            :func:`find_config` for the walk rules).
+
+    Returns:
+        Resolved configuration. An empty :class:`DimfortConfig` if no
+        file was found. On a *malformed* file (TOML decode error or
+        ``OSError``), a config carrying ``config_path=path`` and
+        ``load_error=str(exc)`` so the CLI can honour its exit-2
+        contract for invalid configs; the LSP keeps the soft path and
+        ignores ``load_error``.
+
+    Note:
+        Parse errors are logged but never raise — a missing or broken
+        config must not break the CLI or the LSP.
     """
     path = find_config(start)
     if path is None:

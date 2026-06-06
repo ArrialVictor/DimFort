@@ -1,9 +1,17 @@
 """Command-line entry point.
 
-Exit codes:
-    0 — no error-severity diagnostics
-    1 — at least one error-severity diagnostic
-    2 — usage error, missing file, invalid config
+Wires the ``dimfort`` console script: ``check``, ``interactions``, and
+``lsp`` subcommands. The ``check`` and ``interactions`` paths share a
+config-loading + file-discovery prologue; ``lsp`` hands off to
+``dimfort.lsp.server.run_stdio``.
+
+Exit codes (uniform across subcommands):
+
+* ``0`` — no error-severity diagnostics.
+* ``1`` — at least one error-severity diagnostic (or an X001 conflict
+  for ``interactions``).
+* ``2`` — usage error: missing subcommand, missing path, no Fortran
+  sources discovered, or invalid ``.dimfort.toml``.
 """
 from __future__ import annotations
 
