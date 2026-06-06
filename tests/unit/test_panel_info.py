@@ -511,17 +511,19 @@ def test_panel_marker_paints_polymorphism_diagnostics(tmp_path: Path):
 
 
 def test_panel_h020_arg_rows_render_binding_and_collision_trailer(tmp_path: Path):
-    """Each conflicting arg row of an H020 must render in the spec form
-    ``'a = <actual> — collides with arg N`` in its unit column (not the
-    generic ``(expected 'a)`` reserved for the concrete-signature H004
-    mismatch path), with marker ``error`` and the ``expected`` field
-    suppressed to avoid a duplicate trailer. Regression pin: before
-    this, arg rows showed ``kg`` / ``m`` in the unit column with
-    ``(expected 'a)`` as the trailer and marker ``warn`` (via the
-    expected → warn demotion), which understated the conflict severity
-    and used the wrong wording per the spec's `(collides with …)` vs
-    `(expected …)` convention. See docs/design/shipped/polymorphic-
-    units.md §H020."""
+    """Each conflicting arg row of an H020 must render:
+    - unit column = ``'a = <actual>`` (the binding the slot would push);
+    - new ``collides`` payload field = ``"arg N"`` / ``"arg N, arg M"``
+      that the companion renders as ``(collides with …)`` to the right
+      of the marker, parallel to ``(expected …)``;
+    - marker = ``error``;
+    - ``expected`` field suppressed (the binding string already surfaces
+      the formal tyvar; the spec mandates ``(collides …)`` wording for
+      this path, not ``(expected …)``).
+    Regression pin: before this, arg rows showed ``kg`` / ``m`` in the
+    unit column with ``(expected 'a)`` as the trailer and marker
+    ``warn`` (via the expected → warn demotion). See
+    docs/design/shipped/polymorphic-units.md §H020."""
     from dimfort.core import ts_parser as _ts
     from dimfort.core.multifile import check_files
     from dimfort.lsp import server
@@ -571,20 +573,18 @@ def test_panel_h020_arg_rows_render_binding_and_collision_trailer(tmp_path: Path
         assert a_row["expected"] is None, a_row
         assert b_row["expected"] is None, b_row
         assert c_row["expected"] is None, c_row
-        # Unit column carries the spec's ``'a = <actual> — collides
-        # with arg N`` form. Partner indices use bare ``arg N`` (no
-        # ``(name)`` parenthetical — the partner's own row carries
-        # the name).
-        assert "'a = kg" in a_row["unit"], a_row
-        assert "collides with" in a_row["unit"], a_row
-        # arg 1 (a) collides with arg 2 (b), the only other-binding partner.
-        assert "arg 2" in a_row["unit"], a_row
-        assert "'a = m" in b_row["unit"], b_row
+        # Unit column carries the bare binding ``'a = <actual>``; the
+        # collision trailer ships in its own ``collides`` field.
+        assert a_row["unit"] == "'a = kg", a_row
+        assert b_row["unit"] == "'a = m", b_row
+        assert c_row["unit"] == "'a = kg", c_row
+        # ``collides`` field carries the partner-arg list with bare
+        # ``arg N`` labels (no ``(name)`` parenthetical — the
+        # partner's own row carries the name).
+        assert a_row["collides"] == "arg 2", a_row
         # arg 2 (b) collides with both arg 1 (a) and arg 3 (c).
-        assert "arg 1" in b_row["unit"], b_row
-        assert "arg 3" in b_row["unit"], b_row
-        assert "'a = kg" in c_row["unit"], c_row
-        assert "arg 2" in c_row["unit"], c_row
+        assert b_row["collides"] == "arg 1, arg 3", b_row
+        assert c_row["collides"] == "arg 2", c_row
     finally:
         with server.state.last_result_lock:
             server.state.last_result = saved_result

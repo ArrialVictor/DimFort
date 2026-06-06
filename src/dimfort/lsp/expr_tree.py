@@ -374,27 +374,28 @@ def _build_expression_tree(
         unit_render = "?"
 
     # H020 polymorphic-conflict override on a conflicting arg row.
-    # Renders the spec's ``'a = <actual> — collides with arg N, arg M``
-    # single-string form into the unit column and suppresses the
-    # generic ``(expected 'a)`` trailer — the binding string already
-    # surfaces the formal tyvar, and the trailer is the conflict-
-    # specific wording the spec mandates (`collides`, not `expected`).
-    # See docs/design/shipped/polymorphic-units.md §H020.
+    # Unit column renders ``'a = <actual>`` (the binding the slot would
+    # force the tyvar to); the spec's ``collides with arg N`` trailer
+    # ships separately in the payload's ``collides`` field so the
+    # companion can render it to the right of the marker, parallel to
+    # ``(expected …)`` and ``(assumed: …)``. The generic ``(expected
+    # 'a)`` trailer is suppressed — the binding string already surfaces
+    # the formal tyvar, and the spec mandates the ``collides`` wording
+    # for the polymorphism conflict path. See
+    # docs/design/shipped/polymorphic-units.md §H020.
+    collides_render: str | None = None
     if (
         polymorphism_conflict_row is not None
         and expected_render is not None
         and unit is not None
     ):
-        binding_text, partner_indices = polymorphism_conflict_row
+        _binding_text, partner_indices = polymorphism_conflict_row
         actual_render = format_unit(unit, show_factor=sf)
+        unit_render = f"{expected_render} = {actual_render}"
         if partner_indices:
-            partners = ", ".join(f"arg {p + 1}" for p in partner_indices)
-            unit_render = (
-                f"{expected_render} = {actual_render} — "
-                f"collides with {partners}"
+            collides_render = ", ".join(
+                f"arg {p + 1}" for p in partner_indices
             )
-        else:
-            unit_render = f"{expected_render} = {actual_render}"
         expected_render = None  # avoid the duplicate ``(expected 'a)``
 
     payload: dict[str, Any] = {
@@ -406,6 +407,12 @@ def _build_expression_tree(
         # assignment, not on the assignment itself — see the
         # post-recursion block below.
         "assumed": None,
+        # `collides` carries the H020 partner-arg list rendered as
+        # ``"arg N"`` / ``"arg N, arg M"``. The companion renders it
+        # to the right of the marker as ``(collides with …)``,
+        # parallel to ``(expected …)`` / ``(assumed: …)``. ``None``
+        # on every non-H020 row.
+        "collides": collides_render,
         "children": child_nodes,
     }
 

@@ -131,3 +131,74 @@ def test_recursive_call_with_wrong_unit_fires_h020(tmp_path: Path):
     diags = _diags(result, src)
     codes = [d.code for d in diags]
     assert "H020" in codes, [(d.code, d.message) for d in diags]
+
+
+def test_hover_h020_arg_row_renders_collides_trailer(tmp_path: Path):
+    """The detailed-hover tree (rendered by ``_render_ast_tree``) must
+    surface H020's spec-faithful row form on every conflicting arg:
+    unit column = ``'a = <actual>`` (the binding the slot would push),
+    row tail = ``(collides with arg N)``, marker = 🔴. Regression pin:
+    fix #2 updated the panel-side ``_build_expression_tree`` but the
+    parallel ``_render_ast_tree`` was left rendering the generic
+    ``(expected 'a)`` trailer at 🟡 — surfaces in VSCode's call hover,
+    short hover, and CLI ``--trace`` output. See
+    docs/design/shipped/polymorphic-units.md §H020."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.lsp import server
+    from dimfort.lsp.hover import _render_ast_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
+
+    src = _materialise(
+        tmp_path, "poly_hover.f90",
+        "module m\n"
+        "contains\n"
+        "  subroutine f(x, y)\n"
+        "    real, intent(in)  :: x  !< @unit{'a}\n"
+        "    real, intent(out) :: y  !< @unit{'a}\n"
+        "    y = x\n"
+        "  end subroutine f\n"
+        "  subroutine caller(a, b)\n"
+        "    real, intent(in)  :: a  !< @unit{kg}\n"
+        "    real, intent(out) :: b  !< @unit{m}\n"
+        "    call f(a, b)\n"
+        "  end subroutine caller\n"
+        "end module m\n"
+    )
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    calls = [n for n in _ts.walk(tree.root_node)
+             if n.type == "subroutine_call"]
+
+    result = check_files([src])
+    with server.state.last_result_lock:
+        saved_result, server.state.last_result = server.state.last_result, result
+    try:
+        ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+        rows: list = []
+        _render_ast_tree(
+            calls[-1], ctx, source,
+            prefix="", is_last=True, is_root=True, rows=rows,
+        )
+        # rows are (label, unit, mark, extra) tuples.
+        # Skip the root (the call itself); look at the immediate arg rows.
+        arg_rows = [r for r in rows[1:] if "├──" in r[0] or "└──" in r[0]]
+        assert len(arg_rows) >= 2, rows
+        a_row = next(r for r in arg_rows if "a" in r[0])
+        b_row = next(r for r in arg_rows if "b" in r[0])
+        # Unit column carries the bare binding ``'a = <actual>``.
+        assert a_row[1] == "'a = kg", a_row
+        assert b_row[1] == "'a = m", b_row
+        # Marker hard-pinned to 🔴 — the polymorphism conflict owns
+        # each arg row directly, strictly stronger than the 🟡 demote
+        # that an ``(expected …)`` trailer would trigger.
+        assert a_row[2] == "🔴", a_row
+        assert b_row[2] == "🔴", b_row
+        # Row tail is the spec's ``(collides with arg N)`` form,
+        # parallel to ``(expected …)`` / ``(assumed: …)`` for other
+        # consistency surfaces.
+        assert a_row[3] == "(collides with arg 2)", a_row
+        assert b_row[3] == "(collides with arg 1)", b_row
+    finally:
+        with server.state.last_result_lock:
+            server.state.last_result = saved_result
