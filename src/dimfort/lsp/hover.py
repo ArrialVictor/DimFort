@@ -957,6 +957,30 @@ def _render_ast_tree(
         unit_str = format_unit(unit, show_factor=sf)
     else:
         unit_str = "?"
+
+    # H020 unbound-return override on the call_expression itself.
+    # ``_resolve_polymorphic_return`` returns ``None`` on unification
+    # failure (so downstream checks don't double-fire on top of H020 —
+    # fix #6). The bare ``?`` is honest but loses context; render
+    # ``'a = ?`` instead when the cause is a polymorphic return that
+    # couldn't bind. Mirrors :func:`_build_expression_tree`. Clean
+    # polymorphic returns keep the bare bound unit per convention.
+    if (
+        node.type == "call_expression"
+        and unit is None
+    ):
+        from dimfort.lsp.expr_tree import _h020_conflict_map_for_call
+        if _h020_conflict_map_for_call(node, ctx) is not None:
+            callee_nm_lc = _ts_h.call_name(node, source)
+            if callee_nm_lc is not None:
+                sig = ctx.signatures.get(callee_nm_lc.lower())
+                if (
+                    sig is not None
+                    and sig.return_unit is not None
+                    and ts_checker._unit_expr_has_tyvars(sig.return_unit)
+                ):
+                    formal_return = format_unit(sig.return_unit, show_factor=sf)
+                    unit_str = f"{formal_return} = ?"
     extra_str = ""
     if (
         expected_unit is not None

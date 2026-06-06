@@ -590,6 +590,116 @@ def test_panel_h020_arg_rows_render_binding_and_collision_trailer(tmp_path: Path
             server.state.last_result = saved_result
 
 
+def test_panel_h020_function_call_renders_unbound_return_form(tmp_path: Path):
+    """A polymorphic function call whose unifier rejected (H020 fires)
+    must render its own row's unit column as ``'a = ?`` — not bare
+    ``?`` — so the polymorphism context is preserved at a glance.
+    Mirrors the arg rows' ``'a = unit`` form, but with ``?`` standing
+    in for the indeterminate binding.
+
+    Regression pin: before this, ``_resolve_polymorphic_return``
+    returning ``None`` on failure (fix #6) caused the call_expression
+    row to fall through to the generic ``?`` glyph in unit_render —
+    correct but uninformative. The override surfaces the formal
+    return tyvar so the row reads as polymorphism-specific."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp import server
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
+
+    src = tmp_path / "poly_h020_func.f90"
+    src.write_text(
+        "module m\n"
+        "contains\n"
+        "  function f(x, y) result(out)\n"
+        "    real, intent(in) :: x    !< @unit{'a}\n"
+        "    real, intent(in) :: y    !< @unit{'a}\n"
+        "    real             :: out  !< @unit{'a}\n"
+        "    out = x\n"
+        "  end function f\n"
+        "  subroutine caller(a, b, r)\n"
+        "    real, intent(in)  :: a  !< @unit{kg}\n"
+        "    real, intent(in)  :: b  !< @unit{m}\n"
+        "    real, intent(out) :: r  !< @unit{kg}\n"
+        "    r = f(a, b)\n"
+        "  end subroutine caller\n"
+        "end module m\n"
+    )
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    calls = [n for n in _ts.walk(tree.root_node)
+             if n.type == "call_expression"]
+
+    result = check_files([src])
+    with server.state.last_result_lock:
+        saved_result, server.state.last_result = server.state.last_result, result
+    try:
+        ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+        # The call expression in the RHS of `r = f(a, b)` — the LAST
+        # call_expression in the file is the conflicting one.
+        payload = _build_expression_tree(calls[-1], ctx, source)
+        # Unit column: ``'a = ?`` (formal return = unbound).
+        assert payload["unit"] == "'a = ?", payload
+        # Marker still 🔴 (worst-of-children inherits H020 from args).
+        assert payload["marker"] == "error", payload
+    finally:
+        with server.state.last_result_lock:
+            server.state.last_result = saved_result
+
+
+def test_panel_clean_polymorphic_function_call_keeps_bare_bound_unit(tmp_path: Path):
+    """A clean polymorphic function call (unifier succeeded) must keep
+    bare bound-unit rendering — ``m``, not ``'a = m`` — per our
+    "show binding only when it matters" convention (fix #4/#5 rationale).
+    The unbound-return ``'a = ?`` override fires ONLY on H020 failure;
+    clean returns stay as plain bound units, matching how clean concrete
+    function calls render."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp import server
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
+
+    src = tmp_path / "poly_clean_func.f90"
+    src.write_text(
+        "module m\n"
+        "contains\n"
+        "  function f(x, y) result(out)\n"
+        "    real, intent(in) :: x    !< @unit{'a}\n"
+        "    real, intent(in) :: y    !< @unit{'a}\n"
+        "    real             :: out  !< @unit{'a}\n"
+        "    out = x\n"
+        "  end function f\n"
+        "  subroutine caller(a, b, r)\n"
+        "    real, intent(in)  :: a  !< @unit{m}\n"
+        "    real, intent(in)  :: b  !< @unit{m}\n"
+        "    real, intent(out) :: r  !< @unit{m}\n"
+        "    r = f(a, b)\n"
+        "  end subroutine caller\n"
+        "end module m\n"
+    )
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    calls = [n for n in _ts.walk(tree.root_node)
+             if n.type == "call_expression"]
+
+    result = check_files([src])
+    with server.state.last_result_lock:
+        saved_result, server.state.last_result = server.state.last_result, result
+    try:
+        ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+        payload = _build_expression_tree(calls[-1], ctx, source)
+        # Unit column: bare ``m`` (the bound return), not ``'a = m``.
+        assert payload["unit"] == "m", payload
+        assert payload["marker"] == "ok", payload
+    finally:
+        with server.state.last_result_lock:
+            server.state.last_result = saved_result
+
+
 def test_panel_clean_polymorphic_call_has_no_expected_trailer(tmp_path: Path):
     """A clean polymorphic call (every actual unifies cleanly with the
     formal tyvar) must render each arg row as bare ``unit 🟢`` — no

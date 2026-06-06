@@ -309,6 +309,11 @@ def _build_expression_tree(
 
     unit = ts_checker.resolve_unit(node, ctx, source)
 
+    # H020 conflict data for this node (if it's a call). Hoisted out of
+    # the children-build block so the unit-column renderer below can
+    # also key off it for the call_expression-itself override (rendering
+    # ``'a = ?`` on a polymorphic call whose unifier rejected).
+    poly_conflict_map: dict[int, tuple[str, tuple[int, ...]]] | None = None
     if node.type in ("identifier", "number_literal", "string_literal", "complex_literal"):
         kids: list[Node] = []
         child_nodes: list[dict[str, Any]] = []
@@ -323,7 +328,6 @@ def _build_expression_tree(
         # formal expected unit propagated. Subroutine_call and
         # call_expression both share this path.
         arg_expected: list[UnitExpr | None] = []
-        poly_conflict_map: dict[int, tuple[str, tuple[int, ...]]] | None = None
         if node.type in ("call_expression", "subroutine_call"):
             callee_nm = _ts_h.call_name(node, source)
             if callee_nm is not None:
@@ -379,6 +383,32 @@ def _build_expression_tree(
         unit_render = format_unit(unit, show_factor=sf)
     else:
         unit_render = "?"
+
+    # H020 unbound-return override on the call_expression itself.
+    # ``_resolve_polymorphic_return`` deliberately returns ``None`` when
+    # unification fails (so downstream checks don't double-fire on top
+    # of H020 — see fix #6). The bare ``?`` is honest but loses the
+    # polymorphism context. When the failure is *because* the polymorphic
+    # return couldn't bind, render ``'a = ?`` instead — mirroring the
+    # arg rows' ``'a = unit`` form and making the "this is polymorphism,
+    # not unannotated" specificity visible at a glance. Clean
+    # polymorphic returns keep the bare bound unit (e.g. ``m``), per
+    # our "show binding only when it matters" convention.
+    if (
+        node.type == "call_expression"
+        and unit is None
+        and poly_conflict_map is not None
+    ):
+        callee_nm_lc = _ts_h.call_name(node, source)
+        if callee_nm_lc is not None:
+            sig = ctx.signatures.get(callee_nm_lc.lower())
+            if (
+                sig is not None
+                and sig.return_unit is not None
+                and ts_checker._unit_expr_has_tyvars(sig.return_unit)
+            ):
+                formal_return = format_unit(sig.return_unit, show_factor=sf)
+                unit_render = f"{formal_return} = ?"
 
     # H020 polymorphic-conflict override on a conflicting arg row.
     # Unit column renders ``'a = <actual>`` (the binding the slot would
