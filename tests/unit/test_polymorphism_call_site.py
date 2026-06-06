@@ -81,6 +81,80 @@ def test_h020_message_lists_both_contributors(tmp_path: Path):
 # H020 does NOT fire — clean polymorphic call
 
 
+def test_clean_polymorphic_function_no_spurious_h001(tmp_path: Path):
+    """A polymorphic function ``f(x: 'a, y: 'a) -> 'a`` called as
+    ``r:m = f(m, m)`` must NOT fire H001 on the assignment — the
+    unifier binds ``'a = m`` at this call so the resolved RHS unit is
+    ``m`` (matches LHS).
+
+    Regression pin: before this, ``_resolve`` on the call_expression
+    returned ``sig.return_unit`` directly without applying the
+    unifier's substitution. The resolved RHS was ``'a`` (the formal),
+    not ``m`` (the bound return), so the assignment-homogeneity check
+    saw ``m ≠ 'a`` and fired a spurious H001 even though the call was
+    perfectly clean."""
+    src = _materialise(tmp_path, "p.f90",
+        "module mod\n"
+        "contains\n"
+        "  function f(x, y) result(out)\n"
+        "    real, intent(in) :: x    !< @unit{'a}\n"
+        "    real, intent(in) :: y    !< @unit{'a}\n"
+        "    real             :: out  !< @unit{'a}\n"
+        "    out = x\n"
+        "  end function f\n"
+        "  subroutine caller(a, b, r)\n"
+        "    real, intent(in)  :: a  !< @unit{m}\n"
+        "    real, intent(in)  :: b  !< @unit{m}\n"
+        "    real, intent(out) :: r  !< @unit{m}\n"
+        "    r = f(a, b)\n"
+        "  end subroutine caller\n"
+        "end module mod\n"
+    )
+    result = check_files([src])
+    diags = _diags(result, src)
+    codes = [d.code for d in diags]
+    # No H001 (clean call) and no H020 (consistent slots).
+    assert "H001" not in codes, [(d.code, d.message) for d in diags]
+    assert "H020" not in codes, [(d.code, d.message) for d in diags]
+
+
+def test_h020_polymorphic_function_no_spurious_h001(tmp_path: Path):
+    """When a polymorphic function call DOES conflict (H020), the
+    assignment must NOT also fire H001. H020 owns the failure; piling
+    H001 on top would double-report the same error and confuse the UX.
+
+    Regression target: the formal-return fallback in
+    ``_resolve_polymorphic_return`` is what keeps the LHS-vs-RHS
+    homogeneity check from going off — under unification failure we
+    return ``sig.return_unit`` (the formal ``'a``), and the
+    assignment check should see ``'a`` and skip the dim comparison
+    via the same polymorphic-formal gate that protects the args."""
+    src = _materialise(tmp_path, "p.f90",
+        "module mod\n"
+        "contains\n"
+        "  function f(x, y) result(out)\n"
+        "    real, intent(in) :: x    !< @unit{'a}\n"
+        "    real, intent(in) :: y    !< @unit{'a}\n"
+        "    real             :: out  !< @unit{'a}\n"
+        "    out = x\n"
+        "  end function f\n"
+        "  subroutine caller(a, b, r)\n"
+        "    real, intent(in)  :: a  !< @unit{kg}\n"
+        "    real, intent(in)  :: b  !< @unit{m}\n"
+        "    real, intent(out) :: r  !< @unit{kg}\n"
+        "    r = f(a, b)\n"
+        "  end subroutine caller\n"
+        "end module mod\n"
+    )
+    result = check_files([src])
+    diags = _diags(result, src)
+    codes = [d.code for d in diags]
+    # H020 fires — args conflict.
+    assert "H020" in codes, [(d.code, d.message) for d in diags]
+    # H001 must NOT fire — H020 already reports the failure.
+    assert "H001" not in codes, [(d.code, d.message) for d in diags]
+
+
 def test_no_h020_clean_polymorphic_call(tmp_path: Path):
     """Caller passes two {m} args into a function expecting both as 'a —
     cleanly polymorphic, no fire."""

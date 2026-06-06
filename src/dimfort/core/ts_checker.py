@@ -16,7 +16,7 @@ strings.
 from __future__ import annotations
 
 import bisect
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
@@ -1037,7 +1037,7 @@ def _resolve_call(node: Node, ctx: _Ctx, source: bytes) -> UnitExpr | None:
     # User-defined function: look up by lower-cased name.
     sig = ctx.signatures.get(name_lc)
     if sig is not None and not sig.is_subroutine:
-        return sig.return_unit
+        return _resolve_polymorphic_return(sig, arg_exprs, ctx, source)
 
     # Array indexing: ``arr(i)`` shares its node type with ``f(x)``.
     # If the callee resolves to a known variable, the result unit is
@@ -2465,6 +2465,73 @@ def _check_same_unit_args(
             # a genuinely dimensionless non-literal operand vs a
             # dimensioned carrying unit is a real mismatch
             yield _emit_h002_or_h023(a, u, carry, ctx)
+
+
+def _resolve_polymorphic_return(
+    sig: FuncSig,
+    arg_exprs: Sequence[Node | None],
+    ctx: _Ctx,
+    source: bytes,
+) -> UnitExpr | None:
+    """Return ``sig.return_unit`` with the call-site unifier's
+    substitution applied — so a polymorphic function whose return is
+    ``'a`` resolves to the bound unit at this call (e.g. ``m`` when
+    ``'a`` was bound to ``m`` by the args), not the formal ``'a``.
+
+    For a concrete signature (no free tyvars), returns ``sig.
+    return_unit`` directly. When the call-site unifier rejects (the
+    H020 case — every contributing arg pushed a different binding),
+    returns ``None`` so the call's resolved unit is "unknown" and
+    downstream checks (LHS-vs-RHS homogeneity on an assignment,
+    nested expression resolution) skip rather than fire a *second*
+    error on top of H020's. The H020 diagnostic + the 🔴 marker on
+    the call node already convey the failure; the assignment row
+    inherits 🔴 via worst-of-children, no spurious H001 needed.
+
+    When unification raises :class:`UnsupportedPolymorphism` (symbolic
+    tyvar exponent, etc.), also returns ``None`` — Phase 2 scope; the
+    caller treats this call as unresolvable.
+
+    Regression target: before this, ``_resolve`` returned ``sig.
+    return_unit`` directly. For a polymorphic function ``r = f(m, m)``
+    where ``f`` returns ``'a``, the resolved RHS unit was ``'a`` —
+    which then failed the assignment homogeneity check against the
+    concrete LHS ``r : m`` and fired a spurious H001.
+    """
+    if sig.return_unit is None:
+        return None
+    free_tyvars = free_tyvars_of_sig(sig)
+    if not free_tyvars:
+        return sig.return_unit
+    poly_equations: list[SlotEquation] = []
+    for i, (expected, actual_node) in enumerate(
+        zip(sig.arg_units, arg_exprs, strict=False)
+    ):
+        if expected is None or actual_node is None:
+            continue
+        if not _tyvars_in_unit_expr(expected, free_tyvars):
+            continue  # concrete slot doesn't constrain the substitution
+        actual = _resolve(actual_node, ctx, source)
+        if actual is None:
+            continue
+        if not isinstance(expected, Unit) or not isinstance(actual, Unit):
+            continue  # wrapper-typed polymorphic slot — Phase 2
+        if actual.offset != 0:
+            continue  # affine actual into a tyvar slot — H022 territory
+        arg_name = sig.arg_names[i] if i < len(sig.arg_names) else None
+        poly_equations.append(SlotEquation(
+            slot_index=i, slot_name=arg_name,
+            formal=expected, actual=actual,
+        ))
+    if not poly_equations:
+        return sig.return_unit
+    try:
+        result = unify(poly_equations, tuple(sorted(free_tyvars)))
+    except UnsupportedPolymorphism:
+        return None
+    if not result.ok or result.substitution is None:
+        return None
+    return result.substitution.apply(sig.return_unit)
 
 
 def _check_call_args_against_sig(

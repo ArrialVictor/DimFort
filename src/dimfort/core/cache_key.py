@@ -85,7 +85,16 @@ from dimfort import __version__ as _dimfort_version
 #     ``(__version__, CHECKER_OUTPUT_VERSION)``; bumping the latter is
 #     how we invalidate cleanly within a patch release that ships a
 #     diagnostic-shape change).
-CHECKER_OUTPUT_VERSION = 8
+# v9: 0.2.3.1 also fixed ``_resolve`` to apply the call-site unifier's
+#     substitution to a polymorphic callee's return unit. Pre-fix, an
+#     assignment ``r:m = f(m, m)`` where ``f`` returns ``'a`` saw the
+#     RHS resolve to the formal ``'a`` (not the bound ``m``) and fired
+#     a spurious H001. Now the call resolves to ``m`` on success and
+#     to ``None`` on unification failure (H020 already reports the
+#     failure; H001 must NOT double-fire). Pre-v9 cache entries for
+#     any file containing a polymorphic-function call carry the wrong
+#     H001 set — bump invalidates so warm checks redo the resolution.
+CHECKER_OUTPUT_VERSION = 9
 
 
 # Keys from a workspace config that affect a *file's* output and
