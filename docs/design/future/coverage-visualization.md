@@ -161,7 +161,8 @@ hint" with "show me everything"; four would over-specify.
 Default: `disabled` in v1. Users opt in explicitly. Rationale: an
 opt-in feature on first ship lets early adopters validate the
 taxonomy and the visual choice before the default flips. The default
-can be promoted to `gutter` once the feature stabilises.
+can be promoted to `gutter` once the feature stabilises (separate
+release decision; not in v1).
 
 ## 6. Gutter-clash resolution
 
@@ -179,12 +180,18 @@ gutter would render two red icons (or one would overwrite the other,
 depending on priority resolution). Visual noise without information
 gain.
 
-**Resolution:** the coverage layer paints **green** and **blue** only
-on lines without a native diagnostic icon. Lines with a yellow / red
-diagnostic skip the coverage gutter — the native icon already
-communicates that level of attention. The coverage layer's actual
-value-add is the **positive signal**: green for "this line is verified
-fine," which the native diagnostic stream cannot express.
+**Resolution (provisional):** the coverage layer paints **green** and
+**blue** only on lines without a native diagnostic icon. Lines with a
+yellow / red diagnostic skip the coverage gutter — the native icon
+already communicates that level of attention. The coverage layer's
+actual value-add is the **positive signal**: green for "this line is
+verified fine," which the native diagnostic stream cannot express.
+
+This is the v1 default. It may be revised after implementation: an
+alternative is to render the coverage gutter sign alongside the
+native diagnostic icon as reinforcement (visual cost, no information
+loss). The decision will be validated against the actual rendering in
+each companion before the feature ships.
 
 Verbose mode is different: line background tint sits behind the text,
 not in the gutter column, so the tint applies to every line including
@@ -287,13 +294,16 @@ file with 100 lines of comments / blank / control flow has 400
 checkable lines. The coverage percentage measures how many of the 400
 DimFort verified, not 400/500.
 
-Flags:
+Flags (v1):
 
-- `--json` — emit machine-readable JSON for CI consumption.
-- `--threshold N` — exit non-zero if workset coverage is below N%
-  (CI gate).
+- `--json` — emit machine-readable JSON for downstream consumption.
 - `--by-module` — group by module instead of per-file.
 - `--summary` — workset total only, no per-file rows.
+
+CI-gate flags (`--threshold N`, per-file thresholds, etc.) are
+deferred past v1. The `--json` output is enough for downstream tools
+to implement their own gating; the question of what the canonical
+CI-gate UX should be can be revisited once there is real demand.
 
 ### 8.2 LSP: `dimfort/coverageStats`
 
@@ -457,41 +467,41 @@ A new `_run_coverage(args)` in `cli.py`, paralleling `_run_check` and
 adds a counting + formatting pass over the result. The CLI dispatch in
 `main()` gains a third subcommand branch.
 
-## 11. Open questions
+## 11. Decisions resolved during spec review
 
-These are the points worth resolving in the spec review before
-implementation begins:
+The following points were raised during the spec review and locked in
+for v1:
 
-1. **Default mode at first ship.** This doc proposes `disabled`
-   (opt-in). An alternative is `gutter` (on by default). Trade-off:
-   on-by-default is the better demo on first install, but uses
-   gutter column real estate every user pays for whether they wanted
-   it or not. Lean: `disabled`.
+1. **Default mode at first ship: `disabled`.** Users opt in
+   explicitly. Promotion to `gutter` deferred to a future release.
+2. **Coverage-percentage semantics: per-line.** Per-AST-node is
+   not in v1; could land as a future `--ast-nodes` flag if demand
+   emerges.
+3. **CI gate not in v1.** No `--threshold` flag, no per-file
+   threshold flags. The `--json` output is sufficient for downstream
+   tools to implement their own gating; canonical CI-gate UX is a
+   future question.
 
-2. **Coverage-percentage semantics: per-line or per-AST-node?** The
-   spec above measures per-line: a line with 3 expressions, 2
-   verified + 1 yellow, counts as yellow. A per-AST-node count would
-   be more granular (66.7% verified) but harder to communicate.
-   Lean: per-line, with an `--ast-nodes` CLI flag as a future
-   enhancement.
+## 12. Open questions (remaining)
 
-3. **CI gate semantics.** `--threshold 80` exits non-zero if
-   workspace coverage is below 80%. Should this also support
-   per-file thresholds (e.g. fail if any file is < 50%)? Lean: not
-   in v1; aggregate threshold only.
+These are open for review and may shift before implementation:
 
-4. **Promoting default to `gutter` later.** When the feature
+1. **Promoting default to `gutter` later.** When the feature
    stabilises (post-0.2.4 user feedback), the default could flip
    from `disabled` to `gutter`. The flip is a one-line companion
    change but is visible to every user. Decision deferred to the
    release that flips it.
-
-5. **`dimfort/lineStatus` revalidation cost.** For a 5000-line file
+2. **Gutter-clash resolution validation.** The v1 design steps the
+   coverage layer aside on lines with native diagnostic icons
+   (§6). The decision will be re-checked against the actual
+   rendering in each companion before the feature ships; the
+   alternative (render both as reinforcement) is on the table.
+3. **`dimfort/lineStatus` revalidation cost.** For a 5000-line file
    with frequent edits, the per-line projection runs once per
    `didChange` debounce. Cheap, but worth measuring on a
    representative large workset before shipping to confirm.
 
-## 12. Migration
+## 13. Migration
 
 For implementation in 0.2.4:
 
@@ -510,7 +520,7 @@ For implementation in 0.2.4:
    together. Companions ship at the matching companion version
    tracking server 0.2.4.
 
-## 13. Out of scope for this design
+## 14. Out of scope for this design
 
 - **Tracking coverage over time.** Coverage history (commit-over-
   commit deltas) would require persistent storage. Out of scope.
