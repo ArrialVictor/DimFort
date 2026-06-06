@@ -37,6 +37,16 @@ def _color_enabled(no_color: bool) -> bool:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Construct the top-level ``argparse`` parser.
+
+    Wires the three subcommands (``check``, ``interactions``, ``lsp``)
+    and their flags. Built lazily by :func:`main` so ``dimfort --version``
+    stays fast — none of the heavier checker / LSP modules are imported
+    here.
+
+    Returns:
+        Configured root parser, with subparsers attached.
+    """
     parser = argparse.ArgumentParser(
         prog="dimfort",
         description="Check dimensional homogeneity of Fortran projects.",
@@ -488,6 +498,19 @@ def _run_interactions(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Entry point for the ``dimfort`` console script.
+
+    Parses ``argv`` against :func:`build_parser` and dispatches to the
+    matching subcommand handler. With no subcommand supplied, prints
+    help to stderr and returns exit code 2 per the documented contract.
+
+    Args:
+        argv: Argument list to parse. ``None`` falls back to
+            ``sys.argv[1:]`` via argparse's default.
+
+    Returns:
+        Process exit code (see module docstring for the 0 / 1 / 2 scheme).
+    """
     parser = build_parser()
     args = parser.parse_args(argv)
 

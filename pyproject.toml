@@ -56,7 +56,25 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM"]
+select = ["E", "F", "I", "UP", "B", "SIM", "D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests: docstring rules don't carry their weight on test functions, which
+# are self-documenting via descriptive names and the assertions they make.
+"tests/**" = ["D"]
+# Development utilities, not part of the shipped package. Exempt from the
+# docstring convention so contributors aren't forced to over-document
+# one-off helpers.
+"scripts/**" = ["D"]
+# Entry stub: re-raises SystemExit(main()) and needs no module docstring.
+"src/dimfort/__main__.py" = ["D100"]
+# core/__init__.py is a side-effect-import shim (populates DEFAULT_TABLE);
+# lsp/__init__.py is empty (package marker only). Neither warrants a docstring.
+"src/dimfort/core/__init__.py" = ["D104"]
+"src/dimfort/lsp/__init__.py" = ["D104"]
 
 [tool.mypy]
 python_version = "3.11"

@@ -322,12 +322,12 @@ def parse_with_cpp(
     cpp_closure: set[str] = set()
 
     def _is_target(marker_file: str) -> bool:
-        """Return ``True`` if this marker points at the source file passed to cpp.
+        r"""Return ``True`` if this marker points at the source file passed to cpp.
 
         Direct string match handles POSIX-style ``cpp`` on macOS/Linux.
         The basename fallback handles Windows path-encoding quirks
         (some ``cpp`` builds emit ``C:/...`` while ``Path.str`` gives
-        ``C:\\...``; some emit backslashes literally) and the
+        ``C:\...``; some emit backslashes literally) and the
         case-insensitive Windows filesystem.
 
         Args:

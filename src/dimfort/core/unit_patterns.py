@@ -1,5 +1,4 @@
-"""Configurable comment-delimiter patterns for the three unit
-directive families.
+"""Configurable comment-delimiter patterns for the three unit directive families.
 
 The scanner consumes ``UnitPattern`` / ``StructuredPattern`` objects
 to find directive captures in comment text. Patterns use
