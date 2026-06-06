@@ -134,6 +134,21 @@ class Diagnostic:
     # action. ``None`` for every other diagnostic and for U002s
     # without a suggestion.
     suggested_rewrite: str | None = None
+    # Structured conflict data for H020 (polymorphic call-site
+    # unification failure). Each row carries
+    # ``(slot_index, slot_name, binding_unit_text, partner_slot_indices)`` —
+    # the slot's index (0-based), the formal arg name if known, the unit
+    # the slot would force the tyvar to (pretty-formatted), and the
+    # *other* slot indices it collides with. The LSP panel-rendering
+    # path reads this to draw the spec's ``'a = unit — collides with
+    # arg N`` rendering on each conflicting arg row instead of the
+    # generic ``(expected 'a)`` trailer that the concrete-signature
+    # H004 path uses. ``None`` for every diagnostic other than H020;
+    # never reaches the LSP wire (``_to_lsp_diagnostic`` doesn't
+    # forward it).
+    polymorphism_conflict: tuple[
+        tuple[int, str | None, str, tuple[int, ...]], ...
+    ] | None = None
 
 
 @dataclass(frozen=True)

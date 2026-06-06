@@ -510,6 +510,141 @@ def test_panel_marker_paints_polymorphism_diagnostics(tmp_path: Path):
             server.state.last_result = saved_result
 
 
+def test_panel_h020_arg_rows_render_binding_and_collision_trailer(tmp_path: Path):
+    """Each conflicting arg row of an H020 must render in the spec form
+    ``'a = <actual> — collides with arg N`` in its unit column (not the
+    generic ``(expected 'a)`` reserved for the concrete-signature H004
+    mismatch path), with marker ``error`` and the ``expected`` field
+    suppressed to avoid a duplicate trailer. Regression pin: before
+    this, arg rows showed ``kg`` / ``m`` in the unit column with
+    ``(expected 'a)`` as the trailer and marker ``warn`` (via the
+    expected → warn demotion), which understated the conflict severity
+    and used the wrong wording per the spec's `(collides with …)` vs
+    `(expected …)` convention. See docs/design/shipped/polymorphic-
+    units.md §H020."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp import server
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
+
+    src = tmp_path / "poly_h020_render.f90"
+    src.write_text(
+        "module m\n"
+        "contains\n"
+        "  subroutine f(x, y, z)\n"
+        "    real, intent(in)  :: x  !< @unit{'a}\n"
+        "    real, intent(in)  :: y  !< @unit{'a}\n"
+        "    real, intent(out) :: z  !< @unit{'a}\n"
+        "    z = x\n"
+        "  end subroutine f\n"
+        "  subroutine caller(a, b, c)\n"
+        "    real, intent(in)  :: a  !< @unit{kg}\n"   # slot 0 → 'a = kg
+        "    real, intent(in)  :: b  !< @unit{m}\n"    # slot 1 → 'a = m
+        "    real, intent(out) :: c  !< @unit{kg}\n"   # slot 2 → 'a = kg
+        "    call f(a, b, c)\n"                        # 3-way conflict
+        "  end subroutine caller\n"
+        "end module m\n"
+    )
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    calls = [n for n in _ts.walk(tree.root_node)
+             if n.type == "subroutine_call"]
+
+    result = check_files([src])
+    with server.state.last_result_lock:
+        saved_result, server.state.last_result = server.state.last_result, result
+    try:
+        ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+        payload = _build_expression_tree(calls[-1], ctx, source)
+        # Three arg rows, one per slot.
+        assert len(payload["children"]) == 3
+        a_row, b_row, c_row = payload["children"]
+        # Every row hard-pinned to error — the generic warn demotion
+        # is the bug we're patching.
+        assert a_row["marker"] == "error", a_row
+        assert b_row["marker"] == "error", b_row
+        assert c_row["marker"] == "error", c_row
+        # Expected-trailer field suppressed (would otherwise produce a
+        # duplicate "(expected 'a) — collides with …" double-trailer).
+        assert a_row["expected"] is None, a_row
+        assert b_row["expected"] is None, b_row
+        assert c_row["expected"] is None, c_row
+        # Unit column carries the spec's ``'a = <actual> — collides
+        # with arg N`` form. Partner indices use bare ``arg N`` (no
+        # ``(name)`` parenthetical — the partner's own row carries
+        # the name).
+        assert "'a = kg" in a_row["unit"], a_row
+        assert "collides with" in a_row["unit"], a_row
+        # arg 1 (a) collides with arg 2 (b), the only other-binding partner.
+        assert "arg 2" in a_row["unit"], a_row
+        assert "'a = m" in b_row["unit"], b_row
+        # arg 2 (b) collides with both arg 1 (a) and arg 3 (c).
+        assert "arg 1" in b_row["unit"], b_row
+        assert "arg 3" in b_row["unit"], b_row
+        assert "'a = kg" in c_row["unit"], c_row
+        assert "arg 2" in c_row["unit"], c_row
+    finally:
+        with server.state.last_result_lock:
+            server.state.last_result = saved_result
+
+
+def test_h020_message_uses_new_multiline_shape(tmp_path: Path):
+    """H020's diagnostic message must use the multi-line shape with
+    tightened lead and bare ``arg N`` partner labels (no ``(name)``
+    parenthetical, em-dash separator). Regression pin: the prior single
+    flat sentence (``Call to '<fn>': type variable 'a bound to
+    inconsistent units at this call site arg 1 (x): 'a = kg (collides
+    with arg 2 (y)) …``) packed all rows on one line and duplicated
+    each partner's name."""
+    from dimfort.core.multifile import check_files
+
+    src = tmp_path / "poly_h020_msg.f90"
+    src.write_text(
+        "module m\n"
+        "contains\n"
+        "  subroutine f(x, y)\n"
+        "    real, intent(in)  :: x  !< @unit{'a}\n"
+        "    real, intent(out) :: y  !< @unit{'a}\n"
+        "    y = x\n"
+        "  end subroutine f\n"
+        "  subroutine caller(a, b)\n"
+        "    real, intent(in)  :: a  !< @unit{kg}\n"
+        "    real, intent(out) :: b  !< @unit{m}\n"
+        "    call f(a, b)\n"
+        "  end subroutine caller\n"
+        "end module m\n"
+    )
+    result = check_files([src])
+    resolved = src.resolve()
+    diags = result.diagnostics.get(resolved, ())
+    h020 = next(d for d in diags if d.code == "H020")
+    # New lead phrase, with function name embedded at the end (so it
+    # reads as a clause rather than a redundant prefix).
+    assert "cannot unify across these args of 'f'" in h020.message
+    assert "Call to '" not in h020.message, (
+        "old verbose lead phrase should be gone"
+    )
+    # Multi-line structure: each contributing row on its own line.
+    lines = h020.message.split("\n")
+    assert len(lines) >= 3, h020.message
+    # Em-dash separator before the collision trailer, replacing the
+    # old ``(collides with …)`` parenthetical.
+    assert " — collides with " in h020.message
+    # Partner labels are bare ``arg N`` — the parenthetical
+    # ``(name)`` form is gone.
+    assert "(collides with arg 2 (b))" not in h020.message
+    assert "(collides with arg 1 (a))" not in h020.message
+    # Structured conflict data attached for the panel-render path.
+    assert h020.polymorphism_conflict is not None
+    assert len(h020.polymorphism_conflict) == 2
+    # Each row: (slot_index, slot_name, binding_text, partner_indices)
+    slots = {row[0]: row for row in h020.polymorphism_conflict}
+    assert slots[0][2] == "kg" and slots[0][3] == (1,)
+    assert slots[1][2] == "m" and slots[1][3] == (0,)
+
+
 def test_panel_expression_shows_scale_factor_in_scale_mode(tmp_path: Path):
     """With scale mode on, the expression tree's unit column surfaces the
     multiplicative scale factor (e.g. ``100×kg·m⁻¹·s⁻²`` for ``hPa``)

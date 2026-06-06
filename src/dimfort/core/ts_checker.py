@@ -1451,41 +1451,56 @@ def _emit_h020(
 ) -> Diagnostic:
     """Polymorphic call-site unification failure (H020).
 
-    Renders the symmetric ``(collides with arg N (name))`` trailer on
-    every contributing row — the parenthesized form matches
-    ``_arg_label``. Unification has no ordering, so every slot that
+    Renders the symmetric ``— collides with arg N`` trailer on every
+    contributing row. Partner labels use the bare ``arg N`` form (no
+    ``(name)`` parenthetical) — the partner's own row carries the name
+    already, so duplicating it bloats the message without adding
+    information. Unification has no ordering, so every slot that
     pushed an inconsistent value is named — no "first arg wins"
     asymmetry.
+
+    The structured contributor data is also attached to the diagnostic
+    via :attr:`Diagnostic.polymorphism_conflict` so the LSP panel can
+    render the spec's ``'a = unit — collides with arg N`` form on each
+    conflicting arg row instead of the generic ``(expected 'a)``
+    fallback. See docs/design/shipped/polymorphic-units.md §H020.
     """
     start, end = _node_span(loc)
     contribs = conflict.contributions
     # Build the symmetric collision trailer for every row: the partners
     # are every *other* contributor whose implied value differs.
     rows: list[str] = []
+    conflict_rows: list[tuple[int, str | None, str, tuple[int, ...]]] = []
     for c in contribs:
         partners = [
             p for p in contribs
             if p.slot_index != c.slot_index and p.implied != c.implied
         ]
+        partner_indices = tuple(p.slot_index for p in partners)
+        binding_text = format_unit(c.implied)
+        conflict_rows.append(
+            (c.slot_index, c.slot_name, binding_text, partner_indices)
+        )
         if partners:
             partner_label = ", ".join(
-                _arg_label(p.slot_index, p.slot_name) for p in partners
+                f"arg {p.slot_index + 1}" for p in partners
             )
-            trailer = f"  (collides with {partner_label})"
+            trailer = f" — collides with {partner_label}"
         else:
             trailer = ""
         label = _arg_label(c.slot_index, c.slot_name)
         rows.append(
-            f"  {label}: {conflict.tyvar} = {format_unit(c.implied)}{trailer}"
+            f"  {label}: {conflict.tyvar} = {binding_text}{trailer}"
         )
     body = "\n".join(rows)
     return Diagnostic(
         file=ctx.file, start=start, end=end,
         severity=Severity.ERROR, code="H020",
         message=(
-            f"Call to '{func_name}': type variable {conflict.tyvar} bound "
-            f"to inconsistent units at this call site\n{body}"
+            f"type variable {conflict.tyvar} cannot unify across "
+            f"these args of '{func_name}':\n{body}"
         ),
+        polymorphism_conflict=tuple(conflict_rows),
     )
 
 
