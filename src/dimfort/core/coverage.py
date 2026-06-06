@@ -14,6 +14,7 @@ design spec.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,36 +94,96 @@ _EXPRESSION_STATEMENT_TYPES: frozenset[str] = frozenset({
 })
 
 
-def _walk_expression_lines(tree: Tree, names_lc: frozenset[str]) -> set[int]:
-    """Collect line numbers of unit-bearing statements referencing an annotated identifier.
+# U005 message format from ts_checker.py:
+#   f"{name_text!r} is used in a unit-checked expression but has no @unit{{}}"
+# Python's repr() on a string wraps it in single quotes; the regex
+# captures whatever sits between them. Stable across server versions
+# because the message shape is part of the documented diagnostic
+# surface (changing it would already be a breaking change).
+_U005_NAME_RE = re.compile(r"^'([^']+)'")
 
-    Walks the tree-sitter tree, identifies expression-bearing statement
-    nodes (per :data:`_EXPRESSION_STATEMENT_TYPES`), and records every
-    line spanned by such a node iff a descendant identifier matches
-    one of ``names_lc``.
 
-    Lines occupied purely by declarations, subroutine / function
-    signatures, ``use`` statements, ``end`` markers, or comments do
-    NOT contribute — those carry annotated identifiers in their token
-    streams but are not unit-checking the way an assignment or call
-    site is.
+def _unannotated_names_for_file(
+    result: WorksetResult, path: Path
+) -> frozenset[str]:
+    """Extract the lower-cased names of all unannotated-but-used variables.
+
+    The checker fires one ``U005`` diagnostic per unannotated declaration
+    that participates in a unit-checked expression. The variable name
+    appears as a single-quoted token at the start of the message; this
+    function lifts those names out so the projection can propagate the
+    yellow signal from declaration lines to every use site.
+
+    Args:
+        result: Workset check result the diagnostics live on.
+        path: Resolved absolute file path; key into
+            ``result.diagnostics``.
+
+    Returns:
+        Lower-cased set of names that fired ``U005`` for this file.
+        Empty when the file has no ``U005`` diagnostics or no entry in
+        ``result.diagnostics``.
+    """
+    names: set[str] = set()
+    for d in result.diagnostics.get(path, []):
+        if d.code != "U005":
+            continue
+        m = _U005_NAME_RE.match(d.message)
+        if m is not None:
+            names.add(m.group(1).lower())
+    return frozenset(names)
+
+
+def _walk_expression_lines(
+    tree: Tree,
+    annotated_lc: frozenset[str],
+    unannotated_lc: frozenset[str],
+) -> tuple[set[int], set[int]]:
+    """Walk expression-bearing statements and bucket their lines by tier.
+
+    For each expression-bearing statement node (per
+    :data:`_EXPRESSION_STATEMENT_TYPES`), inspects descendant
+    ``identifier`` tokens and decides which tier the statement
+    contributes to its spanned lines:
+
+    - **Yellow candidate**: the statement references at least one
+      identifier in ``unannotated_lc`` — the use site participates in
+      an unannotated declaration, so the line is "needs attention"
+      even if no direct diagnostic owns it.
+    - **Green candidate**: no unannotated reference, but the statement
+      references at least one identifier in ``annotated_lc`` — the
+      line is verified-OK in the literal "diagnostic owns the line"
+      sense.
+
+    Yellow wins over green on the same line (worst-of-children).
 
     Args:
         tree: Parse tree for the file. Caller must hold any required
-            traversal lock (see ``state.ts_handler_lock`` in
-            ``lsp/state.py``).
-        names_lc: Lower-cased annotated names. A statement counts iff
-            at least one descendant ``identifier`` matches.
+            traversal lock.
+        annotated_lc: Lower-cased annotated names from
+            ``attached.var_units``.
+        unannotated_lc: Lower-cased unannotated names extracted from
+            the file's ``U005`` diagnostics (see
+            :func:`_unannotated_names_for_file`).
 
     Returns:
-        Set of 1-based line numbers. Empty if ``names_lc`` is empty
-        or no expression-bearing statement matches.
+        Pair ``(green_lines, yellow_lines)`` of 1-based line numbers.
+        Lines may appear in both sets — :func:`project_file` resolves
+        with worst-wins (yellow above green).
     """
-    if not names_lc:
-        return set()
+    if not annotated_lc and not unannotated_lc:
+        return set(), set()
 
-    def _has_annotated_identifier(node: object) -> bool:
-        """Depth-first scan for an ``identifier`` token in ``names_lc``."""
+    def _classify(node: object) -> tuple[bool, bool]:
+        """Depth-first scan for matching identifiers.
+
+        Returns:
+            ``(has_unannotated, has_annotated)`` — both booleans
+            independent so a statement can contribute to yellow and
+            green simultaneously.
+        """
+        has_unann = False
+        has_ann = False
         stack = [node]
         while stack:
             n = stack.pop()
@@ -130,30 +191,35 @@ def _walk_expression_lines(tree: Tree, names_lc: frozenset[str]) -> set[int]:
                 text = n.text  # type: ignore[attr-defined]
                 if text is not None:
                     name_lc = text.decode("utf-8", errors="replace").lower()
-                    if name_lc in names_lc:
-                        return True
+                    if name_lc in unannotated_lc:
+                        has_unann = True
+                    elif name_lc in annotated_lc:
+                        has_ann = True
             stack.extend(n.children)  # type: ignore[attr-defined]
-        return False
+        return has_unann, has_ann
 
-    lines: set[int] = set()
+    green_lines: set[int] = set()
+    yellow_lines: set[int] = set()
     stack = [tree.root_node]
     while stack:
         node = stack.pop()
         if node.type in _EXPRESSION_STATEMENT_TYPES:
-            if _has_annotated_identifier(node):
+            has_unann, has_ann = _classify(node)
+            if has_unann or has_ann:
                 # tree-sitter rows are 0-based; convert. Span every
                 # line the statement touches so multi-line continued
                 # statements paint completely.
                 for row in range(node.start_point[0], node.end_point[0] + 1):
-                    lines.add(row + 1)
-            # Don't descend into a matched expression statement (its
-            # whole span is already painted) — but still descend into
-            # an unmatched one, since a nested if/case may contain a
-            # matching deeper statement.
-            if _has_annotated_identifier(node):
+                    line = row + 1
+                    if has_unann:
+                        yellow_lines.add(line)
+                    elif has_ann:
+                        green_lines.add(line)
+                # Don't descend into a matched statement — its whole
+                # span is already classified.
                 continue
         stack.extend(node.children)
-    return lines
+    return green_lines, yellow_lines
 
 
 def project_file(
@@ -196,29 +262,45 @@ def project_file(
             if current is None or _TIER_ORDER[tier] > _TIER_ORDER[current]:
                 statuses[line] = tier
 
-    # Step 2: paint green where annotated identifiers appear and no
-    # higher-severity tier already owns the line. Lines that hold an
-    # annotation token itself (the declaration) are also included via
-    # the var_units_span table.
+    # Step 2: paint green / yellow at expression sites where annotated
+    # or unannotated identifiers appear. The unannotated set is lifted
+    # from the file's U005 diagnostics so a use of an unannotated
+    # variable carries the yellow signal at every use site, not just
+    # the declaration line. Diagnostic-painted tiers from step 1
+    # already win on lines they cover.
     attached = result.attachments.get(path)
     if attached is None:
         return statuses
 
-    # Declaration lines: the line carrying the @unit{} token.
+    # Declaration lines: the line carrying the @unit{} token. Always
+    # green for annotated declarations unless step 1 already painted a
+    # higher tier (e.g. an H001 landing on the declaration line via a
+    # multi-line continued statement).
     for line, _start_col, _end_col in attached.var_units_span.values():
         if line not in statuses:
             statuses[line] = "green"
 
-    # Use-sites: walk the tree and find identifier tokens matching any
-    # annotated name. Skip when no tree is cached (e.g. a load failure).
+    # Use-sites: walk expression-bearing statements once and bucket
+    # their spanned lines into green / yellow tiers. Skip when no
+    # tree is cached (e.g. a load failure).
     tree_entry = result.trees.get(path)
     if tree_entry is None:
         return statuses
     tree, _source = tree_entry
 
-    annotated_names_lc = frozenset(name.lower() for name in attached.var_units)
-    use_lines = _walk_expression_lines(tree, annotated_names_lc)
-    for line in use_lines:
+    annotated_lc = frozenset(name.lower() for name in attached.var_units)
+    unannotated_lc = _unannotated_names_for_file(result, path)
+    green_lines, yellow_lines = _walk_expression_lines(
+        tree, annotated_lc, unannotated_lc,
+    )
+    # Yellow first — worst-wins means a line that fell into both buckets
+    # paints yellow. Lines already painted red / yellow / blue from
+    # step 1 stay at their (possibly higher) tier.
+    for line in yellow_lines:
+        current = statuses.get(line)
+        if current is None or _TIER_ORDER["yellow"] > _TIER_ORDER[current]:
+            statuses[line] = "yellow"
+    for line in green_lines:
         if line not in statuses:
             statuses[line] = "green"
 

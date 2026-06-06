@@ -100,10 +100,16 @@ def test_project_file_dimension_mismatch_paints_red(tmp_path: Path):
     assert statuses.get(5) == "red"
 
 
-def test_project_file_u005_paints_yellow_on_declaration(tmp_path: Path):
-    """U005 fires on the declaration line of the unannotated variable;
-    that line paints yellow. The use line stays green because it
-    references annotated identifiers and no diagnostic owns it."""
+def test_project_file_u005_propagates_yellow_to_use_sites(tmp_path: Path):
+    """U005 fires on the declaration line; the projection propagates
+    yellow to every line that references the unannotated name.
+
+    Counter-intuitive behaviour we are deliberately avoiding: removing
+    an annotation should NOT make use sites of the now-unannotated
+    variable look "better" (green from the other annotated identifiers
+    on the same line). U005 propagation keeps the use sites yellow
+    until the annotation is restored.
+    """
     from dimfort.core.coverage import project_file
     from dimfort.core.multifile import check_files
 
@@ -117,10 +123,59 @@ def test_project_file_u005_paints_yellow_on_declaration(tmp_path: Path):
     # The unannotated declaration of y on line 3 fires U005 → yellow.
     assert statuses.get(3) == "yellow"
     # The assignment line uses x (annotated), y (unannotated), z
-    # (annotated). No diagnostic owns line 5; literal "diagnostic
-    # owns the line" semantics paint it green. Yellow on the
-    # declaration is the user signal where the fix lands.
-    assert statuses.get(5) == "green"
+    # (annotated). Yellow wins via U005 propagation to use sites.
+    assert statuses.get(5) == "yellow"
+
+
+def test_project_file_removing_annotation_does_not_make_use_site_greener(
+    tmp_path: Path,
+):
+    """Regression for the qa.f90 observation 2026-06-06.
+
+    Originally ``bogus = c_sound * t`` fires H001 (bogus is kg, RHS
+    resolves to m/s · s = m). Removing ``@unit{s}`` from ``t`` makes
+    the checker unable to compute the RHS, so H001 no longer fires.
+    Without U005 propagation, the line would fall back to green via
+    the other annotated identifiers (bogus, c_sound) — a clearly wrong
+    signal ("removing an annotation made the line look fine"). With
+    propagation, the line stays yellow because it references the
+    now-unannotated t.
+    """
+    from dimfort.core.coverage import project_file
+    from dimfort.core.multifile import check_files
+
+    f_with = tmp_path / "with.f90"
+    f_with.write_text(
+        "subroutine demo(c_sound, t, bogus)\n"
+        "  real :: c_sound  !< @unit{m/s}\n"
+        "  real :: t        !< @unit{s}\n"
+        "  real :: bogus    !< @unit{kg}\n"
+        "  bogus = c_sound * t\n"
+        "end subroutine\n"
+    )
+    f_without = tmp_path / "without.f90"
+    f_without.write_text(
+        "subroutine demo(c_sound, t, bogus)\n"
+        "  real :: c_sound  !< @unit{m/s}\n"
+        "  real :: t\n"
+        "  real :: bogus    !< @unit{kg}\n"
+        "  bogus = c_sound * t\n"
+        "end subroutine\n"
+    )
+    res_with = check_files([f_with])
+    res_without = check_files([f_without])
+
+    s_with = project_file(f_with.resolve(), res_with)
+    s_without = project_file(f_without.resolve(), res_without)
+
+    # With the annotation, the assignment line is red (H001 fires).
+    assert s_with.get(5) == "red"
+    # Without the annotation, H001 cannot fire. The use line must
+    # NOT become green — U005 propagation keeps it yellow.
+    assert s_without.get(5) == "yellow", (
+        f"removing the annotation made line 5 look like {s_without.get(5)!r}; "
+        f"U005 propagation should keep it yellow"
+    )
 
 
 def test_project_file_no_workset_entry_returns_empty(tmp_path: Path):
