@@ -2,6 +2,18 @@
 
 All notable changes to DimFort are documented here. Format inspired by [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Changed
+
+- **Top-level docstring sweep**: module + class + public-function
+  docstrings under `src/dimfort/` (top level only: `__init__.py`,
+  `cli.py`, `config.py`) rewritten in Google style (Args / Returns /
+  Attributes / Note sections), with each docstring verified against
+  current behaviour. No code changes; behaviour unchanged. First of
+  three sweep PRs (top-level → `core/` → `lsp/`); convention is
+  enforced via ruff in a follow-up.
+
 ## [0.2.3.1] — 2026-06-07
 
 Patch release fixing the in-editor surface of the 0.2.3 polymorphism
