@@ -4,6 +4,29 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Coverage projection: expand red and yellow tier code sets**.
+  Surfaced during the poly_qa.f90 smoke walk: H020 / H021 / H022 /
+  H023 (polymorphism unification failures) fire at ERROR severity
+  but were missing from `_RED_CODES`, so lines firing those codes
+  painted green instead of red. Also added S003 (invalid affine
+  conversion) and U002 (unparseable annotation) to the red tier,
+  and S001 / S002 (scale / offset mismatch) to the yellow tier.
+  All severity-ERROR consistency-family codes now paint red and
+  all severity-WARNING quality / scale codes paint yellow.
+- **Coverage projection: paint every annotated declaration regardless
+  of scope**. Surfaced during the same smoke walk: a polymorphic
+  variable name (`x`, `mean`, `half`) declared in multiple routines
+  of a module would show uncoloured at every declaration except the
+  first. Cause: the projection read
+  `attachments.var_units_span`, which is keyed first-seen-wins on
+  the variable NAME, so same-name declarations across scopes
+  weren't recorded. Fix: walk tree-sitter `comment` nodes for an
+  ``@unit`` substring and paint every line carrying an annotation
+  comment green. Robust against name collisions across scopes.
+  Design spec §10.2 updated accordingly.
+
 ### Changed
 
 - **Coverage projection: propagate `U005` to use sites**. The previous

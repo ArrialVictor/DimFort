@@ -243,6 +243,69 @@ def test_project_file_worst_tier_wins_on_overlapping_diagnostics(tmp_path: Path)
     assert statuses.get(5) == "red"
 
 
+def test_project_file_h023_paints_red(tmp_path: Path):
+    """Regression for the poly_qa.f90 observation 2026-06-07: H023
+    (polymorphic body forces 'a = unit) is in the red tier."""
+    from dimfort.core.coverage import project_file
+    from dimfort.core.multifile import check_files
+
+    # Case B from poly_qa.f90: subroutine claims @unit{'a} but body
+    # adds a {kg} parameter, forcing 'a = kg → H023 on the assignment.
+    f = tmp_path / "h023.f90"
+    f.write_text(
+        "module m\n"
+        "contains\n"
+        "  subroutine biased(x, y, mean)\n"
+        "    real, intent(in)  :: x        !< @unit{'a}\n"
+        "    real, intent(in)  :: y        !< @unit{'a}\n"
+        "    real, intent(out) :: mean     !< @unit{'a}\n"
+        "    real, parameter   :: bias_kg = 1.0  !< @unit{kg}\n"
+        "    mean = (x + y) + bias_kg\n"
+        "  end subroutine\n"
+        "end module\n"
+    )
+    result = check_files([f])
+    statuses = project_file(f.resolve(), result)
+    # The body line that mixes 'a with kg must fire H023 and paint red.
+    assert statuses.get(8) == "red"
+
+
+def test_project_file_paints_same_name_declarations_across_scopes(tmp_path: Path):
+    """Regression for the poly_qa.f90 observation 2026-06-07: a name
+    declared in multiple scopes must still paint green at every
+    declaration line, not just the first.
+
+    The earlier implementation read ``attached.var_units_span`` which
+    is first-seen-wins on the variable NAME; later-scope declarations
+    of the same name went uncoloured. The tree-walked annotation-
+    comment helper paints every annotated declaration regardless of
+    scope.
+    """
+    from dimfort.core.coverage import project_file
+    from dimfort.core.multifile import check_files
+
+    f = tmp_path / "multiscope.f90"
+    f.write_text(
+        "module m\n"
+        "contains\n"
+        "  subroutine a(x)\n"
+        "    real :: x  !< @unit{m}\n"
+        "    x = 1.0\n"
+        "  end subroutine\n"
+        "  subroutine b(x)\n"
+        "    real :: x  !< @unit{s}\n"
+        "    x = 2.0\n"
+        "  end subroutine\n"
+        "end module\n"
+    )
+    result = check_files([f])
+    statuses = project_file(f.resolve(), result)
+    # Both declaration lines (4 and 8) must paint green even though
+    # they share the variable name `x`.
+    assert statuses.get(4) == "green"
+    assert statuses.get(8) == "green"
+
+
 # ---------------------------------------------------------------------------
 # Aggregate helpers
 # ---------------------------------------------------------------------------

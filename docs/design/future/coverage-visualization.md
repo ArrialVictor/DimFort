@@ -50,9 +50,9 @@ Four tiers + a no-decoration default. Reuses every shipped colour from
 
 | Tier | Trigger | Existing parity |
 | --- | --- | --- |
-| **Green** | Line carries unit-typed expressions; checker resolved them and no consistency-family diagnostic owns the line, AND no identifier on the line is in the file's `U005` set | matches panel/hover green |
-| **Yellow** | A `U005` (unannotated-but-used) or `H010` (hint-level) diagnostic owns the line, OR an expression on the line references an identifier from the file's `U005` set (use-site propagation; see §3.3) | matches panel/hover yellow |
-| **Red** | An `H001` / `H002` / `H003` / `H004` (hard fire) diagnostic owns the line | matches panel/hover red |
+| **Green** | Line carries an `@unit` annotation comment, OR carries unit-typed expressions; checker resolved them and no consistency-family diagnostic owns the line, AND no identifier on the line is in the file's `U005` set | matches panel/hover green |
+| **Yellow** | A `U005` / `H010` / `S001` / `S002` (warning-severity quality / scale) diagnostic owns the line, OR an expression on the line references an identifier from the file's `U005` set (use-site propagation; see §3.3) | matches panel/hover yellow |
+| **Red** | An ERROR-severity consistency-family diagnostic owns the line — dimension homogeneity (`H001` / `H002` / `H003` / `H004`), polymorphism unification failure (`H020` / `H021` / `H022` / `H023`), affine-conversion-directive validation (`S003`), or unparseable annotation (`U002`) | matches panel/hover red |
 | **Blue** | A `P001` (unparsed region) diagnostic owns the line | matches panel/hover blue |
 | **— (no decoration)** | Line has no unit semantics (string assignments, control flow, comments, blank lines, decl-only lines with no expression) | uncoloured |
 
@@ -541,12 +541,18 @@ For each file in the last `WorksetResult`:
 For each file:
 
 1. Initialise an empty per-line status map.
-2. Walk the diagnostics: for each in the tier-mapped set
-   (`H001/H002/H003/H004` → red, `U005`/`H010` → yellow, `P001` →
-   blue), assign its tier to every line in
+2. Walk the diagnostics: for each in the tier-mapped set (full
+   tier→code mapping in §3), assign its tier to every line in
    `start.line ..= end.line`, taking the worst tier on collision.
-3. Mark every annotated-declaration line green via
-   `attachments.var_units_span` (if not already painted by step 2).
+3. Walk the tree for ``comment`` nodes carrying an ``@unit``
+   annotation marker; paint every spanned line green (if not
+   already painted by step 2). This catches every annotated
+   declaration regardless of scope — previous implementations
+   read `attachments.var_units_span`, which is keyed
+   first-seen-wins on the variable NAME and therefore misses
+   same-name declarations across scopes (e.g. a polymorphic
+   `x` declared in every routine of a module). The comment-
+   walk-based approach is robust against name collisions.
 4. Build the **unannotated name set** from the file's `U005`
    diagnostics by extracting the quoted variable name from each
    message (`'name' is used in a unit-checked expression...`). This
