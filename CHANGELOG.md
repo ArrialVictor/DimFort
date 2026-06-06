@@ -15,6 +15,18 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
   and S001 / S002 (scale / offset mismatch) to the yellow tier.
   All severity-ERROR consistency-family codes now paint red and
   all severity-WARNING quality / scale codes paint yellow.
+- **Coverage projection: paint unannotated unit-bearing declarations
+  yellow**. Surfaced during the imports_qa.f90 smoke walk: a
+  `real :: density` declaration with no `@unit{}` and no use site
+  shows yellow in the panel / hover (resolution-axis 🟡) but the
+  coverage layer left it uncoloured — `U005` only fires when the
+  variable is *also* used, and a declared-but-never-used variable
+  has no diagnostic. The projection now walks `variable_declaration`
+  nodes of unit-bearing intrinsic types (`real`, `double precision`)
+  and paints yellow when no sibling comment carries `@unit`. Matches
+  the panel / hover signal. Non-unit-bearing types (`integer`,
+  `character`, `logical`) are unaffected. Design spec §3.4 documents
+  the rule.
 - **Coverage projection: paint every annotated declaration regardless
   of scope**. Surfaced during the same smoke walk: a polymorphic
   variable name (`x`, `mean`, `half`) declared in multiple routines

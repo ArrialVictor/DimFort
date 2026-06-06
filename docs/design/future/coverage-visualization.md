@@ -51,7 +51,7 @@ Four tiers + a no-decoration default. Reuses every shipped colour from
 | Tier | Trigger | Existing parity |
 | --- | --- | --- |
 | **Green** | Line carries an `@unit` annotation comment, OR carries unit-typed expressions; checker resolved them and no consistency-family diagnostic owns the line, AND no identifier on the line is in the file's `U005` set | matches panel/hover green |
-| **Yellow** | A `U005` / `H010` / `S001` / `S002` (warning-severity quality / scale) diagnostic owns the line, OR an expression on the line references an identifier from the file's `U005` set (use-site propagation; see §3.3) | matches panel/hover yellow |
+| **Yellow** | A `U005` / `H010` / `S001` / `S002` (warning-severity quality / scale) diagnostic owns the line, OR an expression on the line references an identifier from the file's `U005` set (use-site propagation; see §3.3), OR the line is a declaration of a unit-bearing type (`real`, `double precision`) without an `@unit` annotation (resolution-axis yellow; see §3.4) | matches panel/hover yellow |
 | **Red** | An ERROR-severity consistency-family diagnostic owns the line — dimension homogeneity (`H001` / `H002` / `H003` / `H004`), polymorphism unification failure (`H020` / `H021` / `H022` / `H023`), affine-conversion-directive validation (`S003`), or unparseable annotation (`U002`) | matches panel/hover red |
 | **Blue** | A `P001` (unparsed region) diagnostic owns the line | matches panel/hover blue |
 | **— (no decoration)** | Line has no unit semantics (string assignments, control flow, comments, blank lines, decl-only lines with no expression) | uncoloured |
@@ -143,6 +143,32 @@ The polymorphic check verifies that any concrete instantiation will be
 dimensionally consistent — soundness over an infinite family. There is
 no weaker-than-concrete sense; both are fully verified. The coverage
 view does not differentiate.
+
+### 3.4 Unannotated unit-bearing declarations paint yellow (validated 2026-06-07)
+
+A declaration of a `real` (or `double precision`) variable without an
+`@unit{}` annotation paints yellow, regardless of whether `U005`
+happens to fire. Matches the panel / hover resolution axis: 🟡 means
+"could carry a unit, doesn't yet."
+
+**Why this isn't already covered by `U005`.** `U005` fires only on
+declarations whose variables are *also used* in a unit-checked
+expression. A declared-but-never-used `real :: density` produces no
+diagnostic — but the panel still shows it as unannotated 🟡, and the
+coverage layer must agree. Without this rule, such declarations would
+read as out-of-scope (uncoloured), giving the false impression that
+DimFort doesn't care about them.
+
+**What counts as unit-bearing.** The intrinsic-type tokens `real`,
+`double precision`, and `double`. `integer`, `character`, `logical`,
+and derived types are not unit-bearing and don't paint at all from
+this rule — they carry no coverage signal.
+
+**Detection.** Walk every `variable_declaration` node, check its
+`intrinsic_type` child against the unit-bearing set, and check
+sibling `comment` nodes on the declaration's last line for the
+`@unit` marker. Declarations whose intrinsic type is unit-bearing
+AND whose siblings carry no `@unit` comment paint yellow.
 
 ## 4. Three rendering layers
 
@@ -553,12 +579,20 @@ For each file:
    same-name declarations across scopes (e.g. a polymorphic
    `x` declared in every routine of a module). The comment-
    walk-based approach is robust against name collisions.
-4. Build the **unannotated name set** from the file's `U005`
+4. Walk the tree for ``variable_declaration`` nodes of unit-bearing
+   intrinsic types (`real`, `double precision`); paint every line
+   spanned by such a declaration yellow when no sibling ``comment``
+   on the declaration's last line carries the ``@unit`` marker.
+   This is the resolution-axis 🟡 rule from §3.4 — a declared-but-
+   never-used real variable fires no `U005` but is still
+   unannotated, and the panel surfaces yellow for it; the coverage
+   layer matches.
+5. Build the **unannotated name set** from the file's `U005`
    diagnostics by extracting the quoted variable name from each
    message (`'name' is used in a unit-checked expression...`). This
    is the set of names whose use sites should propagate yellow per
    §3.3.
-5. Walk expression-bearing statement nodes. For each statement,
+6. Walk expression-bearing statement nodes. For each statement,
    classify by descendant identifier text against the annotated
    set and the unannotated set:
    - If any descendant matches an unannotated name → paint every
@@ -566,7 +600,7 @@ For each file:
      uncoloured line; red / blue / yellow from step 2 stand).
    - Else if any descendant matches an annotated name → paint
      every spanned line green (only on lines still uncoloured).
-6. Lines not painted by any step stay out-of-scope (omitted from
+7. Lines not painted by any step stay out-of-scope (omitted from
    the response).
 
 This is one extra pass over data already in memory; no re-check.

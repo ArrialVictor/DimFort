@@ -270,6 +270,38 @@ def test_project_file_h023_paints_red(tmp_path: Path):
     assert statuses.get(8) == "red"
 
 
+def test_project_file_unannotated_unused_declaration_paints_yellow(tmp_path: Path):
+    """Regression for the imports_qa.f90 observation 2026-06-07.
+
+    A real declaration without `@unit{}` that is never referenced in an
+    expression fires no U005 (U005 only fires on declared-and-used
+    variables). The panel / hover still flag it 🟡 via the resolution
+    axis ("unit-bearing type, no annotation"). Coverage must match —
+    the declaration line paints yellow even with no diagnostic owning
+    it.
+    """
+    from dimfort.core.coverage import project_file
+    from dimfort.core.multifile import check_files
+
+    f = tmp_path / "unused.f90"
+    f.write_text(
+        "module m\n"
+        "  real :: density                    ! unannotated, never used\n"
+        "  real :: g                          !< @unit{m/s^2}\n"
+        "  integer :: counter                 ! integer = not unit-bearing\n"
+        "end module\n"
+    )
+    result = check_files([f])
+    statuses = project_file(f.resolve(), result)
+    # Line 2: real, unannotated, never used → yellow (no U005, but still
+    # unannotated on a unit-bearing type).
+    assert statuses.get(2) == "yellow"
+    # Line 3: real, annotated → green.
+    assert statuses.get(3) == "green"
+    # Line 4: integer, unannotated → no decoration (not unit-bearing).
+    assert 4 not in statuses
+
+
 def test_project_file_paints_same_name_declarations_across_scopes(tmp_path: Path):
     """Regression for the poly_qa.f90 observation 2026-06-07: a name
     declared in multiple scopes must still paint green at every
