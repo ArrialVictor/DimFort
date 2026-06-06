@@ -187,21 +187,42 @@ already communicates that level of attention. The coverage layer's
 actual value-add is the **positive signal**: green for "this line is
 verified fine," which the native diagnostic stream cannot express.
 
-This is the v1 default. It may be revised after implementation: an
-alternative is to render the coverage gutter sign alongside the
-native diagnostic icon as reinforcement (visual cost, no information
-loss). The decision will be validated against the actual rendering in
-each companion before the feature ships.
+**Status update (2026-06-06, validated during VSCode smoke):** this
+provisional was reversed. The "step aside on native diagnostic icon"
+rule assumed editors paint diagnostic icons in the gutter column —
+but VSCode does not by default: diagnostics surface as squiggles in
+the editor text, entries in the overview ruler, and rows in the
+Problems panel, while the gutter column itself stays bare unless an
+extension paints there. Skipping yellow / red coverage dots therefore
+leaves those tiers with no per-line gutter indicator at all, which
+reads as "the coverage layer only flags positives."
 
-Verbose mode is different: line background tint sits behind the text,
-not in the gutter column, so the tint applies to every line including
-those with native diagnostic icons. No competition.
+**Validated rule:** the coverage layer paints **all four tiers** in
+the gutter. This:
+
+- Carries a per-line indicator the user can read at a glance for
+  every tier — green / yellow / red / blue.
+- Coexists with the inline squiggles (squiggles are in the text,
+  the coverage dot is in the gutter column — no competition).
+- Matches the test-coverage convention familiar from
+  Coverage Gutters in VSCode and similar tools.
+
+The companion implementations should follow the same rule: paint
+every tier in the gutter, unless the target editor *does* show
+diagnostic icons in the gutter by default. The Nvim and Emacs
+implementations should verify against their own defaults during their
+own smoke walks; the default position is "paint all tiers" unless
+proven otherwise.
+
+Verbose mode is unchanged from the original design: line background
+tint sits behind the text, not in the gutter column, and tints every
+coloured line.
 
 Concretely:
 
 ```
-gutter mode, line with H001:        [native red ×] foo = bar * baz
-gutter mode, line with U005:        [native yellow !] qux = quux
+gutter mode, line with H001:        [coverage red ●] foo = bar * baz
+gutter mode, line with U005:        [coverage yellow ●] qux = quux
 gutter mode, line verified OK:      [coverage green ●] x = y * z   ! @unit{m}
 gutter mode, line with P001:        [coverage blue ●] some_unparseable_stmt
 gutter mode, line out of scope:     [no icon] do i = 1, n
@@ -481,22 +502,34 @@ for v1:
    threshold flags. The `--json` output is sufficient for downstream
    tools to implement their own gating; canonical CI-gate UX is a
    future question.
+4. **Gutter-clash resolution: paint all four tiers** (validated
+   during the VSCode smoke 2026-06-06; see §6). VSCode does not
+   paint diagnostic icons in the gutter by default, so the earlier
+   "step aside on yellow / red" rule left those tiers with no
+   per-line gutter indicator. The companion paints every tier;
+   the Nvim and Emacs implementations should verify against their
+   own defaults during their own smoke walks.
+5. **Refresh trigger: `onDidChangeDiagnostics`** (validated during
+   the VSCode smoke 2026-06-06). The companion listens for the
+   editor's diagnostic-change signal rather than running its own
+   post-edit timer; this keeps the coverage layer in lock-step
+   with the squiggles and avoids any race against the server's
+   internal debounce. The Nvim and Emacs implementations should
+   use their equivalent (`LspDiagnosticsChanged` on Nvim,
+   `flymake-diagnostic-functions` / `eglot--diagnostics-changed`
+   on Emacs).
 
 ## 12. Open questions (remaining)
 
-These are open for review and may shift before implementation:
+These are open for review and may shift before further companion
+work:
 
 1. **Promoting default to `gutter` later.** When the feature
    stabilises (post-0.2.4 user feedback), the default could flip
    from `disabled` to `gutter`. The flip is a one-line companion
    change but is visible to every user. Decision deferred to the
    release that flips it.
-2. **Gutter-clash resolution validation.** The v1 design steps the
-   coverage layer aside on lines with native diagnostic icons
-   (§6). The decision will be re-checked against the actual
-   rendering in each companion before the feature ships; the
-   alternative (render both as reinforcement) is on the table.
-3. **`dimfort/lineStatus` revalidation cost.** For a 5000-line file
+2. **`dimfort/lineStatus` revalidation cost.** For a 5000-line file
    with frequent edits, the per-line projection runs once per
    `didChange` debounce. Cheap, but worth measuring on a
    representative large workset before shipping to confirm.
