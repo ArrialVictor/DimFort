@@ -961,8 +961,15 @@ def _render_ast_tree(
     if (
         expected_unit is not None
         and unit is not None
+        and not ts_checker._unit_expr_has_tyvars(expected_unit)
         and not equal_dim(unit, expected_unit)
     ):
+        # ``(expected …)`` only when the formal is concrete. A
+        # polymorphic formal (tyvar-bearing) unifies with any actual
+        # — the dimensional comparison is irrelevant, the unifier
+        # decides, and either an H020 fires (handled below) or the
+        # call is clean (no trailer, marker stays 🟢). Mirrors the
+        # panel-side gate in :func:`_build_expression_tree`.
         extra_str = f"(expected {format_unit(expected_unit, show_factor=sf)})"
     # H020 polymorphic-conflict override. The unit column renders
     # ``'a = <actual>`` (the binding this slot would force) and the

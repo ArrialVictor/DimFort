@@ -351,11 +351,18 @@ def _build_expression_tree(
         child_nodes = [c for c in built if c is not None]
 
     # Render the `(expected …)` annotation only when actual and formal
-    # disagree dimensionally — matching the call-hover rule.
+    # disagree dimensionally AND the formal is concrete — matching the
+    # call-hover rule. A polymorphic formal (carrying tyvars) can unify
+    # with any actual unit, so dimensional comparison is irrelevant
+    # there: the unifier handles binding, and if no H020 fires the call
+    # is clean. Suppressing this trailer on tyvar formals also stops
+    # the marker demote-to-warn below from firing on clean polymorphic
+    # call rows.
     expected_render: str | None = None
     if (
         expected_unit is not None
         and unit is not None
+        and not ts_checker._unit_expr_has_tyvars(expected_unit)
         and not equal_dim(unit, expected_unit)
     ):
         expected_render = format_unit(expected_unit, show_factor=sf)
@@ -378,25 +385,27 @@ def _build_expression_tree(
     # force the tyvar to); the spec's ``collides with arg N`` trailer
     # ships separately in the payload's ``collides`` field so the
     # companion can render it to the right of the marker, parallel to
-    # ``(expected …)`` and ``(assumed: …)``. The generic ``(expected
-    # 'a)`` trailer is suppressed — the binding string already surfaces
-    # the formal tyvar, and the spec mandates the ``collides`` wording
-    # for the polymorphism conflict path. See
+    # ``(expected …)`` and ``(assumed: …)``. See
     # docs/design/shipped/polymorphic-units.md §H020.
+    #
+    # Note: ``expected_render`` is None on every polymorphic call row
+    # (clean or conflicting) because the formal is a tyvar — see the
+    # tyvar gate above. The formal text is therefore drawn from
+    # ``expected_unit`` directly here, not from ``expected_render``.
     collides_render: str | None = None
     if (
         polymorphism_conflict_row is not None
-        and expected_render is not None
+        and expected_unit is not None
         and unit is not None
     ):
         _binding_text, partner_indices = polymorphism_conflict_row
+        formal_render = format_unit(expected_unit, show_factor=sf)
         actual_render = format_unit(unit, show_factor=sf)
-        unit_render = f"{expected_render} = {actual_render}"
+        unit_render = f"{formal_render} = {actual_render}"
         if partner_indices:
             collides_render = ", ".join(
                 f"arg {p + 1}" for p in partner_indices
             )
-        expected_render = None  # avoid the duplicate ``(expected 'a)``
 
     payload: dict[str, Any] = {
         "label": _node_label(node, source),

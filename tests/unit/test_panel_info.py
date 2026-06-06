@@ -590,6 +590,84 @@ def test_panel_h020_arg_rows_render_binding_and_collision_trailer(tmp_path: Path
             server.state.last_result = saved_result
 
 
+def test_panel_clean_polymorphic_call_has_no_expected_trailer(tmp_path: Path):
+    """A clean polymorphic call (every actual unifies cleanly with the
+    formal tyvar) must render each arg row as bare ``unit 🟢`` — no
+    ``(expected 'a)`` trailer, no 🟡 demote. Regression pin: before
+    this, ``equal_dim(unit, expected_unit)`` was checked unconditionally;
+    for a polymorphic formal whose ``tyvars`` field is non-empty the
+    check returned False (the formal's concrete dimensions are zero
+    while the actual has e.g. mass) so the trailer fired and the marker
+    demoted to warn. But polymorphic formals unify with any actual —
+    the dimensional comparison doesn't apply. See
+    docs/design/shipped/polymorphic-units.md."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp import server
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
+
+    src = tmp_path / "poly_clean.f90"
+    src.write_text(
+        "module m\n"
+        "contains\n"
+        "  subroutine f(x, y, z)\n"
+        "    real, intent(in)  :: x  !< @unit{'a}\n"
+        "    real, intent(in)  :: y  !< @unit{'a}\n"
+        "    real, intent(out) :: z  !< @unit{'a}\n"
+        "    z = x\n"
+        "  end subroutine f\n"
+        "  subroutine caller_clean(a, b, c)\n"
+        "    real, intent(in)  :: a  !< @unit{m}\n"
+        "    real, intent(in)  :: b  !< @unit{m}\n"
+        "    real, intent(out) :: c  !< @unit{m}\n"
+        "    call f(a, b, c)\n"
+        "  end subroutine caller_clean\n"
+        "end module m\n"
+    )
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    calls = [n for n in _ts.walk(tree.root_node)
+             if n.type == "subroutine_call"]
+
+    result = check_files([src])
+    # Sanity: no H020 should fire on this clean call.
+    diags = result.diagnostics.get(resolved, ())
+    assert not any(d.code == "H020" for d in diags), [
+        (d.code, d.message) for d in diags
+    ]
+
+    with server.state.last_result_lock:
+        saved_result, server.state.last_result = server.state.last_result, result
+    try:
+        ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+        payload = _build_expression_tree(calls[-1], ctx, source)
+        assert len(payload["children"]) == 3
+        a_row, b_row, c_row = payload["children"]
+        # Bare unit column; no binding prefix or trailer in unit.
+        assert a_row["unit"] == "m", a_row
+        assert b_row["unit"] == "m", b_row
+        assert c_row["unit"] == "m", c_row
+        # No ``(expected 'a)`` trailer field set.
+        assert a_row["expected"] is None, a_row
+        assert b_row["expected"] is None, b_row
+        assert c_row["expected"] is None, c_row
+        # No collides — clean call, no conflict.
+        assert a_row.get("collides") is None, a_row
+        assert b_row.get("collides") is None, b_row
+        assert c_row.get("collides") is None, c_row
+        # Each arg row stays clean — no diagnostic owns it, no demote.
+        assert a_row["marker"] == "ok", a_row
+        assert b_row["marker"] == "ok", b_row
+        assert c_row["marker"] == "ok", c_row
+        # The call root propagates clean too (no H020, no warn from kids).
+        assert payload["marker"] == "ok", payload
+    finally:
+        with server.state.last_result_lock:
+            server.state.last_result = saved_result
+
+
 def test_h020_message_uses_new_multiline_shape(tmp_path: Path):
     """H020's diagnostic message must use the multi-line shape with
     tightened lead and bare ``arg N`` partner labels (no ``(name)``

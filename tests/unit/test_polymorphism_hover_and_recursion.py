@@ -133,6 +133,67 @@ def test_recursive_call_with_wrong_unit_fires_h020(tmp_path: Path):
     assert "H020" in codes, [(d.code, d.message) for d in diags]
 
 
+def test_hover_clean_polymorphic_call_has_no_expected_trailer(tmp_path: Path):
+    """A clean polymorphic call hover (every actual unifies cleanly
+    with the formal tyvar) must render each arg row as bare ``unit 🟢``
+    — no ``(expected 'a)`` row tail, no 🟡 demote. Mirrors the panel-
+    side test ``test_panel_clean_polymorphic_call_has_no_expected_trailer``;
+    the parallel ``_render_ast_tree`` path applies the same tyvar gate
+    so the call hover, short hover, and CLI ``--trace`` output all
+    agree the call is clean."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.lsp import server
+    from dimfort.lsp.hover import _render_ast_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
+
+    src = _materialise(
+        tmp_path, "poly_hover_clean.f90",
+        "module m\n"
+        "contains\n"
+        "  subroutine f(x, y)\n"
+        "    real, intent(in)  :: x  !< @unit{'a}\n"
+        "    real, intent(out) :: y  !< @unit{'a}\n"
+        "    y = x\n"
+        "  end subroutine f\n"
+        "  subroutine caller_clean(a, b)\n"
+        "    real, intent(in)  :: a  !< @unit{m}\n"
+        "    real, intent(out) :: b  !< @unit{m}\n"
+        "    call f(a, b)\n"
+        "  end subroutine caller_clean\n"
+        "end module m\n"
+    )
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    calls = [n for n in _ts.walk(tree.root_node)
+             if n.type == "subroutine_call"]
+
+    result = check_files([src])
+    with server.state.last_result_lock:
+        saved_result, server.state.last_result = server.state.last_result, result
+    try:
+        ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+        rows: list = []
+        _render_ast_tree(
+            calls[-1], ctx, source,
+            prefix="", is_last=True, is_root=True, rows=rows,
+        )
+        arg_rows = [r for r in rows[1:] if "├──" in r[0] or "└──" in r[0]]
+        assert len(arg_rows) >= 2, rows
+        a_row = next(r for r in arg_rows if "a" in r[0])
+        b_row = next(r for r in arg_rows if "b" in r[0])
+        # Bare unit; no trailer; 🟢 marker.
+        assert a_row[1] == "m", a_row
+        assert b_row[1] == "m", b_row
+        assert a_row[2] == "🟢", a_row
+        assert b_row[2] == "🟢", b_row
+        assert a_row[3] == "", a_row
+        assert b_row[3] == "", b_row
+    finally:
+        with server.state.last_result_lock:
+            server.state.last_result = saved_result
+
+
 def test_hover_h020_arg_row_renders_collides_trailer(tmp_path: Path):
     """The detailed-hover tree (rendered by ``_render_ast_tree``) must
     surface H020's spec-faithful row form on every conflicting arg:
