@@ -82,18 +82,34 @@ Dim = tuple[
 
 @dataclass(frozen=True, eq=False)
 class Exponent:
-    """Linear combination of opaque generators with rational coefficients
-    plus a rational constant. See module docstring for motivation.
+    """Linear combination of opaque generators with rational coefficients plus a rational constant.
 
-    Equality with a plain ``Number`` (``int``/``Fraction``) returns
-    True iff this Exponent is pure-constant and its constant equals the
-    Number. This keeps the migration ergonomic: legacy code that
-    compares a dimension slot against a literal still works.
+    See the module docstring for motivation. Equality with a plain
+    ``Number`` (``int`` / ``Fraction``) returns ``True`` iff this
+    Exponent is pure-constant and its constant equals the Number; this
+    keeps the migration ergonomic — legacy code comparing a dimension
+    slot against a literal still works.
+
+    Attributes:
+        terms: Tuple of ``(name, coefficient)`` pairs in canonical form
+            (sorted by name, no zero coefficients, coefficients are
+            :class:`Fraction`).
+        constant: The rational constant ``c`` in the linear form.
     """
     terms: tuple[tuple[str, Fraction], ...]
     constant: Fraction
 
     def __eq__(self, other: object) -> bool:
+        """Compare for structural equality, with Number-coercion shim.
+
+        Args:
+            other: Another :class:`Exponent`, or a plain ``int`` /
+                :class:`Fraction` (treated as a pure-constant Exponent).
+
+        Returns:
+            ``True`` iff both sides denote the same linear form;
+            ``NotImplemented`` for unsupported operand types.
+        """
         if isinstance(other, Exponent):
             return self.terms == other.terms and self.constant == other.constant
         if isinstance(other, (int, Fraction)):
@@ -101,6 +117,16 @@ class Exponent:
         return NotImplemented
 
     def __hash__(self) -> int:
+        """Hash consistent with :meth:`__eq__`.
+
+        For a pure-constant Exponent the hash equals the hash of the
+        bare Number so dict / set lookups don't depend on which side
+        of the comparison sits in the bucket; otherwise the hash is
+        structural over ``(terms, constant)``.
+
+        Returns:
+            Integer hash.
+        """
         # Python contract: ``a == b`` ⇒ ``hash(a) == hash(b)``. Since
         # ``__eq__`` returns True against an ``int``/``Fraction`` for a
         # pure-constant Exponent, the hash for that case must equal the
@@ -113,6 +139,18 @@ class Exponent:
         return hash((self.terms, self.constant))
 
     def __post_init__(self) -> None:
+        """Validate that ``terms`` is already in canonical form.
+
+        The smart constructor :meth:`build` is the only path for
+        non-trivial construction; direct construction is allowed when
+        the caller has already-canonical input (tests and the output
+        of arithmetic methods).
+
+        Raises:
+            ValueError: If ``terms`` contains a zero-coefficient entry
+                or is not sorted by name — either would break the
+                equality / hash contract.
+        """
         # Defensive: the smart constructor below should be the only path
         # for non-trivial construction. Allow direct construction with
         # already-canonical input (used in tests and after-arithmetic).
@@ -137,13 +175,21 @@ class Exponent:
         terms: dict[str, Number] | tuple[tuple[str, Number], ...] = (),
         constant: Number = 0,
     ) -> Exponent:
-        """Smart constructor: canonicalize a raw term mapping.
+        """Canonicalize a raw term mapping into an :class:`Exponent`.
 
         Aggregates duplicate keys by summing coefficients (callers may
         pass a sequence of pairs with repeats), drops zero coefficients,
-        promotes ``int`` to ``Fraction`` (including the ``constant``
+        promotes ``int`` to :class:`Fraction` (including the ``constant``
         parameter), and sorts entries by name. Always use this for new
-        Exponents unless you already have a canonical input.
+        Exponents unless the input is already canonical.
+
+        Args:
+            terms: Mapping (or sequence of pairs) from generator name to
+                coefficient. Empty by default.
+            constant: Rational constant term. Defaults to ``0``.
+
+        Returns:
+            A canonical :class:`Exponent`.
         """
         items = list(terms.items()) if isinstance(terms, dict) else list(terms)
         # Aggregate duplicate keys (defensive — callers may pass either
@@ -164,35 +210,78 @@ class Exponent:
 
     @classmethod
     def from_value(cls, value: Number) -> Exponent:
-        """Promote a literal rational to an Exponent (no symbol terms)."""
+        """Promote a literal rational to a pure-constant Exponent.
+
+        Args:
+            value: Integer or :class:`Fraction` constant.
+
+        Returns:
+            Exponent with empty ``terms`` and ``constant=value``.
+        """
         return cls.build(constant=value)
 
     @classmethod
     def from_symbol(cls, name: str, coefficient: Number = 1) -> Exponent:
-        """Build an Exponent representing ``coefficient * name``."""
+        """Build an Exponent representing ``coefficient * name``.
+
+        Args:
+            name: Generator identifier (e.g. ``"kappa"``).
+            coefficient: Rational coefficient on the generator. Defaults
+                to ``1``.
+
+        Returns:
+            Single-term Exponent with zero constant.
+        """
         return cls.build(terms={name: coefficient})
 
     # ---- queries ---------------------------------------------------------
 
     def is_constant(self) -> bool:
-        """``True`` iff this Exponent has no symbol terms."""
+        """Return ``True`` iff this Exponent has no symbol terms.
+
+        Returns:
+            ``True`` for a pure-constant Exponent; ``False`` otherwise.
+        """
         return len(self.terms) == 0
 
     def is_zero(self) -> bool:
-        """``True`` iff this Exponent is the additive identity (0)."""
+        """Return ``True`` iff this Exponent is the additive identity (0).
+
+        Returns:
+            ``True`` iff ``terms`` is empty and ``constant == 0``.
+        """
         return len(self.terms) == 0 and self.constant == 0
 
     def is_one(self) -> bool:
-        """``True`` iff this Exponent is the multiplicative identity (1)."""
+        """Return ``True`` iff this Exponent is the multiplicative identity (1).
+
+        Returns:
+            ``True`` iff ``terms`` is empty and ``constant == 1``.
+        """
         return len(self.terms) == 0 and self.constant == 1
 
     def as_fraction(self) -> Fraction | None:
-        """If pure-constant, return the rational value; else ``None``."""
+        """Return the rational value if pure-constant.
+
+        Returns:
+            The :class:`Fraction` ``constant`` when :meth:`is_constant`
+            holds, otherwise ``None``.
+        """
         return self.constant if self.is_constant() else None
 
     # ---- arithmetic ------------------------------------------------------
 
     def __add__(self, other: Exponent | Number) -> Exponent:
+        """Add another Exponent or a numeric constant.
+
+        Args:
+            other: Right-hand operand — :class:`Exponent`, ``int``, or
+                :class:`Fraction`.
+
+        Returns:
+            The canonicalized sum, or ``NotImplemented`` for
+            unsupported operand types.
+        """
         if isinstance(other, Exponent):
             agg: dict[str, Number] = dict(self.terms)
             for name, coeff in other.terms:
@@ -203,9 +292,27 @@ class Exponent:
         return NotImplemented
 
     def __radd__(self, other: Number) -> Exponent:
+        """Right-side addition with a numeric constant.
+
+        Args:
+            other: Left-hand ``int`` or :class:`Fraction` operand.
+
+        Returns:
+            The canonicalized sum.
+        """
         return self.__add__(other)
 
     def __sub__(self, other: Exponent | Number) -> Exponent:
+        """Subtract another Exponent or a numeric constant.
+
+        Args:
+            other: Right-hand operand — :class:`Exponent`, ``int``, or
+                :class:`Fraction`.
+
+        Returns:
+            The canonicalized difference, or ``NotImplemented`` for
+            unsupported operand types.
+        """
         if isinstance(other, Exponent):
             return self + (-other)
         if isinstance(other, (int, Fraction)):
@@ -213,23 +320,48 @@ class Exponent:
         return NotImplemented
 
     def __rsub__(self, other: Number) -> Exponent:
+        """Right-side subtraction with a numeric constant.
+
+        Args:
+            other: Left-hand ``int`` or :class:`Fraction` operand.
+
+        Returns:
+            The canonicalized ``other - self``.
+        """
         return (-self) + other
 
     def __neg__(self) -> Exponent:
+        """Negate every coefficient and the constant.
+
+        Returns:
+            The canonical additive inverse of this Exponent.
+        """
         return Exponent.build(
             {name: -coeff for name, coeff in self.terms},
             -self.constant,
         )
 
     def __mul__(self, other: Number | Exponent) -> Exponent:
-        """Scalar multiplication only.
+        """Multiply by a scalar (or a pure-constant Exponent).
 
         ``Exponent * scalar`` and ``scalar * Exponent`` are linear and
         always defined. ``Exponent * Exponent`` is defined *only* when
         one side is pure-constant — otherwise the product would be
         quadratic in the symbols, outside the linear algebra this type
-        represents. Raises ``UnitError`` in the non-linear case (the
-        resolver catches this and falls back to ``D1.4``).
+        represents.
+
+        Args:
+            other: Right-hand operand — ``int``, :class:`Fraction`, or
+                :class:`Exponent`.
+
+        Returns:
+            The canonicalized product, or ``NotImplemented`` for
+            unsupported operand types.
+
+        Raises:
+            UnitError: When both operands carry symbol terms (non-linear
+                product). The resolver catches this and falls back to
+                ``D1.4``.
         """
         if isinstance(other, (int, Fraction)):
             return Exponent.build(
@@ -248,11 +380,28 @@ class Exponent:
         return NotImplemented
 
     def __rmul__(self, other: Number) -> Exponent:
+        """Right-side scalar multiplication.
+
+        Args:
+            other: Left-hand ``int`` or :class:`Fraction` operand.
+
+        Returns:
+            The canonicalized product.
+        """
         return self.__mul__(other)
 
     # ---- presentation ----------------------------------------------------
 
     def __str__(self) -> str:
+        """Render as a human-readable linear form.
+
+        Terms are joined by ``+`` / ``-`` with their canonical sign;
+        a unit coefficient is elided (``kappa`` rather than ``1·kappa``).
+        Pure-zero renders as ``"0"``.
+
+        Returns:
+            String representation of the linear form.
+        """
         if self.is_zero():
             return "0"
         # Build a list of (sign, magnitude_text) so we can join cleanly
@@ -291,7 +440,12 @@ ZERO_DIM: Dim = (Exponent.from_value(0),) * 7
 
 
 class UnitError(ValueError):
-    pass
+    """Base error for the unit-algebra layer.
+
+    Raised by parser, smart constructors, and the algebra dispatch when
+    an operation is well-formed at the Python level but ill-formed under
+    the unit-algebra rules.
+    """
 
 
 class UnknownUnitError(UnitError):
@@ -299,17 +453,30 @@ class UnknownUnitError(UnitError):
 
 
 class UnitAmbiguityWarning(UserWarning):
-    pass
+    """Warning emitted for ambiguous slash-precedence in a unit expression.
+
+    Fired by the parser when a ``/`` at a given paren depth is followed
+    by another ``*`` or ``/`` at the same depth (e.g. ``kg/m/s``), since
+    different conventions parse this differently. Parentheses disambiguate.
+    """
 
 
 def _canonicalize_tyvars(
     items: tuple[tuple[str, Number | Exponent], ...],
 ) -> tuple[tuple[str, Exponent], ...]:
-    """Aggregate, sort, drop-zero-exponent. Mirrors ``Exponent.build``.
+    """Canonicalize a ``tyvars`` mapping (mirrors :meth:`Exponent.build`).
 
-    Promotes raw ``Number`` exponents to ``Exponent.from_value``. The
-    result is a tuple of ``(name, non-zero Exponent)`` pairs sorted by
-    name — the canonical form ``Unit.tyvars`` must hold.
+    Aggregates duplicates by summing exponents, drops zero-exponent
+    entries, sorts by name, and promotes raw ``Number`` exponents to
+    :class:`Exponent`.
+
+    Args:
+        items: Tuple of ``(name, exponent)`` pairs; exponents may be
+            ``int``, :class:`Fraction`, or :class:`Exponent`.
+
+    Returns:
+        Tuple of ``(name, non-zero Exponent)`` pairs sorted by name —
+        the canonical form ``Unit.tyvars`` must hold.
     """
     agg: dict[str, Exponent] = {}
     for name, exp in items:
@@ -323,30 +490,38 @@ def _canonicalize_tyvars(
 
 @dataclass(frozen=True)
 class Unit:
-    """Dimension vector (one Exponent per SI base slot) plus a rational
-    prefactor.
+    """Dimension vector (one Exponent per SI base slot) plus a rational prefactor.
 
-    The dimension slots historically held ``Number`` (``int | Fraction``).
-    As of the symbolic-exponents work, each slot is an ``Exponent``: a
-    linear form over Q with named opaque generators. Existing callers
-    that pass ``int``/``Fraction`` slots still work — ``__post_init__``
-    promotes scalar entries to ``Exponent.from_value`` automatically,
-    coerces ``factor``/``offset`` to ``Fraction``, and canonicalizes
-    ``tyvars`` (drop-zero, sort-by-name, promote raw exponents).
+    The dimension slots historically held :class:`Number` (``int`` /
+    :class:`Fraction`). As of the symbolic-exponents work, each slot is
+    an :class:`Exponent` — a linear form over Q with named opaque
+    generators. Existing callers passing ``int`` / :class:`Fraction`
+    slots still work: :meth:`__post_init__` promotes scalar entries
+    automatically, coerces ``factor`` / ``offset`` to :class:`Fraction`,
+    and canonicalizes ``tyvars``.
 
-    ``offset`` marks an *absolute* affine quantity (e.g. degC with
-    offset ``273.15``): conversion to base is ``x_base = factor*x + offset``.
-    ``offset == 0`` is the *ordinary* case (every non-affine unit, absolute
-    K, and every temperature *difference*), so the multiplicative algebra
-    is unaffected.
-
-    ``tyvars`` carries parametric-polymorphism type-variable exponents
-    (Kennedy-style AG-extension of the multiplicative unit algebra). Each
-    entry is ``(name, Exponent)`` — the exponent is symbolic in the same
-    way the SI slots are, so ``'a^κ`` composes with the existing
-    symbolic-exponent machinery for free. Empty by default; every
-    pre-polymorphism caller sees byte-identical behaviour. See
-    ``docs/design/shipped/polymorphic-units.md``.
+    Attributes:
+        dimension: Seven-tuple of :class:`Exponent` over the SI base
+            slots ``(M, L, T, Theta, I, N, J)``. Legacy callers may pass
+            raw ``Number`` entries; they are promoted in
+            :meth:`__post_init__`.
+        factor: Multiplicative prefactor (prefix / conversion scale) as
+            a :class:`Fraction`.
+        offset: Affine zero-point shift versus the base unit. A non-zero
+            ``offset`` marks an *absolute* affine quantity (e.g. degC
+            with offset ``273.15``); conversion to base is
+            ``x_base = factor*x + offset``. ``offset == 0`` is the
+            *ordinary* case (every non-affine unit, absolute K, and
+            every temperature *difference*), and the multiplicative
+            algebra is unaffected. See ``docs/design/scale.md``
+            §3.2–§3.3. Defaults to ``0``.
+        tyvars: Parametric-polymorphism type-variable exponents
+            (Kennedy-style AG-extension). Each entry is
+            ``(name, Exponent)`` — the exponent is symbolic in the same
+            way the SI slots are, so ``'a^κ`` composes with the
+            symbolic-exponent machinery for free. Empty by default;
+            every pre-polymorphism caller sees byte-identical
+            behaviour. See ``docs/design/shipped/polymorphic-units.md``.
     """
     dimension: tuple[Exponent, ...]
     factor: Fraction
@@ -361,6 +536,17 @@ class Unit:
     tyvars: tuple[tuple[str, Exponent], ...] = ()
 
     def __post_init__(self) -> None:
+        """Coerce, validate, and canonicalize the dataclass fields.
+
+        Promotes raw ``Number`` dimension slots to :class:`Exponent`,
+        coerces ``factor`` / ``offset`` to :class:`Fraction`, and
+        canonicalizes ``tyvars`` (drop-zero, sort-by-name, promote raw
+        exponents).
+
+        Raises:
+            UnitError: If ``dimension`` does not have exactly
+                :data:`DIM_LEN` slots.
+        """
         # Coerce legacy callers passing ``Number`` per slot. After this
         # method runs, every entry in ``dimension`` is an Exponent.
         if len(self.dimension) != DIM_LEN:
@@ -391,6 +577,15 @@ class Unit:
                 object.__setattr__(self, "tyvars", canon)
 
     def __mul__(self, other: Unit) -> Unit:
+        """Multiply two Units (slot-wise exponent sum, factor product).
+
+        Args:
+            other: Right-hand :class:`Unit`.
+
+        Returns:
+            The product unit; ``tyvars`` are concatenated and
+            canonicalized by :meth:`__post_init__`.
+        """
         return Unit(
             tuple(a + b for a, b in zip(self.dimension, other.dimension, strict=False)),
             self.factor * other.factor,
@@ -398,6 +593,16 @@ class Unit:
         )
 
     def __truediv__(self, other: Unit) -> Unit:
+        """Divide two Units (slot-wise exponent difference, factor quotient).
+
+        Args:
+            other: Right-hand (divisor) :class:`Unit`.
+
+        Returns:
+            The quotient unit; the divisor's ``tyvars`` exponents are
+            negated and merged. Canonicalization in
+            :meth:`__post_init__` drops anything that cancels to zero.
+        """
         # Negate the divisor's tyvar exponents and merge. Canonicalization
         # in __post_init__ drops anything that cancels to zero.
         neg_tyvars = tuple((n, -e) for n, e in other.tyvars)
@@ -410,17 +615,27 @@ class Unit:
     def pow(self, exp: Number | Exponent) -> Unit:
         """Raise the unit to a power.
 
-        ``exp`` may be a literal ``Number`` (the legacy path) or an
-        ``Exponent`` (symbolic). The result's dimension is the slot-wise
-        product of the current Exponent and ``exp``; ``Exponent.__mul__``
-        raises ``UnitError`` if the multiplication is non-linear (both
-        sides have symbol terms) — the caller (``power(...)`` below)
-        converts that into a D1.4 diagnostic.
+        The result's dimension is the slot-wise product of the current
+        :class:`Exponent` and ``exp``. Tyvar exponents are scaled by the
+        same ``exp`` — ``('a)^k`` → ``'a^k``. Symbolic ``exp`` on a
+        tyvar whose exponent is itself symbolic would be non-linear;
+        :meth:`Exponent.__mul__` raises and the caller (:func:`power`)
+        falls back to ``D1.4`` (same path as the SI-slot case).
 
-        Tyvar exponents are scaled by the same ``exp`` — ``('a)^k`` →
-        ``'a^k``. Symbolic ``exp`` on a tyvar whose exponent is itself
-        symbolic would be non-linear; ``Exponent.__mul__`` raises and the
-        caller falls back to D1.4 (same path as the SI-slot case).
+        Args:
+            exp: Literal :class:`Number` (the legacy path) or a
+                symbolic :class:`Exponent`.
+
+        Returns:
+            The exponentiated unit.
+
+        Raises:
+            UnitError: When the multiplication is non-linear (both sides
+                have symbol terms), or when ``exp`` is non-integer on a
+                prefixed / scaled factor (``factor != 1``) — would
+                generally not stay rational, so the algebra refuses.
+                The caller (:func:`power`) converts both cases into a
+                ``D1.4`` diagnostic.
         """
         new_dim = tuple(a * exp for a in self.dimension)
         new_tyvars = tuple((n, e * exp) for n, e in self.tyvars)
@@ -457,13 +672,27 @@ class Unit:
 
 @dataclass(frozen=True)
 class LogWrap:
-    """Unit tagged as residing in log space (spec §1.2)."""
+    """Unit tagged as residing in log space (spec §1.2).
+
+    Use :func:`wrap_log` to construct, since it applies the R2/R3
+    canonicalization rules; direct construction bypasses them.
+
+    Attributes:
+        inner: The wrapped :class:`UnitExpr`.
+    """
     inner: UnitExpr
 
 
 @dataclass(frozen=True)
 class ExpWrap:
-    """Unit tagged as residing in exp space (spec §1.2)."""
+    """Unit tagged as residing in exp space (spec §1.2).
+
+    Use :func:`wrap_exp` to construct, since it applies the R2/R3
+    canonicalization rules; direct construction bypasses them.
+
+    Attributes:
+        inner: The wrapped :class:`UnitExpr`.
+    """
     inner: UnitExpr
 
 
@@ -471,13 +700,19 @@ UnitExpr = Unit | LogWrap | ExpWrap
 
 
 def is_dimensionless(u: UnitExpr) -> bool:
-    """``True`` iff ``u`` is a ``Unit`` with all base exponents zero
-    and no tyvar exponents.
+    """Return ``True`` iff ``u`` has empty dimension and no tyvars.
 
-    Wrappers around dim'less never exist post-canonicalization (R2.3),
-    so a wrapper is by definition non-dim'less. A Unit with no SI
-    exponents but a live tyvar (``'a``) is **not** dim'less — its
-    dimension is the symbolic tyvar.
+    Wrappers around dimensionless never exist post-canonicalization
+    (R2.3), so a wrapper is by definition non-dimensionless. A
+    :class:`Unit` with no SI exponents but a live tyvar (``'a``) is
+    **not** dimensionless — its dimension is the symbolic tyvar.
+
+    Args:
+        u: The unit expression to test.
+
+    Returns:
+        ``True`` iff ``u`` is a :class:`Unit` with all base exponents
+        zero and an empty ``tyvars`` tuple.
     """
     return (
         isinstance(u, Unit)
@@ -487,7 +722,16 @@ def is_dimensionless(u: UnitExpr) -> bool:
 
 
 def wrap_log(u: UnitExpr) -> UnitExpr:
-    """Construct ``LOG(u)`` with canonicalization (R3.1 + R2.1 + R2.3)."""
+    """Construct ``LOG(u)`` with canonicalization (R3.1 + R2.1 + R2.3).
+
+    Args:
+        u: Inner unit expression.
+
+    Returns:
+        ``u.inner`` if ``u`` is an :class:`ExpWrap` (R2.1); ``u`` itself
+        if ``u`` is dimensionless (R2.3); otherwise a fresh
+        :class:`LogWrap` around ``u`` (R3.1).
+    """
     from dimfort.core.trace import trace_step
     if isinstance(u, ExpWrap):
         result = u.inner  # R2.1
@@ -502,7 +746,16 @@ def wrap_log(u: UnitExpr) -> UnitExpr:
 
 
 def wrap_exp(u: UnitExpr) -> UnitExpr:
-    """Construct ``EXP(u)`` with canonicalization (R3.2 + R2.2 + R2.3)."""
+    """Construct ``EXP(u)`` with canonicalization (R3.2 + R2.2 + R2.3).
+
+    Args:
+        u: Inner unit expression.
+
+    Returns:
+        ``u.inner`` if ``u`` is a :class:`LogWrap` (R2.2); ``u`` itself
+        if ``u`` is dimensionless (R2.3); otherwise a fresh
+        :class:`ExpWrap` around ``u`` (R3.2).
+    """
     from dimfort.core.trace import trace_step
     if isinstance(u, LogWrap):
         result = u.inner  # R2.2
@@ -517,6 +770,20 @@ def wrap_exp(u: UnitExpr) -> UnitExpr:
 
 
 def _u(dim: Dim, factor: Number = 1) -> Unit:
+    """Build a :class:`Unit` from a raw dimension tuple and prefactor.
+
+    Internal convenience used by the parser and the default unit-table
+    setup; promotes scalar slots to :class:`Exponent` so static typing
+    sees a uniform tuple (``Unit.__post_init__`` would coerce at
+    runtime regardless).
+
+    Args:
+        dim: Seven-tuple of dimension exponents.
+        factor: Prefactor scale. Defaults to ``1``.
+
+    Returns:
+        The constructed :class:`Unit`.
+    """
     # Promote any scalar slots to Exponent so the type matches Unit.dimension
     # (Unit.__post_init__ would coerce at runtime regardless).
     promoted = tuple(
@@ -548,18 +815,20 @@ def _u(dim: Dim, factor: Number = 1) -> Unit:
 def _logwrap_inner_pow(
     inner: UnitExpr, k: Number | Exponent,
 ) -> UnitExpr | None:
-    """Compute ``inner ^ k`` for use under LogWrap (R5.4 inner side).
+    """Compute ``inner ^ k`` for use under a :class:`LogWrap` (R5.4 inner side).
 
-    ``k`` may be a plain ``Number`` (literal rational) or a symbolic
-    ``Exponent`` (linear form over named dim'less generators). The
-    underlying ``Unit.pow`` accepts both since the
-    ``symbolic-exponents`` Step 2. If the multiplication would be
-    non-linear (e.g. symbolic ``k`` applied to a Unit that already has
-    symbolic dimensions), ``Unit.pow`` raises ``UnitError`` and we
-    return None — caller falls back to D1.4.
+    Args:
+        inner: Inner unit expression. Only :class:`Unit` is handled;
+            nested-wrapper inners return ``None``.
+        k: Exponent — plain :class:`Number` (literal rational) or a
+            symbolic :class:`Exponent` (linear form over named
+            dimensionless generators).
 
-    Only defined when ``inner`` is ``Unit``; nested-wrapper inners
-    fall through to the caller as ``None``.
+    Returns:
+        The exponentiated unit, or ``None`` if ``inner`` is not a
+        :class:`Unit` or if :meth:`Unit.pow` raised :class:`UnitError`
+        (e.g. non-linear multiplication of symbolic exponents). The
+        caller falls back to ``D1.4`` in the latter case.
     """
     if not isinstance(inner, Unit):
         return None
@@ -570,15 +839,26 @@ def _logwrap_inner_pow(
 
 
 def _result_offset(op: str, oa: Fraction, ob: Fraction) -> Fraction:
-    """Offset of ``a <op> b`` per the affine algebra (docs/design/scale.md
-    §3.3). Pure propagation — *validity* (e.g. point+point) is flagged
-    separately at the emission site, so the value returned for an
-    ill-defined combination is a harmless placeholder.
+    """Compute the result offset for ``a <op> b`` under the affine algebra.
 
-    - ``+``: point+vector → the point's offset; ordinary → 0.
-    - ``-``: point−vector → the point's offset; point−point (equal) →
-      0 (a difference); else 0.
-    - ``*``/``/``/``**``: handled by the operators (result offset 0).
+    Pure propagation — *validity* (e.g. point+point) is flagged
+    separately at the emission site, so the value returned for an
+    ill-defined combination is a harmless placeholder. See
+    ``docs/design/scale.md`` §3.3.
+
+    Args:
+        op: Binary operator — ``"+"``, ``"-"``, ``"*"``, ``"/"``.
+        oa: ``a``'s offset.
+        ob: ``b``'s offset.
+
+    Returns:
+        The result offset:
+
+        - ``"+"``: point+vector → the point's offset; ordinary → ``0``.
+        - ``"-"``: point−vector → the point's offset; point−point
+          (equal) → ``0`` (a difference); else ``0``.
+        - ``"*"`` / ``"/"`` / ``"**"``: handled by the operators
+          (result offset ``0``).
     """
     if op == "+":
         if ob == 0:
@@ -602,25 +882,40 @@ def combine(
     a_literal: Number | Exponent | None = None,
     b_literal: Number | Exponent | None = None,
 ) -> tuple[UnitExpr | None, str | None]:
-    """Apply binary op ``a <op> b`` at the unit level.
+    """Apply binary op ``a <op> b`` at the unit-algebra level.
 
-    ``op`` is one of ``'+', '-', '*', '/'``. ``*_literal`` carries the
-    operand's resolved literal value when the corresponding source-AST
-    operand is a pure numeric literal, a PARAMETER reference, or a
-    symbolic linear ``Exponent`` (used by R5.4 to apply the log-power
-    identity ``γ · LOG(u) = LOG(u^γ)``).
+    Single dispatch entry point for §4–§7 of the spec, so the checker
+    doesn't have to keep the rules in sync across two recursive walks.
 
-    Returns ``(result_unit_or_None, diag_code_or_None)``. A non-None
-    diag_code with a None result means the op is undefined (rule error);
-    a non-None result with no diag_code is success.
+    Args:
+        op: Operator string — one of ``"+"``, ``"-"``, ``"*"``, ``"/"``.
+        a: Left-hand unit expression.
+        b: Right-hand unit expression.
+        a_literal: Resolved literal value of ``a``'s source operand when
+            it is a pure numeric literal, a PARAMETER reference, or a
+            symbolic linear :class:`Exponent` (used by R5.4 to apply
+            the log-power identity ``γ · LOG(u) = LOG(u^γ)``); else
+            ``None``.
+        b_literal: As ``a_literal``, for the right-hand operand.
+
+    Returns:
+        ``(result_unit_or_None, diag_code_or_None)``. A non-``None``
+        diagnostic code with a ``None`` result means the op is
+        undefined (rule error); a non-``None`` result with no diag
+        code is success. Diagnostic codes are bare strings —
+        ``"D1.1"`` / ``"D1.2"`` / ``"D1.3"`` / ``"D1.4"`` / ``"D1.5"``;
+        the caller maps each to a concrete :class:`Diagnostic` with
+        AST position.
     """
     from dimfort.core.trace import trace_step
 
     def _ok(rule_id: str, result: UnitExpr) -> tuple[UnitExpr, None]:
+        """Record a successful rule fire and return ``(result, None)``."""
         trace_step(rule_id, (a, b), result)
         return result, None
 
     def _err(rule_id: str, diag: str) -> tuple[None, str]:
+        """Record a failed rule fire and return ``(None, diag_code)``."""
         trace_step(rule_id, (a, b), None)
         return None, diag
     # ---- Regular × Regular (§4) ----
@@ -819,39 +1114,41 @@ def power(
     gates:
 
     1. **Exponent type-check (D1.7)** — an exponent must be
-       dimensionless. ``base ^ Rn``, ``base ^ Ln``, ``base ^ En``
-       all error with D1.7 regardless of ``base``. The mathematical
+       dimensionless. ``base ^ Rn``, ``base ^ Ln``, ``base ^ En`` all
+       error with ``D1.7`` regardless of ``base``. The mathematical
        reading via ``a^b = exp(b·log(a))`` would give a typed
-       ExpWrap result, but in practice ``2.0 ** speed`` style
-       expressions are virtually always bugs; the gate surfaces
-       them at the power site. (D1.7 defaults to a WARNING, so
-       projects that genuinely live in exp-tagged space can opt
-       out or be tolerated by default.)
+       :class:`ExpWrap` result, but in practice ``2.0 ** speed``-style
+       expressions are virtually always bugs; the gate surfaces them
+       at the power site. (``D1.7`` defaults to a warning, so projects
+       that genuinely live in exp-tagged space can opt out or be
+       tolerated by default.)
+    2. **Base-specific value gate** — once the exponent is known to be
+       dimensionless, the base determines whether the value matters:
 
-    2. **Base-specific value gate** — once the exponent is known
-       to be dim'less, the base determines whether the value
-       matters:
+       - ``Rd`` (dimensionless): result is always ``Rd``. ``0·k = 0``
+         for any ``k`` — literal, non-literal, integer, irrational.
+       - ``Rn``: result is ``Rn(k·t)`` if the exponent value is a
+         known literal rational; ``D1.4`` if not (classic Exner
+         ``p^kappa`` pattern needing OQ4 to resolve precisely).
+       - ``Ln``: result is ``Ln`` only for the trivial identity
+         ``k = 1`` (R5.9); otherwise ``D1.2``.
+       - ``En``: ``ExpWrap(k·U)`` if ``k`` is known literal (R6.4);
+         ``D1.4`` if not.
 
-         - ``Rd`` (dim'less): result is always ``Rd``. ``0·k = 0``
-           for any ``k`` — literal, non-literal, integer, irrational.
-           This refinement to R4.3's (Rd, non-literal-k) cell closes
-           a class of false positives observed in real-world corpora.
-         - ``Rn``: result is ``Rn(k·t)`` if the exponent value is
-           a known literal rational; ``D1.4`` if not (classic Exner
-           ``p^kappa`` pattern needing OQ4 to resolve precisely).
-         - ``Ln``: result is ``Ln`` only for the trivial identity
-           ``k = 1`` (R5.9); otherwise ``D1.2``.
-         - ``En``: ``ExpWrap(k·U)`` if ``k`` is known literal
-           (R6.4); ``D1.4`` if not.
+    Args:
+        base: Resolved unit of the base expression.
+        exponent_unit: Resolved unit of the exponent expression, or
+            ``None`` if the checker couldn't determine it — usually
+            because the variable lacks an annotation. U005 surfaces
+            that underlying issue, so ``D1.7`` is **not** fired on
+            unknown-unit exponents.
+        exponent_value: Literal rational (or symbolic
+            :class:`Exponent`) extracted at the AST level, or ``None``
+            for non-literal expressions.
 
-    ``exponent_unit`` is the resolved unit of the exponent expression
-    (or ``None`` if the checker couldn't determine it — usually
-    because the variable lacks an annotation; U005 surfaces that
-    underlying issue, so we do NOT fire D1.7 on unknown-unit
-    exponents).
-
-    ``exponent_value`` is the literal rational extracted at the
-    AST level, or ``None`` for non-literal expressions.
+    Returns:
+        ``(result_unit_or_None, diag_code_or_None)`` — same shape as
+        :func:`combine`.
     """
     from dimfort.core.trace import trace_step
 
@@ -917,6 +1214,23 @@ def power(
 
 @dataclass(frozen=True)
 class UnitTable:
+    """Resolved unit table — the parser's lookup source.
+
+    Populated at import time from ``default_units.toml`` plus any
+    project overrides; see :mod:`dimfort.core.unit_config`.
+
+    Attributes:
+        base: Mapping from canonical base-unit symbol to its
+            :class:`Unit`.
+        derived: Mapping from canonical derived-unit symbol to its
+            :class:`Unit` (combinations of base units, possibly with
+            non-unit ``factor`` / ``offset``).
+        prefixable: Set of unit names that allow SI-prefix expansion
+            (``kg``, ``s``, …).
+        prefixes: Mapping from prefix string (``"k"``, ``"m"``, …) to
+            its multiplicative :class:`Fraction`.
+    """
+
     base: dict[str, Unit]
     derived: dict[str, Unit]
     prefixable: frozenset[str]   # names that allow prefix expansion
@@ -929,6 +1243,22 @@ DEFAULT_TABLE: UnitTable | None = None
 
 
 def _resolve_identifier(name: str, table: UnitTable) -> Unit:
+    """Resolve a unit identifier against a :class:`UnitTable`.
+
+    Tries direct base / derived lookup first, then falls back to
+    prefix expansion for any ``prefixable`` base or derived name.
+
+    Args:
+        name: Unit identifier as it appeared in the source.
+        table: Active unit table.
+
+    Returns:
+        The resolved :class:`Unit`.
+
+    Raises:
+        UnknownUnitError: If ``name`` is not in the table and no
+            prefix expansion succeeds.
+    """
     if name in table.base:
         return table.base[name]
     if name in table.derived:
@@ -957,6 +1287,23 @@ _TOKEN_RE = re.compile(
 
 
 def _tokenize(expr: str) -> list[tuple[str, str]]:
+    """Tokenize a unit expression.
+
+    The lexer recognises type-variables (``'a``), identifiers, integer
+    literals, the Fortran-style ``**`` power operator (normalised to
+    ``^``), and the single-character operators ``*/^()-``. Whitespace
+    is skipped. The token stream is terminated by an ``("END", "")``
+    sentinel.
+
+    Args:
+        expr: Source expression text.
+
+    Returns:
+        List of ``(kind, lexeme)`` pairs.
+
+    Raises:
+        UnitError: On any character outside the recognised classes.
+    """
     tokens: list[tuple[str, str]] = []
     for m in _TOKEN_RE.finditer(expr):
         if m.group("TYVAR") is not None:
@@ -983,26 +1330,79 @@ def _tokenize(expr: str) -> list[tuple[str, str]]:
 
 
 class _Parser:
+    """Recursive-descent parser for ``@unit{}`` expressions.
+
+    Grammar: ``unit = term ((*|/) term)*``;
+    ``term = factor (^ exp)?``;
+    ``factor = ident | (unit) | 1``;
+    ``exp = int | (int/int) | -exp``.
+
+    ``/`` is left-associative, same precedence as ``*``. When a ``/``
+    is followed at the same paren depth by another ``*`` or ``/``,
+    :class:`UnitAmbiguityWarning` is emitted.
+    """
+
     def __init__(self, tokens: list[tuple[str, str]], table: UnitTable):
+        """Initialise the parser.
+
+        Args:
+            tokens: Token stream produced by :func:`_tokenize`.
+            table: Active :class:`UnitTable` for identifier resolution.
+        """
         self.tokens = tokens
         self.i = 0
         self.table = table
 
     def peek(self) -> tuple[str, str]:
+        """Return the next token without consuming it.
+
+        Returns:
+            The ``(kind, lexeme)`` pair at the current cursor.
+        """
         return self.tokens[self.i]
 
     def consume(self) -> tuple[str, str]:
+        """Consume and return the next token, advancing the cursor.
+
+        Returns:
+            The ``(kind, lexeme)`` pair that was at the cursor.
+        """
         tok = self.tokens[self.i]
         self.i += 1
         return tok
 
     def expect(self, kind: str, value: str | None = None) -> tuple[str, str]:
+        """Consume the next token, asserting its kind (and optionally lexeme).
+
+        Args:
+            kind: Expected token kind.
+            value: Optional expected lexeme.
+
+        Returns:
+            The consumed token.
+
+        Raises:
+            UnitError: If the next token does not match.
+        """
         tok = self.peek()
         if tok[0] != kind or (value is not None and tok[1] != value):
             raise UnitError(f"expected {kind} {value!r}, got {tok}")
         return self.consume()
 
     def parse_unit(self) -> UnitExpr:
+        """Parse the top-level ``unit`` production.
+
+        Returns:
+            The parsed :class:`UnitExpr`. The result is a :class:`Unit`
+            unless a ``LOG(...)`` / ``EXP(...)`` wrapper is the entire
+            expression (arithmetic between wrapped units is not
+            supported in annotation syntax).
+
+        Raises:
+            UnitError: On ill-formed input — including ``*`` / ``/``
+                applied between :class:`LogWrap` / :class:`ExpWrap`
+                operands.
+        """
         left = self.parse_term()
         slash_seen = False
         while self.peek() == ("OP", "*") or self.peek() == ("OP", "/"):
@@ -1026,6 +1426,15 @@ class _Parser:
         return left
 
     def parse_term(self) -> UnitExpr:
+        """Parse a ``term`` (factor with optional ``^`` exponent).
+
+        Returns:
+            The parsed :class:`UnitExpr`.
+
+        Raises:
+            UnitError: If a power is applied to a wrapped unit (not
+                expressible in annotation syntax).
+        """
         f = self.parse_factor()
         if self.peek() == ("OP", "^"):
             self.consume()
@@ -1039,6 +1448,18 @@ class _Parser:
         return f
 
     def parse_factor(self) -> UnitExpr:
+        """Parse a ``factor`` (identifier, ``(unit)``, ``1``, or tyvar).
+
+        ``LOG(...)`` / ``EXP(...)`` wrappers shadow any same-named unit
+        identifier (case-insensitive per A2).
+
+        Returns:
+            The parsed :class:`UnitExpr`.
+
+        Raises:
+            UnitError: On any other integer literal than ``1`` or any
+                unexpected token.
+        """
         tok = self.peek()
         if tok == ("OP", "("):
             self.consume()
@@ -1075,6 +1496,14 @@ class _Parser:
         raise UnitError(f"expected unit factor, got {tok}")
 
     def parse_exp(self) -> Number:
+        """Parse an exponent: ``int``, ``(int/int)``, or unary minus.
+
+        Returns:
+            The parsed exponent as an ``int`` or :class:`Fraction`.
+
+        Raises:
+            UnitError: On any other token shape.
+        """
         tok = self.peek()
         if tok == ("OP", "-"):
             self.consume()
@@ -1094,8 +1523,18 @@ class _Parser:
 def base_symbols(table: UnitTable | None = None) -> tuple[str, ...]:
     """Return the base-unit symbols in dimension-slot order.
 
-    Falls back to the SI slot name (``M``, ``L``, …) for any slot the
-    active table doesn't cover.
+    Args:
+        table: Active :class:`UnitTable`. ``None`` (the default) uses
+            :data:`DEFAULT_TABLE`.
+
+    Returns:
+        Seven-tuple of unit symbols. Falls back to the SI slot name
+        (``M``, ``L``, …) for any slot the active table doesn't cover.
+
+    Raises:
+        RuntimeError: If ``table`` is ``None`` and :data:`DEFAULT_TABLE`
+            has not been initialised (i.e. :mod:`dimfort.core.unit_config`
+            has not been imported).
     """
     if table is None:
         if DEFAULT_TABLE is None:
@@ -1118,6 +1557,16 @@ _SUPERSCRIPTS = {
 
 
 def _to_super(s: str) -> str:
+    """Translate digits and ``-`` in ``s`` to Unicode superscript glyphs.
+
+    Args:
+        s: ASCII digit / sign string (e.g. ``"-2"``).
+
+    Returns:
+        The same string with each character mapped through
+        :data:`_SUPERSCRIPTS`; characters outside the table pass
+        through unchanged.
+    """
     return "".join(_SUPERSCRIPTS.get(c, c) for c in s)
 
 
@@ -1135,21 +1584,29 @@ def format_unit(
     ``factor`` (when shown) is joined to the body by ``×`` so the
     separator distinguishes a scale factor from another base unit.
     Negative exponents render as signed superscripts (``K⁻¹``,
-    ``kg·m·s⁻²``) rather than a ``/`` denominator.
-    Rational exponents fall back to ``^(p/q)`` since superscript fractions
-    look messy. ``LogWrap`` / ``ExpWrap`` print as ``LOG(...)`` /
+    ``kg·m·s⁻²``) rather than a ``/`` denominator. Rational exponents
+    fall back to ``^(p/q)`` since superscript fractions look messy.
+    :class:`LogWrap` / :class:`ExpWrap` print as ``LOG(...)`` /
     ``EXP(...)`` per spec §9.
 
-    An **affine** unit (``offset != 0``, e.g. ``degC``) appends its
-    zero-point shift — ``degC`` → ``K + 273.15`` — so it is distinguishable
-    from its base (``K``). This is shown whenever the offset is non-zero,
-    *independent* of ``show_factor``: the offset is the only thing that
-    tells ``degC`` from ``K``, so a message like "cast … to K" would
-    otherwise hide the very distinction it is reporting. Offset-0 units
-    (everything non-affine) are byte-identical to before. ``show_offset``
-    can be turned off where the rendering must be valid ``@unit{}`` syntax
-    (e.g. a copy-pasteable PARAMETER suggestion), since ``K + 273.15`` is a
-    description, not a parseable unit.
+    Args:
+        u: The unit expression to render.
+        show_factor: If ``True``, prepend the rational :class:`Fraction`
+            ``factor`` (e.g. ``1000×kg``) when not ``1``. Defaults to
+            ``False``.
+        show_offset: If ``True`` (the default), append the affine
+            zero-point shift for absolute units — ``degC`` reads
+            ``K + 273.15`` rather than an indistinguishable ``K``. This
+            renders independently of ``show_factor``. Turn off where the
+            output must be valid ``@unit{}`` syntax (e.g. a
+            copy-pasteable PARAMETER suggestion), since ``K + 273.15``
+            is a description, not a parseable unit.
+        table: Active :class:`UnitTable`. ``None`` uses
+            :data:`DEFAULT_TABLE`.
+
+    Returns:
+        The rendered string. Offset-zero units (every non-affine unit)
+        are byte-identical to the pre-affine rendering.
     """
     if isinstance(u, LogWrap):
         inner = format_unit(
@@ -1219,14 +1676,22 @@ def format_unit_source(u: UnitExpr, *, table: UnitTable | None = None) -> str:
     """Serialize ``u`` as a parseable ``@unit{}`` string.
 
     :func:`format_unit` is for *display* — Unicode superscripts, ``·``
-    products, signed-exponent powers (``kg·m·s⁻²``) — and its output does
-    **not** round-trip through :func:`parse`. This function emits the ASCII
-    DSL the parser accepts (``*`` products, ``^`` powers, a ``/``
-    denominator: ``kg*m/s^2``) so the result can be written back into source
-    as a ``@unit{...}`` annotation (e.g. the H010 extract-to-PARAMETER
-    quick-fix). The affine ``offset`` is dropped — an absolute unit's
-    zero-point shift is not expressible in annotation syntax — so ``degC``
-    serializes to ``K``.
+    products, signed-exponent powers (``kg·m·s⁻²``) — and its output
+    does **not** round-trip through :func:`parse`. This function emits
+    the ASCII DSL the parser accepts (``*`` products, ``^`` powers, a
+    ``/`` denominator: ``kg*m/s^2``) so the result can be written back
+    into source as a ``@unit{...}`` annotation (e.g. the H010
+    extract-to-PARAMETER quick-fix). The affine ``offset`` is dropped
+    — an absolute unit's zero-point shift is not expressible in
+    annotation syntax — so ``degC`` serializes to ``K``.
+
+    Args:
+        u: The unit expression to serialize.
+        table: Active :class:`UnitTable`. ``None`` uses
+            :data:`DEFAULT_TABLE`.
+
+    Returns:
+        ASCII unit-expression source compatible with :func:`parse`.
     """
     if isinstance(u, LogWrap):
         return f"LOG({format_unit_source(u.inner, table=table)})"
@@ -1275,6 +1740,23 @@ def format_unit_source(u: UnitExpr, *, table: UnitTable | None = None) -> str:
 
 
 def parse(expr: str, table: UnitTable | None = None) -> UnitExpr:
+    """Parse a unit-expression string against a :class:`UnitTable`.
+
+    Args:
+        expr: Source expression text (the body of an ``@unit{...}``
+            annotation, or an equivalent inline string).
+        table: Active :class:`UnitTable`. ``None`` (the default) uses
+            :data:`DEFAULT_TABLE`.
+
+    Returns:
+        The parsed :class:`UnitExpr`.
+
+    Raises:
+        UnitError: On any lex / parse failure or trailing input.
+        UnknownUnitError: If an identifier is not in the table.
+        RuntimeError: If ``table`` is ``None`` and :data:`DEFAULT_TABLE`
+            has not been initialised.
+    """
     if table is None:
         if DEFAULT_TABLE is None:
             raise RuntimeError("DEFAULT_TABLE not initialised — import dimfort.core.unit_config")
@@ -1288,14 +1770,21 @@ def parse(expr: str, table: UnitTable | None = None) -> UnitExpr:
 
 
 def equal_dim(a: UnitExpr, b: UnitExpr) -> bool:
-    """Structural dimension-equality on the ``UnitExpr`` tree.
+    """Structural dimension-equality on the :class:`UnitExpr` tree.
 
-    Two ``Unit`` leaves compare on their 7-tuples *and* on their tyvar
-    maps (factor / offset ignored). A free type variable is part of the
-    Unit's dimension under the AG-extension, so ``'a`` and ``'b`` are
-    NOT dim-equal even if both have zero SI slots.
-    Two ``LogWrap`` (or two ``ExpWrap``) compare by recursing into
-    ``inner``. A wrapper is never dim-equal to a leaf.
+    Two :class:`Unit` leaves compare on their 7-tuples *and* on their
+    tyvar maps (``factor`` / ``offset`` ignored). A free type variable
+    is part of the Unit's dimension under the AG-extension, so ``'a``
+    and ``'b`` are **not** dim-equal even if both have zero SI slots.
+    Two :class:`LogWrap` (or two :class:`ExpWrap`) compare by
+    recursing into ``inner``. A wrapper is never dim-equal to a leaf.
+
+    Args:
+        a: Left operand.
+        b: Right operand.
+
+    Returns:
+        ``True`` iff ``a`` and ``b`` have the same dimension.
     """
     if isinstance(a, Unit) and isinstance(b, Unit):
         return tuple(a.dimension) == tuple(b.dimension) and a.tyvars == b.tyvars
@@ -1307,13 +1796,25 @@ def equal_dim(a: UnitExpr, b: UnitExpr) -> bool:
 
 
 def equal_strict(a: UnitExpr, b: UnitExpr) -> bool:
-    """Like :func:`equal_dim` but ``Unit`` leaves also compare factors
-    and offsets — equivalent to ``Unit.__eq__`` on the leaves. Previously
-    omitted offset, which let ``equal_strict(degC, K)`` return True even
-    though ``degC == K`` returns False; that broke the invariant the
+    """Compare ``a`` and ``b`` including ``factor`` and ``offset``.
+
+    Like :func:`equal_dim` but :class:`Unit` leaves also compare
+    ``factor`` and ``offset`` — equivalent to ``Unit.__eq__`` on the
+    leaves. Previously omitted offset, which let
+    ``equal_strict(degC, K)`` return ``True`` even though
+    ``degC == K`` returned ``False``; that broke the invariant the
     rest of the codebase relies on (two Units that compare equal under
-    ``Unit.__eq__`` must compare equal under ``equal_strict`` and vice
-    versa)."""
+    ``Unit.__eq__`` must compare equal under :func:`equal_strict` and
+    vice versa).
+
+    Args:
+        a: Left operand.
+        b: Right operand.
+
+    Returns:
+        ``True`` iff ``a`` and ``b`` are equal under the strict
+        (dimension + factor + offset) comparison.
+    """
     if isinstance(a, Unit) and isinstance(b, Unit):
         return (
             equal_dim(a, b)
@@ -1331,23 +1832,28 @@ def equal_strict(a: UnitExpr, b: UnitExpr) -> bool:
 class Verdict:
     """Structured result of comparing two unit expressions (scale layer).
 
-    ``kind`` is one of:
-
-    - ``"equal"`` — same dimension, ``factor``, and ``offset``.
-    - ``"dim_mismatch"`` — base dimensions differ (today's H001/H002 case).
-    - ``"scale_mismatch"`` — same dimension, different ``factor``;
-      ``ratio = a.factor / b.factor`` is the magnitude discrepancy (S001).
-    - ``"offset_mismatch"`` — same dimension and ``factor``, different
-      ``offset`` (e.g. ``K`` vs ``degC``); ``delta = a.offset - b.offset``
-      (S002, path 1). NOTE: ``compare`` only sees offset *mismatches*; the
-      affine *operation-validity* failures (``degC + degC`` etc., where
-      offsets are equal) are flagged in ``combine``/``power``, not here —
-      see docs/design/scale.md §4–§5.
-
     Representation-only: it reports *what* differs, never *how severe*.
-    The ``scale_mode`` gate and per-code severity live at the call sites,
-    not here — so soft-units can later remap severity without touching
-    this function. See ``docs/design/scale.md``.
+    The ``scale_mode`` gate and per-code severity live at the call
+    sites, not here — so soft-units can later remap severity without
+    touching this function. See ``docs/design/scale.md``.
+
+    Attributes:
+        kind: One of ``"equal"`` (same dimension, ``factor``, and
+            ``offset``), ``"dim_mismatch"`` (base dimensions differ —
+            today's H001 / H002 case), ``"scale_mismatch"`` (same
+            dimension, different ``factor`` — S001), or
+            ``"offset_mismatch"`` (same dimension and ``factor``,
+            different ``offset`` — e.g. ``K`` vs ``degC``, S002 path 1).
+        ratio: For ``"scale_mismatch"``, ``a.factor / b.factor`` —
+            the magnitude discrepancy. ``None`` otherwise.
+        delta: For ``"offset_mismatch"``, ``a.offset - b.offset``.
+            ``None`` otherwise.
+
+    Note:
+        :func:`compare` only sees offset *mismatches*; affine
+        *operation-validity* failures (``degC + degC`` etc., where
+        offsets are equal) are flagged in :func:`combine` /
+        :func:`power`, not here — see ``docs/design/scale.md`` §4–§5.
     """
 
     kind: str
@@ -1358,14 +1864,24 @@ class Verdict:
 def compare(a: UnitExpr, b: UnitExpr) -> Verdict:
     """Compare two unit expressions, returning a structured verdict.
 
-    Dimension first, then multiplicative scale (``factor``). Wrappers
-    recurse into ``inner`` exactly as :func:`equal_dim`; a wrapper is
-    never comparable to a leaf (→ ``dim_mismatch``).
+    Dimension first, then multiplicative scale (``factor``), then
+    affine ``offset``. Wrappers recurse into ``inner`` exactly as
+    :func:`equal_dim`; a wrapper is never comparable to a leaf (→
+    ``dim_mismatch``).
 
-    Note ``factor`` is checked **even when the dimension is** ``{1}`` —
-    that is what lets ``g/kg`` (factor 1/1000) vs ``kg/kg`` (factor 1) be
-    caught. ``equal_dim`` / ``equal_strict`` are left as-is; this is added
-    alongside them as the scale layer's single source of truth.
+    Args:
+        a: Left operand.
+        b: Right operand.
+
+    Returns:
+        A :class:`Verdict` describing the relationship.
+
+    Note:
+        ``factor`` is checked **even when the dimension is** ``{1}`` —
+        that is what lets ``g/kg`` (factor 1/1000) vs ``kg/kg``
+        (factor 1) be caught. :func:`equal_dim` / :func:`equal_strict`
+        are left as-is; this function is the scale layer's single
+        source of truth.
     """
     if isinstance(a, Unit) and isinstance(b, Unit):
         if tuple(a.dimension) != tuple(b.dimension) or a.tyvars != b.tyvars:

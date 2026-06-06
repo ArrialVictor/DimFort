@@ -26,6 +26,15 @@ from dimfort.core.units import UnitExpr
 
 @dataclass(frozen=True)
 class CodeSpec:
+    """Canonical metadata for one DimFort diagnostic code.
+
+    Attributes:
+        code: Stable identifier (e.g. ``"H001"``, ``"U005"``, ``"X001"``).
+        severity: Default severity attached to emissions of this code.
+        description: Short one-line description used by the CLI summary
+            and the LSP rendering layer.
+    """
+
     code: str
     severity: Severity
     description: str
@@ -78,15 +87,20 @@ CODES: dict[str, CodeSpec] = {
 class FuncSig:
     """A user-defined function or subroutine's unit interface.
 
-    ``arg_names[i]`` and ``arg_units[i]`` describe the i-th formal
-    argument; ``arg_units[i]`` is ``None`` when that argument has no
-    unit annotation (the checker then doesn't constrain the actual).
-    ``return_unit`` is ``None`` for subroutines and for functions whose
-    return variable carries no annotation.
+    Consumed by :func:`interactions._classify` and :func:`resolve_unit`
+    to skip user-function calls during identifier classification.
 
-    ``is_subroutine`` is ``True`` for subroutines. Consumed by
-    :func:`interactions._classify` and :func:`resolve_unit` to skip
-    user-function calls during identifier classification.
+    Attributes:
+        arg_names: Formal-argument names in declaration order.
+        arg_units: Per-argument unit; ``None`` for any argument that
+            has no annotation (the checker then doesn't constrain the
+            actual). Units may be wrapped (LOG/EXP), e.g. a function
+            annotated ``@unit{LOG(Pa)}`` — hence ``UnitExpr``, not just
+            ``Unit``.
+        return_unit: Unit of the function's return variable. ``None``
+            for subroutines and for functions whose return variable
+            carries no annotation.
+        is_subroutine: ``True`` for subroutines, ``False`` for functions.
     """
 
     arg_names: tuple[str, ...]
@@ -157,26 +171,34 @@ REDUCTION_INTRINSICS: frozenset[str] = frozenset({
 
 @dataclass(frozen=True)
 class ModuleExports:
-    """Public surface of one Fortran module, ready to splice into a
-    consumer file's local scope via a ``use`` clause.
+    """Public surface of one Fortran module, ready to splice into a consumer file.
 
-    ``var_units`` lists only annotated variables. ``all_var_names``
-    records every module-level variable declaration so the LSP can
-    surface "this module declares X but it has no @unit{}" in hover
-    summaries without re-walking the tree.
+    The consumer file imports symbols by listing this module on a
+    ``use`` clause; :func:`apply_use_clauses` performs the splice.
 
-    ``inner_uses`` are the ``use`` clauses *inside* the module body —
-    needed to compute the transitive re-export closure for the panel's
-    Imports section (see :func:`compute_transitive_exports`). Typed as
-    ``tuple[Any, ...]`` to avoid an import cycle with
-    ``workspace_index.UseRef``; each element duck-types to that shape
-    (``.module``, ``.only``, ``.renames``).
-
-    Visibility (Fortran's PUBLIC / PRIVATE access control):
-    ``default_private`` is ``True`` when the module body carries a bare
-    ``private`` statement (default flips to private). ``public_names``
-    and ``private_names`` are the lower-cased symbols named in
-    per-symbol ``public :: …`` / ``private :: …`` overrides.
+    Attributes:
+        name: Module name as declared in source (case preserved).
+        var_units: Annotated module-level variables, keyed by name,
+            value is the parsed :class:`UnitExpr`. Excludes unannotated
+            declarations (those still appear in ``all_var_names``).
+        signatures: Public user-defined function/subroutine signatures,
+            keyed by lower-cased name.
+        all_var_names: Every module-level variable declaration in
+            source order, used by the LSP to surface "this module
+            declares X but it has no ``@unit{}``" in hover summaries
+            without re-walking the tree.
+        inner_uses: ``use`` clauses *inside* the module body, needed
+            for the transitive re-export closure (see
+            :func:`compute_transitive_exports`). Typed as
+            ``tuple[Any, ...]`` to avoid an import cycle with
+            ``workspace_index.UseRef``; each element duck-types to
+            that shape (``.module``, ``.only``, ``.renames``).
+        default_private: ``True`` when the module body carries a bare
+            ``private`` statement (default visibility flips to private).
+        public_names: Lower-cased symbols named in per-symbol
+            ``public :: …`` overrides.
+        private_names: Lower-cased symbols named in per-symbol
+            ``private :: …`` overrides.
     """
 
     name: str
@@ -214,6 +236,21 @@ def deps_consumed_from_uses(
     Only ``external_modules`` are excluded: they live outside the
     workspace by definition and never resolve into it, so their state
     can't change a file's diagnostics.
+
+    Args:
+        uses: Tuple of ``use``-clause records from the file, each
+            exposing a ``.module`` attribute.
+        unresolved: Names of modules the workspace failed to resolve.
+            Currently unused by the body but accepted to keep the
+            caller signature stable; the inclusion policy treats every
+            non-external ``use`` target as a dependency.
+        external_modules: Lower-cased names of modules that live
+            outside the workspace (intrinsic modules, vendor libraries)
+            and must be excluded from the cache-dep set.
+
+    Returns:
+        The set of lower-cased module names the file depends on for
+        cache-invalidation purposes.
     """
     return frozenset(
         use.module.lower() for use in uses
@@ -230,17 +267,30 @@ def apply_use_clauses(
 ) -> tuple[dict[str, UnitExpr], dict[str, FuncSig], frozenset[str]]:
     """Merge imported symbols into a file's scope.
 
-    ``uses`` is the tuple of :class:`workspace_index.UseRef` produced
-    by ``extract_uses``. Local declarations always win over imports
-    (no shadow warning at this phase). Returns the merged
-    ``(var_units, signatures)`` tables plus the set of module names
-    referenced by ``use`` that we couldn't resolve — the caller can
-    surface those as U007.
+    Local declarations always win over imports (no shadow warning at
+    this phase).
 
-    ``external_modules`` is the allowlist of module names that live
-    outside the workspace (intrinsic modules like ``iso_fortran_env``,
-    libraries like ``netcdf``). Names in this set are silently
-    skipped — no symbols are imported and no U007 is emitted.
+    Args:
+        uses: Tuple of :class:`workspace_index.UseRef` produced by
+            ``extract_uses``.
+        module_exports: Workspace-wide table of resolved module
+            exports, keyed by lower-cased module name.
+        base_var_units: The file's local variable-to-unit table before
+            imports are spliced in. Treated as immutable input — a
+            fresh copy is mutated and returned.
+        base_signatures: The file's local function/subroutine
+            signature table, same contract as ``base_var_units``.
+        external_modules: Allowlist of module names that live outside
+            the workspace (intrinsic modules like ``iso_fortran_env``,
+            libraries like ``netcdf``). Names in this set are silently
+            skipped — no symbols are imported and no U007 is emitted.
+
+    Returns:
+        ``(var_units, signatures, unresolved)`` where ``var_units``
+        and ``signatures`` are the merged scope tables and
+        ``unresolved`` is the set of module names referenced by
+        ``use`` that the workspace could not resolve. The caller
+        surfaces ``unresolved`` as U007.
     """
     var_units = dict(base_var_units)
     signatures = dict(base_signatures)
@@ -310,16 +360,6 @@ def compute_transitive_exports(
 ]:
     """Resolve each module's transitive re-export surface.
 
-    Returns ``(vars_by_module, sigs_by_module)`` where:
-
-    - ``vars_by_module[mod_lc][name_lc]`` is ``(unit_or_None,
-      origin_module_lc)`` — the unit annotation (``None`` when the
-      original declaration carried no ``@unit{}``) and the module that
-      *originally* declared the symbol. A consumer of ``mod_lc`` sees
-      this map (filtered by their own ``only:`` / renames) as their
-      import surface.
-    - ``sigs_by_module[mod_lc][name_lc]`` is ``(FuncSig, origin_lc)``.
-
     Rules honoured (Fortran 2008 §11.2):
 
     1. **Default visibility is PUBLIC** — a module re-exports everything
@@ -332,9 +372,24 @@ def compute_transitive_exports(
        only their own locally-declared symbols on the back-edge (the
        forward edge fills in the rest on first visit).
 
-    Memoised: each module is resolved once. The work is O(modules ×
-    inner-uses × symbols-per-module), independent of the depth of the
+    Memoised: each module is resolved once. The work is O(modules x
+    inner-uses x symbols-per-module), independent of the depth of the
     use chain.
+
+    Args:
+        module_exports: Workspace-wide table of resolved module
+            exports, keyed by lower-cased module name.
+
+    Returns:
+        A pair ``(vars_by_module, sigs_by_module)`` where:
+
+        - ``vars_by_module[mod_lc][name_lc]`` is ``(unit_or_None,
+          origin_module_lc)`` — the unit annotation (``None`` when the
+          original declaration carried no ``@unit{}``) and the module
+          that *originally* declared the symbol. A consumer of
+          ``mod_lc`` sees this map (filtered by their own ``only:`` /
+          renames) as their import surface.
+        - ``sigs_by_module[mod_lc][name_lc]`` is ``(FuncSig, origin_lc)``.
     """
     vars_out: dict[str, dict[str, tuple[UnitExpr | None, str]]] = {}
     sigs_out: dict[str, dict[str, tuple[FuncSig, str]]] = {}
@@ -344,6 +399,11 @@ def compute_transitive_exports(
         dict[str, tuple[UnitExpr | None, str]],
         dict[str, tuple[FuncSig, str]],
     ]:
+        """Resolve one module's re-export tables, memoising the result.
+
+        Returns empty maps on a cycle back-edge (the forward visit on
+        the cycle's entry module fills in the rest).
+        """
         if mod_lc in vars_out:
             return vars_out[mod_lc], sigs_out[mod_lc]
         if mod_lc in in_progress:
@@ -405,6 +465,7 @@ def compute_transitive_exports(
         default_private = exports.default_private
 
         def visible(name_lc: str) -> bool:
+            """Return ``True`` if ``name_lc`` is re-exported by this module."""
             if name_lc in priv:
                 return False
             if name_lc in pub:

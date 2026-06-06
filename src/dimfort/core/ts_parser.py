@@ -52,8 +52,12 @@ _PARSER: Parser | None = None
 def _parser() -> Parser:
     """Lazy-create and reuse a single Parser instance.
 
-    Tree-sitter Parser is cheap to create but holding one instance
+    Tree-sitter ``Parser`` is cheap to create, but holding one instance
     avoids re-loading the grammar shared object on every call.
+
+    Returns:
+        The module-level singleton ``Parser`` instance, created on first
+        call.
     """
     global _LANGUAGE, _PARSER
     if _PARSER is None:
@@ -66,17 +70,29 @@ def _parser() -> Parser:
 # Errors
 
 class TreeSitterError(Exception):
-    """Wraps a parse failure or CPP-shim failure."""
+    """Base class for parse and CPP-shim failures in this module."""
 
 
 class CppNotFoundError(TreeSitterError):
-    """The system ``cpp`` binary could not be located."""
+    """Raised when the system ``cpp`` binary cannot be located on ``PATH``."""
 
 
 class CppFailedError(TreeSitterError):
-    """``cpp`` exited non-zero. ``stderr`` carries its first line."""
+    """Raised when ``cpp`` exits non-zero.
+
+    Attributes:
+        stderr: First line of ``cpp``'s stderr stream, captured for
+            display in the diagnostic surface.
+    """
 
     def __init__(self, message: str, stderr: str):
+        """Initialise the error.
+
+        Args:
+            message: Human-readable summary (typically the failing file
+                name and the ``cpp`` return code).
+            stderr: First line of ``cpp``'s stderr output.
+        """
         super().__init__(message)
         self.stderr = stderr
 
@@ -85,21 +101,32 @@ class CppFailedError(TreeSitterError):
 # Plain parsing
 
 def parse_text(text: str | bytes) -> Tree:
-    """Parse Fortran source text. No preprocessing.
+    """Parse Fortran source text with no preprocessing.
 
-    Accepts ``str`` (UTF-8 encoded under the hood) or ``bytes``. Use
-    ``bytes`` when you already have raw file content — saves a copy.
+    Args:
+        text: Fortran source. ``str`` inputs are UTF-8 encoded under the
+            hood; pass ``bytes`` when raw file content is already in
+            hand to save a copy.
+
+    Returns:
+        The parsed tree-sitter ``Tree``.
     """
     src = text.encode("utf-8") if isinstance(text, str) else text
     return _parser().parse(src)
 
 
 def parse_file(path: str | Path) -> Tree:
-    """Parse a Fortran source file. No preprocessing.
+    """Parse a Fortran source file with no preprocessing.
 
     For ``.F90`` files containing CPP directives, prefer
     :func:`parse_with_cpp`. ``parse_file`` is appropriate for ``.f90``
     or for ``.F90`` known to be directive-free.
+
+    Args:
+        path: Filesystem path to the Fortran source file.
+
+    Returns:
+        The parsed tree-sitter ``Tree``.
     """
     return parse_text(Path(path).read_bytes())
 
@@ -109,15 +136,20 @@ def parse_file(path: str | Path) -> Tree:
 
 @dataclass(frozen=True)
 class PreprocessedSource:
-    """A parsed CPP-expanded source, plus a position remap.
+    """A parsed CPP-expanded source, plus an expanded-to-source line remap.
 
-    ``tree`` is the parsed expanded source. ``expanded_text`` is the
-    bytes fed to the parser. ``line_map`` maps a 1-based expanded line
-    number to the corresponding 1-based original-source line number.
+    Lines from ``#include``-injected content map to ``None`` in
+    ``line_map`` (callers should normally not encounter them since
+    DimFort doesn't analyse code from .h includes).
 
-    Lines from ``#include``-injected content map to ``None`` (callers
-    should normally not encounter them since DimFort doesn't analyse
-    code from .h includes).
+    Attributes:
+        tree: The parsed tree-sitter ``Tree`` over the expanded source.
+        expanded_text: Raw bytes fed to the parser, after stripping
+            ``cpp``'s line markers.
+        line_map: Indexed by ``expanded_line - 1`` (0-based); each entry
+            is the 1-based source line that produced the expanded line,
+            or ``None`` for lines synthesised from an ``#include``.
+        cpp_closure: Documented inline beside the field.
     """
     tree: Tree
     expanded_text: bytes
@@ -132,7 +164,16 @@ class PreprocessedSource:
     """
 
     def source_line(self, expanded_line_1based: int) -> int | None:
-        """Map an expanded 1-based line number back to source."""
+        """Map an expanded 1-based line number back to the source file.
+
+        Args:
+            expanded_line_1based: 1-based line number in the expanded
+                (post-cpp, marker-stripped) text.
+
+        Returns:
+            The corresponding 1-based source-file line, or ``None`` if
+            the line came from an ``#include`` or is out of range.
+        """
         idx = expanded_line_1based - 1
         if 0 <= idx < len(self.line_map):
             return self.line_map[idx]
@@ -140,6 +181,14 @@ class PreprocessedSource:
 
 
 def _find_cpp() -> str:
+    """Locate the system ``cpp`` binary.
+
+    Returns:
+        Absolute path to the ``cpp`` executable.
+
+    Raises:
+        CppNotFoundError: If ``cpp`` is not on ``PATH``.
+    """
     cpp = shutil.which("cpp")
     if cpp is None:
         raise CppNotFoundError("system 'cpp' not found in PATH")
@@ -147,11 +196,11 @@ def _find_cpp() -> str:
 
 
 def _build_line_map(expanded_with_markers: bytes, source_path: Path) -> tuple[int | None, ...]:
-    """Walk a ``cpp``-output stream (with line markers) and build a map.
+    """Walk a ``cpp``-output stream with line markers and build an expanded-to-source map.
 
     ``cpp`` emits ``# linenum "file"`` markers when called without
-    ``-P``. We use those to track which lines of the expanded output
-    correspond to which line of the original source. Lines from other
+    ``-P``. Those markers track which lines of the expanded output
+    correspond to which line of the original source; lines from other
     files (``#include`` expansions) map to ``None``.
 
     The marker syntax is::
@@ -161,6 +210,16 @@ def _build_line_map(expanded_with_markers: bytes, source_path: Path) -> tuple[in
     Per GCC docs, lines in the output between two markers come from
     the file the first marker names, starting at the line number the
     first marker gives.
+
+    Args:
+        expanded_with_markers: Raw ``cpp`` output including line markers.
+        source_path: Path to the original source file (used to recognise
+            target-file markers).
+
+    Returns:
+        Tuple indexed by expanded-line-minus-one; each entry is the
+        1-based source line, or ``None`` for lines that originated
+        outside ``source_path``.
     """
     target = str(source_path)
     target_realpath = str(source_path.resolve())
@@ -199,25 +258,41 @@ def parse_with_cpp(
     defines: Sequence[str] = (),
     include_paths: Sequence[str | Path] = (),
 ) -> PreprocessedSource:
-    """Preprocess a Fortran file with system ``cpp`` then parse it.
+    """Preprocess a Fortran file with system ``cpp``, then parse the expansion.
 
     On macOS ``cpp`` is a clang wrapper; ``-I`` must be passed as the
     joined form ``-IPATH``, not ``-I PATH`` (the wrapper mis-parses
-    the split form). We use the joined form unconditionally — it
-    works on every platform we care about.
+    the split form). The joined form is used unconditionally — it
+    works on every platform DimFort cares about.
 
     One ``cpp`` invocation, no ``-P``: that keeps the
-    ``# <linenum> "file"`` markers in the output so we can build the
-    expanded-line → source-line map accurately. We then strip the
-    marker lines ourselves to produce parser input, and the map is
-    constructed from the same stream so it stays in sync line-for-line
-    with what the parser actually sees.
+    ``# <linenum> "file"`` markers in the output so the expanded-line
+    to source-line map can be built accurately. The marker lines are
+    then stripped to produce parser input, and the map is constructed
+    from the same stream so it stays in sync line-for-line with what
+    the parser actually sees.
 
-    Earlier versions called cpp twice (once with ``-P``, once without)
-    and built the map from the with-markers stream. That produced a
-    line-count mismatch because ``-P`` also suppresses the blank
-    lines surrounding suppressed markers — diagnostics on cpp'd files
-    consistently appeared 1-2 lines above their real source position.
+    Earlier versions called ``cpp`` twice (once with ``-P``, once
+    without) and built the map from the with-markers stream. That
+    produced a line-count mismatch because ``-P`` also suppresses the
+    blank lines surrounding suppressed markers — diagnostics on cpp'd
+    files consistently appeared 1-2 lines above their real source
+    position.
+
+    Args:
+        path: Filesystem path to the Fortran source file.
+        defines: ``-D`` preprocessor symbols to pass to ``cpp``.
+        include_paths: ``-I`` include search paths to pass to ``cpp``.
+
+    Returns:
+        A :class:`PreprocessedSource` carrying the parsed tree, the
+        marker-stripped expanded bytes, the expanded-to-source line
+        map, and the set of files pulled in transitively via
+        ``#include`` (the cpp closure).
+
+    Raises:
+        CppNotFoundError: If the system ``cpp`` binary is missing.
+        CppFailedError: If ``cpp`` exits non-zero on ``path``.
     """
     cpp = _find_cpp()
     p = Path(path)
@@ -247,13 +322,20 @@ def parse_with_cpp(
     cpp_closure: set[str] = set()
 
     def _is_target(marker_file: str) -> bool:
-        """Is this marker pointing at the source file we asked cpp about?
+        """Return ``True`` if this marker points at the source file passed to cpp.
 
-        Direct string match handles POSIX-style cpp on macOS/Linux.
+        Direct string match handles POSIX-style ``cpp`` on macOS/Linux.
         The basename fallback handles Windows path-encoding quirks
-        (some cpp builds emit ``C:/...`` while Path.str gives
-        ``C:\\...``; some emit backslashes literally) and the case-
-        insensitive Windows filesystem.
+        (some ``cpp`` builds emit ``C:/...`` while ``Path.str`` gives
+        ``C:\\...``; some emit backslashes literally) and the
+        case-insensitive Windows filesystem.
+
+        Args:
+            marker_file: The filename from a ``# linenum "file"`` cpp marker.
+
+        Returns:
+            ``True`` when the marker file matches the source path
+            (direct, resolved, or basename-case-insensitive).
         """
         if marker_file in target_strs:
             return True
@@ -349,8 +431,15 @@ def walk(node: Node) -> Iterator[Node]:
     accounted for ~65% of wall-clock during the check phase —
     each Python-level ``yield from`` frame plus the ``.children``
     list materialisation costs more than the actual tree traversal.
-    Cursor-based iteration walks in C and saves roughly 2× on the
+    Cursor-based iteration walks in C and saves roughly 2x on the
     full pipeline.
+
+    Args:
+        node: Root tree-sitter node to walk from.
+
+    Yields:
+        Each node in pre-order depth-first sequence, starting with
+        ``node`` itself.
     """
     cursor = node.walk()
     # ``cursor.node`` is ``Node | None`` in the API but is non-None at every
@@ -379,21 +468,39 @@ class SourcePosition:
     """1-based ``(line, column)`` matching DimFort's diagnostic convention.
 
     Tree-sitter exposes 0-based ``(row, column)``. This helper is the
-    only place we convert; callers should not read ``node.start_point``
-    directly.
+    only place that conversion happens; callers should not read
+    ``node.start_point`` directly.
+
+    Attributes:
+        line: 1-based line number.
+        column: 1-based column number.
     """
     line: int
     column: int
 
 
 def position_for(node: Node) -> SourcePosition:
-    """Start position of a node in DimFort's 1-based convention."""
+    """Return the start position of ``node`` in DimFort's 1-based convention.
+
+    Args:
+        node: A tree-sitter node.
+
+    Returns:
+        The 1-based start :class:`SourcePosition`.
+    """
     row, col = node.start_point
     return SourcePosition(line=row + 1, column=col + 1)
 
 
 def end_position_for(node: Node) -> SourcePosition:
-    """End position (exclusive) of a node in 1-based convention."""
+    """Return the end position (exclusive) of ``node`` in 1-based convention.
+
+    Args:
+        node: A tree-sitter node.
+
+    Returns:
+        The 1-based exclusive end :class:`SourcePosition`.
+    """
     row, col = node.end_point
     return SourcePosition(line=row + 1, column=col + 1)
 
@@ -404,6 +511,13 @@ def node_text(node: Node, source: bytes) -> str:
     Tree-sitter nodes don't carry their own text; the caller must
     provide the original ``bytes``. UTF-8 decoded with ``replace`` so
     non-ASCII comments don't break the wrapper.
+
+    Args:
+        node: The tree-sitter node whose byte span to slice.
+        source: The raw source bytes the tree was parsed from.
+
+    Returns:
+        The decoded source text covered by ``node``.
     """
     return source[node.start_byte:node.end_byte].decode("utf-8", "replace")
 
@@ -412,12 +526,27 @@ def node_text(node: Node, source: bytes) -> str:
 # Error inspection
 
 def has_error(tree: Tree) -> bool:
-    """``True`` if any node in the tree is ``ERROR`` or missing."""
+    """Return ``True`` if any node in ``tree`` is ``ERROR`` or missing.
+
+    Args:
+        tree: The parsed tree-sitter tree.
+
+    Returns:
+        ``True`` when the root node reports parse errors.
+    """
     return tree.root_node.has_error
 
 
 def error_nodes(tree: Tree) -> Iterator[Node]:
-    """Yield every ``ERROR`` or missing node in the tree."""
+    """Yield every ``ERROR`` or missing node in ``tree``.
+
+    Args:
+        tree: The parsed tree-sitter tree.
+
+    Yields:
+        Each node whose ``type`` is ``"ERROR"`` or whose ``is_missing``
+        flag is set, in pre-order.
+    """
     for n in walk(tree.root_node):
         if n.type == "ERROR" or n.is_missing:
             yield n

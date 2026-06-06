@@ -73,13 +73,55 @@ from dimfort.core.units import UnitError, UnitExpr, UnitTable
 
 @dataclass(frozen=True)
 class FileLoadFailure:
-    """The file couldn't be read (or, vanishingly rare, tree-sitter raised)."""
+    """The file couldn't be read (or, vanishingly rare, tree-sitter raised).
+
+    Attributes:
+        stderr: Human-readable error text (the underlying exception
+            string, or ``cpp``'s stderr on a CPP failure).
+    """
 
     stderr: str
 
 
 @dataclass
 class WorksetResult:
+    """Aggregated output of one workset pass.
+
+    All ``dict`` / ``list`` fields default to empty containers and are
+    populated incrementally by :func:`check_files`. Per-field semantics
+    are documented inline beside each field.
+
+    Attributes:
+        diagnostics: Per-file list of emitted diagnostics, sorted as
+            produced by the checker.
+        attachments: Per-file annotation-attachment record.
+        load_failures: Per-file read / parse failures, keyed by path.
+        compile_failures: Reserved for future per-file compile-stage
+            failures (currently unused; kept for API stability).
+        trees: Per-file ``(tree, source_bytes)`` consumed by the LSP.
+        merged_var_units: Workset-wide flat ``var_units`` table (first
+            occurrence wins).
+        merged_field_units: Workset-wide ``(type, field) → unit`` map.
+        var_units_by_scope: Per-file scope-aware unit table.
+        signatures: Function / subroutine signatures across the
+            workset.
+        module_exports: Lower-cased module name → exports record.
+        module_transitive_vars: Per-module transitive re-export
+            closure for variables.
+        module_transitive_sigs: Per-module transitive re-export
+            closure for signatures.
+        phase_timings: Wall-clock seconds per pipeline phase.
+        deps_consumed: Per-file set of workspace modules whose exports
+            the file's check output depends on.
+        autocast_events: Per-file R4.4 autocast events.
+        unparseable_units: Per-file lower-cased names whose
+            ``@unit{...}`` annotation failed to parse (the U002 set).
+        cache_hits: Number of cache reads that validated.
+        cache_misses: Number of cache reads that found no entry.
+        cache_dirty: Number of cache reads invalidated by dep drift.
+        cache_writes: Number of cache writes attempted (best-effort).
+    """
+
     diagnostics: dict[Path, list[Diagnostic]] = field(default_factory=dict)
     attachments: dict[Path, AttachmentResult] = field(default_factory=dict)
     load_failures: dict[Path, FileLoadFailure] = field(default_factory=dict)
@@ -158,19 +200,29 @@ class _Loaded:
     """Per-file intermediate state for one workset pass.
 
     On ``.F90`` files where CPP preprocessing is needed (to make
-    modules buried inside ``#ifdef`` blocks visible), we keep two
-    trees:
+    modules buried inside ``#ifdef`` blocks visible), two trees are
+    kept: a primary cpp-expanded tree the checker walks, and a raw
+    tree the LSP enrichment handlers walk because it carries
+    on-disk-source coordinates. Diagnostics emitted on the primary
+    tree are remapped via ``line_map`` before publish.
 
-    - ``tree`` is the *primary* parse — the cpp-expanded one when cpp
-      ran, the raw one otherwise. The checker walks this tree because
-      it's where module / use semantics are visible.
-    - ``raw_tree`` is the raw parse, populated only when ``tree``
-      came from cpp. Its node positions match the on-disk file. The
-      LSP enrichment handlers walk this tree because they receive
-      cursor positions in source coordinates.
-
-    Diagnostics emitted by the checker are remapped from expanded →
-    source line numbers via ``line_map`` before publish.
+    Attributes:
+        path: Resolved absolute path of the file.
+        text: Original source text (pre-cpp on ``.F90``).
+        source: Bytes ``tree`` was actually built from (cpp-expanded
+            when cpp ran, otherwise identical to ``text.encode()``).
+        scan: Annotation-scan result for the file.
+        attachment: Annotation-attachment result.
+        tree: Primary parse tree; ``None`` only if the file couldn't
+            be read.
+        load_error: Error string when loading failed, ``None``
+            otherwise.
+        line_map: Per-line expanded-to-source mapping when cpp ran,
+            ``None`` for raw-parsed files.
+        raw_tree: Raw-source tree, populated only when cpp ran.
+        raw_source: Bytes for ``raw_tree``.
+        cpp_closure: Set of include files cpp pulled in (used to feed
+            include-hashing for the cache key).
     """
 
     path: Path
@@ -198,20 +250,34 @@ def _load_one(
 ) -> _Loaded:
     """Read source, scan + attach annotations, parse with tree-sitter.
 
-    ``overrides`` lets the LSP feed unsaved buffer contents instead of
-    reading from disk.
-
-    For ``.F90`` files we pre-run the system ``cpp`` using the
+    For ``.F90`` files the system ``cpp`` is pre-run using the
     project's ``cpp_defines`` / ``include_paths`` (from
     ``.dimfort.toml``). Without this, modules whose ``module NAME``
     statement sits inside an ``#ifdef X`` block surface as an ERROR
     span and downstream consumers fire U007 even though the module
     exists. The cost is ~10 ms per ``.F90`` file (system cpp); on a
     workset where the directives aren't used (no defines configured)
-    we skip cpp entirely.
+    cpp is skipped entirely.
 
-    Buffer overrides bypass cpp regardless — VSCode edits hit the
+    Buffer overrides bypass cpp regardless — editor edits hit the
     in-memory text, which we want parsed verbatim.
+
+    Args:
+        path: File to load.
+        overrides: Optional in-memory source overrides keyed by
+            resolved path; lets the LSP feed unsaved buffer contents.
+        cpp_defines: ``-D`` flags forwarded to ``cpp``.
+        include_paths: ``-I`` paths forwarded to ``cpp``.
+        unit_patterns: Configured ``@unit{...}``-family delimiters.
+        assume_patterns: Configured ``@unit_assume{...}`` delimiters.
+        affine_patterns: Configured ``@unit_affine_conversion{...}``
+            delimiters.
+
+    Returns:
+        A ``_Loaded`` record. On any pre-parse failure (read,
+        scan/attach, cpp, tree-sitter), the record carries
+        ``tree=None`` and a populated ``load_error`` so the workset
+        pass can continue without aborting.
     """
     from dimfort.core._source_io import read_text
     text = overrides[path] if path in overrides else read_text(path)
@@ -273,14 +339,24 @@ def _remap_diagnostic(
     """Remap a diagnostic's positions from expanded → source coordinates.
 
     No-op for files parsed raw (``line_map is None``). Lines that came
-    from an ``#include`` (``line_map[idx] is None``) are clamped to the
-    nearest known source line so the diagnostic still publishes
+    from an ``#include`` (``line_map[idx] is None``) are clamped to
+    the nearest known source line so the diagnostic still publishes
     somewhere useful rather than being silently dropped.
+
+    Args:
+        d: Diagnostic emitted on cpp-expanded coordinates.
+        line_map: Per-line expanded-to-source mapping from
+            ``_Loaded.line_map``.
+
+    Returns:
+        A new :class:`Diagnostic` with start/end lines rewritten to
+        source coordinates (or the original when no remap is needed).
     """
     if line_map is None:
         return d
 
     def _src(line_1based: int) -> int:
+        """Map a 1-based expanded line to its source line (clamping)."""
         idx = line_1based - 1
         if 0 <= idx < len(line_map):
             mapped = line_map[idx]
@@ -308,6 +384,11 @@ def _remap_diagnostic(
 
 
 def _u007(path: Path, message: str) -> Diagnostic:
+    """Build a file-level U007 (missing-module / unloadable-file) diagnostic.
+
+    Anchored at line/column 0 because U007 fires at file scope rather
+    than on a particular statement.
+    """
     return Diagnostic(
         file=str(path),
         start=Position(0, 0),
@@ -325,9 +406,20 @@ def _attachment_diags(
 ) -> list[Diagnostic]:
     """Surface attach-time issues (orphan annotations, conflicts, U010).
 
-    When an ``@unit{}`` orphan lands on an assignment statement,
-    that's a wrong-statement-kind situation (spec §8.3 → U023)
-    rather than a plain orphan (U006).
+    When an ``@unit{}`` orphan lands on an assignment statement, that
+    is a wrong-statement-kind situation (spec §8.3 → U023) rather than
+    a plain orphan (U006).
+
+    Args:
+        file: Stringified path of the file owning ``att``.
+        att: Attachment result produced by :func:`attach`.
+        assignment_line_ranges: Line ranges of assignment statements
+            in the file; used to upgrade an orphan that lands on one
+            of those ranges from U006 to U023.
+
+    Returns:
+        Diagnostics for every orphan, attach-time conflict, and
+        intermediate-continuation error (U010) found.
     """
     out: list[Diagnostic] = []
     for orph in att.orphans:
@@ -396,6 +488,12 @@ def _attachment_diags(
 def _parse_var_units(
     text: dict[str, str], table: UnitTable
 ) -> dict[str, UnitExpr]:
+    """Parse every ``name → unit-text`` entry against ``table``.
+
+    Entries that fail to parse are silently dropped; the U002
+    diagnostic is emitted from a separate code path so the parsing
+    failure is surfaced exactly once.
+    """
     out: dict[str, UnitExpr] = {}
     for name, raw in text.items():
         try:
@@ -408,6 +506,11 @@ def _parse_var_units(
 def _parse_var_units_by_scope(
     text: dict[tuple[str | None, str], str], table: UnitTable
 ) -> dict[tuple[str | None, str], UnitExpr]:
+    """Scope-keyed variant of :func:`_parse_var_units`.
+
+    Keys are ``(scope_lc_or_None, name)`` pairs. Unparseable entries
+    are dropped (U002 is emitted elsewhere).
+    """
     out: dict[tuple[str | None, str], UnitExpr] = {}
     for key, raw in text.items():
         try:
@@ -427,8 +530,15 @@ def _digest_module_exports(exports: ModuleExports | None) -> str:
 
     A cached file's entry is dirty when any module it consumed has a
     different digest now vs. when the entry was written.
-    ``None`` (module no longer in workspace) maps to a sentinel digest
-    so disappearance is treated as "changed".
+
+    Args:
+        exports: Module exports record, or ``None`` when the module is
+            no longer in the workspace.
+
+    Returns:
+        A SHA-256 hex digest of the serialised exports, or the literal
+        ``"absent"`` sentinel when ``exports`` is ``None`` (so
+        disappearance is treated as "changed").
     """
     if exports is None:
         return "absent"
@@ -441,8 +551,14 @@ def _digest_module_exports(exports: ModuleExports | None) -> str:
 def _hash_file(path: Path) -> str:
     """Hex SHA-256 of a file's contents, ``""`` if missing.
 
-    Used to feed ``units_file_hash`` into the per-file cache key so
-    a project-units-table edit invalidates cached diagnostics.
+    Used to feed ``units_file_hash`` into the per-file cache key so a
+    project-units-table edit invalidates cached diagnostics.
+
+    Args:
+        path: File to hash.
+
+    Returns:
+        Lowercase hex digest, or the empty string on ``OSError``.
     """
     try:
         with open(path, "rb") as fh:
@@ -468,6 +584,10 @@ def _build_cache_config_view(
     Every dimension that can change a file's diagnostics for the same
     source bytes must contribute here; see
     :data:`dimfort.core.cache_key.PER_FILE_CONFIG_KEYS`.
+
+    Returns:
+        A plain dict carrying every cache-key-affecting setting in a
+        JSON-serialisable shape.
     """
     return {
         "external_modules": external_modules,
@@ -497,17 +617,29 @@ def _try_replay_from_cache(
     module_exports: dict[str, ModuleExports],
     result: WorksetResult,
 ) -> tuple[str | None, list[Diagnostic] | None]:
-    """Attempt to serve an entry from cache. Returns ``(key, diags)``.
+    """Attempt to serve an entry from cache.
 
-    - ``(key, [..])``  — cache hit, validated; replay these diagnostics
-      and skip the fresh ``ts_checker.check`` pass.
-    - ``(key, None)``  — cache miss or dep-dirty; caller runs check
-      and may write back under ``key``.
-    - ``(None, None)`` — key could not be computed (e.g. include
-      hashing raised OSError); caller proceeds without caching.
+    Args:
+        cache: The opened cache store.
+        include_hasher: Memoised include-file hasher used to fold the
+            cpp closure into the cache key.
+        entry: Loaded per-file state.
+        cache_config_view: Settings dict from
+            :func:`_build_cache_config_view`.
+        module_exports: Current workspace module-exports map (used to
+            validate dep digests).
+        result: Workset result whose cache counters are mutated.
 
-    Stats counters on ``result`` (``cache_hits``, ``cache_misses``,
-    ``cache_dirty``) are updated as a side effect.
+    Returns:
+        A ``(key, diags)`` pair:
+
+        * ``(key, [..])`` — cache hit, validated; replay these
+          diagnostics and skip the fresh check pass.
+        * ``(key, None)`` — cache miss or dep-dirty; caller runs check
+          and may write back under ``key``.
+        * ``(None, None)`` — key could not be computed (e.g. include
+          hashing raised ``OSError``); caller proceeds without
+          caching.
     """
     try:
         closure_hashes = include_hasher.hash_closure(entry.cpp_closure)
@@ -545,7 +677,24 @@ def _write_cache_entry(
     remapped_diags: list[Diagnostic],
     result: WorksetResult,
 ) -> None:
-    """Persist a fresh check's output to the cache. Best-effort on I/O."""
+    """Persist a fresh check's output to the cache.
+
+    Best-effort: ``OSError`` from the underlying write is swallowed so
+    a transient cache failure never aborts a workset pass.
+
+    Args:
+        cache: The opened cache store.
+        key: Cache key computed earlier by
+            :func:`_try_replay_from_cache`.
+        deps_consumed: Modules this file's check output depends on.
+        module_exports: Current workspace module-exports map (used to
+            stamp dep digests into the payload).
+        remapped_diags: Already-remapped diagnostics; cached as-is so
+            replay restores source-coordinate positions without a
+            second remap.
+        result: Workset result whose ``cache_writes`` counter is
+            incremented on success.
+    """
     deps_signature = {
         mod_lc: _digest_module_exports(module_exports.get(mod_lc))
         for mod_lc in deps_consumed
@@ -587,24 +736,51 @@ def check_files(
 ) -> WorksetResult:
     """Scan, attach, and check every file in ``sources`` together.
 
-    The public entry point used by both the CLI and the LSP.
+    The public entry point used by both the CLI and the LSP. Runs the
+    four pipeline phases documented at module level and returns a
+    populated :class:`WorksetResult`.
 
-    - ``overrides`` — unsaved buffer contents keyed by absolute path
-      (typically passed by the LSP).
-    - ``external_modules`` — allowlist of module names treated as
-      known-out-of-workset so their unresolved ``use`` clauses don't
-      fire U007.
-    - ``cache`` / ``cache_mode`` — opt-in content-hash per-file check
-      cache (``"off"`` / ``"read-write"``).
-    - ``unit_patterns`` / ``assume_patterns`` / ``affine_patterns`` —
-      project-configurable open/close delimiters (default canonical
-      ``@unit{...}`` / ``@unit_assume{...}`` / ``@unit_affine_conversion{...}``).
-    - ``scale_mode`` — enables S001/S002 scale checking.
-    - ``cpp_defines`` / ``include_paths`` — CPP pre-processing for files
-      that need it.
-    - ``progress_cb`` — receives ``(phase, current, total, path)`` ticks
-      during load / index / check phases so the LSP status bar stays
-      informative on large worksets.
+    Args:
+        sources: Files to load and check.
+        table: Optional unit table; defaults to
+            :data:`dimfort.core.units.DEFAULT_TABLE`.
+        overrides: Unsaved buffer contents keyed by absolute path
+            (typically passed by the LSP).
+        external_modules: Allowlist of module names treated as
+            known-out-of-workset so their unresolved ``use`` clauses
+            don't fire U007.
+        cpp_defines: ``-D`` flags forwarded to ``cpp`` for ``.F90``
+            files that need preprocessing.
+        include_paths: ``-I`` paths forwarded to ``cpp``.
+        progress_cb: Optional callback receiving
+            ``(phase, current, total, path)`` ticks during load /
+            index / check phases so the LSP status bar stays
+            informative on large worksets.
+        max_load_workers: Override for the load-phase thread pool
+            size; default is one less than the CPU count.
+        cache: Optional opened :class:`CacheStore` for per-file
+            content-hash caching.
+        cache_mode: One of ``"off"`` / ``"read-only"`` /
+            ``"read-write"``; ``"off"`` keeps the cache untouched.
+        units_file: Project units extension file; its content hash
+            feeds the per-file cache key.
+        diagnostic_severities: Per-rule severity overrides.
+        scale_mode: Enables S001 / S002 scale checking.
+        unit_patterns: Configured ``@unit{...}``-family delimiters.
+        assume_patterns: Configured ``@unit_assume{...}`` delimiters.
+        affine_patterns: Configured ``@unit_affine_conversion{...}``
+            delimiters.
+
+    Returns:
+        A :class:`WorksetResult` carrying per-file diagnostics,
+        per-file ``(tree, source)`` for downstream LSP use, the
+        resolved signatures / module exports, and timing / cache
+        counters.
+
+    Raises:
+        RuntimeError: If no unit table is available (the caller must
+            have imported :mod:`dimfort.core.unit_config` to install
+            ``DEFAULT_TABLE``).
     """
     abs_sources = [Path(p).resolve() for p in sources]
     overrides_map = {Path(p).resolve(): t for p, t in (overrides or {}).items()}
@@ -632,6 +808,13 @@ def check_files(
     def _do_load(
         idx: int, src: Path
     ) -> tuple[int, Path, _Loaded | None, Exception | None]:
+        """Thread-pool worker that loads one file.
+
+        Returns a 4-tuple ``(idx, src, entry_or_None, exc_or_None)``
+        so the outer loop can place the result at the correct slot
+        and surface failures as :class:`FileLoadFailure` records
+        without aborting the workset pass.
+        """
         try:
             return idx, src, _load_one(
                 src,

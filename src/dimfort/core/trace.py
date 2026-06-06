@@ -33,13 +33,17 @@ if TYPE_CHECKING:
 class Provenance:
     """One rule fire — what went in, what came out, which rule fired.
 
-    ``rule_id`` is a string like ``"R3.1"`` / ``"R5.2"`` / ``"R2.3"``;
-    ``before`` is a tuple of operands (one for unary rules, two for
-    binary); ``after`` is the result unit (``None`` when the rule
-    produced an error and the caller will emit a diagnostic);
-    ``source_text`` is an optional source snippet for the rule's
-    triggering expression — populated by the checker when an AST node
-    is available.
+    Attributes:
+        rule_id: Rule identifier like ``"R3.1"`` / ``"R5.2"`` / ``"R2.3"``.
+        before: Tuple of input operands. One element for unary rules
+            (R3.x wrapper untag, R2.x wrapper tag), two for binary rules
+            (R5.x add/sub, R6.x mul/div, R7.x power).
+        after: Result unit, or ``None`` when the rule produced an error
+            and the caller will emit a diagnostic in its stead.
+        source_text: Optional source snippet for the triggering
+            expression. Populated by the checker when an AST node is
+            available; left ``None`` for rules fired from synthetic
+            contexts (e.g. cross-routine resolution).
     """
     rule_id: str
     before: tuple[UnitExpr, ...]
@@ -49,13 +53,28 @@ class Provenance:
 
 @dataclass
 class Trace:
-    """An append-only ordered list of rule fires."""
+    """An append-only ordered list of rule fires.
+
+    Attributes:
+        steps: The recorded ``Provenance`` entries, in fire order.
+    """
     steps: list[Provenance] = field(default_factory=list)
 
     def append(self, step: Provenance) -> None:
+        """Append a single rule fire to the trace.
+
+        Args:
+            step: Recorded provenance to append.
+        """
         self.steps.append(step)
 
     def snapshot(self) -> tuple[Provenance, ...]:
+        """Return an immutable copy of the steps recorded so far.
+
+        Returns:
+            Tuple of steps in fire order. Subsequent appends to the
+            trace do not affect this snapshot.
+        """
         return tuple(self.steps)
 
 
@@ -65,7 +84,12 @@ _active_trace: contextvars.ContextVar[Trace | None] = contextvars.ContextVar(
 
 
 def current_trace() -> Trace | None:
-    """Return the trace collector active in this context, or ``None``."""
+    """Return the trace collector active in this context.
+
+    Returns:
+        The active :class:`Trace`, or ``None`` if tracing is not
+        enabled in the current context.
+    """
     return _active_trace.get()
 
 
@@ -75,7 +99,19 @@ def trace_step(
     after: UnitExpr | None,
     source_text: str | None = None,
 ) -> None:
-    """Record a rule fire if a trace is active; otherwise no-op."""
+    """Record a rule fire on the active trace if one exists; otherwise no-op.
+
+    Designed to be cheap enough to leave unconditional in the hot
+    rule-dispatch path — when no trace is active, this collapses to a
+    single ``ContextVar.get()`` lookup.
+
+    Args:
+        rule_id: Rule identifier like ``"R3.1"`` / ``"R5.2"``.
+        before: Input operands to the rule, in source order.
+        after: Result unit, or ``None`` if the rule produced an error.
+        source_text: Optional source snippet for the triggering
+            expression.
+    """
     trace = _active_trace.get()
     if trace is None:
         return
@@ -84,7 +120,16 @@ def trace_step(
 
 @contextmanager
 def with_trace() -> Iterator[Trace]:
-    """Activate a fresh trace for the duration of the ``with`` block."""
+    """Activate a fresh trace for the duration of the ``with`` block.
+
+    Uses ``contextvars`` for activation, so concurrent checks running
+    in distinct contexts (e.g. an LSP server handling parallel
+    requests) do not bleed traces into one another.
+
+    Yields:
+        The freshly-allocated :class:`Trace`, available for inspection
+        after the block exits.
+    """
     trace = Trace()
     token = _active_trace.set(trace)
     try:
@@ -96,8 +141,15 @@ def with_trace() -> Iterator[Trace]:
 def format_provenance(step: Provenance) -> str:
     """Render one rule fire as ``A <op> B  ⇒  Result   [Rx.y]`` (spec §12 T3).
 
-    Wrapper types print using ``format_unit`` so the LOG(...)/EXP(...)
-    layer is visible; "ERROR" stands in for ``after=None``.
+    Wrapper types print using ``format_unit`` so the ``LOG(...)`` /
+    ``EXP(...)`` layer is visible. The literal string ``"ERROR"``
+    stands in for ``after=None``.
+
+    Args:
+        step: Recorded rule fire.
+
+    Returns:
+        Single-line human-readable rendering.
     """
     from dimfort.core.units import format_unit
     before = ", ".join(format_unit(u) for u in step.before)
@@ -108,11 +160,18 @@ def format_provenance(step: Provenance) -> str:
 def format_trace(steps: tuple[Provenance, ...] | list[Provenance]) -> str:
     """Render a full trace chain as multi-line text suitable for CLI / hover.
 
-    Consecutive duplicate steps are collapsed (the checker's parallel
-    _resolve / _walk_expressions walks both invoke combine() on the
-    same subexpressions, so each rule otherwise appears twice). Each
-    step occupies one line, prefixed with ``→`` so the chain reads
-    top-to-bottom. Empty traces return an empty string.
+    Consecutive duplicate steps are collapsed — the checker's parallel
+    ``_resolve`` / ``_walk_expressions`` walks both invoke ``combine()``
+    on the same subexpressions, so each rule otherwise appears twice.
+    Each surviving step occupies one line, prefixed with ``→`` so the
+    chain reads top-to-bottom. Empty traces return an empty string.
+
+    Args:
+        steps: Recorded provenance steps, in fire order.
+
+    Returns:
+        Multi-line rendering led by a ``"trace:"`` header line, or an
+        empty string when ``steps`` is empty.
     """
     if not steps:
         return ""

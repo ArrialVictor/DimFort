@@ -49,10 +49,17 @@ if TYPE_CHECKING:
 
 
 def free_tyvars_of_sig(sig: FuncSig) -> frozenset[str]:
-    """Collect every tyvar name appearing in a function signature's
-    arg + return units. Unwraps LogWrap / ExpWrap to reach the inner
-    Unit. Shared by the checker (call-site dispatch + H023 detection)
-    and the LSP (polymorphic-signature rendering).
+    """Collect every tyvar name appearing in a signature's arg / return units.
+
+    Unwraps :class:`LogWrap` / :class:`ExpWrap` to reach the inner
+    :class:`Unit`. Shared by the checker (call-site dispatch + H023
+    detection) and the LSP (polymorphic-signature rendering).
+
+    Args:
+        sig: Function signature whose arg and return units are scanned.
+
+    Returns:
+        Frozen set of tyvar names found anywhere in the signature.
     """
     out: set[str] = set()
     units_iter: list[UnitExpr | None] = list(sig.arg_units)
@@ -70,9 +77,10 @@ def free_tyvars_of_sig(sig: FuncSig) -> frozenset[str]:
 
 
 class UnsupportedPolymorphism(Exception):
-    """Raised when a signature uses a polymorphism shape the unifier
-    does not yet handle (symbolic tyvar exponents, wrapper-typed slots,
-    etc.). Callers should fall back to treating the call site as a
+    """Raised when a signature uses a polymorphism shape the unifier cannot handle.
+
+    Examples include symbolic tyvar exponents and wrapper-typed slots.
+    Callers should fall back to treating the call site as a
     concrete-mismatch / U005.
     """
 
@@ -85,10 +93,16 @@ class UnsupportedPolymorphism(Exception):
 class SlotEquation:
     """One call-site equation ``formal_i ≡ actual_i``.
 
-    ``slot_index`` and ``slot_name`` are carried for downstream
-    diagnostic rendering — the checker uses them when building H020's
-    symmetric "collides with arg N: name" trailer. The unifier itself
-    only uses them to label conflict contributions.
+    The unifier uses ``slot_index`` / ``slot_name`` only to label
+    conflict contributions; the checker carries them through to build
+    H020's symmetric "collides with arg N: name" trailer.
+
+    Attributes:
+        slot_index: 0-based index of the formal arg in its signature.
+        slot_name: Formal arg name if known, else ``None``.
+        formal: Formal-side unit (may carry free tyvars).
+        actual: Actual-side unit at the call site (may carry tyvars
+            from the enclosing scope).
     """
     slot_index: int
     slot_name: str | None
@@ -100,10 +114,14 @@ class SlotEquation:
 class Contribution:
     """One slot's per-tyvar implied binding.
 
-    Recorded for every slot that constrains a given tyvar. The
-    checker aggregates contributions per tyvar across slots and, on
-    conflict, lists every contributing slot as a collider in the H020
-    message.
+    Recorded for every slot that constrains a given tyvar. The checker
+    aggregates contributions per tyvar across slots and, on conflict,
+    lists every contributing slot as a collider in the H020 message.
+
+    Attributes:
+        slot_index: 0-based index of the contributing slot.
+        slot_name: Formal arg name if known, else ``None``.
+        implied: The slot's view of what σ('α) must be.
     """
     slot_index: int
     slot_name: str | None
@@ -112,8 +130,16 @@ class Contribution:
 
 @dataclass(frozen=True)
 class Conflict:
-    """Unification failed for a tyvar: at least two slots imply
-    inconsistent values.
+    """Unification failed for a tyvar.
+
+    Records the tyvar that could not be solved together with every slot
+    contribution that fed into the failed system.
+
+    Attributes:
+        tyvar: Name of the tyvar whose unification was rejected.
+        contributions: All slot contributions for this tyvar, in slot
+            order. The checker treats each as a collider when rendering
+            the H020 message.
     """
     tyvar: str
     contributions: tuple[Contribution, ...]
@@ -121,7 +147,15 @@ class Conflict:
 
 @dataclass(frozen=True)
 class Substitution:
-    """σ: tyvar name → concrete Unit. Empty for callers with no tyvars."""
+    """σ: tyvar name → concrete :class:`Unit`.
+
+    Empty for callers with no tyvars.
+
+    Attributes:
+        bindings: Mapping from tyvar name to the :class:`Unit` σ assigns
+            to it. Tyvars absent from the mapping are *unbound* and
+            preserved as-is by :meth:`apply`.
+    """
     bindings: dict[str, Unit]
 
     def apply(self, u: UnitExpr) -> UnitExpr:
@@ -137,6 +171,13 @@ class Substitution:
         collapse the inner to dim'less (e.g. ``σ('a) = {1}``) take the
         R2.1 / R2.3 path and don't leave a stale ``LogWrap({1})`` /
         ``ExpWrap({1})`` behind.
+
+        Args:
+            u: Unit expression to substitute into.
+
+        Returns:
+            Unit expression with σ applied. Non-Unit / non-wrapper
+            inputs are returned unchanged.
         """
         if isinstance(u, Unit):
             return _apply_to_unit(u, self.bindings)
@@ -158,11 +199,17 @@ class Substitution:
 class UnificationResult:
     """Outcome of :func:`unify`.
 
-    Exactly one of ``substitution`` (success) or ``conflicts``
-    (failure) is non-empty. ``all_contributions`` is always populated:
-    it records every slot's per-tyvar contribution regardless of
-    success, so the LSP hover / CLI tree can render the per-slot
+    Exactly one of ``substitution`` (success) or ``conflicts`` (failure)
+    is non-empty. ``all_contributions`` is always populated regardless
+    of success so the LSP hover and CLI tree can render the per-slot
     ``'a = m`` annotations the spec calls for.
+
+    Attributes:
+        substitution: Solved σ on success, ``None`` on failure.
+        conflicts: Per-tyvar conflict records on failure, empty on
+            success.
+        all_contributions: Every slot's per-tyvar contribution, keyed
+            by tyvar name.
     """
     substitution: Substitution | None
     conflicts: tuple[Conflict, ...]
@@ -170,6 +217,7 @@ class UnificationResult:
 
     @property
     def ok(self) -> bool:
+        """Return ``True`` when unification succeeded."""
         return self.substitution is not None
 
 
@@ -178,6 +226,24 @@ class UnificationResult:
 
 
 def _apply_to_unit(u: Unit, bindings: dict[str, Unit]) -> Unit:
+    """Substitute ``bindings`` into a single :class:`Unit`.
+
+    Multiplies the unit's concrete (SI dim + factor + offset) part by
+    ``σ('α)^t_α`` for each bound tyvar, keeping any tyvar absent from
+    ``bindings`` as a residual.
+
+    Args:
+        u: Unit to substitute into.
+        bindings: Active σ mapping.
+
+    Returns:
+        Substituted unit. Returned unchanged when ``u`` carries no
+        tyvars.
+
+    Raises:
+        UnsupportedPolymorphism: A tyvar's exponent is symbolic (not a
+            literal rational).
+    """
     if not u.tyvars:
         return u
     # Start from the SI-dim + factor + offset part, then multiply in
@@ -213,6 +279,22 @@ def unify(
     equations: list[SlotEquation], free_tyvars: tuple[str, ...],
 ) -> UnificationResult:
     """Solve the linear system for ``free_tyvars`` against ``equations``.
+
+    Args:
+        equations: Per-slot ``(formal, actual)`` equations from the
+            call site, in slot order.
+        free_tyvars: Tyvar names declared free in the callee's
+            signature. May include tyvars no slot constrains.
+
+    Returns:
+        Result carrying either the solved substitution or per-tyvar
+        conflicts; ``all_contributions`` is populated in both cases for
+        diagnostic rendering.
+
+    Raises:
+        UnsupportedPolymorphism: A slot uses a polymorphism shape the
+            unifier cannot handle (wrapper-typed operands, symbolic
+            tyvar or SI exponents).
 
     Algorithm (M6 semantics):
 
@@ -417,14 +499,24 @@ def unify(
 def _slot_implied_value(
     formal: Unit, actual: Unit, target: str, exponent: Fraction,
 ) -> Unit:
-    """For diagnostic display: what would σ('α) have to be if this slot
-    were the only constraint and every other tyvar in the formal
-    vanished?
+    """Compute the slot's implied value of σ('α) for diagnostic display.
 
-    Computes ``(actual / formal_concrete_part) ^ (1/exponent)`` where
+    What would σ('α) have to be if this slot were the only constraint
+    and every other tyvar in the formal vanished? Computes
+    ``(actual / formal_concrete_part) ^ (1/exponent)`` where
     ``formal_concrete_part`` strips ``'α`` from the formal's tyvar map.
-    This is purely for the hover's per-slot ``'a = m`` annotation; the
-    real binding comes from the linear-system solve.
+    Purely for the hover's per-slot ``'a = m`` annotation; the real
+    binding comes from the linear-system solve.
+
+    Args:
+        formal: Formal-side unit at the slot.
+        actual: Actual-side unit at the slot.
+        target: Name of the tyvar whose implied value is being read.
+        exponent: ``target``'s rational exponent inside ``formal``.
+
+    Returns:
+        The slot's implied :class:`Unit` for σ(target), with offset
+        zeroed and residual tyvars stripped (display-only shape).
     """
     # Pull α out of the formal.
     remaining = tuple((n, e) for n, e in formal.tyvars if n != target)
@@ -445,8 +537,17 @@ def _slot_implied_value(
 
 
 def _strip_to_unit(u: Unit) -> Unit:
-    """Render-time helper: zero offset, drop residual tyvars, keep
-    SI dims + factor. Used for diagnostic implied-value display only.
+    """Strip ``u`` to its SI-dim + factor part for display.
+
+    Drops the offset and any residual tyvars. Used only when rendering
+    implied-value annotations on hover / CLI trees.
+
+    Args:
+        u: Unit to strip.
+
+    Returns:
+        Unit with the same SI dimension and factor, offset zeroed,
+        no tyvars.
     """
     return Unit(u.dimension, u.factor)
 
@@ -454,15 +555,23 @@ def _strip_to_unit(u: Unit) -> Unit:
 def _solve(
     rows: list[list[Fraction]], rhs: list[Fraction],
 ) -> list[Fraction]:
-    """Gauss-Jordan elimination on a rational matrix.
+    """Run Gauss-Jordan elimination on a rational matrix.
 
-    Returns one assignment to the unknowns (pivot variables ← their
-    eliminated RHS; free variables pinned to ``0``). Inconsistent rows
-    (all coefficients zero, non-zero RHS) are NOT detected here — the
-    caller is responsible for post-validation by re-applying the
-    candidate substitution to every equation. That re-validation
-    catches Gauss row-permutation effects correctly; a parallel
-    inside-``_solve`` detection would be redundant and error-prone.
+    Args:
+        rows: Coefficient matrix as a list of equal-length row vectors.
+        rhs: Right-hand-side column, one entry per row.
+
+    Returns:
+        One assignment to the unknowns: pivot variables take their
+        eliminated RHS value, free variables are pinned to ``0``.
+
+    Note:
+        Inconsistent rows (all coefficients zero, non-zero RHS) are
+        NOT detected here — the caller is responsible for
+        post-validation by re-applying the candidate substitution to
+        every equation. That re-validation catches Gauss
+        row-permutation effects correctly; a parallel inside-``_solve``
+        detection would be redundant and error-prone.
     """
     if not rows:
         return []

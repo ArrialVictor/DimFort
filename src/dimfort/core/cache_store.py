@@ -46,7 +46,14 @@ DEFAULT_MAX_AGE_DAYS = 30
 
 
 def default_cache_dir(workspace_root: str | Path) -> Path:
-    """Workspace-local cache: ``{workspace_root}/.dimfort-cache``."""
+    """Return the workspace-local cache directory.
+
+    Args:
+        workspace_root: Path of the workspace root.
+
+    Returns:
+        ``{workspace_root}/.dimfort-cache``.
+    """
     return Path(workspace_root) / DEFAULT_CACHE_DIR_NAME
 
 
@@ -56,6 +63,21 @@ class CacheStore:
 
     Construct once per workspace check; reuse across all file
     lookups in that run.
+
+    Attributes:
+        root: Cache directory root (typically ``.dimfort-cache`` under
+            the workspace).
+        size_limit_bytes: Soft cap enforced by :meth:`prune`; defaults
+            to 500 MB.
+        max_age_days: Entries older than this many days are dropped on
+            :meth:`prune` regardless of size; defaults to 30.
+        output_version: Shard version directory (``v{N}``) under
+            :attr:`root`; defaults to
+            :data:`cache_key.CHECKER_OUTPUT_VERSION`.
+        hits: Number of successful :meth:`read` lookups in this run.
+        misses: Number of unsuccessful :meth:`read` lookups (missing
+            or corrupt entries).
+        writes: Number of :meth:`write` calls that succeeded.
     """
 
     root: Path
@@ -69,17 +91,33 @@ class CacheStore:
     writes: int = field(default=0, init=False)
 
     def shard_root(self) -> Path:
+        """Return the version-shard directory (``{root}/v{output_version}``)."""
         return self.root / f"v{self.output_version}"
 
     def _entry_path(self, key: str) -> Path:
+        """Return the on-disk path for an entry keyed by ``key``.
+
+        Args:
+            key: Hex SHA-256 cache key.
+
+        Returns:
+            ``{shard_root}/{key[:2]}/{key[2:]}.json.gz``.
+        """
         return self.shard_root() / key[:2] / f"{key[2:]}.json.gz"
 
     def read(self, key: str) -> dict[str, Any] | None:
         """Return the cached payload for ``key`` or ``None``.
 
-        Any read error (corrupt gzip, malformed JSON, missing file) is
-        treated as a miss. Corrupted entries are removed so the next
-        write fills the slot cleanly.
+        Increments :attr:`hits` or :attr:`misses` as a side effect.
+
+        Args:
+            key: Hex SHA-256 cache key.
+
+        Returns:
+            The decoded JSON payload on a hit, or ``None`` on a miss.
+            Any read error (corrupt gzip, malformed JSON, missing
+            file) is treated as a miss; corrupted entries are removed
+            so the next write fills the slot cleanly.
         """
         path = self._entry_path(key)
         if not path.exists():
@@ -103,6 +141,16 @@ class CacheStore:
         A temp file is written in the same directory then renamed
         into place. Concurrent writers from another process race
         harmlessly — the last writer wins and content is byte-equal.
+        Increments :attr:`writes` on success.
+
+        Args:
+            key: Hex SHA-256 cache key.
+            payload: JSON-serialisable dict to store under ``key``.
+
+        Raises:
+            Exception: Any exception raised during temp-file creation,
+                gzip write, or rename is re-raised after the temp file
+                is best-effort unlinked.
         """
         path = self._entry_path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -127,7 +175,11 @@ class CacheStore:
             raise
 
     def clear(self) -> None:
-        """Remove every cached entry. Safe to call when the dir is missing."""
+        """Remove every cached entry.
+
+        Safe to call when the cache directory is missing. Errors during
+        removal are swallowed (best-effort).
+        """
         if self.root.exists():
             shutil.rmtree(self.root, ignore_errors=True)
 
@@ -136,8 +188,12 @@ class CacheStore:
     def prune(self) -> int:
         """Drop too-old entries, then trim by size if still over the limit.
 
-        Returns the number of files removed. Pruning is best-effort:
-        permission errors and concurrent removals are swallowed.
+        Pruning is best-effort: permission errors and concurrent
+        removals are swallowed.
+
+        Returns:
+            Total number of files removed (age-based + size-based).
+            Zero when the cache directory does not exist.
         """
         if not self.root.exists():
             return 0

@@ -42,7 +42,25 @@ from dimfort.core.annotations import (
 
 @dataclass(frozen=True)
 class OrphanAnnotation:
-    """An annotation that could not be matched to a declaration."""
+    """An annotation that could not be matched to a declaration.
+
+    Attributes:
+        line: 1-based line of the annotation's source comment.
+        column: 1-based column of the annotation's leading delimiter.
+        unit_text: Raw text inside the annotation's delimiters.
+        reason: Human-readable diagnostic explaining why the
+            annotation did not attach.
+        target_line: 1-based source line where the annotation tried
+            to attach (the comment line itself for POST,
+            ``_block_end + 1`` for PRE). The multifile diagnostic
+            emitter consults this to reroute orphans to U023 when the
+            target line hosts a non-declaration statement (spec §8.3).
+        end_column: 1-based column one past the closing delimiter of
+            the annotation's source token (e.g. one past ``}`` in
+            ``@unit{m/s}``). The U023 reroute emitter widens its
+            diagnostic range with this so the squiggle covers the
+            whole token rather than a single character.
+    """
 
     line: int
     column: int
@@ -63,7 +81,15 @@ class OrphanAnnotation:
 
 @dataclass(frozen=True)
 class ConflictingAnnotation:
-    """A variable that received two different unit annotations."""
+    """A variable that received two different unit annotations.
+
+    Attributes:
+        variable: Variable name; for derived-type fields rendered as
+            ``"type%field"``.
+        first_unit: Unit text from the first annotation seen.
+        second_unit: Unit text from the conflicting annotation.
+        second_line: 1-based source line of the second annotation.
+    """
 
     variable: str
     first_unit: str
@@ -75,8 +101,16 @@ class ConflictingAnnotation:
 class IntermediateContinuationAnnotation:
     """U010: ``!<`` on a continuation line that is neither first nor last.
 
-    The annotation is *not* applied — the user must move it to the first
-    or the last line of the continuation.
+    The annotation is *not* applied — the user must move it to the
+    first or the last line of the continuation.
+
+    Attributes:
+        line: 1-based source line of the rejected annotation.
+        column: 1-based column of the annotation's leading delimiter.
+        unit_text: Raw text inside the annotation's delimiters.
+        declaration_line_start: 1-based first line of the declaration
+            the annotation sat strictly inside.
+        declaration_line_end: 1-based last line of that declaration.
     """
 
     line: int
@@ -87,6 +121,7 @@ class IntermediateContinuationAnnotation:
 
     @property
     def reason(self) -> str:
+        """Human-readable U010 message naming the surrounding declaration span."""
         return (
             f"'!<' on an intermediate continuation line (declaration spans "
             f"lines {self.declaration_line_start}-{self.declaration_line_end}); "
@@ -97,6 +132,29 @@ class IntermediateContinuationAnnotation:
 
 @dataclass
 class AttachmentResult:
+    """Output of :func:`attach`: matched annotations plus rejected cases.
+
+    Per-field rationale is kept inline beside each field — refer to
+    those comments for the detailed contract of each table.
+
+    Attributes:
+        var_units: Flat first-seen-wins variable-to-unit-text view.
+        var_units_by_scope: Authoritative scope-aware variable table
+            keyed by ``(scope_lc, name)``.
+        var_units_span: Source span of the annotation token that set
+            each flat ``var_units`` entry.
+        routine_scopes: Byte-range cover of each routine in the file,
+            carried through from the scan.
+        field_units: Derived-type field annotations, keyed by
+            ``(type_name, field_name)``.
+        var_unit_sources: Provenance tag for each
+            ``var_units_by_scope`` entry — ``"explicit"`` or
+            ``"intrinsic_default"``.
+        orphans: Annotations that did not match any declaration.
+        conflicts: Same-scope re-declarations with disagreeing units.
+        intermediate_continuations: U010 rejections.
+    """
+
     # Flat first-seen-wins view, kept for callers that don't care about
     # scope (LSP hover fallback, U005 annotated-set, U002 parse loop).
     var_units: dict[str, str] = field(default_factory=dict)
@@ -141,7 +199,16 @@ class AttachmentResult:
 def _decl_containing_line(
     line: int, declarations: tuple[DeclarationSite, ...]
 ) -> DeclarationSite | None:
-    """Return the declaration whose physical range contains ``line``, or None."""
+    """Return the declaration whose physical range contains ``line``.
+
+    Args:
+        line: 1-based source line number.
+        declarations: Declaration sites to search, in scan order.
+
+    Returns:
+        The first matching :class:`DeclarationSite`, or ``None`` if no
+        declaration covers ``line``.
+    """
     for d in declarations:
         if d.line_start <= line <= d.line_end:
             return d
@@ -151,6 +218,16 @@ def _decl_containing_line(
 def _decl_starting_at_line(
     line: int, declarations: tuple[DeclarationSite, ...]
 ) -> DeclarationSite | None:
+    """Return the declaration whose ``line_start`` equals ``line``.
+
+    Args:
+        line: 1-based source line number.
+        declarations: Declaration sites to search, in scan order.
+
+    Returns:
+        The first matching :class:`DeclarationSite`, or ``None`` if no
+        declaration starts on ``line``.
+    """
     for d in declarations:
         if d.line_start == line:
             return d
@@ -158,7 +235,16 @@ def _decl_starting_at_line(
 
 
 def _block_end(line: int, pre_block_lines: frozenset[int]) -> int:
-    """Largest L such that {line, line+1, …, L} ⊆ ``pre_block_lines``."""
+    """Return the largest ``L`` such that ``{line, line+1, …, L}`` lies in ``pre_block_lines``.
+
+    Args:
+        line: 1-based source line that starts the contiguous block.
+        pre_block_lines: Set of lines hosting PRE-style annotation
+            comments (``!>`` / ``!!``).
+
+    Returns:
+        The 1-based line number of the block's last contiguous member.
+    """
     while line + 1 in pre_block_lines:
         line += 1
     return line
@@ -175,6 +261,26 @@ def _assign(
     enclosing_type: str | None,
     scope: str | None,
 ) -> None:
+    """Record one ``(name, unit_text)`` attachment, detecting per-scope conflicts.
+
+    Mutates ``result`` in place. Derived-type fields are routed to
+    ``field_units``; module / routine variables update both the
+    scope-aware ``var_units_by_scope`` table and the flat
+    first-seen-wins ``var_units`` view, plus the token span and the
+    ``"explicit"`` provenance tag.
+
+    Args:
+        result: Attachment accumulator to mutate.
+        name: Variable or field name (case as scanned).
+        unit_text: Raw text of the unit annotation.
+        line: 1-based source line of the annotation token.
+        column: 1-based column of the annotation's leading delimiter.
+        end_column: 1-based column one past the closing delimiter.
+        enclosing_type: Derived-type name when ``name`` is a field,
+            else ``None`` for ordinary variable declarations.
+        scope: Lower-cased enclosing routine name, or ``None`` for
+            module-level / file-level declarations.
+    """
     if enclosing_type is not None:
         key = (enclosing_type, name)
         existing_f = result.field_units.get(key)
@@ -243,6 +349,14 @@ def attach(scan: ScanResult) -> AttachmentResult:
       annotations on the same name within a routine scope.
     - ``var_unit_sources`` — provenance pointer from each attached name
       back to the originating :class:`RawAnnotation`.
+
+    Args:
+        scan: Output of the stage-1 source scan, holding raw
+            annotations, declaration sites, the PRE-block line set,
+            and the routine-scope cover.
+
+    Returns:
+        The fully populated :class:`AttachmentResult`.
     """
     result = AttachmentResult(routine_scopes=scan.routine_scopes)
     for ann in scan.annotations:
@@ -322,13 +436,17 @@ _DIMLESS_DEFAULT_TYPES = frozenset({"integer", "logical", "character"})
 def _apply_intrinsic_defaults(
     result: AttachmentResult, declarations: tuple[DeclarationSite, ...]
 ) -> None:
-    """Fill in ``@unit{1}`` for unannotated INTEGER / LOGICAL / CHARACTER
-    declarations.
+    """Fill in ``@unit{1}`` for unannotated INTEGER / LOGICAL / CHARACTER declarations.
 
     Annotated declarations win — if the user wrote ``integer :: t  !<
-    @unit{s}`` we keep ``s``. Derived-type fields skip the default
-    (each field still needs an explicit annotation; the default would
-    interfere with U002 on the type-block).
+    @unit{s}`` the existing ``s`` annotation is kept. Derived-type
+    fields skip the default (each field still needs an explicit
+    annotation; the default would interfere with U002 on the
+    type-block).
+
+    Args:
+        result: Attachment accumulator to mutate in place.
+        declarations: Declaration sites from the stage-1 scan.
     """
     for decl in declarations:
         if decl.intrinsic_type not in _DIMLESS_DEFAULT_TYPES:

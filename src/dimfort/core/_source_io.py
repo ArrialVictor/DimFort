@@ -25,9 +25,18 @@ def discover_fortran_files(roots: list[Path]) -> list[Path]:
     """Recursively collect Fortran source files under ``roots``.
 
     Files passed directly are accepted regardless of extension match
-    (the user named them explicitly); directories are walked for
-    files whose suffix is in :data:`FORTRAN_EXTS`. Output is sorted
-    for determinism.
+    (the user named them explicitly); directories are walked recursively
+    for files whose suffix is in :data:`FORTRAN_EXTS`. Duplicates are
+    eliminated by resolved-path identity, and the output is sorted for
+    determinism.
+
+    Args:
+        roots: A list of file or directory paths. Non-file, non-directory
+            entries are silently skipped (matches the CLI's permissive
+            input handling).
+
+    Returns:
+        Sorted list of resolved absolute paths, each appearing once.
     """
     out: list[Path] = []
     seen: set[Path] = set()
@@ -54,7 +63,18 @@ def discover_fortran_files(roots: list[Path]) -> list[Path]:
 
 
 def read_text(path: str | os.PathLike[str]) -> str:
-    """Read a Fortran source file, tolerating non-UTF-8 encodings."""
+    """Read a Fortran source file, tolerating non-UTF-8 encodings.
+
+    Tries UTF-8 first and falls back to Latin-1, which losslessly
+    decodes any byte sequence. ASCII identifiers (module names, use
+    statements, keywords) survive either decoding intact.
+
+    Args:
+        path: Filesystem path to the source file.
+
+    Returns:
+        Decoded file contents as text.
+    """
     raw = Path(path).read_bytes()
     try:
         return raw.decode("utf-8")
