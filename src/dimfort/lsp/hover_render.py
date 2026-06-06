@@ -172,12 +172,13 @@ def _hover_signature(name: str, sig: FuncSig) -> str:
     return f"**{marker} DimFort**\n\n```\n{_sig_render_md(name, sig)}\n```"
 
 
-# Module hover caps. VSCode's hover popup is scrollable, so we
-# don't actually need to truncate to fit on screen — the cap is
-# only a safety belt against pathological re-export modules with
-# thousands of entries. Set well above realistic large-codebase module
-# sizes (≤ ~100 vars, ≤ ~50 procs); anything bigger gets the "more"
-# tail so the popup doesn't pretend to be authoritative.
+# Module hover caps. Some clients render hover popups scrollably
+# (VSCode); others (e.g. Neovim's default floating preview) do not —
+# the cap is a safety belt for both cases against pathological
+# re-export modules with thousands of entries. Set well above realistic
+# large-codebase module sizes (≤ ~100 vars, ≤ ~50 procs); anything
+# bigger gets the "more" tail so the popup doesn't pretend to be
+# authoritative.
 _MODULE_HOVER_VAR_LIMIT = 500
 _MODULE_HOVER_SIG_LIMIT = 100
 

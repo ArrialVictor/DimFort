@@ -3,7 +3,7 @@
 Assembles the cursor-following panel response: the expression tree at the
 cursor, one variable table per enclosing scope, the cursor-line diagnostics,
 and whole-file counts. Stateless — reads the last cached ``WorksetResult`` and
-computes on the fly. See docs/design/panel-info.md. ``server.py`` registers
+computes on the fly. See docs/design/shipped/panel-info.md. ``server.py`` registers
 the LSP feature and delegates here.
 
 Like the interactions handler, this parses a *fresh* tree from the live buffer
@@ -69,7 +69,7 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
 
     Returns:
         A dict matching the ``panelInfo`` wire format documented in
-        ``docs/design/panel-info.md`` (``expression``, ``scopes``,
+        ``docs/design/shipped/panel-info.md`` (``expression``, ``scopes``,
         ``imports``, back-compat ``scope`` / ``routine`` mirrors,
         ``diagnostics``, ``fileDiagnosticCounts``) or ``None`` when
         any precondition fails.
@@ -202,7 +202,7 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
     # unparseable statement collapses the whole routine into an ``ERROR``
     # node. Recover the enclosing scopes line-based from the surviving
     # header statements so the Scope section still lists the routine's
-    # declarations instead of blanking. See docs/design/panel-info.md.
+    # declarations instead of blanking. See docs/design/shipped/panel-info.md.
     if not scopes:
         recovered = recover_scopes(tree, source_bytes)
         chain = [
