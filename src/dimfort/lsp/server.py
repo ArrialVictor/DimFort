@@ -96,6 +96,7 @@ from dimfort.core.workspace_index import (
 from dimfort.lsp import (
     code_action,
     completion,
+    coverage,
     definition,
     hover,
     inlay,
@@ -1437,6 +1438,58 @@ def _interactions(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
         lock needed because that path parses fresh trees.
     """
     return interactions.resolve(ls, params)
+
+
+# ---------------------------------------------------------------------------
+# Coverage visualisation — thin delegations for the dimfort/lineStatus and
+# dimfort/coverageStats requests. The handlers forward to ``coverage.resolve``
+# / ``coverage.stats``; this file owns only the @server.feature registration.
+# See docs/design/future/coverage-visualization.md.
+# ---------------------------------------------------------------------------
+
+
+@server.feature("dimfort/lineStatus")
+def _line_status(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
+    """Implements ``dimfort/lineStatus``: per-line coverage status for a file.
+
+    Reads the per-line projection from the cached
+    :class:`~dimfort.core.multifile.WorksetResult` and returns one
+    entry per non-out-of-scope line. Lines absent from the response
+    are out-of-scope (no decoration).
+
+    Args:
+        ls: Active language server.
+        params: Custom request params; an object with at least
+            ``uri``.
+
+    Returns:
+        A dict matching the coverage-visualisation wire format
+        (``uri``, ``lines``) or ``None`` when ``uri`` is missing or
+        does not map to a known path.
+    """
+    return coverage.resolve(ls, params)
+
+
+@server.feature("dimfort/coverageStats")
+def _coverage_stats(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
+    """Implements ``dimfort/coverageStats``: aggregate coverage counts.
+
+    With ``uri`` in ``params``, returns the per-tier breakdown for
+    that file. Without ``uri``, returns the workspace-wide breakdown
+    across every file in the cached workset.
+
+    Args:
+        ls: Active language server.
+        params: Custom request params; an optional ``uri`` to scope
+            the response.
+
+    Returns:
+        A dict with ``scope``, optional ``uri``, ``files`` (per-file
+        rows), and ``total`` (sum across the rows), matching §8.2 of
+        the coverage-visualisation spec. ``None`` when ``uri`` was
+        supplied but did not map to a known path.
+    """
+    return coverage.stats(ls, params)
 
 
 # ---------------------------------------------------------------------------

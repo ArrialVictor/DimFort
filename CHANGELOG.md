@@ -4,6 +4,20 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### Added
+
+- **Coverage visualisation (server-side)**: new `dimfort/lineStatus`
+  and `dimfort/coverageStats` LSP methods, plus a new `dimfort
+  coverage` CLI subcommand. The four-tier projection (green / yellow
+  / red / blue + no-decoration) is computed from the cached workset
+  check result without re-running the checker. New module at
+  `core/coverage.py` carries the pure projection logic; the LSP
+  wrapper in `lsp/coverage.py` serialises tree traversal under
+  `state.ts_handler_lock`. CLI flags: `--summary`, `--by-module`,
+  `--json`, `--no-color`. Companion-side rendering work follows in
+  separate PRs. See `docs/design/future/coverage-visualization.md`
+  for the design spec.
+
 ### Fixed
 
 - **Stale doc-path references in `lsp/` comments**: four `#` comments

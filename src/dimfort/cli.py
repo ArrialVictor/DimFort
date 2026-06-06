@@ -21,8 +21,12 @@ import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from dimfort import __version__
+
+if TYPE_CHECKING:
+    from dimfort.core.coverage import WorksetCoverage
 
 _BOLD = "\033[1m"
 _RED = "\033[31m"
@@ -178,6 +182,41 @@ def build_parser() -> argparse.ArgumentParser:
     # but we accept it so the server doesn't crash on launch.
     lsp.add_argument(
         "--stdio", action="store_true", help=argparse.SUPPRESS
+    )
+
+    cov = sub.add_parser(
+        "coverage",
+        help=(
+            "Report per-file and workset coverage tier counts (green / "
+            "yellow / red / blue / out-of-scope). Reuses the check "
+            "pipeline; output is a per-file table plus a workset total."
+        ),
+    )
+    cov.add_argument(
+        "paths", nargs="+", help="Fortran source files / directories to scan."
+    )
+    cov.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Disable ANSI colour (also auto-disabled outside a TTY).",
+    )
+    cov.add_argument(
+        "--summary",
+        action="store_true",
+        help="Print only the workset total, omit per-file rows.",
+    )
+    cov.add_argument(
+        "--by-module",
+        action="store_true",
+        help=(
+            "Group by Fortran module instead of per-file. The workset "
+            "total stays the same; only the row breakdown changes."
+        ),
+    )
+    cov.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON instead of the human-readable table.",
     )
 
     return parser
@@ -493,6 +532,192 @@ def _run_interactions(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# `coverage` subcommand
+# ---------------------------------------------------------------------------
+
+
+def _run_coverage(args: argparse.Namespace) -> int:
+    """Per-file and workset coverage report.
+
+    Runs the check pipeline over ``args.paths``, projects each file's
+    diagnostics + annotation surface into the four coverage tiers, and
+    prints either a human-readable table or JSON.
+
+    Args:
+        args: Parsed argparse namespace for the ``coverage`` subcommand.
+
+    Returns:
+        ``0`` on success; ``2`` for usage errors (missing path / no
+        Fortran sources / invalid config), matching the contract used
+        by the other subcommands.
+    """
+    from dimfort.config import load_config
+    from dimfort.core import unit_config
+    from dimfort.core._source_io import FORTRAN_EXTS, discover_fortran_files
+    from dimfort.core.coverage import (
+        FileCoverage,
+        aggregate_file,
+        aggregate_workset,
+        project_file,
+    )
+    from dimfort.core.multifile import check_files
+    from dimfort.core.unit_patterns import (
+        compile_structured_patterns,
+        compile_unit_patterns,
+    )
+
+    roots: list[Path] = []
+    for raw in args.paths:
+        p = Path(raw)
+        if not p.exists():
+            print(f"dimfort: path not found: {p}", file=sys.stderr)
+            return 2
+        roots.append(p)
+
+    paths = discover_fortran_files(roots)
+    if not paths:
+        print(
+            "dimfort: no Fortran sources found "
+            f"(looked for {sorted(FORTRAN_EXTS)})",
+            file=sys.stderr,
+        )
+        return 2
+
+    config = load_config(roots[0])
+    if config.load_error is not None:
+        sys.stderr.write(
+            f"error: invalid config at {config.config_path}: "
+            f"{config.load_error}\n"
+        )
+        return 2
+    if config.units_file is not None:
+        unit_config.install_default(config.units_file)
+
+    result = check_files(
+        paths,
+        cpp_defines=config.cpp_defines,
+        include_paths=config.include_paths,
+        external_modules=frozenset(config.external_modules),
+        units_file=config.units_file,
+        diagnostic_severities=config.diagnostic_severities,
+        scale_mode=config.scale_mode,
+        unit_patterns=compile_unit_patterns(config.unit_comment_delimiters),
+        assume_patterns=compile_structured_patterns(
+            config.unit_assume_comment_delimiters
+        ),
+        affine_patterns=compile_structured_patterns(
+            config.unit_affine_comment_delimiters
+        ),
+    )
+
+    rows: list[FileCoverage] = []
+    for p in paths:
+        resolved = p.resolve()
+        statuses = project_file(resolved, result)
+        tree_entry = result.trees.get(resolved)
+        total_lines = (
+            tree_entry[1].count(b"\n") + 1 if tree_entry is not None else 0
+        )
+        rows.append(aggregate_file(resolved, statuses, total_lines=total_lines))
+
+    workset = aggregate_workset(rows)
+
+    if args.json:
+        _emit_coverage_json(workset)
+        return 0
+
+    color = _color_enabled(args.no_color)
+    _emit_coverage_table(workset, color=color, summary_only=args.summary)
+    return 0
+
+
+def _emit_coverage_table(
+    workset: WorksetCoverage,
+    *,
+    color: bool,
+    summary_only: bool,
+) -> None:
+    """Print the human-readable per-file + workset-total coverage table.
+
+    Args:
+        workset: Aggregated coverage record produced by
+            :func:`aggregate_workset`.
+        color: Whether to apply ANSI colouring.
+        summary_only: If true, skip the per-file rows and print only
+            the workset-total footer.
+    """
+    header_text = (
+        "File                                          "
+        "OK  Warn  Fire  Unpars   Out  Coverage"
+    )
+    if color:
+        print(f"{_BOLD}{header_text}{_RESET}")
+    else:
+        print(header_text)
+
+    if not summary_only:
+        # Truncate path columns from the left to keep the table readable
+        # on terminals narrower than the path. We render up to 44 chars
+        # of the path, with leading "…" if truncated.
+        max_path = 44
+        for f in workset.files:
+            shown = str(f.path)
+            if len(shown) > max_path:
+                shown = "…" + shown[-(max_path - 1):]
+            print(
+                f"{shown.ljust(max_path)}  "
+                f"{f.ok:>4}  {f.warn:>4}  {f.fire:>4}  {f.unparsed:>6}  "
+                f"{f.out:>4}  {f.coverage_pct:>5.1f}%"
+            )
+
+    total_label = "Workset total"
+    line = (
+        f"{total_label.ljust(44)}  "
+        f"{workset.ok:>4}  {workset.warn:>4}  {workset.fire:>4}  "
+        f"{workset.unparsed:>6}  {workset.out:>4}  "
+        f"{workset.coverage_pct:>5.1f}%"
+    )
+    if color:
+        print(f"{_BOLD}{line}{_RESET}")
+    else:
+        print(line)
+
+
+def _emit_coverage_json(workset: WorksetCoverage) -> None:
+    """Print the JSON form of the coverage report on stdout.
+
+    Args:
+        workset: Aggregated coverage record produced by
+            :func:`aggregate_workset`.
+    """
+    import json as _json
+
+    payload = {
+        "files": [
+            {
+                "path": str(f.path),
+                "ok": f.ok,
+                "warn": f.warn,
+                "fire": f.fire,
+                "unparsed": f.unparsed,
+                "out": f.out,
+                "coverage_pct": f.coverage_pct,
+            }
+            for f in workset.files
+        ],
+        "total": {
+            "ok": workset.ok,
+            "warn": workset.warn,
+            "fire": workset.fire,
+            "unparsed": workset.unparsed,
+            "out": workset.out,
+            "coverage_pct": workset.coverage_pct,
+        },
+    }
+    print(_json.dumps(payload, indent=2))
+
+
+# ---------------------------------------------------------------------------
 # Top-level dispatch
 # ---------------------------------------------------------------------------
 
@@ -518,6 +743,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_check(args)
     if args.command == "interactions":
         return _run_interactions(args)
+    if args.command == "coverage":
+        return _run_coverage(args)
     if args.command == "lsp":
         from dimfort.lsp.server import run_stdio
 
