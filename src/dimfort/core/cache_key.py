@@ -1,4 +1,4 @@
-"""Cache key derivation for the content-hash workspace cache.
+r"""Cache key derivation for the content-hash workspace cache.
 
 A per-file cache key is the SHA-256 of length-prefixed sections:
 
@@ -134,14 +134,14 @@ PER_FILE_CONFIG_KEYS: tuple[str, ...] = (
 
 
 def _section(tag: bytes, body: bytes) -> bytes:
-    """Length-prefix a section so concatenations are unambiguous.
+    r"""Length-prefix a section so concatenations are unambiguous.
 
     Args:
         tag: Three-byte section tag (e.g. ``b"SRC"``).
         body: Raw section payload.
 
     Returns:
-        ``tag + b"\\0" + 8-byte big-endian length + body``.
+        ``tag + b"\0" + 8-byte big-endian length + body``.
     """
     return tag + b"\0" + len(body).to_bytes(8, "big") + body
 

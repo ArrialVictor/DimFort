@@ -54,7 +54,12 @@ A patch that breaks tests or trips ruff will not be merged.
 - Comments should explain **why**, not what. Reading the code
   tells you what; the comment is for the non-obvious constraint,
   invariant, or trade-off.
-- Public API additions need a docstring.
+- Public API additions need a docstring in **Google style** (`Args:` /
+  `Returns:` / `Raises:` / `Yields:` / `Attributes:` / `Note:` as
+  appropriate). Enforced by `ruff` via the `D` ruleset with
+  `convention = "google"`; `ruff check .` will fire on missing or
+  malformed docstrings. Tests under `tests/` and dev utilities under
+  `scripts/` are exempt.
 - New diagnostic codes are registered in `core/symbols.py`'s
   `CODES` dict.
 - Performance work is welcome; please include before/after numbers

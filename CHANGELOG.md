@@ -4,6 +4,22 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### Added
+
+- **Docstring style enforcement**: ruff now selects the `D` rule set
+  with `[tool.ruff.lint.pydocstyle] convention = "google"`. Missing
+  or malformed docstrings in `src/dimfort/` fire under `ruff check .`,
+  keeping the post-sweep Google style from drifting. Tests under
+  `tests/` and dev utilities under `scripts/` are exempt; the empty
+  `lsp/__init__.py`, the side-effect `core/__init__.py` shim, and the
+  thin `__main__.py` entry stub carry narrow per-file exemptions.
+  `CONTRIBUTING.md` tightened to mention the convention. Two
+  previously-missed public functions in `cli.py` (`build_parser`,
+  `main`) gained their docstrings; three `D301` fires on docstrings
+  containing literal backslashes gained their `r"""` prefix; one
+  `D205` fire on the module docstring of `core/unit_patterns.py` was
+  reflowed to a single-line summary.
+
 ### Changed
 
 - **Top-level docstring sweep**: module + class + public-function
