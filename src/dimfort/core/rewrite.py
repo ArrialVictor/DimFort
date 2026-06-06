@@ -37,6 +37,18 @@ _DIGIT_SUFFIX_RE = re.compile(r"([a-zA-Z]+)(\d+)")
 
 
 def _digit_suffix_to_caret(s: str) -> str:
+    """Insert ``^`` between an alphabetic identifier and its trailing digits.
+
+    Implements the spec §12.2 rule. ``kg/m3`` becomes ``kg/m^3``;
+    already-correct strings like ``m^2`` are untouched. Idempotent —
+    applying twice yields the same result.
+
+    Args:
+        s: Candidate unit string captured from a comment.
+
+    Returns:
+        Rewritten string with caret-separated exponents.
+    """
     return _DIGIT_SUFFIX_RE.sub(r"\1^\2", s)
 
 
@@ -48,14 +60,29 @@ RULES: tuple[Callable[[str], str], ...] = (
 
 
 def suggest_rewrite(captured: str, table: UnitTable | None = None) -> str | None:
-    """Run the rewrite pipeline on ``captured``; return the
-    transformed string iff it differs from the input AND parses
-    cleanly against ``table``. Otherwise return ``None``.
+    """Run the rewrite pipeline on ``captured`` and return a usable suggestion.
 
-    A ``None`` table falls back to ``units.DEFAULT_TABLE``; if the
-    default table isn't installed yet (vanishingly rare in practice
-    — would mean ``unit_config`` was never imported), the function
-    returns ``None`` rather than raising.
+    Each rule in :data:`RULES` is applied in list order, feeding its
+    output to the next rule. A suggestion is emitted only when (a) the
+    transformed string differs from the input AND (b) it parses cleanly
+    against ``table``.
+
+    Args:
+        captured: Raw unit text captured from a unit-pattern comment
+            (e.g. the inside of ``@unit{...}``).
+        table: Unit table to parse against. ``None`` falls back to
+            ``units.DEFAULT_TABLE``; if the default table itself is not
+            yet installed (vanishingly rare — would mean ``unit_config``
+            was never imported), the function returns ``None`` rather
+            than raising.
+
+    Returns:
+        Transformed unit string suitable for a "did you mean ...?"
+        prompt, or ``None`` if no rule changed the input, the result
+        was unchanged, or the result still failed to parse. Parse
+        exceptions of any kind (``UnitError``, ``ZeroDivisionError``
+        from ``m^(2/0)`` reductions, ``IndexError`` on malformed token
+        streams) are swallowed and treated as "no useful suggestion".
     """
     from dimfort.core import units as _units_mod
     active = table if table is not None else _units_mod.DEFAULT_TABLE

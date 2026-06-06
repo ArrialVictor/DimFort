@@ -49,7 +49,14 @@ from dimfort.core.unit_patterns import (
 
 
 class AnnotationKind(StrEnum):
-    """Where the annotation attaches relative to its declaration."""
+    """Where the annotation attaches relative to its declaration.
+
+    Attributes:
+        PRE: Comment marked ``!>`` or ``!!`` preceding the declaration
+            (and possibly continued by further ``!!`` lines).
+        POST: Comment marked ``!<`` trailing the declaration on the
+            same source line.
+    """
 
     PRE = "pre"   # !> or !! preceding the declaration
     POST = "post"  # !< trailing the declaration
@@ -57,7 +64,21 @@ class AnnotationKind(StrEnum):
 
 @dataclass(frozen=True)
 class RawAnnotation:
-    """One ``@unit{...}`` occurrence as found by the scanner."""
+    """One ``@unit{...}`` occurrence as found by the scanner.
+
+    Attributes:
+        kind: Whether the annotation precedes (PRE) or trails (POST) its
+            target declaration.
+        line: 1-based physical line number of the comment.
+        column: 1-based column where the matched opening delimiter
+            begins.
+        unit_text: Inner capture between the matched pattern's open and
+            close delimiters (configurable since 0.2.2), stripped of
+            surrounding whitespace.
+        end_column: 1-based column one past the closing delimiter.
+            Defaults to ``0`` for back-compat callers that only need
+            ``column``.
+    """
 
     kind: AnnotationKind
     line: int        # 1-based physical line of the comment
@@ -75,8 +96,18 @@ class RawAssume:
     The escape hatch: on an assignment line it tells the checker to stop
     deriving the RHS unit (suppressing D1.4 and any interior fire) and
     instead treat the result as ``unit_text``, still consistency-checked
-    against the LHS. ``reason`` is mandatory (a category + free text, e.g.
-    ``empirical-fit: Brandes 2007``) so every assumption is auditable.
+    against the LHS. ``reason`` is mandatory (a category plus free text,
+    e.g. ``empirical-fit: Brandes 2007``) so every assumption is
+    auditable.
+
+    Attributes:
+        line: 1-based physical line of the comment.
+        column: 1-based column where the matched opening delimiter
+            begins.
+        end_column: 1-based column just past the closing delimiter
+            (exclusive end).
+        unit_text: The asserted unit (e.g. ``"kg/m^3"``).
+        reason: Mandatory justification (a category plus free text).
     """
 
     line: int        # 1-based physical line of the comment
@@ -94,9 +125,18 @@ class RawAffineConv:
     an assignment line it asserts the statement converts a ``src``-typed
     quantity into the ``tgt`` frame (e.g. ``degC -> K``). Unlike
     ``@unit_assume`` it carries no reason and needs no registry — the
-    checker *verifies* the arithmetic against the known offsets and errors
-    (S003) if it doesn't fit. ``->`` is primary; ``,`` is accepted as a
-    synonym separator.
+    checker *verifies* the arithmetic against the known offsets and
+    errors (S003) if it doesn't fit. ``->`` is primary; ``,`` is accepted
+    as a synonym separator.
+
+    Attributes:
+        line: 1-based physical line of the comment.
+        column: 1-based column where the matched opening delimiter
+            begins.
+        src: Source unit name (e.g. ``"degC"``).
+        tgt: Target unit name (e.g. ``"K"``).
+        end_column: 1-based column one past the closing delimiter.
+            Defaults to ``0`` for back-compat callers.
     """
 
     line: int        # 1-based physical line of the comment
@@ -108,7 +148,19 @@ class RawAffineConv:
 
 @dataclass(frozen=True)
 class MalformedAnnotation:
-    """A ``@unit`` invocation that the scanner could not parse."""
+    """A ``@unit``-family invocation that the scanner could not parse.
+
+    Attributes:
+        line: 1-based physical line of the offending comment.
+        column: 1-based column of the open delimiter that started the
+            malformed match.
+        reason: Human-readable explanation surfaced through the U001
+            emitter.
+        end_column: 1-based column one past the closing delimiter of the
+            offending token. When ``0`` (back-compat default), the U001
+            emitter widens to ``column + 1`` so the squiggle covers at
+            least one character.
+    """
 
     line: int
     column: int
@@ -121,14 +173,25 @@ class MalformedAnnotation:
 
 @dataclass(frozen=True)
 class WrongStatementKind:
-    """A directive matched a comment but landed on a statement of
-    the wrong kind (spec §8.3 → U023).
+    """A directive landed on a statement of the wrong kind (spec §8.3 → U023).
 
     For example, ``@unit_assume`` on a ``real :: x`` declaration, or
     ``@unit`` on a ``v = 1.0`` assignment. The directive is dropped
-    (not attached). The diagnostic emitter names the directive
-    found, the statement kind it landed on, and which directive
-    would attach correctly there.
+    (not attached). The diagnostic emitter names the directive found,
+    the statement kind it landed on, and which directive would attach
+    correctly there.
+
+    Attributes:
+        line: 1-based physical line of the comment carrying the
+            directive.
+        column: 1-based column of the matched opening delimiter.
+        end_column: 1-based column one past the closing delimiter.
+        directive_found: Name of the directive that fired (e.g.
+            ``"@unit_assume"``).
+        landed_on: Kind of statement actually present at the target
+            line — ``"declaration"`` or ``"assignment"``.
+        expected_directive: Name of the directive that would have
+            attached correctly to ``landed_on``.
     """
 
     line: int
@@ -141,12 +204,27 @@ class WrongStatementKind:
 
 @dataclass(frozen=True)
 class PatternConflict:
-    """Two configured patterns matched the same comment with
-    disagreeing capture text (spec §8.2 → U021).
+    """Two configured patterns matched the same comment with disagreeing capture text.
 
-    The first-listed pattern's capture is the one applied to the
-    statement; this record is the input the U021 emitter uses to
-    point the user at both captures.
+    Spec §8.2 → U021. The first-listed pattern's capture is the one
+    applied to the statement; this record is the input the U021 emitter
+    uses to point the user at both captures.
+
+    Attributes:
+        line: 1-based physical line of the comment.
+        column: 1-based column of the LATER pattern's opening
+            delimiter.
+        end_column: 1-based column one past its closing delimiter.
+        directive: One of ``"@unit"``, ``"@unit_assume"``,
+            ``"@unit_affine_conversion"``.
+        first_unit_text: Winning capture (from the first-listed
+            pattern).
+        second_unit_text: Losing capture (from the later-listed
+            pattern).
+        first_pattern_index: Position of the winning pattern in the
+            configured pattern list.
+        second_pattern_index: Position of the losing pattern in the
+            configured pattern list.
     """
 
     line: int
@@ -165,18 +243,26 @@ class PatternConflict:
 
 
 def _comment_start(line: str) -> int | None:
-    """Column of the first ``!`` that opens a comment, or ``None``.
+    """Find the column of the first ``!`` that opens a comment.
 
     Tracks single- and double-quoted strings so a ``!`` inside a literal
     isn't mistaken for a comment marker. Doubled quotes (``''`` / ``""``)
     inside a string are the Fortran escape and don't close it.
 
-    Fast path: the vast majority of Fortran lines contain no string
-    literal, so a single ``str.find("!")`` is enough. Only when a quote
-    is actually present do we fall back to the quote-aware character
-    scan. Profiling on a large workspace (1.75M calls) showed this function and its
-    per-iteration ``len(line)`` accounted for ~9 seconds; the fast
-    path drops it under 1.
+    Args:
+        line: One physical source line, without the trailing newline.
+
+    Returns:
+        Zero-based column of the comment-opening ``!``, or ``None`` if
+        the line carries no comment.
+
+    Note:
+        Fast path — the vast majority of Fortran lines contain no
+        string literal, so a single ``str.find("!")`` is enough. Only
+        when a quote is actually present do we fall back to the quote-
+        aware character scan. Profiling on a large workspace (1.75M
+        calls) showed this function and its per-iteration ``len(line)``
+        accounted for ~9 seconds; the fast path drops it under 1.
     """
     if "'" not in line and '"' not in line:
         idx = line.find("!")
@@ -212,11 +298,18 @@ def _comment_start(line: str) -> int | None:
 _DOX_MARKER = {">": AnnotationKind.PRE, "!": AnnotationKind.PRE, "<": AnnotationKind.POST}
 
 def _doxygen_kind(comment_text: str) -> AnnotationKind | None:
-    """Classify a comment (everything after the opening ``!``).
+    """Classify a comment by its Doxygen marker.
 
-    Returns ``None`` for plain ``!`` comments. The Doxygen marker
-    character is consumed; the caller scans the rest of the line for
-    ``@unit{...}``.
+    Args:
+        comment_text: Everything in the source line after the opening
+            ``!`` character.
+
+    Returns:
+        :class:`AnnotationKind.PRE` for ``!>`` or ``!!``,
+        :class:`AnnotationKind.POST` for ``!<``, and ``None`` for plain
+        ``!`` comments. The Doxygen marker character is consumed; the
+        caller scans the rest of the line for the configured unit
+        directive.
     """
     if not comment_text:
         return None
@@ -232,10 +325,17 @@ _AFFINE_DIR_NAME = "@unit_affine_conversion"
 
 
 def _open_implies_brace(pat: UnitPattern | StructuredPattern) -> bool:
-    """A pattern that ends with ``{`` triggers the historical
-    ``unclosed '{' in @unit`` malformed-annotation when an opener is
-    found without a closing brace. Patterns with other closers (e.g.
-    bracket-style ``[``/``]``) don't fire that diagnostic.
+    """Report whether a pattern's open delimiter ends with ``{``.
+
+    Args:
+        pat: A configured ``@unit{}``-family pattern.
+
+    Returns:
+        ``True`` when the open delimiter ends with ``{``. Such patterns
+        trigger the historical ``unclosed '{' in @unit`` malformed-
+        annotation when an opener is found without a closing brace.
+        Patterns with other closers (e.g. bracket-style ``[``/``]``)
+        don't fire that diagnostic.
     """
     return pat.open.endswith("{")
 
@@ -243,9 +343,21 @@ def _open_implies_brace(pat: UnitPattern | StructuredPattern) -> bool:
 def _find_unsupported_open(
     body: str, patterns: tuple[UnitPattern | StructuredPattern, ...]
 ) -> tuple[int, UnitPattern | StructuredPattern] | None:
-    """If ``body`` contains a ``{``-style pattern's open without a
-    matching close, return ``(index, pattern)``. Used to preserve the
-    pre-0.2.2 ``unclosed '{' in @unit`` malformed-annotation behavior.
+    """Detect a ``{``-style pattern opener with no matching close.
+
+    Args:
+        body: Comment body to scan.
+        patterns: Configured patterns to consider; only patterns whose
+            open ends with ``{`` are tested.
+
+    Returns:
+        ``(index, pattern)`` for the first such unclosed opener, where
+        ``index`` is the position of the open within ``body``. ``None``
+        if no unclosed ``{``-style opener is present.
+
+    Note:
+        Used to preserve the pre-0.2.2 ``unclosed '{' in @unit``
+        malformed-annotation behavior.
     """
     for pat in patterns:
         if not _open_implies_brace(pat):
@@ -265,11 +377,26 @@ def _select_unit(
     list[RawAnnotation], list[MalformedAnnotation], list[PatternConflict],
     int | None,
 ]:
-    """Pattern-driven ``@unit{}``-family extractor (spec §2, §8).
+    """Run the ``@unit{}``-family extractor on a single comment body.
 
-    The trailing ``int | None`` is the winner pattern's index in
-    ``patterns`` when one was selected — the caller uses it to apply
-    the spec §6 multi-var-skip rule.
+    Implements spec §2 and §8 against the configured pattern list.
+
+    Args:
+        body: Comment body text (already stripped of the leading ``!``
+            and any Doxygen marker character).
+        line_no: 1-based physical line number of the comment.
+        body_col_offset: 1-based column at which ``body[0]`` sits in
+            the original source line.
+        kind: PRE or POST classification of the comment.
+        patterns: Configured ``@unit{}``-family patterns to try, in
+            precedence order.
+
+    Returns:
+        A ``(annotations, errors, conflicts, winner_idx)`` tuple. The
+        trailing ``int | None`` is the winning pattern's index within
+        ``patterns`` when one was selected — the caller uses it to
+        apply the spec §6 multi-var-skip rule. ``None`` if no pattern
+        matched.
     """
     if not patterns:
         return [], [], [], None
@@ -339,6 +466,23 @@ def _select_assume(
 ) -> tuple[
     list[RawAssume], list[MalformedAnnotation], list[PatternConflict]
 ]:
+    """Run the ``@unit_assume{}``-family extractor on a comment body.
+
+    Args:
+        body: Comment body text (already stripped of the leading ``!``
+            and any Doxygen marker character).
+        line_no: 1-based physical line number of the comment.
+        body_col_offset: 1-based column at which ``body[0]`` sits in
+            the original source line.
+        patterns: Configured ``@unit_assume{}``-family patterns to try,
+            in precedence order.
+
+    Returns:
+        A ``(assumes, errors, conflicts)`` tuple. ``errors`` may carry
+        a malformed-annotation report when an opener was found but the
+        body had no matching close, an empty unit, an empty reason, or
+        a missing separator.
+    """
     if not patterns:
         return [], [], []
     hits_per_pattern: list[tuple[int, StructuredPattern, list[PatternMatch]]] = []
@@ -424,6 +568,24 @@ def _select_affine(
 ) -> tuple[
     list[RawAffineConv], list[MalformedAnnotation], list[PatternConflict]
 ]:
+    """Run the ``@unit_affine_conversion{}``-family extractor on a comment body.
+
+    Args:
+        body: Comment body text (already stripped of the leading ``!``
+            and any Doxygen marker character).
+        line_no: 1-based physical line number of the comment.
+        body_col_offset: 1-based column at which ``body[0]`` sits in
+            the original source line.
+        patterns: Configured ``@unit_affine_conversion{}``-family
+            patterns to try, in precedence order.
+
+    Returns:
+        A ``(affines, errors, conflicts)`` tuple. ``,`` is accepted as
+        a legacy synonym for ``->`` on the canonical
+        ``@unit_affine_conversion{`` open; that compatibility path is
+        handled here rather than plumbed through
+        :class:`StructuredPattern`.
+    """
     if not patterns:
         return [], [], []
     hits_per_pattern: list[tuple[int, StructuredPattern, list[PatternMatch]]] = []
@@ -543,7 +705,31 @@ def _select_affine(
 
 @dataclass(frozen=True)
 class DeclarationSite:
-    """A single Fortran declaration (possibly continued across lines)."""
+    """A single Fortran declaration (possibly continued across lines).
+
+    Attributes:
+        line_start: 1-based physical line carrying the type-spec.
+        line_end: 1-based physical line of the last line of the
+            statement (after any ``&``-continuations).
+        names: Variable names declared on the statement, in source
+            order.
+        enclosing_type: Name of the enclosing ``type :: …`` block when
+            this declaration is a field of a derived type, else
+            ``None``.
+        scope: Lower-cased name of the innermost enclosing
+            ``subroutine`` / ``function``. ``None`` for declarations at
+            module or file top level. Used by stage 2 (``attach``) to
+            key annotations per scope so same-named arguments in two
+            routines don't collide.
+        intrinsic_type: Lower-cased intrinsic type qualifier
+            (``real``, ``integer``, ``logical``, ``character``,
+            ``complex``, ``double precision``, ``type``), or ``None``
+            if not detected. Used by ``attach`` to inject an implicit
+            dimensionless default for unannotated ``integer``
+            declarations (counts / indices / loop iterators) so the
+            U005 firehose is restricted to REAL variables where unit
+            consistency actually matters.
+    """
 
     line_start: int            # 1-based: the line containing the type-spec
     line_end: int              # 1-based: the last physical line of the statement
@@ -566,6 +752,48 @@ class DeclarationSite:
 
 @dataclass(frozen=True)
 class ScanResult:
+    """Aggregated output of one source-file scan.
+
+    Bundles every annotation, declaration, directive, and diagnostic
+    seed surfaced by :func:`scan_text`. Stage 2 (:mod:`dimfort.core.attach`)
+    joins ``annotations`` to ``declarations`` by physical line range;
+    higher layers consume the directive streams and the malformed /
+    conflict / wrong-kind reports.
+
+    Attributes:
+        annotations: Every ``@unit{...}`` occurrence in textual order.
+        errors: Malformed-annotation seeds surfaced by U001 / U021 /
+            U023 emitters downstream.
+        pre_block_lines: Lines whose comment starts with ``!>`` or
+            ``!!`` — used to find where a PRE block ends so it can be
+            attached to the next declaration. POST (``!<``) is treated
+            as one-line and is NOT included here.
+        declarations: Every declaration statement found in the source,
+            in textual order.
+        routine_scopes: Byte-range cover of every ``subroutine`` /
+            ``function`` in the file as ``(start_byte, end_byte,
+            name_lc)``. Sorted by ``start_byte`` so the checker can
+            bisect a node's byte offset to find its enclosing routine
+            scope.
+        assumes: Every ``@unit_assume{...}`` occurrence (escape-hatch
+            directive).
+        affine_conversions: Every ``@unit_affine_conversion{...}``
+            occurrence.
+        pattern_conflicts: Conflicts between configured patterns (spec
+            §8.2). Populated when more than one pattern matches a
+            comment with disagreeing capture text. Empty for the
+            default single-pattern config. Consumed by the U021
+            emitter.
+        wrong_statement_kinds: Wrong-statement-kind events (spec §8.3
+            → U023). A directive landed on a statement of a kind it
+            does not target; the directive is dropped.
+        assignment_line_ranges: Line ranges (1-based, inclusive) of
+            every ``assignment_statement`` in the source. Used to
+            distinguish "wrong statement kind here" (U023) from "no
+            statement here at all" (U006 orphan) for ``@unit{}``
+            annotations that don't find a declaration.
+    """
+
     annotations: tuple[RawAnnotation, ...]
     errors: tuple[MalformedAnnotation, ...]
     # Lines whose comment starts with `!>` or `!!` — used to find where a
@@ -606,14 +834,29 @@ def scan_text(
     assume_patterns: tuple[StructuredPattern, ...] = DEFAULT_ASSUME_PATTERNS,
     affine_patterns: tuple[StructuredPattern, ...] = DEFAULT_AFFINE_PATTERNS,
 ) -> ScanResult:
-    """Scan a single Fortran source string for annotations + declarations.
+    """Scan a single Fortran source string for annotations and declarations.
 
-    Pattern lists default to the canonical ``@unit{...}`` etc. forms
-    so callers with no project config get bit-for-bit pre-0.2.2
-    behavior — with one documented expansion (spec §10): a bare
-    ``!`` comment containing a default-pattern match is now eligible
-    at trailing-on-decl-line and standalone-immediately-above-decl
-    positions.
+    Args:
+        source: Full text of one Fortran source file.
+        unit_patterns: Configured ``@unit{}``-family patterns, in
+            precedence order. Defaults to the canonical pattern.
+        assume_patterns: Configured ``@unit_assume{}``-family patterns,
+            in precedence order. Defaults to the canonical pattern.
+        affine_patterns: Configured ``@unit_affine_conversion{}``-family
+            patterns, in precedence order. Defaults to the canonical
+            pattern.
+
+    Returns:
+        A :class:`ScanResult` carrying every annotation, declaration,
+        directive, and diagnostic seed surfaced by the scan.
+
+    Note:
+        Pattern lists default to the canonical ``@unit{...}`` etc.
+        forms so callers with no project config get bit-for-bit
+        pre-0.2.2 behavior — with one documented expansion (spec §10):
+        a bare ``!`` comment containing a default-pattern match is now
+        eligible at trailing-on-decl-line and standalone-immediately-
+        above-decl positions.
     """
     lines = source.splitlines()
     declarations, routine_scopes, assignment_ranges = _scan_declarations(source)
@@ -643,6 +886,7 @@ def scan_text(
     wrong_statement_kinds: list[WrongStatementKind] = []
 
     def _line_in_decl(ln: int) -> bool:
+        """Return ``True`` if line ``ln`` is covered by a declaration."""
         return ln in decl_covered
 
     for line_no, line in enumerate(lines, start=1):
@@ -751,16 +995,34 @@ def _classify_plain_comment(
     assignment_starts: frozenset[int],
     assignment_covered: frozenset[int],
 ) -> AnnotationKind | None:
-    """Return POST/PRE/None for a plain ``!`` comment per spec §3 / §5.
+    """Classify a plain ``!`` comment per spec §3 / §5.
 
-    POST: trailing on a statement-bearing line — a declaration (for
-    ``@unit{}``) or an assignment (for ``@unit_assume`` /
-    ``@unit_affine_conversion``). Per spec §5, eligibility is the
-    union; the kind-correctness check (§8.3 → U023) happens after
-    extraction.
+    Args:
+        line: The full source line containing the comment.
+        col: Zero-based column of the comment-opening ``!``.
+        line_no: 1-based physical line number of the comment.
+        decl_starts: Map of 1-based line → declaration starting on
+            that line.
+        decl_covered: Map of 1-based line → declaration covering that
+            line (including continuation lines).
+        assignment_starts: 1-based lines on which an
+            ``assignment_statement`` begins.
+        assignment_covered: 1-based lines covered by an
+            ``assignment_statement`` (including continuation lines).
 
-    PRE: standalone on its own line (only whitespace before ``!``)
-    AND the very next line begins a declaration or assignment.
+    Returns:
+        :class:`AnnotationKind.POST` when the comment trails a
+        statement-bearing line — a declaration (for ``@unit{}``) or an
+        assignment (for ``@unit_assume`` / ``@unit_affine_conversion``).
+        :class:`AnnotationKind.PRE` when the comment is standalone on
+        its own line (only whitespace before ``!``) AND the very next
+        line begins a declaration or assignment. ``None`` if the plain
+        ``!`` comment is not in an eligible position.
+
+    Note:
+        Per spec §5, eligibility is the union of declaration- and
+        assignment-targeted positions; the kind-correctness check
+        (§8.3 → U023) happens after extraction.
     """
     is_standalone = not line[:col].strip()
     if not is_standalone:
@@ -808,7 +1070,16 @@ _NAME_WRAPPERS = {"sized_declarator", "init_declarator"}
 
 
 def _ts_decl_names(decl_node: Node) -> list[str]:
-    """Return the variable names declared by a ``variable_declaration``."""
+    """Return the variable names declared by a ``variable_declaration``.
+
+    Args:
+        decl_node: A tree-sitter ``variable_declaration`` node.
+
+    Returns:
+        Names of the declared entities, in source order. Identifiers
+        inside attribute expressions (the ``n`` in ``real, dimension(n)
+        :: arr``) are not included.
+    """
     names: list[str] = []
     for c in decl_node.children:
         if c.type == "identifier":
@@ -824,9 +1095,14 @@ def _ts_decl_names(decl_node: Node) -> list[str]:
 def _ts_declarator_name(node: Node) -> str | None:
     """Find the leading identifier inside a declarator wrapper.
 
-    Walks descendants until the first ``identifier`` — that's the name
-    of the declared entity (everything after it is dimension spec or
-    initializer).
+    Args:
+        node: A ``sized_declarator`` or ``init_declarator`` node.
+
+    Returns:
+        Name of the declared entity (the first ``identifier`` reached
+        in a one-level recursive walk), or ``None`` if no identifier
+        is present. Everything after the leading identifier is a
+        dimension spec or initializer.
     """
     for c in node.children:
         if c.type == "identifier":
@@ -841,9 +1117,13 @@ def _ts_declarator_name(node: Node) -> str | None:
 def _ts_type_name(type_def_node: Node) -> str | None:
     """Pull the type name out of a ``derived_type_definition`` node.
 
-    The first ``derived_type_statement`` child carries a ``type_name``
-    child whose text is the user-visible name (preserving case, per
-    Fortran source convention).
+    Args:
+        type_def_node: A tree-sitter ``derived_type_definition`` node.
+
+    Returns:
+        User-visible type name preserving case (per Fortran source
+        convention), or ``None`` if the expected
+        ``derived_type_statement`` / ``type_name`` children are absent.
     """
     stmt = next(
         (c for c in type_def_node.children if c.type == "derived_type_statement"),
@@ -856,7 +1136,15 @@ def _ts_type_name(type_def_node: Node) -> str | None:
 
 
 def _ts_routine_name(node: Node) -> str | None:
-    """Pull the name of a ``subroutine`` / ``function`` node."""
+    """Pull the name of a ``subroutine`` / ``function`` node.
+
+    Args:
+        node: A tree-sitter ``subroutine`` or ``function`` node.
+
+    Returns:
+        Routine name (preserving case), or ``None`` if the expected
+        statement / ``name`` children are absent.
+    """
     stmt_type = (
         "subroutine_statement"
         if node.type == "subroutine"
@@ -878,15 +1166,29 @@ def _scan_declarations(
 ]:
     """Walk a tree-sitter Fortran tree and emit one :class:`DeclarationSite` per decl.
 
-    Also returns the byte-range cover of every ``subroutine`` /
-    ``function`` (sorted by ``start_byte``) so consumers can map a
-    byte offset to its enclosing routine scope without re-walking.
+    Args:
+        source: Full text of one Fortran source file.
 
-    The scanner is deliberately tolerant: a parse with ``ERROR`` nodes
-    (e.g. a syntactically broken statement somewhere in the file) still
-    yields declarations from the well-formed regions. This matters for
-    real-world Fortran files that occasionally contain F77 idioms the
-    grammar doesn't fully model.
+    Returns:
+        A three-tuple ``(declarations, routine_ranges,
+        assignment_ranges)``:
+
+        * ``declarations`` — one :class:`DeclarationSite` per
+          ``variable_declaration`` node, in textual order.
+        * ``routine_ranges`` — byte-range cover of every
+          ``subroutine`` / ``function`` as ``(start_byte, end_byte,
+          name_lc)``, sorted by ``start_byte`` so consumers can map a
+          byte offset to its enclosing routine scope without
+          re-walking.
+        * ``assignment_ranges`` — 1-based inclusive line range of
+          every ``assignment_statement`` in textual order.
+
+    Note:
+        The scanner is deliberately tolerant: a parse with ``ERROR``
+        nodes (e.g. a syntactically broken statement somewhere in the
+        file) still yields declarations from the well-formed regions.
+        This matters for real-world Fortran files that occasionally
+        contain idioms the grammar doesn't fully model.
     """
     tree = _ts.parse_text(source)
     root = tree.root_node
@@ -918,6 +1220,7 @@ def _scan_declarations(
     routine_ranges.sort(key=lambda r: r[0])
 
     def enclosing_type_at(byte_offset: int) -> str | None:
+        """Return the innermost derived-type name covering ``byte_offset``."""
         # Smallest containing range wins (handles nested definitions).
         best: tuple[int, int, str] | None = None
         for lo, hi, name in type_ranges:
@@ -928,6 +1231,7 @@ def _scan_declarations(
         return best[2] if best else None
 
     def enclosing_routine_at(byte_offset: int) -> str | None:
+        """Return the innermost routine name covering ``byte_offset``."""
         # Innermost (smallest) containing routine wins; handles a
         # CONTAINS-nested procedure inside its parent's range.
         best: tuple[int, int, str] | None = None
@@ -980,6 +1284,18 @@ _INTRINSIC_QUALIFIER_TYPES = frozenset({
 
 
 def _ts_decl_intrinsic_type(decl_node: Node) -> str | None:
+    """Return the lower-cased intrinsic type qualifier of a declaration.
+
+    Args:
+        decl_node: A tree-sitter ``variable_declaration`` node.
+
+    Returns:
+        Lower-cased qualifier — one of ``"real"``, ``"integer"``,
+        ``"logical"``, ``"character"``, ``"complex"``, or
+        ``"double precision"`` — or ``None`` for derived-type
+        declarations (``type(particle) :: …``) and when no
+        ``intrinsic_type`` child is present.
+    """
     for c in decl_node.children:
         if c.type != "intrinsic_type":
             continue
@@ -991,6 +1307,14 @@ def _ts_decl_intrinsic_type(decl_node: Node) -> str | None:
 
 
 def scan_file(path: str | Path) -> ScanResult:
-    """Scan a Fortran source file from disk."""
+    """Scan a Fortran source file from disk.
+
+    Args:
+        path: Path to a Fortran source file.
+
+    Returns:
+        A :class:`ScanResult` with the same contents as
+        :func:`scan_text` would produce for the file's contents.
+    """
     from dimfort.core._source_io import read_text
     return scan_text(read_text(path))

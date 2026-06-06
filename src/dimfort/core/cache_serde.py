@@ -36,7 +36,15 @@ from dimfort.core.workspace_index import UseRef
 # Fraction
 
 def dump_fraction(f: Fraction | int) -> str:
-    """Serialize a rational as ``"num/den"`` (or ``"num"`` if den==1)."""
+    """Serialize a rational as ``"num/den"`` (or ``"num"`` if den==1).
+
+    Args:
+        f: A :class:`fractions.Fraction` or plain ``int``.
+
+    Returns:
+        Compact string form: ``"num"`` when the denominator is 1, else
+        ``"num/den"``.
+    """
     fr = f if isinstance(f, Fraction) else Fraction(f)
     if fr.denominator == 1:
         return str(fr.numerator)
@@ -44,6 +52,14 @@ def dump_fraction(f: Fraction | int) -> str:
 
 
 def load_fraction(s: str) -> Fraction:
+    """Parse the string form produced by :func:`dump_fraction`.
+
+    Args:
+        s: Either ``"num"`` or ``"num/den"`` (integers in decimal).
+
+    Returns:
+        The :class:`fractions.Fraction` round-trip of the input.
+    """
     if "/" in s:
         num, den = s.split("/", 1)
         return Fraction(int(num), int(den))
@@ -54,6 +70,15 @@ def load_fraction(s: str) -> Fraction:
 # Exponent
 
 def dump_exponent(e: Exponent) -> dict[str, Any]:
+    """Serialise an :class:`Exponent` to its tagged-dict form.
+
+    Args:
+        e: The exponent to serialise.
+
+    Returns:
+        Tagged dict with key ``"_t": "Exp"``, ``"t"`` (term list) and
+        ``"c"`` (constant).
+    """
     return {
         "_t": "Exp",
         "t": [[name, dump_fraction(coeff)] for name, coeff in e.terms],
@@ -62,6 +87,14 @@ def dump_exponent(e: Exponent) -> dict[str, Any]:
 
 
 def load_exponent(d: dict[str, Any]) -> Exponent:
+    """Reconstruct an :class:`Exponent` from its tagged-dict form.
+
+    Args:
+        d: Tagged dict produced by :func:`dump_exponent`.
+
+    Returns:
+        The round-tripped exponent built via :meth:`Exponent.build`.
+    """
     return Exponent.build(
         terms={name: load_fraction(coeff) for name, coeff in d["t"]},
         constant=load_fraction(d["c"]),
@@ -72,6 +105,22 @@ def load_exponent(d: dict[str, Any]) -> Exponent:
 # Unit / LogWrap / ExpWrap
 
 def dump_unit_expr(u: UnitExpr) -> dict[str, Any]:
+    """Serialise a :class:`UnitExpr` (``Unit``, ``LogWrap``, ``ExpWrap``).
+
+    Optional ``Unit`` fields (``offset``, ``tyvars``) are only emitted
+    when non-default, so concrete units serialise to the byte-identical
+    shape they had before those fields existed.
+
+    Args:
+        u: The unit expression to serialise.
+
+    Returns:
+        Tagged dict — ``"U"`` for :class:`Unit`, ``"Log"`` for
+        :class:`LogWrap`, ``"Exp1"`` for :class:`ExpWrap`.
+
+    Raises:
+        TypeError: If ``u`` is not a recognised :class:`UnitExpr`.
+    """
     if isinstance(u, Unit):
         out: dict[str, Any] = {
             "_t": "U",
@@ -97,6 +146,20 @@ def dump_unit_expr(u: UnitExpr) -> dict[str, Any]:
 
 
 def load_unit_expr(d: dict[str, Any]) -> UnitExpr:
+    """Reconstruct a :class:`UnitExpr` from its tagged-dict form.
+
+    Args:
+        d: Tagged dict produced by :func:`dump_unit_expr`.
+
+    Returns:
+        The round-tripped :class:`Unit`, :class:`LogWrap`, or
+        :class:`ExpWrap`. Missing optional ``Unit`` keys default to
+        no offset and no tyvars.
+
+    Raises:
+        ValueError: If the ``"_t"`` tag is not one of the recognised
+            unit-expression tags.
+    """
     tag = d["_t"]
     if tag == "U":
         raw_v = d.get("v", [])
@@ -122,6 +185,16 @@ def load_unit_expr(d: dict[str, Any]) -> UnitExpr:
 # FuncSig
 
 def dump_funcsig(s: FuncSig) -> dict[str, Any]:
+    """Serialise a :class:`FuncSig` to its tagged-dict form.
+
+    Args:
+        s: The function signature to serialise.
+
+    Returns:
+        Tagged dict with ``"_t": "Sig"`` carrying arg names, per-arg
+        units (``None`` for unannotated slots), the return unit, and
+        the ``is_subroutine`` flag.
+    """
     return {
         "_t": "Sig",
         "an": list(s.arg_names),
@@ -132,6 +205,14 @@ def dump_funcsig(s: FuncSig) -> dict[str, Any]:
 
 
 def load_funcsig(d: dict[str, Any]) -> FuncSig:
+    """Reconstruct a :class:`FuncSig` from its tagged-dict form.
+
+    Args:
+        d: Tagged dict produced by :func:`dump_funcsig`.
+
+    Returns:
+        The round-tripped function signature.
+    """
     return FuncSig(
         arg_names=tuple(d["an"]),
         arg_units=tuple(
@@ -148,9 +229,19 @@ def load_funcsig(d: dict[str, Any]) -> FuncSig:
 # ModuleExports
 
 def _dump_useref(u: UseRef) -> dict[str, Any]:
-    """Serialise a single ``use`` clause reference. ``inner_uses`` is
-    typed ``tuple[Any, ...]`` on ModuleExports to dodge an import
-    cycle; in practice every element is a :class:`UseRef`."""
+    """Serialise a single ``use`` clause reference.
+
+    ``inner_uses`` is typed ``tuple[Any, ...]`` on ModuleExports to
+    dodge an import cycle; in practice every element is a
+    :class:`UseRef`.
+
+    Args:
+        u: The use-reference to serialise.
+
+    Returns:
+        Tagged dict with module name, optional ``only`` list, and
+        the rename pair list.
+    """
     return {
         "m": u.module,
         "o": None if u.only is None else list(u.only),
@@ -159,6 +250,14 @@ def _dump_useref(u: UseRef) -> dict[str, Any]:
 
 
 def _load_useref(d: dict[str, Any]) -> UseRef:
+    """Reconstruct a :class:`UseRef` from its tagged-dict form.
+
+    Args:
+        d: Tagged dict produced by :func:`_dump_useref`.
+
+    Returns:
+        The round-tripped use-clause reference.
+    """
     return UseRef(
         module=d["m"],
         only=None if d.get("o") is None else tuple(d["o"]),
@@ -167,6 +266,22 @@ def _load_useref(d: dict[str, Any]) -> UseRef:
 
 
 def dump_module_exports(m: ModuleExports) -> dict[str, Any]:
+    """Serialise a :class:`ModuleExports` to its tagged-dict form.
+
+    Optional visibility fields (``inner_uses``, ``default_private``,
+    ``public_names``, ``private_names``) are only emitted when
+    non-default so pre-existing cache entries stay byte-identical and
+    downstream consumers that don't yet honour visibility see an
+    unchanged payload.
+
+    Args:
+        m: The module-exports record to serialise.
+
+    Returns:
+        Tagged dict with ``"_t": "Exports"`` carrying the module name,
+        per-name unit map, per-name signature map, and the
+        all-var-names list, plus any non-default visibility fields.
+    """
     out: dict[str, Any] = {
         "_t": "Exports",
         "n": m.name,
@@ -192,6 +307,15 @@ def dump_module_exports(m: ModuleExports) -> dict[str, Any]:
 
 
 def load_module_exports(d: dict[str, Any]) -> ModuleExports:
+    """Reconstruct a :class:`ModuleExports` from its tagged-dict form.
+
+    Args:
+        d: Tagged dict produced by :func:`dump_module_exports`.
+
+    Returns:
+        The round-tripped module-exports record. Missing optional
+        visibility keys default to empty / ``False``.
+    """
     raw_iu = d.get("iu", [])
     raw_pu = d.get("pu", [])
     raw_pr = d.get("pr", [])
@@ -211,6 +335,20 @@ def load_module_exports(d: dict[str, Any]) -> ModuleExports:
 # Diagnostic (sans trace)
 
 def dump_diagnostic(g: Diagnostic) -> dict[str, Any]:
+    """Serialise a :class:`Diagnostic` to its tagged-dict form.
+
+    The ``trace`` field is deliberately dropped (see the module
+    docstring). Optional fields ``suggested_rewrite`` (U002) and
+    ``polymorphism_conflict`` (H020) are emitted only when non-``None``
+    so every other diagnostic stays byte-identical.
+
+    Args:
+        g: The diagnostic to serialise.
+
+    Returns:
+        Tagged dict with ``"_t": "Diag"`` carrying file path, span,
+        severity, code, message, and any non-default optional fields.
+    """
     out: dict[str, Any] = {
         "_t": "Diag",
         "f": g.file,
@@ -240,6 +378,17 @@ def dump_diagnostic(g: Diagnostic) -> dict[str, Any]:
 
 
 def load_diagnostic(d: dict[str, Any]) -> Diagnostic:
+    """Reconstruct a :class:`Diagnostic` from its tagged-dict form.
+
+    Args:
+        d: Tagged dict produced by :func:`dump_diagnostic`.
+
+    Returns:
+        The round-tripped diagnostic. ``trace`` is left at its default
+        (never reconstructed from cache). Optional ``suggested_rewrite``
+        and ``polymorphism_conflict`` fields are restored from their
+        cached shape when present.
+    """
     raw_pc = d.get("pc")
     polymorphism_conflict: tuple[
         tuple[int, str | None, str, tuple[int, ...]], ...

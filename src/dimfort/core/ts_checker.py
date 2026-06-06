@@ -68,6 +68,15 @@ from dimfort.core.units import (
 
 
 def _is_wrapper(u: UnitExpr | None) -> bool:
+    """Return ``True`` when ``u`` is a ``LogWrap`` or ``ExpWrap`` wrapper.
+
+    Args:
+        u: Candidate unit expression, or ``None``.
+
+    Returns:
+        ``True`` if ``u`` is a wrapper variant; ``False`` for plain
+        ``Unit`` or ``None``.
+    """
     return isinstance(u, (LogWrap, ExpWrap))
 
 
@@ -187,6 +196,13 @@ class _Ctx:
     scale_mode: bool = False
 
     def __post_init__(self) -> None:
+        """Materialise the case-insensitive mirror tables.
+
+        Builds ``_var_units_lc`` / ``_by_scope_lc`` / ``_field_units_lc``
+        from their case-preserving counterparts the first time the
+        context is constructed; later mutations of the source tables are
+        not reflected (the context is treated as immutable post-build).
+        """
         if self.var_units and not self._var_units_lc:
             for k, v in self.var_units.items():
                 self._var_units_lc.setdefault(k.lower(), v)
@@ -1097,6 +1113,14 @@ def _emit_unparsed_regions(tree: Tree, ctx: _Ctx) -> list[Diagnostic]:
     a silently-empty Expression panel one line below.
     """
     def _statement_ancestor_with_error(node: Node) -> Node | None:
+        """Return the smallest enclosing erroring statement-level ancestor.
+
+        Walks up parents looking for a ``*_statement`` or
+        ``subroutine_call`` whose ``has_error`` is set. Used to widen
+        a P001 region from the bare error node out to the
+        full statement tree-sitter recovery considered untrustworthy.
+        Returns ``None`` if no such ancestor exists.
+        """
         cur = node.parent
         while cur is not None:
             if cur.has_error and (
@@ -1183,6 +1207,12 @@ def _emit_u005_for_unannotated(
     annotated_lc = {k.lower() for k in ctx.var_units}
 
     def _mark_identifier(ident: Node) -> None:
+        """Record ``ident`` as queried if it isn't already annotated.
+
+        Updates the closure's ``queried`` set and tracks the earliest
+        usage position for each name so the U005 message can cite a
+        representative usage line.
+        """
         name = _ts.node_text(ident, source)
         if not name:
             return
@@ -1196,6 +1226,13 @@ def _emit_u005_for_unannotated(
             first_use[key] = (sr, sc)
 
     def _walk_operands(expr: Node | None) -> None:
+        """Recurse over operand-shaped children of ``expr``, marking identifiers.
+
+        Walks only structural operand kinds (identifier / math_expression
+        / unary_expression / parenthesized_expression / member-chain /
+        call_expression) so noise nodes (qualifiers, punctuation) don't
+        leak into the queried set.
+        """
         if expr is None:
             return
         if expr.type == "identifier":
@@ -1287,6 +1324,13 @@ def _decl_name_nodes(decl: Node) -> Iterator[Node]:
 
 
 def _declarator_leading_node(node: Node) -> Node | None:
+    """Return the leading identifier node inside a declarator wrapper.
+
+    Descends through nested ``_DECLARATOR_WRAPPERS`` shapes (e.g.
+    ``init_declarator``, ``sized_declarator``) until an ``identifier``
+    child is found; returns ``None`` if the structure doesn't bottom out
+    in one.
+    """
     for c in node.children:
         if c.type == "identifier":
             return c
@@ -1327,6 +1371,18 @@ def _is_pure_numeric_constant(node: Node | None) -> bool:
 
 
 def _emit_h001(loc: Node, lhs: UnitExpr, rhs: UnitExpr, ctx: _Ctx) -> Diagnostic:
+    """Build an H001 assignment unit-mismatch diagnostic at ``loc``.
+
+    Args:
+        loc: AST node spanning the offending assignment.
+        lhs: Resolved unit of the assignment target.
+        rhs: Resolved unit of the assignment value.
+        ctx: Active check context (used for the source file name).
+
+    Returns:
+        Error-severity :class:`Diagnostic` whose message reports both
+        units as formatted by :func:`format_unit`.
+    """
     start, end = _node_span(loc)
     return Diagnostic(
         file=ctx.file, start=start, end=end,
@@ -1339,6 +1395,17 @@ def _emit_h001(loc: Node, lhs: UnitExpr, rhs: UnitExpr, ctx: _Ctx) -> Diagnostic
 
 
 def _emit_h002(loc: Node, left: UnitExpr, right: UnitExpr, ctx: _Ctx) -> Diagnostic:
+    """Build an H002 ``+``/``-`` operand-mismatch diagnostic at ``loc``.
+
+    Args:
+        loc: AST node spanning the offending binary expression.
+        left: Resolved unit of the left operand.
+        right: Resolved unit of the right operand.
+        ctx: Active check context (used for the source file name).
+
+    Returns:
+        Error-severity :class:`Diagnostic` tagged with rule marker D1.1.
+    """
     start, end = _node_span(loc)
     return Diagnostic(
         file=ctx.file, start=start, end=end,
@@ -1409,6 +1476,21 @@ def _emit_h023(
     loc: Node, lu: UnitExpr, ru: UnitExpr,
     involved: frozenset[str], ctx: _Ctx,
 ) -> Diagnostic:
+    """Build an H023 polymorphic-body-binds-tyvar diagnostic at ``loc``.
+
+    Args:
+        loc: AST node spanning the body operation that would force a
+            binding on one or more tyvars.
+        lu: Resolved unit of the left operand (or the only operand for
+            unary contexts).
+        ru: Resolved unit of the right operand.
+        involved: Names of the enclosing function's free tyvars referenced
+            by either operand. Joined in sorted order in the message.
+        ctx: Active check context (used for the source file name).
+
+    Returns:
+        Error-severity :class:`Diagnostic` carrying the H023 code.
+    """
     start, end = _node_span(loc)
     tyvars_str = ", ".join(sorted(involved))
     return Diagnostic(
@@ -2154,6 +2236,17 @@ def _emit_d16_untag(
 
 
 def _emit_h003(loc: Node, intrinsic: str, arg_unit: UnitExpr, ctx: _Ctx) -> Diagnostic:
+    """Build an H003 dimensionless-intrinsic-argument diagnostic at ``loc``.
+
+    Args:
+        loc: AST node spanning the intrinsic call.
+        intrinsic: Name of the intrinsic (e.g. ``"sin"``, ``"log"``).
+        arg_unit: Resolved unit of the offending argument.
+        ctx: Active check context (used for the source file name).
+
+    Returns:
+        Error-severity :class:`Diagnostic` carrying the H003 code.
+    """
     start, end = _node_span(loc)
     return Diagnostic(
         file=ctx.file, start=start, end=end,
@@ -2169,6 +2262,22 @@ def _emit_h004(
     loc: Node, func: str, arg_index: int, expected: UnitExpr, actual: UnitExpr,
     ctx: _Ctx, arg_name: str | None = None,
 ) -> Diagnostic:
+    """Build an H004 call-argument unit-mismatch diagnostic at ``loc``.
+
+    Args:
+        loc: AST node spanning the call site.
+        func: Callee name (printed in the message).
+        arg_index: Zero-based slot index of the offending actual.
+        expected: Formal parameter's declared unit.
+        actual: Resolved unit of the actual passed in.
+        ctx: Active check context (used for the source file name).
+        arg_name: Optional formal-parameter name. When provided the
+            message reads ``argument N (name)`` so the reader doesn't
+            have to count positions.
+
+    Returns:
+        Error-severity :class:`Diagnostic` carrying the H004 code.
+    """
     start, end = _node_span(loc)
     # Include the formal parameter's name when available so the reader
     # doesn't have to count argument positions to find the offending
@@ -2542,6 +2651,28 @@ def _check_call_args_against_sig(
     ctx: _Ctx,
     source: bytes,
 ) -> Iterable[Diagnostic]:
+    """Yield H004/H020/H022 for argument-vs-signature mismatches.
+
+    Concrete signatures take the per-slot dim-equality path (H004).
+    Polymorphic signatures split slots into a tyvar-touching group
+    (routed through the unifier, producing H020 on conflict) and a
+    concrete-formal group (kept on the per-slot H004 path). Tyvar
+    slots receiving an affine actual (offset != 0) short-circuit to
+    H022 — tyvars range over the multiplicative algebra only.
+
+    Args:
+        sig: Callee signature (arg names + units, return unit,
+            subroutine flag).
+        func_name: Callee name for diagnostic messages.
+        arg_exprs: Per-slot actual-argument nodes aligned to
+            ``sig.arg_names``. ``None`` entries mark unsupplied slots.
+        call_node: AST node anchoring the diagnostic span.
+        ctx: Active check context.
+        source: Source bytes for identifier text extraction.
+
+    Yields:
+        H004 / H020 / H022 diagnostics, in slot order.
+    """
     # ``strict=False``: it's normal for the call site to pass fewer
     # arguments than the signature declares (Fortran allows trailing
     # optional args). We check whichever pairs we can match.
@@ -3008,6 +3139,11 @@ def _make_scoped_lookup(
         )
 
     def lookup(name: str, scope: str | None) -> UnitExpr | None:
+        """Resolve ``name`` in ``scope`` then the module-level layer.
+
+        Lowercases both inputs before lookup. Returns ``None`` when
+        neither the per-scope nor the ``(None, name)`` entry matches.
+        """
         name_lc = name.lower()
         if scope is not None:
             u = by_scope_lc.get((scope.lower(), name_lc))
@@ -3270,6 +3406,19 @@ _DECLARATOR_WRAPPERS = {"sized_declarator", "init_declarator"}
 
 
 def _collect_decl_names(decl: Node, source: bytes) -> list[str]:
+    """Return the declared names in a ``variable_declaration``.
+
+    Walks direct ``identifier`` children and descends through declarator
+    wrappers (init / sized / pointer variants) so a single declaration
+    listing several names (``real :: a, b, c``) yields all of them.
+
+    Args:
+        decl: ``variable_declaration`` AST node.
+        source: Source bytes used to extract identifier text.
+
+    Returns:
+        Names in source order, original case.
+    """
     names: list[str] = []
     for c in decl.children:
         if c.type == "identifier":
@@ -3282,6 +3431,12 @@ def _collect_decl_names(decl: Node, source: bytes) -> list[str]:
 
 
 def _declarator_leading_identifier(node: Node, source: bytes) -> str | None:
+    """Return the leading identifier text inside a declarator wrapper.
+
+    Sister of :func:`_declarator_leading_node` that returns the text
+    rather than the node — used by the collectors that don't need to
+    keep node positions.
+    """
     for c in node.children:
         if c.type == "identifier":
             return _text(c, source)
@@ -3483,6 +3638,12 @@ def check(
     tracing_on = current_trace() is not None
 
     def _attach_traces_since(start_idx: int, trace_obj: Trace | None) -> None:
+        """Backfill ``trace`` onto every diagnostic appended since ``start_idx``.
+
+        The checker walks per-statement so each statement opens a fresh
+        trace; this snapshots it and replaces the affected diagnostics
+        with copies carrying the trace chain. No-op when tracing is off.
+        """
         if trace_obj is None:
             return
         snapshot = trace_obj.snapshot()
@@ -3495,6 +3656,7 @@ def check(
     from contextlib import AbstractContextManager, nullcontext
 
     def _stmt_trace_ctx() -> AbstractContextManager[Trace | None]:
+        """Return a fresh per-statement trace context, or a no-op when tracing is off."""
         return with_trace() if tracing_on else nullcontext()
 
     for node in _ts.walk(tree.root_node):

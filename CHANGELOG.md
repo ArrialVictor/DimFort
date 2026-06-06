@@ -13,6 +13,20 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
   current behaviour. No code changes; behaviour unchanged. First of
   three sweep PRs (top-level → `core/` → `lsp/`); convention is
   enforced via ruff in a follow-up.
+- **`core/` docstring sweep**: same treatment applied across 16 of
+  the 19 modules under `src/dimfort/core/` (the 17th, `__init__.py`,
+  carries only a side-effect import comment and was unchanged).
+  ~136 existing docstrings reshaped to Google style and ~98 added
+  to previously-undocumented callables (including private helpers).
+  Class-level `Attributes:` blocks consolidate per-field rationale
+  where appropriate; rich inline per-field comments are preserved
+  when richer than an `Attributes:` block could carry. Every claim
+  was verified against current behaviour; no stale docstring was
+  found. `core/ts_checker.py` received a lighter pass — its existing
+  one-line docstrings on AST-dispatch helpers were already
+  behaviour-accurate, so the sweep only added 16 missing docstrings
+  rather than reshaping the existing prose. No code changes;
+  behaviour unchanged.
 
 ## [0.2.3.1] — 2026-06-07
 

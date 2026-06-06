@@ -134,18 +134,35 @@ PER_FILE_CONFIG_KEYS: tuple[str, ...] = (
 
 
 def _section(tag: bytes, body: bytes) -> bytes:
-    """Length-prefix a section so concatenations are unambiguous."""
+    """Length-prefix a section so concatenations are unambiguous.
+
+    Args:
+        tag: Three-byte section tag (e.g. ``b"SRC"``).
+        body: Raw section payload.
+
+    Returns:
+        ``tag + b"\\0" + 8-byte big-endian length + body``.
+    """
     return tag + b"\0" + len(body).to_bytes(8, "big") + body
 
 
 def _config_bytes(config: dict[str, object]) -> bytes:
-    """Canonical JSON bytes for the per-file-affecting config subset.
+    """Return canonical JSON bytes for the per-file-affecting config subset.
 
     Missing keys normalise to a typed empty (``[]`` for list-y keys,
     ``{}`` for dict-y keys, ``""`` for the units-file hash) so the
     contributed bytes stay stable across runs where the user has
     not configured that dimension. The canonical form sorts keys
     and uses compact separators so byte-equality is hash-stable.
+
+    Args:
+        config: Workspace config dict. Only the keys listed in
+            :data:`PER_FILE_CONFIG_KEYS` are read; all others are
+            ignored.
+
+    Returns:
+        UTF-8 JSON bytes of the normalised subset, with sorted keys
+        and compact separators.
     """
     list_keys = {
         "external_modules", "extra_defines", "extra_include_paths",
@@ -184,10 +201,17 @@ def compute_file_key(
 ) -> str:
     """Return the hex SHA-256 cache key for one file.
 
-    ``cpp_closure_hashes`` maps absolute include path → its content
-    hash (use :class:`IncludeHasher` to populate). Order-independent.
-    ``config`` is the workspace config dict; only the keys listed in
-    :data:`PER_FILE_CONFIG_KEYS` are read.
+    Args:
+        source_bytes: Raw source bytes of the file under check.
+        cpp_closure_hashes: Map from absolute include path to its
+            content hash (use :class:`IncludeHasher` to populate).
+            Order-independent: paths are sorted before hashing.
+        config: Workspace config dict; only the keys listed in
+            :data:`PER_FILE_CONFIG_KEYS` contribute to the key.
+
+    Returns:
+        Hex SHA-256 digest of the length-prefixed section
+        concatenation (SRC, CPP, CFG, VER, OUT).
     """
     h = hashlib.sha256()
     h.update(_section(b"SRC", source_bytes))
@@ -219,6 +243,10 @@ class IncludeHasher:
     The mtime check is a cheap invalidation signal *within a run*;
     persistent across-run caching of include hashes is left to a
     later optimisation if needed.
+
+    Attributes:
+        _cache: Map from absolute path to ``(mtime_ns, hex_digest)``.
+            Populated lazily on :meth:`hash_for`.
     """
 
     _cache: dict[str, tuple[int, str]] = field(default_factory=dict)
@@ -226,10 +254,19 @@ class IncludeHasher:
     def hash_for(self, abspath: str) -> str:
         """Return the hex SHA-256 of the include's contents.
 
-        Missing files raise ``FileNotFoundError`` — the caller can
-        catch and treat as cache-miss (the file's content can't be
-        validated, so any cached entry that references it must be
-        invalidated).
+        Args:
+            abspath: Absolute path of the include file to hash.
+
+        Returns:
+            Hex SHA-256 digest of the file's bytes. Cached by
+            ``(abspath, mtime_ns)``; a stale entry is replaced
+            transparently.
+
+        Raises:
+            FileNotFoundError: If ``abspath`` does not exist. The
+                caller can catch and treat as cache-miss (the file's
+                content can't be validated, so any cached entry that
+                references it must be invalidated).
         """
         try:
             mtime_ns = os.stat(abspath).st_mtime_ns
@@ -249,10 +286,14 @@ class IncludeHasher:
     def hash_closure(self, paths: frozenset[str]) -> dict[str, str]:
         """Bulk-hash an entire cpp closure.
 
-        Returns a ``{path: digest}`` map suitable for feeding to
-        :func:`compute_file_key`. A missing file produces the literal
-        digest ``"missing"`` so the key still distinguishes "include
-        was here last time" from "include disappeared".
+        Args:
+            paths: Set of absolute include paths to hash.
+
+        Returns:
+            Map from path to hex SHA-256 digest, suitable for feeding
+            to :func:`compute_file_key`. A missing file produces the
+            literal digest ``"missing"`` so the key still distinguishes
+            "include was here last time" from "include disappeared".
         """
         out: dict[str, str] = {}
         for p in paths:

@@ -116,7 +116,15 @@ DEFAULT_INCLUDE_SUFFIXES: frozenset[str] = frozenset({
 
 @dataclass(frozen=True)
 class UseRef:
-    """One ``use`` statement found in a source file."""
+    """One ``use`` statement found in a source file.
+
+    Attributes:
+        module: Lower-cased, normalised module name being imported.
+        only: Lower-cased names from a ``only:`` list, or ``None`` when
+            the whole module is imported.
+        renames: ``(local_name, original_name)`` pairs (both lower-cased)
+            extracted from ``LOCAL => REMOTE`` clauses inside ``only:``.
+    """
 
     module: str                       # lower-cased, normalised
     only: tuple[str, ...] | None      # ``None`` = whole module imported
@@ -127,21 +135,27 @@ class UseRef:
 class WorkspaceIndex:
     """Module-to-file map plus per-file ``use`` lists.
 
-    ``procedures`` maps the lower-cased name of every **top-level**
-    ``SUBROUTINE`` / ``FUNCTION`` declaration (one that is not inside
-    a ``MODULE`` block) to the file that declares it. This covers F77-
-    vintage external procedures that F77-vintage codebases still call
-    without a ``USE`` clause; without this index, the LSP's per-file
-    workset can't reach those defining files via ``use``-chain
+    Procedures contained inside a module are deliberately excluded from
+    ``procedures`` — those are reached through the module's exports
+    already. Top-level (file-scope) procedures, by contrast, mirror the
+    F77-vintage external-linkage pattern: codebases ``CALL`` them
+    without a ``USE`` clause, so without this index the LSP's per-file
+    workset can't reach their defining files via ``use``-chain
     resolution.
 
-    Procedures contained inside a module are deliberately excluded —
-    those are reached through the module's exports already.
-
-    ``calls_by_file`` records lower-cased ``CALL`` invocation names per
-    file. The workset resolver consults it after the ``use``-chain
-    expansion to also pull in the files that define any externally-
-    linked procedures the active file calls.
+    Attributes:
+        modules: Lower-cased module name to the file declaring it.
+        procedures: Lower-cased name of every top-level
+            ``SUBROUTINE`` / ``FUNCTION`` declaration (one that is not
+            inside a ``MODULE`` block) to the file that declares it.
+        uses_by_file: Per-file ordered tuple of every ``use`` statement
+            seen in that file.
+        calls_by_file: Per-file ordered tuple of lower-cased ``CALL``
+            callee names. The workset resolver consults this after the
+            ``use``-chain expansion to also pull in files that define
+            externally-linked procedures the active file calls.
+        scan_failures: Per-file read/scan error message; entries
+            present here are excluded from the rest of the index.
     """
 
     modules: dict[str, Path] = field(default_factory=dict)
@@ -153,7 +167,17 @@ class WorkspaceIndex:
 
 @dataclass(frozen=True)
 class Resolution:
-    """Outcome of resolving a workset from an entry-point set."""
+    """Outcome of resolving a workset from an entry-point set.
+
+    Attributes:
+        compile_order: Files in topological order (each file appears
+            after every file it depends on).
+        unresolved: ``(consumer_file, missing_module)`` pairs for every
+            ``use`` clause whose target module isn't in the index and
+            isn't in the external allowlist.
+        external: Lower-cased names of every allowlist module that was
+            actually referenced by the workset.
+    """
 
     compile_order: tuple[Path, ...]
     unresolved: tuple[tuple[Path, str], ...]  # (consumer_file, missing_module)
@@ -166,13 +190,34 @@ class Resolution:
 
 
 def _strip_comment(line: str) -> str:
-    """Return ``line`` with any trailing comment removed (string-aware)."""
+    """Return ``line`` with any trailing comment removed (string-aware).
+
+    Args:
+        line: A single line of source text.
+
+    Returns:
+        The same line, truncated before the first comment-introducing
+        ``!`` that sits outside a string literal. Unchanged when no
+        comment is present.
+    """
     col = _comment_start(line)
     return line if col is None else line[:col]
 
 
 def _parse_only_list(tail: str) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]]:
-    """Split an ``only:`` tail into ``(plain_names, renames)``."""
+    """Split an ``only:`` tail into ``(plain_names, renames)``.
+
+    Args:
+        tail: Text following ``only:`` (without the ``only:`` keyword
+            itself), e.g. ``"a, b => c, d"``.
+
+    Returns:
+        Pair ``(plain, renames)`` where ``plain`` lists every imported
+        local name (lower-cased) in source order — including the local
+        side of rename clauses — and ``renames`` lists
+        ``(local, original)`` pairs (both lower-cased) for the renamed
+        entries only.
+    """
     plain: list[str] = []
     renames: list[tuple[str, str]] = []
     for piece in tail.split(","):
@@ -197,6 +242,12 @@ def extract_calls(text: str) -> tuple[str, ...]:
     Order-preserving but de-duplicated: the same name called twice
     appears once. Comments are stripped before matching, so a ``CALL``
     inside a string-aware comment is ignored.
+
+    Args:
+        text: Full source text of a Fortran file.
+
+    Returns:
+        Tuple of lower-cased callee names in first-seen order.
     """
     seen: set[str] = set()
     out: list[str] = []
@@ -214,12 +265,16 @@ def extract_calls(text: str) -> tuple[str, ...]:
 def extract_top_level_procedures(text: str) -> tuple[str, ...]:
     """Return the names of every top-level SUBROUTINE/FUNCTION in ``text``.
 
-    "Top-level" = not inside any ``MODULE`` block. We track
-    ``MODULE`` / ``END MODULE`` pairs to discriminate. Nested
-    procedures (the F2008 contained-procedure feature) are NOT
-    captured — only ones whose declaration appears at file scope.
+    "Top-level" = not inside any ``MODULE`` block. ``MODULE`` /
+    ``END MODULE`` pairs are tracked to discriminate. Nested procedures
+    (the F2008 contained-procedure feature) are NOT captured — only
+    ones whose declaration appears at file scope.
 
-    Lower-cased, in source order.
+    Args:
+        text: Full source text of a Fortran file.
+
+    Returns:
+        Lower-cased procedure names in source order.
     """
     names: list[str] = []
     module_depth = 0
@@ -247,7 +302,14 @@ def extract_top_level_procedures(text: str) -> tuple[str, ...]:
 
 
 def extract_modules(text: str) -> tuple[str, ...]:
-    """Return every ``module NAME`` declaration in ``text`` (lower-cased)."""
+    """Return every ``module NAME`` declaration in ``text`` (lower-cased).
+
+    Args:
+        text: Full source text of a Fortran file.
+
+    Returns:
+        Lower-cased module names in source order.
+    """
     names: list[str] = []
     for line in text.splitlines():
         code = _strip_comment(line)
@@ -262,6 +324,12 @@ def extract_uses(text: str) -> tuple[UseRef, ...]:
 
     Multi-line ``use`` statements continued with ``&`` are joined
     before matching so the ``only:`` list isn't truncated.
+
+    Args:
+        text: Full source text of a Fortran file.
+
+    Returns:
+        Tuple of :class:`UseRef` records in source order.
     """
     uses: list[UseRef] = []
     lines = text.splitlines()
@@ -299,14 +367,23 @@ def _iter_fortran_files(
     include_suffixes: frozenset[str],
     exclude_patterns: tuple[str, ...],
 ) -> Iterator[Path]:
-    """Yield every Fortran source file under ``roots`` (recursive),
-    **sorted** so the iteration order is filesystem-independent.
+    """Yield every Fortran source file under ``roots`` (recursive, sorted).
 
     ``Path.rglob`` returns entries in filesystem order, which differs
     between macOS, Linux, and CI runners. First-wins ``setdefault`` on
     duplicate procedure / module names — and ``_topo_sort`` ordering of
     the workset — both inherit that instability. Sorting at the source
     pins the workspace's effective composition across OSes.
+
+    Args:
+        roots: Directories (recursed into) or individual files.
+        include_suffixes: File-extension allowlist (case-sensitive).
+        exclude_patterns: Globs filtered out of the walk; see
+            :func:`_excluded` for matching semantics.
+
+    Yields:
+        Resolved paths to every surviving Fortran source file, in
+        sorted order.
     """
     for root in roots:
         root = Path(root).resolve()
@@ -325,7 +402,18 @@ def _iter_fortran_files(
 
 
 def _excluded(path: Path, patterns: tuple[str, ...]) -> bool:
-    """True if ``path`` matches any glob in ``patterns``."""
+    """Return ``True`` if ``path`` matches any glob in ``patterns``.
+
+    Args:
+        path: Candidate path.
+        patterns: Glob patterns; matched both by :meth:`Path.match`
+            (right-anchored) and by :func:`_glob_substring_match`
+            (anywhere along the path).
+
+    Returns:
+        ``True`` when at least one pattern matches; ``False`` for an
+        empty pattern tuple.
+    """
     if not patterns:
         return False
     s = str(path)
@@ -335,10 +423,21 @@ def _excluded(path: Path, patterns: tuple[str, ...]) -> bool:
 
 
 def _glob_substring_match(s: str, pattern: str) -> bool:
-    """Match ``pattern`` against ``s`` even when the pattern is a path
-    fragment like ``build/**``. ``Path.match`` requires the pattern to
-    align with the right-hand part of the path; this fallback also
-    matches a fragment anywhere along the path."""
+    """Match ``pattern`` against any path-suffix substring of ``s``.
+
+    :meth:`Path.match` requires the pattern to align with the
+    right-hand part of the path; this fallback also matches a fragment
+    anywhere along the path, so patterns like ``build/**`` catch a
+    ``build`` directory at any depth.
+
+    Args:
+        s: Stringified candidate path.
+        pattern: Glob pattern (fnmatch syntax).
+
+    Returns:
+        ``True`` if any contiguous tail of ``s``'s path components
+        matches ``pattern``.
+    """
     from fnmatch import fnmatch
     parts = Path(s).parts
     for i in range(len(parts)):
@@ -362,10 +461,20 @@ def scan_workspace(
 ) -> WorkspaceIndex:
     """Walk every root, scan each Fortran source for module/use headers.
 
-    ``progress_cb`` is invoked after each file is scanned as
-    ``progress_cb(scanned, total, path)``. Materialising the file list
-    upfront costs one extra ``rglob`` traversal but is the only way to
-    surface a meaningful total to the caller.
+    Materialising the file list upfront (when ``progress_cb`` is set)
+    costs one extra ``rglob`` traversal but is the only way to surface
+    a meaningful total to the caller.
+
+    Args:
+        roots: Directories (recursed into) or individual files.
+        include_suffixes: File-extension allowlist (case-sensitive).
+        exclude_patterns: Glob patterns filtered out of the walk.
+        progress_cb: Optional callback invoked after each file is
+            scanned as ``progress_cb(scanned, total, path)``.
+
+    Returns:
+        A populated :class:`WorkspaceIndex` covering every scanned
+        file.
     """
     index = WorkspaceIndex()
     if progress_cb is None:
@@ -389,8 +498,15 @@ def update_index(
 ) -> WorkspaceIndex:
     """Re-scan a single file. Mutates and returns ``index``.
 
-    ``new_text`` lets the LSP pass in unsaved buffer contents; otherwise
-    the file is read from disk.
+    Args:
+        index: Workspace index to update in place.
+        changed: Path of the file that changed.
+        new_text: Optional source override; lets the LSP pass in
+            unsaved buffer contents instead of reading from disk.
+
+    Returns:
+        The same ``index`` object, with all previous entries for
+        ``changed`` dropped and replaced by a fresh scan.
     """
     changed = Path(changed).resolve()
     # Drop previous entries for this file.
@@ -410,6 +526,19 @@ def update_index(
 def _scan_into_index(
     index: WorkspaceIndex, path: Path, *, new_text: str | None = None
 ) -> None:
+    """Scan one file's headers and merge them into ``index``.
+
+    First-found wins on duplicate module / top-level procedure names —
+    matches the link-time symbol-resolution that F77-vintage projects
+    rely on, and avoids re-introducing ordering instability.
+
+    Args:
+        index: Workspace index to update in place.
+        path: File to scan.
+        new_text: Optional source override; when ``None`` the file is
+            read from disk. OS-level read failures are recorded in
+            ``index.scan_failures`` and the file is otherwise skipped.
+    """
     from dimfort.core._source_io import read_text
     try:
         text = new_text if new_text is not None else read_text(path)
@@ -446,6 +575,19 @@ def resolve_workset(
     every file it depends on. Cycles are tolerated — files in a cycle
     appear in arbitrary order relative to each other, after their
     out-of-cycle dependencies.
+
+    Args:
+        index: Pre-built workspace index.
+        entry_files: Files to seed the BFS / DFS expansion from.
+        external_modules: Allowlist of module names known to live
+            outside the source tree; matched entries are recorded in
+            :attr:`Resolution.external` rather than reported as
+            unresolved.
+
+    Returns:
+        A :class:`Resolution` carrying the compile-order tuple,
+        per-consumer unresolved imports, and the set of allowlist
+        modules that were actually referenced.
     """
     ext_lower = frozenset(m.lower() for m in external_modules)
     entries = [Path(p).resolve() for p in entry_files]
@@ -501,25 +643,43 @@ def _topo_sort(
     index: WorkspaceIndex,
     external: frozenset[str],
 ) -> list[Path]:
-    """Kahn-style topo sort. Cycle members come out in arbitrary order
-    but after their non-cycle predecessors.
+    """Kahn-style topological sort over ``files``.
 
-    Edges come from two sources, both flowing dep → user:
+    Cycle members come out in arbitrary order but after their
+    non-cycle predecessors. Edges come from two sources, both flowing
+    dep → user:
 
     1. ``use`` clauses (module-style imports).
     2. ``CALL`` invocations of top-level external procedures.
 
-    Including call edges matters for the LSP cap: the LSP truncates
-    a workset to its last N topo entries (closest to the active
-    file). Without call edges, an external callee — which the
-    active file directly needs — ends up scattered through the
-    middle and gets dropped by the cap.
+    Including call edges matters for the LSP cap: the LSP truncates a
+    workset to its last N topo entries (closest to the active file).
+    Without call edges, an external callee — which the active file
+    directly needs — ends up scattered through the middle and gets
+    dropped by the cap.
+
+    Args:
+        files: Set of files to sort (already expanded by
+            :func:`resolve_workset`).
+        index: Workspace index providing the use / call edges.
+        external: Lower-cased module names treated as out-of-workset
+            (their ``use`` edges are dropped).
+
+    Returns:
+        A list of paths in dependency order, with any cycle members
+        appended at the end in lexicographic order.
     """
     indeg: dict[Path, int] = {f: 0 for f in files}
     edges: dict[Path, list[Path]] = {f: [] for f in files}
     seen_edges: set[tuple[Path, Path]] = set()
 
     def _add_edge(target: Path, consumer: Path) -> None:
+        """Add a dep edge ``target → consumer``, de-duplicating.
+
+        Self-edges are silently dropped. Repeats are ignored so
+        in-degree counts stay accurate when two dependency sources
+        agree on the same edge.
+        """
         if target == consumer:
             return  # self-reference is harmless
         key = (target, consumer)

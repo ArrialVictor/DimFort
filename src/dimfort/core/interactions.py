@@ -64,6 +64,21 @@ KIND_DISPLAY = {
 
 @dataclass(frozen=True)
 class InteractionPoint:
+    """One occurrence of a queried symbol classified by its context.
+
+    Attributes:
+        file: Absolute (stringified) path of the source file.
+        line: 1-based line number of the occurrence.
+        column: 1-based column of the occurrence.
+        scope: Lower-cased name of the enclosing routine, or ``None``
+            at module level.
+        kind: One of ``DECLARES`` / ``CONTRIBUTES`` / ``REQUIRES`` /
+            ``USES`` (see the design doc for the semantics).
+        unit: Unit the site claims about the symbol, or ``None`` when
+            the context places no equality constraint.
+        snippet: The enclosing statement, whitespace-collapsed.
+    """
+
     file: str
     line: int           # 1-based
     column: int         # 1-based
@@ -74,11 +89,23 @@ class InteractionPoint:
 
     @property
     def unit_str(self) -> str:
+        """Human-readable rendering of :attr:`unit` (``"?"`` if absent)."""
         return format_unit(self.unit) if self.unit is not None else "?"
 
 
 @dataclass(frozen=True)
 class Conflict:
+    """A pair of constraining sites that disagree on the symbol's unit.
+
+    Attributes:
+        symbol: The queried symbol, in its caller-supplied casing.
+        site: The site that disagrees with an earlier reference.
+        reference: The earlier site whose claim conflicts with
+            :attr:`site`.
+        diagnostic: An ``X001`` diagnostic anchored on :attr:`site`,
+            ready to be surfaced by a CLI / LSP consumer.
+    """
+
     symbol: str
     site: InteractionPoint       # the site that disagrees
     reference: InteractionPoint  # the earlier site it conflicts with
@@ -87,6 +114,16 @@ class Conflict:
 
 @dataclass(frozen=True)
 class SymbolReport:
+    """Structured result of :func:`collect_interactions`.
+
+    Attributes:
+        symbol: The queried symbol, in its caller-supplied casing.
+        points: Every classified occurrence, sorted by
+            ``(file, line, column)``.
+        conflicts: Every per-scope unit-claim disagreement among the
+            constraining points.
+    """
+
     symbol: str
     points: tuple[InteractionPoint, ...] = ()
     conflicts: tuple[Conflict, ...] = ()
@@ -98,11 +135,21 @@ class SymbolReport:
 
 
 def _same(a: Node | None, b: Node | None) -> bool:
+    """Return ``True`` when ``a`` and ``b`` reference the same AST node."""
     return a is not None and b is not None and a.id == b.id
 
 
 def _iter_identifiers(node: Node, name_lc: str, source: bytes) -> Iterator[Node]:
-    """Yield every ``identifier`` node whose text equals ``name_lc`` (ci)."""
+    """Yield every ``identifier`` node whose text equals ``name_lc`` (case-insensitive).
+
+    Args:
+        node: Subtree to search (typically a file's root node).
+        name_lc: Lower-cased symbol name to match.
+        source: Source bytes the tree was parsed from.
+
+    Yields:
+        Each matching identifier node in document order.
+    """
     if node.type == "identifier" and _text(node, source).lower() == name_lc:
         yield node
     for child in node.children:
@@ -110,6 +157,7 @@ def _iter_identifiers(node: Node, name_lc: str, source: bytes) -> Iterator[Node]
 
 
 def _ancestor_types(node: Node) -> list[str]:
+    """Return the ``type`` of every ancestor of ``node``, nearest first."""
     out: list[str] = []
     p = node.parent
     while p is not None:
@@ -126,7 +174,12 @@ _SKIP_ANCESTORS = frozenset({
 
 
 def _enclosing_statement(node: Node) -> Node:
-    """Nearest ancestor that looks like a statement (for the snippet)."""
+    """Return the nearest ancestor that looks like a statement.
+
+    Used to anchor the human-readable snippet on the smallest enclosing
+    statement-shaped node. Falls back to ``node`` itself if none of its
+    ancestors qualify.
+    """
     p = node
     while p.parent is not None:
         if p.type.endswith("_statement") or p.type in (
@@ -138,6 +191,7 @@ def _enclosing_statement(node: Node) -> Node:
 
 
 def _snippet(node: Node, source: bytes) -> str:
+    """Return the whitespace-collapsed text of ``node``'s enclosing statement."""
     return " ".join(_text(_enclosing_statement(node), source).split())
 
 
@@ -147,12 +201,14 @@ def _snippet(node: Node, source: bytes) -> str:
 
 
 def _unit_mul(a: UnitExpr | None, b: UnitExpr | None) -> Unit | None:
+    """Multiply two units when both are concrete ``Unit`` values, else ``None``."""
     if isinstance(a, Unit) and isinstance(b, Unit):
         return a * b
     return None
 
 
 def _unit_div(a: UnitExpr | None, b: UnitExpr | None) -> Unit | None:
+    """Divide two units when both are concrete ``Unit`` values, else ``None``."""
     if isinstance(a, Unit) and isinstance(b, Unit):
         return a / b
     return None
@@ -190,7 +246,18 @@ def _required_unit_of(node: Node, ctx: Ctx, source: bytes) -> UnitExpr | None:
 
     Walks up the AST, propagating a known target unit down through
     arithmetic. ``None`` = the context places no equality constraint
-    (so the site is a ``uses``, not a ``requires``). See the design doc.
+    (so the site is a ``uses``, not a ``requires``). See the design
+    doc.
+
+    Args:
+        node: The occurrence node whose context is being analysed.
+        ctx: The file's typing context (signatures, var_units, scopes).
+        source: Source bytes the tree was parsed from.
+
+    Returns:
+        The required unit, or ``None`` when no equality constraint
+        applies (or the constraint can't be resolved with the current
+        information).
     """
     p = node.parent
     if p is None:
@@ -272,6 +339,23 @@ def _classify(
     file: str,
     name_lc: str,
 ) -> InteractionPoint | None:
+    """Tag a single identifier occurrence with its interaction kind.
+
+    Args:
+        occ: The matched ``identifier`` node.
+        ctx: The file's typing context.
+        source: Source bytes the tree was parsed from.
+        file: Stringified path of the source file (carried into the
+            returned point).
+        name_lc: Lower-cased name being queried (used for the
+            function-vs-array disambiguation when ``occ`` is a callee).
+
+    Returns:
+        An :class:`InteractionPoint` describing the site, or ``None``
+        when the occurrence is one that should be filtered out (e.g.
+        on a ``use`` line, the callee slot of a ``CALL``, or a call to
+        a user function with the same name as the queried symbol).
+    """
     anc = _ancestor_types(occ)
 
     # Declaration site → a `declares` point (unit from the scoped table).
@@ -340,6 +424,12 @@ def _classify(
 
 
 def _is_conflict(a: UnitExpr, b: UnitExpr, *, scale: bool) -> bool:
+    """Return ``True`` when two unit claims disagree.
+
+    Dimensional mismatches always count. Magnitude (``factor``)
+    mismatches only count when ``scale`` is set, matching the
+    opt-in S001 / S002 semantics.
+    """
     verdict = compare(a, b)
     if verdict.kind == "dim_mismatch":
         return True
@@ -352,7 +442,19 @@ def _detect_conflicts(
     """Within each (file, scope) group, flag constraining sites that disagree.
 
     Same-named variables in different routines are different variables
-    (finding #018), so conflict detection never crosses a scope boundary.
+    (finding #018), so conflict detection never crosses a scope
+    boundary.
+
+    Args:
+        points: All classified occurrences of the symbol.
+        symbol: The queried symbol in caller-supplied casing (carried
+            into each emitted ``Conflict``).
+        scale: Whether magnitude mismatches count as conflicts.
+
+    Returns:
+        One :class:`Conflict` per disagreeing site (per group), with
+        repeats collapsed when the same line/column would otherwise
+        report the same claim twice.
     """
     groups: dict[tuple[str, str | None], list[InteractionPoint]] = {}
     for p in points:
@@ -398,6 +500,12 @@ def _detect_conflicts(
 
 
 def _file_matches(path: Path, file_filter: str | None) -> bool:
+    """Return ``True`` when ``path`` matches the user-supplied file filter.
+
+    A filter matches by basename equality or by string-suffix on the
+    stringified path, so users can pass either ``foo.f90`` or
+    ``sub/foo.f90``. ``None`` matches every path.
+    """
     if file_filter is None:
         return True
     return path.name == file_filter or str(path).endswith(file_filter)
@@ -413,9 +521,24 @@ def collect_interactions(
 ) -> SymbolReport:
     """Collect every interaction point for ``symbol`` across ``workset``.
 
-    ``file`` / ``scope`` (case-insensitive routine name) narrow the report
-    when a name is reused. ``scale`` includes magnitude (``factor``)
-    disagreements as conflicts, mirroring S001's opt-in.
+    Args:
+        workset: A workset already produced by
+            :func:`dimfort.core.multifile.check_files`. Trees, scoped
+            unit tables, signatures, and routine-scope ranges are all
+            consumed.
+        symbol: The variable name to analyse (case-insensitive). The
+            caller-supplied casing is preserved in the returned
+            report.
+        file: Optional file filter; see :func:`_file_matches` for
+            matching semantics.
+        scope: Optional routine-name filter (case-insensitive).
+        scale: Include magnitude (``factor``) disagreements as
+            conflicts, mirroring S001's opt-in.
+
+    Returns:
+        A :class:`SymbolReport` with points sorted by
+        ``(file, line, column)`` and conflicts detected per
+        ``(file, scope)`` group.
     """
     name_lc = symbol.lower()
     name_bytes = name_lc.encode("utf-8")
