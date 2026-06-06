@@ -1379,7 +1379,7 @@ _VERDICT_TO_MARKER = {
 # dimfort/interactions requests. The two handlers below forward to
 # ``panel.resolve`` / ``interactions.resolve`` in the extracted feature
 # modules; this file owns only the @server.feature registration and
-# the cached-state plumbing. See docs/design/panel-info.md.
+# the cached-state plumbing. See docs/design/shipped/panel-info.md.
 # ---------------------------------------------------------------------------
 
 
@@ -1391,8 +1391,8 @@ def _panel_info(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
 
     Stateless from the server's perspective: reads from the last
     cached ``WorksetResult`` (``state.last_result``) and computes
-    the response on the fly. See ``docs/design/side-panel.md`` for
-    the data model.
+    the response on the fly. See ``docs/design/shipped/panel-info.md``
+    for the data model and wire spec.
 
     Args:
         ls: Active language server.

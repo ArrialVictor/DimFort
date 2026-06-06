@@ -108,11 +108,11 @@ def resolve(ls: LanguageServer, params: lsp.CodeActionParams) -> list[lsp.CodeAc
         # append at end-of-line.
         comment_col = _comment_column(line)
         insert_col = comment_col if comment_col is not None else len(line)
-        # Use a command (handled by the VSCode extension) so the cursor
+        # Use a command (handled by the editor companion) so the cursor
         # lands inside the braces ready for typing. Plain LSP TextEdits
-        # can't position the cursor; non-VSCode clients that don't have
-        # the `dimfort.insertSnippet` command registered would see this
-        # action as a no-op — acceptable for v1.
+        # can't position the cursor; clients without `dimfort.insertSnippet`
+        # registered would see this action as a no-op. All three shipped
+        # companions (VSCode, Nvim, Emacs) register it.
         snippet = "  !< @unit{$0}"
         action = lsp.CodeAction(
             title=f"DimFort: Add @unit{{}} to {', '.join(decl.names)}",
@@ -311,10 +311,11 @@ def _h010_extract_to_parameter_actions(
             ),
             kind=lsp.CodeActionKind.QuickFix,
             diagnostics=[diag],
-            # Delegate to the extension so it can prompt the user for
-            # the parameter name with showInputBox before applying the
-            # two-edit refactor. Non-VSCode clients that don't have the
-            # command registered see this action as a no-op.
+            # Delegate to the editor companion so it can prompt the user
+            # for the parameter name (with its native input UI) before
+            # applying the two-edit refactor. Clients without
+            # `dimfort.extractToParameter` registered see this action as
+            # a no-op. All three shipped companions register it.
             command=lsp.Command(
                 title="DimFort: extract literal to PARAMETER",
                 command="dimfort.extractToParameter",

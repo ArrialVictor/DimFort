@@ -4,6 +4,29 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Stale doc-path references in `lsp/` comments**: four `#` comments
+  and docstrings in `lsp/server.py` and `lsp/panel.py` pointed at
+  `docs/design/panel-info.md`; the actual file lives at
+  `docs/design/shipped/panel-info.md`. A fifth reference introduced
+  in the `lsp/` docstring sweep mis-targeted `docs/design/side-panel.md`
+  (no such file — the user-facing description is at
+  `docs/editor-integration/side-panel.md`; the implementer-facing
+  wire spec is the `shipped/panel-info.md` path); both reference
+  styles now point at the correct location.
+- **Stale "non-VSCode clients see this as a no-op" framing in
+  `lsp/code_action.py`**: two `#` comments described the
+  `dimfort.insertSnippet` and `dimfort.extractToParameter` code
+  actions as VSCode-only, with non-VSCode clients seeing them as
+  no-ops. All three shipped editor companions (VSCode, Nvim, Emacs)
+  register both commands; the comments now say so.
+- **Over-claiming VSCode-specific framing in `lsp/hover_render.py`**:
+  the module-hover cap comment treated truncation as a cosmetic
+  safety belt because "VSCode's hover popup is scrollable." Some
+  clients (e.g. Neovim's default floating preview) do not scroll, so
+  the cap is load-bearing for both cases; updated.
+
 ### Added
 
 - **Docstring style enforcement**: ruff now selects the `D` rule set
