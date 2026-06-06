@@ -868,6 +868,7 @@ def _render_ast_tree(
     target_unit_for_literal: UnitExpr | None = None,
     expected_unit: UnitExpr | None = None,
     assumed_overlay: tuple[str, str] | None = None,
+    polymorphism_conflict_row: tuple[str, tuple[int, ...]] | None = None,
     max_depth: int | None = None,
     _depth: int = 0,
 ) -> None:
@@ -956,13 +957,64 @@ def _render_ast_tree(
         unit_str = format_unit(unit, show_factor=sf)
     else:
         unit_str = "?"
+
+    # H020 unbound-return override on the call_expression itself.
+    # ``_resolve_polymorphic_return`` returns ``None`` on unification
+    # failure (so downstream checks don't double-fire on top of H020 —
+    # fix #6). The bare ``?`` is honest but loses context; render
+    # ``'a = ?`` instead when the cause is a polymorphic return that
+    # couldn't bind. Mirrors :func:`_build_expression_tree`. Clean
+    # polymorphic returns keep the bare bound unit per convention.
+    if (
+        node.type == "call_expression"
+        and unit is None
+    ):
+        from dimfort.lsp.expr_tree import _h020_conflict_map_for_call
+        if _h020_conflict_map_for_call(node, ctx) is not None:
+            callee_nm_lc = _ts_h.call_name(node, source)
+            if callee_nm_lc is not None:
+                sig = ctx.signatures.get(callee_nm_lc.lower())
+                if (
+                    sig is not None
+                    and sig.return_unit is not None
+                    and ts_checker._unit_expr_has_tyvars(sig.return_unit)
+                ):
+                    formal_return = format_unit(sig.return_unit, show_factor=sf)
+                    unit_str = f"{formal_return} = ?"
     extra_str = ""
     if (
         expected_unit is not None
         and unit is not None
+        and not ts_checker._unit_expr_has_tyvars(expected_unit)
         and not equal_dim(unit, expected_unit)
     ):
+        # ``(expected …)`` only when the formal is concrete. A
+        # polymorphic formal (tyvar-bearing) unifies with any actual
+        # — the dimensional comparison is irrelevant, the unifier
+        # decides, and either an H020 fires (handled below) or the
+        # call is clean (no trailer, marker stays 🟢). Mirrors the
+        # panel-side gate in :func:`_build_expression_tree`.
         extra_str = f"(expected {format_unit(expected_unit, show_factor=sf)})"
+    # H020 polymorphic-conflict override. The unit column renders
+    # ``'a = <actual>`` (the binding this slot would force) and the
+    # row tail flips from ``(expected 'a)`` to the spec's ``(collides
+    # with arg N)`` form. See docs/design/shipped/polymorphic-units.md
+    # §H020. Mirrors :func:`_build_expression_tree` for panel/hover
+    # parity.
+    if (
+        polymorphism_conflict_row is not None
+        and expected_unit is not None
+        and unit is not None
+    ):
+        _binding_text, partner_indices = polymorphism_conflict_row
+        formal_render = format_unit(expected_unit, show_factor=sf)
+        actual_render = format_unit(unit, show_factor=sf)
+        unit_str = f"{formal_render} = {actual_render}"
+        if partner_indices:
+            partners = ", ".join(f"arg {p + 1}" for p in partner_indices)
+            extra_str = f"(collides with {partners})"
+        else:
+            extra_str = ""
     # `@unit_assume` overlay — applied to the RHS row of an assumed
     # assignment (the parent's loop passes ``assumed_overlay`` to that
     # one child; this node itself never carries the overlay because
@@ -993,6 +1045,15 @@ def _render_ast_tree(
     # sits on the enclosing call via H004's diagnostic.
     if extra_str and mark == "🟢" and assumed_overlay is None:
         mark = "🟡"
+    # H020 polymorphic-conflict override: every contributing arg row
+    # owns part of the conflict and renders 🔴 — strictly stronger
+    # than the 🟡-on-expected demote above (which is suppressed
+    # alongside its trailer when this branch fires). Mirrors the
+    # panel-side override in :func:`_build_expression_tree`. The
+    # diagnostic-owned 🔴 on the enclosing call still propagates
+    # independently through ``_node_marker``.
+    if polymorphism_conflict_row is not None:
+        mark = "🔴"
     # `@unit_assume` overlay wins the marker column (after the
     # 🟡-on-expected step above) on 🟢/🟡 rows — the assumption is
     # the headline at this row. A 🔴 from a diagnostic owning *this*
@@ -1038,12 +1099,20 @@ def _render_ast_tree(
     # ``expected_unit`` paints 🟡 + ``(expected <formal>)`` per the
     # override in this same function above.
     arg_expected: list[UnitExpr | None] = []
+    poly_conflict_map: dict[int, tuple[str, tuple[int, ...]]] | None = None
     if node.type in ("call_expression", "subroutine_call"):
         callee_nm = _ts_h.call_name(node, source)
         if callee_nm is not None:
             sig = ctx.signatures.get(callee_nm.lower())
             if sig is not None:
                 arg_expected = list(sig.arg_units)
+        # H020 conflict data, if this call fires one. Threaded per-slot
+        # to the child render so each conflicting arg renders the
+        # spec's ``(collides with arg N)`` trailer. Reuses the
+        # panel-side helper for single-source-of-truth diagnostic
+        # extraction.
+        from dimfort.lsp.expr_tree import _h020_conflict_map_for_call
+        poly_conflict_map = _h020_conflict_map_for_call(node, ctx)
     elif node.type == "assignment_statement" and len(children) >= 2:
         # ``assignment_homogeneity`` already does the autocast vs
         # mismatch decision; in autocast the RHS resolves to LHS unit
@@ -1079,6 +1148,10 @@ def _render_ast_tree(
         per_child_assumed: tuple[str, str] | None = None
         if rhs_assumed_overlay is not None and is_last_child:
             per_child_assumed = rhs_assumed_overlay
+        per_child_poly_conflict: tuple[str, tuple[int, ...]] | None = (
+            poly_conflict_map.get(i)
+            if poly_conflict_map is not None else None
+        )
         _render_ast_tree(
             c, ctx, source,
             prefix=next_prefix, is_last=(i == len(children) - 1),
@@ -1086,5 +1159,6 @@ def _render_ast_tree(
             target_unit_for_literal=per_child_target,
             expected_unit=per_child_expected,
             assumed_overlay=per_child_assumed,
+            polymorphism_conflict_row=per_child_poly_conflict,
             max_depth=max_depth, _depth=_depth + 1,
         )

@@ -440,6 +440,399 @@ def test_panel_marker_matrix_diagnostic_driven(tmp_path: Path):
     assert marks == ["error", "warn", "ok"]
 
 
+def test_panel_marker_paints_polymorphism_diagnostics(tmp_path: Path):
+    """H020 / H023 fire as mismatch-shaped diagnostics on a call site /
+    dishonest body. They must paint 🔴 on the offending node so the
+    panel-tree matches the Problems-panel severity (and the worst-of-
+    children rule lifts it to the assignment/call root). Regression
+    pin: before this, the polymorphism codes weren't in
+    ``_MARKER_DIAG_CODES``, so the dishonest assignment rendered 🟡
+    (resolution-axis only) alongside a 🔴 in the Problems panel —
+    a confusing UX where the hover tree didn't reflect that a hard
+    error fired."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp import server
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
+
+    src = tmp_path / "poly.f90"
+    src.write_text(
+        "module m\n"
+        "contains\n"
+        "  ! H023 — dishonest body forces 'a = kg\n"
+        "  subroutine biased_avg(x, y, mean)\n"
+        "    real, intent(in)  :: x        !< @unit{'a}\n"
+        "    real, intent(in)  :: y        !< @unit{'a}\n"
+        "    real, intent(out) :: mean     !< @unit{'a}\n"
+        "    real, parameter   :: bias_kg = 1.0  !< @unit{kg}\n"
+        "    real :: half  !< @unit{1}\n"
+        "    half = 0.5\n"
+        "    mean = half * (x + y) + bias_kg\n"   # <- H023 here
+        "  end subroutine biased_avg\n"
+        "  ! H020 — caller mixes kg + m across two 'a slots\n"
+        "  subroutine caller_mismatch(m_in, l_in, o)\n"
+        "    real, intent(in)  :: m_in   !< @unit{kg}\n"
+        "    real, intent(in)  :: l_in   !< @unit{m}\n"
+        "    real, intent(out) :: o      !< @unit{kg}\n"
+        "    call biased_avg(m_in, l_in, o)\n"     # <- H020 here
+        "  end subroutine caller_mismatch\n"
+        "end module m\n"
+    )
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    asns = [n for n in _ts.walk(tree.root_node)
+            if n.type == "assignment_statement"]
+    calls = [n for n in _ts.walk(tree.root_node)
+             if n.type == "subroutine_call"]
+
+    result = check_files([src])
+    with server.state.last_result_lock:
+        saved_result, server.state.last_result = server.state.last_result, result
+    try:
+        ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+        # The dishonest assignment is the LAST assignment in the file
+        # (line 11). The H023 owns that node; its tree must root 🔴.
+        dishonest_asn = asns[-1]
+        marker = _build_expression_tree(dishonest_asn, ctx, source)["marker"]
+        assert marker == "error", (
+            f"H023 should paint the dishonest assignment 🔴, got {marker}"
+        )
+        # The single call_expression with H020 must also root 🔴.
+        assert calls, "expected a subroutine_call in the fixture"
+        call_marker = _build_expression_tree(calls[-1], ctx, source)["marker"]
+        assert call_marker == "error", (
+            f"H020 should paint the mismatched call site 🔴, got {call_marker}"
+        )
+    finally:
+        with server.state.last_result_lock:
+            server.state.last_result = saved_result
+
+
+def test_panel_h020_arg_rows_render_binding_and_collision_trailer(tmp_path: Path):
+    """Each conflicting arg row of an H020 must render:
+    - unit column = ``'a = <actual>`` (the binding the slot would push);
+    - new ``collides`` payload field = ``"arg N"`` / ``"arg N, arg M"``
+      that the companion renders as ``(collides with …)`` to the right
+      of the marker, parallel to ``(expected …)``;
+    - marker = ``error``;
+    - ``expected`` field suppressed (the binding string already surfaces
+      the formal tyvar; the spec mandates ``(collides …)`` wording for
+      this path, not ``(expected …)``).
+    Regression pin: before this, arg rows showed ``kg`` / ``m`` in the
+    unit column with ``(expected 'a)`` as the trailer and marker
+    ``warn`` (via the expected → warn demotion). See
+    docs/design/shipped/polymorphic-units.md §H020."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp import server
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
+
+    src = tmp_path / "poly_h020_render.f90"
+    src.write_text(
+        "module m\n"
+        "contains\n"
+        "  subroutine f(x, y, z)\n"
+        "    real, intent(in)  :: x  !< @unit{'a}\n"
+        "    real, intent(in)  :: y  !< @unit{'a}\n"
+        "    real, intent(out) :: z  !< @unit{'a}\n"
+        "    z = x\n"
+        "  end subroutine f\n"
+        "  subroutine caller(a, b, c)\n"
+        "    real, intent(in)  :: a  !< @unit{kg}\n"   # slot 0 → 'a = kg
+        "    real, intent(in)  :: b  !< @unit{m}\n"    # slot 1 → 'a = m
+        "    real, intent(out) :: c  !< @unit{kg}\n"   # slot 2 → 'a = kg
+        "    call f(a, b, c)\n"                        # 3-way conflict
+        "  end subroutine caller\n"
+        "end module m\n"
+    )
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    calls = [n for n in _ts.walk(tree.root_node)
+             if n.type == "subroutine_call"]
+
+    result = check_files([src])
+    with server.state.last_result_lock:
+        saved_result, server.state.last_result = server.state.last_result, result
+    try:
+        ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+        payload = _build_expression_tree(calls[-1], ctx, source)
+        # Three arg rows, one per slot.
+        assert len(payload["children"]) == 3
+        a_row, b_row, c_row = payload["children"]
+        # Every row hard-pinned to error — the generic warn demotion
+        # is the bug we're patching.
+        assert a_row["marker"] == "error", a_row
+        assert b_row["marker"] == "error", b_row
+        assert c_row["marker"] == "error", c_row
+        # Expected-trailer field suppressed (would otherwise produce a
+        # duplicate "(expected 'a) — collides with …" double-trailer).
+        assert a_row["expected"] is None, a_row
+        assert b_row["expected"] is None, b_row
+        assert c_row["expected"] is None, c_row
+        # Unit column carries the bare binding ``'a = <actual>``; the
+        # collision trailer ships in its own ``collides`` field.
+        assert a_row["unit"] == "'a = kg", a_row
+        assert b_row["unit"] == "'a = m", b_row
+        assert c_row["unit"] == "'a = kg", c_row
+        # ``collides`` field carries the partner-arg list with bare
+        # ``arg N`` labels (no ``(name)`` parenthetical — the
+        # partner's own row carries the name).
+        assert a_row["collides"] == "arg 2", a_row
+        # arg 2 (b) collides with both arg 1 (a) and arg 3 (c).
+        assert b_row["collides"] == "arg 1, arg 3", b_row
+        assert c_row["collides"] == "arg 2", c_row
+    finally:
+        with server.state.last_result_lock:
+            server.state.last_result = saved_result
+
+
+def test_panel_h020_function_call_renders_unbound_return_form(tmp_path: Path):
+    """A polymorphic function call whose unifier rejected (H020 fires)
+    must render its own row's unit column as ``'a = ?`` — not bare
+    ``?`` — so the polymorphism context is preserved at a glance.
+    Mirrors the arg rows' ``'a = unit`` form, but with ``?`` standing
+    in for the indeterminate binding.
+
+    Regression pin: before this, ``_resolve_polymorphic_return``
+    returning ``None`` on failure (fix #6) caused the call_expression
+    row to fall through to the generic ``?`` glyph in unit_render —
+    correct but uninformative. The override surfaces the formal
+    return tyvar so the row reads as polymorphism-specific."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp import server
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
+
+    src = tmp_path / "poly_h020_func.f90"
+    src.write_text(
+        "module m\n"
+        "contains\n"
+        "  function f(x, y) result(out)\n"
+        "    real, intent(in) :: x    !< @unit{'a}\n"
+        "    real, intent(in) :: y    !< @unit{'a}\n"
+        "    real             :: out  !< @unit{'a}\n"
+        "    out = x\n"
+        "  end function f\n"
+        "  subroutine caller(a, b, r)\n"
+        "    real, intent(in)  :: a  !< @unit{kg}\n"
+        "    real, intent(in)  :: b  !< @unit{m}\n"
+        "    real, intent(out) :: r  !< @unit{kg}\n"
+        "    r = f(a, b)\n"
+        "  end subroutine caller\n"
+        "end module m\n"
+    )
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    calls = [n for n in _ts.walk(tree.root_node)
+             if n.type == "call_expression"]
+
+    result = check_files([src])
+    with server.state.last_result_lock:
+        saved_result, server.state.last_result = server.state.last_result, result
+    try:
+        ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+        # The call expression in the RHS of `r = f(a, b)` — the LAST
+        # call_expression in the file is the conflicting one.
+        payload = _build_expression_tree(calls[-1], ctx, source)
+        # Unit column: ``'a = ?`` (formal return = unbound).
+        assert payload["unit"] == "'a = ?", payload
+        # Marker still 🔴 (worst-of-children inherits H020 from args).
+        assert payload["marker"] == "error", payload
+    finally:
+        with server.state.last_result_lock:
+            server.state.last_result = saved_result
+
+
+def test_panel_clean_polymorphic_function_call_keeps_bare_bound_unit(tmp_path: Path):
+    """A clean polymorphic function call (unifier succeeded) must keep
+    bare bound-unit rendering — ``m``, not ``'a = m`` — per our
+    "show binding only when it matters" convention (fix #4/#5 rationale).
+    The unbound-return ``'a = ?`` override fires ONLY on H020 failure;
+    clean returns stay as plain bound units, matching how clean concrete
+    function calls render."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp import server
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
+
+    src = tmp_path / "poly_clean_func.f90"
+    src.write_text(
+        "module m\n"
+        "contains\n"
+        "  function f(x, y) result(out)\n"
+        "    real, intent(in) :: x    !< @unit{'a}\n"
+        "    real, intent(in) :: y    !< @unit{'a}\n"
+        "    real             :: out  !< @unit{'a}\n"
+        "    out = x\n"
+        "  end function f\n"
+        "  subroutine caller(a, b, r)\n"
+        "    real, intent(in)  :: a  !< @unit{m}\n"
+        "    real, intent(in)  :: b  !< @unit{m}\n"
+        "    real, intent(out) :: r  !< @unit{m}\n"
+        "    r = f(a, b)\n"
+        "  end subroutine caller\n"
+        "end module m\n"
+    )
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    calls = [n for n in _ts.walk(tree.root_node)
+             if n.type == "call_expression"]
+
+    result = check_files([src])
+    with server.state.last_result_lock:
+        saved_result, server.state.last_result = server.state.last_result, result
+    try:
+        ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+        payload = _build_expression_tree(calls[-1], ctx, source)
+        # Unit column: bare ``m`` (the bound return), not ``'a = m``.
+        assert payload["unit"] == "m", payload
+        assert payload["marker"] == "ok", payload
+    finally:
+        with server.state.last_result_lock:
+            server.state.last_result = saved_result
+
+
+def test_panel_clean_polymorphic_call_has_no_expected_trailer(tmp_path: Path):
+    """A clean polymorphic call (every actual unifies cleanly with the
+    formal tyvar) must render each arg row as bare ``unit 🟢`` — no
+    ``(expected 'a)`` trailer, no 🟡 demote. Regression pin: before
+    this, ``equal_dim(unit, expected_unit)`` was checked unconditionally;
+    for a polymorphic formal whose ``tyvars`` field is non-empty the
+    check returned False (the formal's concrete dimensions are zero
+    while the actual has e.g. mass) so the trailer fired and the marker
+    demoted to warn. But polymorphic formals unify with any actual —
+    the dimensional comparison doesn't apply. See
+    docs/design/shipped/polymorphic-units.md."""
+    from dimfort.core import ts_parser as _ts
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp import server
+    from dimfort.lsp.expr_tree import _build_expression_tree
+    from dimfort.lsp.tree_access import _build_ts_ctx
+
+    src = tmp_path / "poly_clean.f90"
+    src.write_text(
+        "module m\n"
+        "contains\n"
+        "  subroutine f(x, y, z)\n"
+        "    real, intent(in)  :: x  !< @unit{'a}\n"
+        "    real, intent(in)  :: y  !< @unit{'a}\n"
+        "    real, intent(out) :: z  !< @unit{'a}\n"
+        "    z = x\n"
+        "  end subroutine f\n"
+        "  subroutine caller_clean(a, b, c)\n"
+        "    real, intent(in)  :: a  !< @unit{m}\n"
+        "    real, intent(in)  :: b  !< @unit{m}\n"
+        "    real, intent(out) :: c  !< @unit{m}\n"
+        "    call f(a, b, c)\n"
+        "  end subroutine caller_clean\n"
+        "end module m\n"
+    )
+    source = src.read_bytes()
+    tree = _ts.parse_text(source)
+    resolved = src.resolve()
+    calls = [n for n in _ts.walk(tree.root_node)
+             if n.type == "subroutine_call"]
+
+    result = check_files([src])
+    # Sanity: no H020 should fire on this clean call.
+    diags = result.diagnostics.get(resolved, ())
+    assert not any(d.code == "H020" for d in diags), [
+        (d.code, d.message) for d in diags
+    ]
+
+    with server.state.last_result_lock:
+        saved_result, server.state.last_result = server.state.last_result, result
+    try:
+        ctx = _build_ts_ctx(result, source, str(resolved), path=resolved)
+        payload = _build_expression_tree(calls[-1], ctx, source)
+        assert len(payload["children"]) == 3
+        a_row, b_row, c_row = payload["children"]
+        # Bare unit column; no binding prefix or trailer in unit.
+        assert a_row["unit"] == "m", a_row
+        assert b_row["unit"] == "m", b_row
+        assert c_row["unit"] == "m", c_row
+        # No ``(expected 'a)`` trailer field set.
+        assert a_row["expected"] is None, a_row
+        assert b_row["expected"] is None, b_row
+        assert c_row["expected"] is None, c_row
+        # No collides — clean call, no conflict.
+        assert a_row.get("collides") is None, a_row
+        assert b_row.get("collides") is None, b_row
+        assert c_row.get("collides") is None, c_row
+        # Each arg row stays clean — no diagnostic owns it, no demote.
+        assert a_row["marker"] == "ok", a_row
+        assert b_row["marker"] == "ok", b_row
+        assert c_row["marker"] == "ok", c_row
+        # The call root propagates clean too (no H020, no warn from kids).
+        assert payload["marker"] == "ok", payload
+    finally:
+        with server.state.last_result_lock:
+            server.state.last_result = saved_result
+
+
+def test_h020_message_uses_new_multiline_shape(tmp_path: Path):
+    """H020's diagnostic message must use the multi-line shape with
+    tightened lead and bare ``arg N`` partner labels (no ``(name)``
+    parenthetical, em-dash separator). Regression pin: the prior single
+    flat sentence (``Call to '<fn>': type variable 'a bound to
+    inconsistent units at this call site arg 1 (x): 'a = kg (collides
+    with arg 2 (y)) …``) packed all rows on one line and duplicated
+    each partner's name."""
+    from dimfort.core.multifile import check_files
+
+    src = tmp_path / "poly_h020_msg.f90"
+    src.write_text(
+        "module m\n"
+        "contains\n"
+        "  subroutine f(x, y)\n"
+        "    real, intent(in)  :: x  !< @unit{'a}\n"
+        "    real, intent(out) :: y  !< @unit{'a}\n"
+        "    y = x\n"
+        "  end subroutine f\n"
+        "  subroutine caller(a, b)\n"
+        "    real, intent(in)  :: a  !< @unit{kg}\n"
+        "    real, intent(out) :: b  !< @unit{m}\n"
+        "    call f(a, b)\n"
+        "  end subroutine caller\n"
+        "end module m\n"
+    )
+    result = check_files([src])
+    resolved = src.resolve()
+    diags = result.diagnostics.get(resolved, ())
+    h020 = next(d for d in diags if d.code == "H020")
+    # New lead phrase, with function name embedded at the end (so it
+    # reads as a clause rather than a redundant prefix).
+    assert "cannot unify across these args of 'f'" in h020.message
+    assert "Call to '" not in h020.message, (
+        "old verbose lead phrase should be gone"
+    )
+    # Multi-line structure: each contributing row on its own line.
+    lines = h020.message.split("\n")
+    assert len(lines) >= 3, h020.message
+    # Em-dash separator before the collision trailer, replacing the
+    # old ``(collides with …)`` parenthetical.
+    assert " — collides with " in h020.message
+    # Partner labels are bare ``arg N`` — the parenthetical
+    # ``(name)`` form is gone.
+    assert "(collides with arg 2 (b))" not in h020.message
+    assert "(collides with arg 1 (a))" not in h020.message
+    # Structured conflict data attached for the panel-render path.
+    assert h020.polymorphism_conflict is not None
+    assert len(h020.polymorphism_conflict) == 2
+    # Each row: (slot_index, slot_name, binding_text, partner_indices)
+    slots = {row[0]: row for row in h020.polymorphism_conflict}
+    assert slots[0][2] == "kg" and slots[0][3] == (1,)
+    assert slots[1][2] == "m" and slots[1][3] == (0,)
+
+
 def test_panel_expression_shows_scale_factor_in_scale_mode(tmp_path: Path):
     """With scale mode on, the expression tree's unit column surfaces the
     multiplicative scale factor (e.g. ``100×kg·m⁻¹·s⁻²`` for ``hPa``)

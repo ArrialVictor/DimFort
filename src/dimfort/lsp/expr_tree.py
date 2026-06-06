@@ -43,9 +43,20 @@ if TYPE_CHECKING:
 # The unit-consistency family — the only codes that colour a marker
 # along the severity axis (🟢/🟡/🔴). U020 is handled separately and
 # paints 🔵 ("accepted via @unit_assume") — see docs/design/markers.md
-# §4.6.
+# §4.6. The polymorphism additions (H020 unification failure at a call
+# site, H021 tyvar in forbidden position, H022 symbolic exponent on a
+# tyvar, H023 dishonest polymorphic body) are mismatch-shaped and own
+# the node they fire on; treating them as consistency-family ensures
+# the offending expression renders 🔴 in the panel/hover tree and the
+# worst-of-children propagation lifts that 🔴 up to the assignment row
+# — matching the H001/H002 mismatch UX rather than leaving them
+# invisibly 🟡 alongside a 🔴 Problems-panel entry.
 _MARKER_DIAG_CODES = frozenset(
-    {"H001", "H002", "H003", "H004", "S001", "S002", "S003"}
+    {
+        "H001", "H002", "H003", "H004",
+        "H020", "H021", "H022", "H023",
+        "S001", "S002", "S003",
+    }
 )
 
 _SEVERITY_EMOJI = {
@@ -214,9 +225,43 @@ def _node_marker(node: Node, ctx: ts_checker.Ctx, source: bytes) -> str:
     return m
 
 
+def _h020_conflict_map_for_call(
+    node: Node, ctx: ts_checker.Ctx,
+) -> dict[int, tuple[str, tuple[int, ...]]] | None:
+    """If an H020 diagnostic owns this call node, return a mapping
+    ``{slot_index: (binding_text, partner_indices)}`` derived from the
+    diagnostic's :attr:`Diagnostic.polymorphism_conflict` field. Used by
+    :func:`_build_expression_tree` to render each conflicting arg row
+    in the spec form ``'a = unit — collides with arg N`` instead of the
+    generic ``(expected 'a)`` trailer reserved for the concrete-signature
+    H004 mismatch path. ``None`` when no H020 fires on this call (the
+    common case), or when an H020 fires but predates the structured
+    field (defensive — server.py never emits a wire-form rewrite).
+    """
+    diags = _diags_for_ctx(ctx)
+    if not diags:
+        return None
+    nspan = _node_span_lc(node)
+    for d in diags:
+        if d.code != "H020":
+            continue
+        dspan = (d.start.line, d.start.column), (d.end.line, d.end.column)
+        if not _span_within(dspan, nspan):
+            continue
+        if d.polymorphism_conflict is None:
+            return None
+        return {
+            slot_idx: (binding, partners)
+            for slot_idx, _slot_name, binding, partners
+            in d.polymorphism_conflict
+        }
+    return None
+
+
 def _build_expression_tree(
     node: Node | None, ctx: ts_checker.Ctx, source: bytes,
     *, expected_unit: UnitExpr | None = None,
+    polymorphism_conflict_row: tuple[str, tuple[int, ...]] | None = None,
 ) -> dict[str, Any] | None:
     """Build a structured ExpressionNode for the panel.
 
@@ -227,6 +272,15 @@ def _build_expression_tree(
     formal's :class:`UnitExpr`; on a dimensional mismatch the payload's
     ``expected`` field renders it pretty so the panel can append
     ``(expected …)`` to the row.
+
+    ``polymorphism_conflict_row`` is the per-arg row of an H020
+    (polymorphic call-site unification failure) when this node is one of
+    the conflicting slots, threaded down by the parent call. When set,
+    the unit column renders the spec's ``'a = <actual> — collides with
+    arg N, arg M`` form (single string), the marker hard-pins to
+    ``error``, and the generic ``(expected 'a)`` trailer is suppressed —
+    avoiding a `(expected 'a) — collides with arg N` double-trailer that
+    duplicates the same fact two ways. ``None`` for every non-H020 row.
 
     Defers all assignment-specific logic (verdict, autocast detection)
     to :func:`ts_checker.assignment_homogeneity` — the single source
@@ -255,6 +309,11 @@ def _build_expression_tree(
 
     unit = ts_checker.resolve_unit(node, ctx, source)
 
+    # H020 conflict data for this node (if it's a call). Hoisted out of
+    # the children-build block so the unit-column renderer below can
+    # also key off it for the call_expression-itself override (rendering
+    # ``'a = ?`` on a polymorphic call whose unifier rejected).
+    poly_conflict_map: dict[int, tuple[str, tuple[int, ...]]] | None = None
     if node.type in ("identifier", "number_literal", "string_literal", "complex_literal"):
         kids: list[Node] = []
         child_nodes: list[dict[str, Any]] = []
@@ -275,6 +334,10 @@ def _build_expression_tree(
                 sig = ctx.signatures.get(callee_nm.lower())
                 if sig is not None:
                     arg_expected = list(sig.arg_units)
+            # H020 conflict data, if this call fires one. Threaded
+            # per-slot to the child build so each conflicting arg row
+            # renders the spec's ``'a = unit — collides with arg N``.
+            poly_conflict_map = _h020_conflict_map_for_call(node, ctx)
         built = [
             _build_expression_tree(
                 c, ctx, source,
@@ -282,17 +345,28 @@ def _build_expression_tree(
                     arg_expected[i]
                     if arg_expected and i < len(arg_expected) else None
                 ),
+                polymorphism_conflict_row=(
+                    poly_conflict_map.get(i)
+                    if poly_conflict_map is not None else None
+                ),
             )
             for i, c in enumerate(kids)
         ]
         child_nodes = [c for c in built if c is not None]
 
     # Render the `(expected …)` annotation only when actual and formal
-    # disagree dimensionally — matching the call-hover rule.
+    # disagree dimensionally AND the formal is concrete — matching the
+    # call-hover rule. A polymorphic formal (carrying tyvars) can unify
+    # with any actual unit, so dimensional comparison is irrelevant
+    # there: the unifier handles binding, and if no H020 fires the call
+    # is clean. Suppressing this trailer on tyvar formals also stops
+    # the marker demote-to-warn below from firing on clean polymorphic
+    # call rows.
     expected_render: str | None = None
     if (
         expected_unit is not None
         and unit is not None
+        and not ts_checker._unit_expr_has_tyvars(expected_unit)
         and not equal_dim(unit, expected_unit)
     ):
         expected_render = format_unit(expected_unit, show_factor=sf)
@@ -310,6 +384,59 @@ def _build_expression_tree(
     else:
         unit_render = "?"
 
+    # H020 unbound-return override on the call_expression itself.
+    # ``_resolve_polymorphic_return`` deliberately returns ``None`` when
+    # unification fails (so downstream checks don't double-fire on top
+    # of H020 — see fix #6). The bare ``?`` is honest but loses the
+    # polymorphism context. When the failure is *because* the polymorphic
+    # return couldn't bind, render ``'a = ?`` instead — mirroring the
+    # arg rows' ``'a = unit`` form and making the "this is polymorphism,
+    # not unannotated" specificity visible at a glance. Clean
+    # polymorphic returns keep the bare bound unit (e.g. ``m``), per
+    # our "show binding only when it matters" convention.
+    if (
+        node.type == "call_expression"
+        and unit is None
+        and poly_conflict_map is not None
+    ):
+        callee_nm_lc = _ts_h.call_name(node, source)
+        if callee_nm_lc is not None:
+            sig = ctx.signatures.get(callee_nm_lc.lower())
+            if (
+                sig is not None
+                and sig.return_unit is not None
+                and ts_checker._unit_expr_has_tyvars(sig.return_unit)
+            ):
+                formal_return = format_unit(sig.return_unit, show_factor=sf)
+                unit_render = f"{formal_return} = ?"
+
+    # H020 polymorphic-conflict override on a conflicting arg row.
+    # Unit column renders ``'a = <actual>`` (the binding the slot would
+    # force the tyvar to); the spec's ``collides with arg N`` trailer
+    # ships separately in the payload's ``collides`` field so the
+    # companion can render it to the right of the marker, parallel to
+    # ``(expected …)`` and ``(assumed: …)``. See
+    # docs/design/shipped/polymorphic-units.md §H020.
+    #
+    # Note: ``expected_render`` is None on every polymorphic call row
+    # (clean or conflicting) because the formal is a tyvar — see the
+    # tyvar gate above. The formal text is therefore drawn from
+    # ``expected_unit`` directly here, not from ``expected_render``.
+    collides_render: str | None = None
+    if (
+        polymorphism_conflict_row is not None
+        and expected_unit is not None
+        and unit is not None
+    ):
+        _binding_text, partner_indices = polymorphism_conflict_row
+        formal_render = format_unit(expected_unit, show_factor=sf)
+        actual_render = format_unit(unit, show_factor=sf)
+        unit_render = f"{formal_render} = {actual_render}"
+        if partner_indices:
+            collides_render = ", ".join(
+                f"arg {p + 1}" for p in partner_indices
+            )
+
     payload: dict[str, Any] = {
         "label": _node_label(node, source),
         "unit": unit_render,
@@ -319,6 +446,12 @@ def _build_expression_tree(
         # assignment, not on the assignment itself — see the
         # post-recursion block below.
         "assumed": None,
+        # `collides` carries the H020 partner-arg list rendered as
+        # ``"arg N"`` / ``"arg N, arg M"``. The companion renders it
+        # to the right of the marker as ``(collides with …)``,
+        # parallel to ``(expected …)`` / ``(assumed: …)``. ``None``
+        # on every non-H020 row.
+        "collides": collides_render,
         "children": child_nodes,
     }
 
@@ -415,6 +548,17 @@ def _build_expression_tree(
     # override in :func:`_render_ast_tree`.
     if expected_render and payload["marker"] == "ok":
         payload["marker"] = "warn"
+
+    # H020 polymorphic-conflict override: every contributing arg row
+    # owns part of the conflict and renders 🔴. The H020 diagnostic
+    # spans the whole call (not the individual args), so the per-arg
+    # ``_self_marker`` walk above doesn't pick up H020 directly; this
+    # override is what propagates the call-level 🔴 down to each
+    # conflicting arg row. Strictly stronger than the
+    # ``expected_render → warn`` demote above (which is suppressed
+    # alongside its trailer when this branch fires).
+    if polymorphism_conflict_row is not None:
+        payload["marker"] = "error"
 
     return payload
 

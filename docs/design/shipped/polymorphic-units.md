@@ -403,27 +403,38 @@ Hover (tree form) on a call where `'a` is forced to `m` by `roughness` and to
 ```
 🔴 DimFort
 
-eff_param(roughness, frac, out_kg)  :  -  🔴
-├── roughness  :  'a = m      🔴      (collides with arg 3: out_kg)
-├── frac       :  1           🟢
-└── out_kg     :  'a = kg     🔴      (collides with arg 1: roughness)
+eff_param(roughness, frac, out_kg)  :  'a = ?  🔴
+├── roughness  :  'a = m   🔴  (collides with arg 3)
+├── frac       :  1        🟢
+└── out_kg     :  'a = kg  🔴  (collides with arg 1)
 ```
 
-CLI form:
+Per-arg row anatomy: the unit column carries the binding the slot would force
+the tyvar to (`'a = m`); the `(collides with arg N)` trailer ships to the right
+of the marker via the `collides` ExpressionNode field, parallel to the
+existing `(expected …)` and `(assumed: …)` row tails. Partner labels are bare
+`arg N` — the partner's own row carries the name, so duplicating it bloats the
+display without adding information. The call-row itself renders `'a = ?` when
+unification failed (the binding is indeterminate), distinct from a bare `?`
+("unknown for some other reason"); the trailing `?` is muted so the unknown
+component reads at the same visual weight as a bare absence-glyph.
+
+CLI form (one line in the structured message stream, rendered with newlines
+for clarity):
 
 ```
-H020: type variable 'a bound to inconsistent units at this call site
-  ∀ 'a. eff_param('a, 1, 'a) : -
-  arg 1  roughness  : 'a = m       (collides with arg 3: out_kg)
-  arg 2  f          : 1
-  arg 3  out_kg     : 'a = kg      (collides with arg 1: roughness)
+H020: type variable 'a cannot unify across these args of 'eff_param':
+  arg 1 (roughness): 'a = m — collides with arg 3
+  arg 3 (out_kg): 'a = kg — collides with arg 1
 ```
 
-The diagnostic is **symmetric**: every row that contributes a conflicting
-binding goes red and names its partner(s). No "first arg wins"
-asymmetry — unification has no ordering, and the conflict belongs equally to
-all contributing sites. For N-way collisions among 3+ rows, list all partners
-(`(collides with args 1, 4: a, d)`).
+The lead phrase names the callee directly; concrete slots that resolved
+cleanly aren't listed (only contributing tyvar slots appear). The diagnostic
+is **symmetric**: every row that contributes a conflicting binding goes red
+and names its partner(s). No "first arg wins" asymmetry — unification has no
+ordering, and the conflict belongs equally to all contributing sites. For
+N-way collisions among 3+ rows, list all partner indices (` — collides with
+arg 1, arg 4`).
 
 Implementation requires the checker to collect every per-arg binding
 contribution per type variable, detect conflicts after the collection, and
@@ -531,8 +542,13 @@ Recorded here so the rationale survives the design-discussion thread:
 - **Surfacing: standard hover convention, extended.** Definition hovers use
   `∀ 'a. name(slot1, slot2, …) : ret` — the `∀` prefix marks polymorphism
   without disrupting the existing format. Call hovers use the existing tree
-  form with inline `'a = m` on every `'a`-slot row (free info on success,
-  essential on failure). Side panel and CLI follow the same conventions.
+  form: on a clean polymorphic call, each `'a`-slot arg row shows the bare
+  bound unit (`m`) with no extra annotation, matching how concrete call rows
+  render — polymorphism is invisible at row level when nothing's wrong. On
+  H020 failure, each conflicting arg row shows the binding the slot would
+  force (`'a = m`) in the unit column, with the `(collides with arg N)`
+  trailer to the right of the marker; the call-row itself renders `'a = ?`
+  (binding indeterminate). Side panel and CLI follow the same conventions.
   Multiple type variables render as `∀ 'a ∀ 'b` (one quantifier per variable).
 - **Caching: naive is sufficient.** No changes to the per-file cache model.
   Polymorphic signatures serialize into the cache with tyvar names

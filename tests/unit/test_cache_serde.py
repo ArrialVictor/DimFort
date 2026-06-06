@@ -253,6 +253,53 @@ def test_diagnostic_omits_suggested_rewrite_when_none():
     assert "r" not in payload
 
 
+def test_diagnostic_roundtrips_polymorphism_conflict():
+    """H020 populates ``polymorphism_conflict`` (structured per-arg
+    binding/partner data) that the LSP panel reads to render the spec's
+    ``'a = unit — collides with arg N`` form. Without this round-trip
+    a warm cache hit replays the diagnostic with ``polymorphism_conflict
+    = None``, so the panel falls back to the generic ``(expected 'a)``
+    trailer — masking the very UX fix 0.2.3.1 ships. v8 bumps the cache
+    to refresh those entries."""
+    diag = Diagnostic(
+        file="x.f90",
+        start=Position(line=10, column=3),
+        end=Position(line=10, column=30),
+        severity=Severity.ERROR,
+        code="H020",
+        message="type variable 'a cannot unify across these args of 'f':\n"
+                "  arg 1 (x): 'a = kg — collides with arg 2\n"
+                "  arg 2 (y): 'a = m — collides with arg 1",
+        polymorphism_conflict=(
+            (0, "x", "kg", (1,)),
+            (1, "y", "m", (0,)),
+        ),
+    )
+    rt = _roundtrip(dump_diagnostic, load_diagnostic, diag)
+    # Must round-trip as the original tuple shape, not as nested lists.
+    assert rt.polymorphism_conflict == (
+        (0, "x", "kg", (1,)),
+        (1, "y", "m", (0,)),
+    )
+    assert rt.message == diag.message
+
+
+def test_diagnostic_omits_polymorphism_conflict_when_none():
+    """Non-H020 diagnostics (the overwhelming common case) must keep
+    the byte-shape of the v7 payload — no ``pc`` key added when the
+    field is None."""
+    diag = Diagnostic(
+        file="x.f90",
+        start=Position(line=1, column=1),
+        end=Position(line=1, column=3),
+        severity=Severity.ERROR,
+        code="H001",
+        message="oh no",
+    )
+    payload = dump_diagnostic(diag)
+    assert "pc" not in payload
+
+
 def test_diagnostic_drops_trace():
     diag = Diagnostic(
         file="x.f90",

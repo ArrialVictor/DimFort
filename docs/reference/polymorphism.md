@@ -123,11 +123,10 @@ consistent value, the call succeeds. If two argument slots imply
 different values for the same tyvar, **H020** fires:
 
 ```
-H020: Call to 'avg': type variable 'a bound to inconsistent units at
-this call site
-  arg 1 (x):   'a = m   (collides with arg 2 (y))
-  arg 2 (y):   'a = kg  (collides with arg 1 (x), arg 3 (out))
-  arg 3 (out): 'a = m   (collides with arg 2 (y))
+H020: type variable 'a cannot unify across these args of 'avg':
+  arg 1 (x): 'a = m — collides with arg 2
+  arg 2 (y): 'a = kg — collides with arg 1, arg 3
+  arg 3 (out): 'a = m — collides with arg 2
 ```
 
 The trailer is **symmetric**: every contributing row names every other

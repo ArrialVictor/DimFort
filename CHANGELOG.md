@@ -2,6 +2,80 @@
 
 All notable changes to DimFort are documented here. Format inspired by [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.3.1] — 2026-06-07
+
+Patch release fixing the in-editor surface of the 0.2.3 polymorphism
+feature. The 0.2.3 server emitted correct H020 / H023 diagnostics but
+the hover and side-panel tree rendered them with the pre-polymorphism
+`(expected …)` trailer at warn-level — a confidence bug where the
+Problems-panel said 🔴 and the inline UX said 🟡. Eight server- and
+companion-side fixes bring the in-editor surface in line with the spec
+(`docs/design/shipped/polymorphic-units.md` §H020).
+
+Multi-repo release: DimFort + VSCode / Neovim / Emacs companions all
+bump to 0.2.3.1. The wire format gains one optional `collides` field
+on `ExpressionNode` and one optional `polymorphism_conflict` field on
+`Diagnostic` (server-internal, not LSP-exposed). Old companions stay
+forward-compatible (omitted field reads as null/None).
+
+### Fixed
+
+- **Panel/hover marker for H020 / H021 / H022 / H023**: the polymorphism
+  diagnostic codes were missing from the consistency-family marker
+  driver list, so the panel tree fell back to the resolution axis (🟡)
+  even though the diagnostic correctly fired 🔴. They now paint 🔴 on
+  the offending node, and worst-of-children lifts it to the call /
+  assignment root — matching the H001 / H002 UX.
+- **H020 hover and panel rendering** now mirrors the spec form:
+  `arg N (name): 'a = unit` in the unit column, `(collides with arg N)`
+  trailer to the right of the marker (parallel to `(expected …)` and
+  `(assumed: …)`), marker hard-pinned 🔴 on every contributing row.
+  Previously rendered as `unit 🟡 (expected 'a)` — the wrong wording
+  (spec mandates `collides`, not `expected`) at the wrong severity.
+- **H020 diagnostic message reformatted** from a single 200-char run-on
+  sentence to multi-line: tightened lead phrase (`type variable 'a
+  cannot unify across these args of '<fn>':`), one row per contributing
+  slot, em-dash separator before the partner list, bare `arg N` partner
+  labels (no `(name)` parenthetical — the partner's own row carries the
+  name).
+- **Clean polymorphic call** no longer paints arg rows 🟡 with
+  `(expected 'a)`: the dimensional comparison driving `(expected …)` is
+  irrelevant when the formal is a tyvar (the unifier handles binding).
+  Clean rows now render `unit 🟢` with no trailer.
+- **Polymorphic function return** now applies the call-site unifier's
+  substitution to `sig.return_unit`, so a clean `r:m = f(m, m)` against
+  `f(x: 'a, y: 'a) → 'a` resolves the RHS to `m` (the bound return),
+  not the formal `'a`. Pre-fix this fired a spurious H001 on every
+  polymorphic-function assignment. On unification failure (H020), the
+  call resolves to `None` to prevent H001 from double-firing on top of
+  H020's existing report.
+- **H020 call-row rendering**: when a polymorphic call's unifier
+  rejected, the call_expression itself now renders `'a = ?` in its
+  unit column (binding indeterminate) rather than a bare `?`
+  ("unknown for some unspecified reason"). Mirrors the arg rows'
+  `'a = unit` form. Companion-side: the trailing `?` is dimmed so it
+  reads at the same visual weight as a bare absence-glyph.
+
+### Changed
+
+- **CHECKER_OUTPUT_VERSION bumped 7 → 9** (one bump per cached-diagnostic
+  shape change in this release). Upgrading from 0.2.3 → 0.2.3.1 auto-
+  invalidates pre-fix entries on first re-check; no user intervention
+  required. The previous "Clear Content-Hash Cache" workaround is no
+  longer necessary.
+
+### Wire format
+
+- **`Diagnostic.polymorphism_conflict`** (server-internal, not LSP-
+  exposed): structured per-arg conflict data on H020 — each row carries
+  `(slot_index, slot_name, binding_text, partner_slot_indices)`. The
+  LSP panel-render path reads this to draw the spec form on each
+  conflicting arg row.
+- **`ExpressionNode.collides`** (LSP wire): optional string field
+  carrying the H020 partner-arg list (`"arg 2"` /
+  `"arg 1, arg 3"`). Companion renders it as `(collides with …)`.
+  Absent on every non-H020 row; absent on pre-0.2.3.1 servers.
+
 ## [0.2.3] — 2026-06-06
 
 Largest 0.2.x shipment to date — adds parametric polymorphism (a whole
