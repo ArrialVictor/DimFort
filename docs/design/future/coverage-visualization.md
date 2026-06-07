@@ -396,14 +396,23 @@ src/physics/turb_mod.f90                     0    87    11        0    120      
 ...
 Workset total                            12847   612    47       18   4231      95.1%
 
-Coverage = OK / (OK + Warn + Fire + Unparsed). Out-of-scope lines
-are excluded from the denominator.
+Coverage = OK / (OK + Warn + Fire). Unparsed and out-of-scope
+lines are both excluded from the denominator: unparsed regions
+are a tool limitation (no annotation can move them), out-of-scope
+lines aren't checkable. The percentage measures "how close to
+homogeneous is the checkable, parseable surface" — a fully
+annotated workset reaches 100% even when P001 regions exist.
+Unparsed shows in the per-row column so a large P001 area is
+still visible; it just doesn't drag the headline number.
 ```
 
 The denominator deliberately excludes out-of-scope lines: a 500-line
 file with 100 lines of comments / blank / control flow has 400
 checkable lines. The coverage percentage measures how many of the 400
-DimFort verified, not 400/500.
+DimFort verified, not 400/500. Unparsed regions are excluded for an
+analogous reason: a P001 block is not annotatable, so counting it
+against the user would conflate annotation effort with parser
+coverage — two different concerns.
 
 Flags (v1):
 
@@ -441,8 +450,143 @@ response:
 }
 ```
 
-Companions surface as a status-bar widget (workspace total) and/or a
-`:DimfortCoverage` command (per-file or workspace view).
+See §8.3 for the companion-side rendering: an always-visible bar
+segment in the side panel plus an on-demand report buffer.
+
+### 8.3 Companion stats UI
+
+The wire data from §8.2 drives two surfaces inside each companion:
+an always-visible bar segment in the side panel, and an on-demand
+report buffer / view.
+
+#### 8.3.1 Panel bottom bar
+
+The side panel already has a bottom bar; the coverage feature
+adds a single line:
+
+    File: 78% (🟡 18 🔴 2)  ·  WS: 73% (🟡 412 🔴 38)
+
+Two segments — current file, whole workset — same glyph family as
+the in-buffer paint, so the bar reads as a direct summary of what
+the user sees in the gutter / background.
+
+When no `.f90` file is active, the workset is empty, or
+`coverage.mode = disabled`, the bar collapses to the inert form:
+
+    File: —  ·  WS: —
+
+rather than `0% (🟡 0 🔴 0)`, which would read as "everything is
+broken." The bar is gated on `coverage.mode != disabled` — same
+opt-in as the painting.
+
+**No diagnostic-event counts in the bar.** Editor chrome already
+shows workspace W/E totals (VSCode status bar by default; Nvim
+and Emacs via `vim.diagnostic` / flycheck / flymake when
+configured — recommended in the user docs). Showing them again
+inside the panel would force a glyph-family disambiguation
+between "state of these lines" (coverage tiers) and "count of
+fires" (W/E events), which measure different things: yellow
+lines outnumber W diagnostics (propagation, the §3.4 declaration
+rule), and red lines under-count E diagnostics (multiple fires
+can share a line). Circles in the bar always mean "lines in this
+tier"; events live in the editor's native chrome.
+
+Clicking either segment opens the report (§8.3.2).
+
+#### 8.3.2 Coverage report buffer
+
+A single buffer covering both scopes. Layout:
+
+    Workspace coverage: 73.4%   (🟢 1284  🟡 412  🔴 38  · 14 unparsed)
+
+    File                                       Coverage    🟢     🟡    🔴   Unparsed
+    src/phylmd/cv_routines.f90                    12.4%    11     74     3          0
+    src/dyn3d/leapfrog.f90                        81.0%   213     48     2          0
+    src/physics/condsurf.f90                      98.2%   164      3     0          0
+    …
+
+- **Sort**: by coverage % ascending (worst first → actionable).
+  A v2 sort toggle (by path, by tier count) is parked.
+- **Paths**: workspace-relative; the server emits `file://` URIs,
+  the client strips to a relative form.
+- **Activate row**: click / `<CR>` jumps to the file's first
+  non-green line; falls back to line 1 when the whole file is
+  green.
+- **Refresh**: manual via `r` (or editor-idiomatic equivalent);
+  the buffer also refreshes automatically while open on the
+  same `DiagnosticChanged` / `onDidChangeDiagnostics` signal
+  that drives the paint and the bar.
+- **Unparsed** is a per-row column but doesn't enter the headline
+  percentage (matches the §8.1 formula).
+
+#### 8.3.3 Refresh model
+
+File-scope and workspace-scope refresh on different cadences,
+because workspace aggregation is expensive (one tree-sitter walk
+per workset file under `state.ts_handler_lock`; on real-world
+Fortran codebases of 1000+ files the un-cached cost is in the
+tens to hundreds of milliseconds).
+
+**File-scope** refreshes on every editor diagnostic-change signal
+— cheap, one file:
+
+- **VSCode**: `vscode.languages.onDidChangeDiagnostics`.
+- **Nvim**: `DiagnosticChanged` autocmd.
+- **Emacs**: `after-change-functions` with 0.5 s debounce +
+  `after-save-hook`.
+
+**Workspace-scope** sits behind an additional **2 s companion-side
+debounce** on the same trigger. Without it, active typing produces
+a fresh `WorksetResult` every ~400 ms (the server's `didChange`
+debounce), and each refresh would re-walk the entire workset. The
+2 s debounce caps aggregation at roughly one call every two seconds
+during active editing, idle bursts excluded.
+
+To make the staleness visible, the WS segment renders in a **muted
+foreground** between a diagnostic-change signal and the arrival of
+the corresponding `dimfort/coverageStats` response. Companion-side
+state: `ws_stale: bool` flag set on every `DiagnosticChanged`,
+cleared on stats-response. Visual: VSCode
+`descriptionForeground`; Nvim a `Comment`-derived highlight group;
+Emacs the `shadow` face.
+
+File-scope does not need a stale marker — it moves in lock-step
+with the squiggles the user can already see.
+
+**Future optimisations (parked).** The 2 s debounce + identity-
+keyed cache is the conservative first cut. Two follow-ups are
+on the table if real-world profiling shows it's still too heavy
+in steady state:
+
+1. **Per-file tree-identity caching server-side.** Replace the
+   whole-`WorksetResult` cache key with per-file
+   `(id(tree), id(per_file_diagnostics))`. When the user edits
+   one file, only that file's projection re-walks; unchanged
+   files hit the cache. Steady-state cost becomes
+   O(changed files) rather than O(workset). Conditional on the
+   multifile checker reusing tree objects for unchanged files
+   across re-checks (likely, given the existing content-hash
+   cache infrastructure).
+2. **`workspace_stats` user-facing tri-state**:
+   `disabled | manual | automatic`. `manual` shows `WS: ?` with
+   a click / command to compute on demand; `disabled` shows
+   `WS: —` always. File-scope is always live regardless. Gives
+   users on enormous codebases an explicit escape hatch even if
+   the per-file cache is in place.
+
+Neither is implemented in v1; profile first, then choose.
+
+#### 8.3.4 Commands
+
+Each companion exposes:
+
+- `DimFort: Show Coverage Report` / `:DimFortCoverageReport` /
+  `M-x dimfort-coverage-report` — opens the report buffer.
+- (Existing) `DimFort: Cycle Coverage Visualisation` — unchanged.
+
+The bottom-bar segments are clickable shortcuts to the report;
+the command surface is for users who close the panel or prefer
+keyboard-driven access.
 
 ## 9. Companion implementation notes
 
@@ -622,6 +766,25 @@ A new `_run_coverage(args)` in `cli.py`, paralleling `_run_check` and
 `_run_interactions`. Re-uses `check_files` for the analysis pipeline;
 adds a counting + formatting pass over the result. The CLI dispatch in
 `main()` gains a third subcommand branch.
+
+### 10.5 Stats cache
+
+`dimfort/coverageStats` aggregates over every file in the workset
+and is hit by each companion on every diagnostic-change signal.
+The aggregation is not free — each file's projection involves a
+tree-sitter walk under `state.ts_handler_lock`, and on
+larger real-world Fortran codebases the un-cached cost is in
+the tens-to-hundreds of milliseconds.
+
+The handler caches its full response keyed by
+`id(state.last_result)`. `WorksetResult` is immutable per check
+cycle and replaced on each new result, so the cache invalidates
+naturally on result swap. First call after a check pays the
+walk; subsequent calls — from any companion, at any scope — are
+O(1).
+
+The per-file `dimfort/lineStatus` handler does not need this
+cache: it's already scoped to one file and is cheap.
 
 ## 11. Decisions resolved during spec review
 

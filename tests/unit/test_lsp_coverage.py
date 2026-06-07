@@ -184,3 +184,66 @@ def test_stats_returns_empty_when_no_cached_result():
     assert payload["files"] == []
     assert payload["total"]["ok"] == 0
     assert payload["total"]["coverage_pct"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Stats cache (identity-keyed)
+# ---------------------------------------------------------------------------
+
+
+def test_stats_cache_hits_on_same_result(tmp_path: Path):
+    """Repeat ``stats()`` calls on the same WorksetResult skip the tree walk."""
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp import coverage
+    from dimfort.lsp.state import state
+
+    src = _clean_src(tmp_path)
+    result = check_files([src])
+    saved = state.last_result
+
+    # Reset the module cache so we start clean.
+    coverage._cache_result = None
+    coverage._cache_files = {}
+    _set_last_result(result)
+    try:
+        first = coverage.stats(None, {})  # type: ignore[arg-type]
+        # Cache should now contain the file's FileCoverage.
+        assert coverage._cache_result is result
+        assert src.resolve() in coverage._cache_files
+
+        # Second call: same result identity → cache populated, payload identical.
+        second = coverage.stats(None, {})  # type: ignore[arg-type]
+        assert first == second
+    finally:
+        state.last_result = saved  # type: ignore[assignment]
+        coverage._cache_result = None
+        coverage._cache_files = {}
+
+
+def test_stats_cache_invalidates_on_new_result(tmp_path: Path):
+    """A new WorksetResult identity drops the previous cache entries."""
+    from dimfort.core.multifile import check_files
+    from dimfort.lsp import coverage
+    from dimfort.lsp.state import state
+
+    src = _clean_src(tmp_path)
+    result_a = check_files([src])
+    result_b = check_files([src])
+    assert result_a is not result_b  # sanity: fresh check produces fresh object
+
+    saved = state.last_result
+    coverage._cache_result = None
+    coverage._cache_files = {}
+    _set_last_result(result_a)
+    try:
+        coverage.stats(None, {})  # type: ignore[arg-type]
+        assert coverage._cache_result is result_a
+
+        _set_last_result(result_b)
+        coverage.stats(None, {})  # type: ignore[arg-type]
+        # Cache should have rotated to result_b; result_a entries dropped.
+        assert coverage._cache_result is result_b
+    finally:
+        state.last_result = saved  # type: ignore[assignment]
+        coverage._cache_result = None
+        coverage._cache_files = {}
