@@ -165,7 +165,7 @@ dependencies.
 ### 4.2 Line background tint
 
 Subtle background colour wash on the whole line. Opt-in via mode
-`verbose`. Heavier visual weight.
+`background`. Heavier visual weight.
 
 | Companion | Mechanism |
 | --- | --- |
@@ -199,17 +199,26 @@ patch only if a strong user signal demands them.
 A single setting key per companion controls the visualisation level:
 
 ```
-dimfort.coverage.mode: "disabled" | "gutter" | "verbose"
+dimfort.coverage.mode: "disabled" | "gutter" | "background"
 ```
 
 | Mode | Renders | Use case |
 | --- | --- | --- |
 | **disabled** | Nothing. Companion suppresses the LSP request and the rendering pass entirely. | User who wants the diagnostic stream only |
-| **gutter** | Gutter signs in the four tiers. | Default for users who want at-a-glance status without visual noise |
-| **verbose** | Gutter signs + line background tint. | User actively driving adoption / coverage up |
+| **gutter** | Gutter signs in the four tiers, in the left-margin column. | User who wants at-a-glance status without tinting the code body |
+| **background** | Low-alpha background tint behind each in-scope line, in the four tiers. | User who prefers the heavier visual weight that paints behind the text |
 
-Three modes is enough granularity. Two would conflate "I want a quick
-hint" with "show me everything"; four would over-specify.
+**Gutter and background are mutually exclusive** (validated during
+the VSCompanion smoke 2026-06-07). The earlier shape — `verbose =
+gutter + background` — was reconsidered: both layers encode the same
+per-line tier, so showing them together is redundant rather than
+informative. The honest framing is "pick the visual encoding you
+prefer," and the mutually-exclusive shape makes the cycle command
+transitions cleaner (each step clears the previous mode's
+decorations).
+
+Three modes is enough granularity. Two would conflate "no decoration"
+with "I want one of the visual encodings"; four would over-specify.
 
 Default: `disabled` in v1. Users opt in explicitly. Rationale: an
 opt-in feature on first ship lets early adopters validate the
@@ -267,9 +276,10 @@ implementations should verify against their own defaults during their
 own smoke walks; the default position is "paint all tiers" unless
 proven otherwise.
 
-Verbose mode is unchanged from the original design: line background
-tint sits behind the text, not in the gutter column, and tints every
-coloured line.
+Background mode is different: the line tint sits behind the text,
+not in the gutter column, so it never competes with the editor's
+native diagnostic surface (squiggles in the text, icons in editors
+that paint them in the gutter).
 
 Concretely:
 
@@ -280,7 +290,8 @@ gutter mode, line verified OK:      [coverage green ●] x = y * z   ! @unit{m}
 gutter mode, line with P001:        [coverage blue ●] some_unparseable_stmt
 gutter mode, line out of scope:     [no icon] do i = 1, n
 
-verbose mode adds a tinted background to every coloured line.
+background mode replaces every gutter dot with a low-alpha tint
+behind the text on the same line.
 ```
 
 ## 7. Wire format
@@ -414,17 +425,27 @@ infrastructure for decoration. Sketch shapes:
 
 ### 9.1 VSCode
 
+Two decoration-type sets per tier: a gutter-only set and a tint-only
+set. They are mutually exclusive — `gutter` mode applies the gutter
+set; `background` mode applies the tint set; neither runs in
+`disabled` mode. ``TextEditorDecorationType`` is immutable
+post-creation, so building two sets at construction is what lets the
+provider switch between modes cleanly.
+
 ```typescript
-// One DecorationType per tier.
-const decorations = {
+const gutterDecorations = {
   green: vscode.window.createTextEditorDecorationType({
     gutterIconPath: ctx.asAbsolutePath("media/coverage-green.svg"),
     gutterIconSize: "contain",
-    backgroundColor: "rgba(40, 167, 69, 0.08)",  // verbose mode only
   }),
-  yellow: /* ... */,
-  red:    /* ... */,
-  blue:   /* ... */,
+  /* ... yellow / red / blue ... */
+};
+const tintDecorations = {
+  green: vscode.window.createTextEditorDecorationType({
+    backgroundColor: "rgba(40, 167, 69, 0.10)",
+    isWholeLine: true,
+  }),
+  /* ... yellow / red / blue ... */
 };
 
 async function refreshCoverage(uri: vscode.Uri): Promise<void> {
@@ -432,8 +453,11 @@ async function refreshCoverage(uri: vscode.Uri): Promise<void> {
   const { lines } = await client.sendRequest("dimfort/lineStatus", { uri: uri.toString() });
   const buckets = bucketByStatus(lines);
   const editor = vscode.window.activeTextEditor;
-  for (const [status, ranges] of buckets) {
-    editor.setDecorations(decorations[status], ranges);
+  const active = mode === "gutter" ? gutterDecorations : tintDecorations;
+  const inactive = mode === "gutter" ? tintDecorations : gutterDecorations;
+  for (const tier of ["green", "yellow", "red", "blue"]) {
+    editor.setDecorations(active[tier], buckets[tier]);
+    editor.setDecorations(inactive[tier], []);  // clear the other mode
   }
 }
 ```
@@ -441,23 +465,25 @@ async function refreshCoverage(uri: vscode.Uri): Promise<void> {
 ### 9.2 Nvim
 
 ```lua
--- Sign definitions (gutter).
+-- Sign definitions (gutter mode).
 vim.fn.sign_define("DimfortCoverGreen", { text = "●", texthl = "DimfortCoverGreen" })
 -- ... yellow, red, blue ...
 
--- Per-line background (verbose mode).
+-- Per-line background (background mode).
 local ns = vim.api.nvim_create_namespace("DimfortCoverage")
 
 local function refresh_coverage(bufnr, uri)
   if mode == "disabled" then return end
   client.request("dimfort/lineStatus", { uri = uri }, function(err, result)
     if err then return end
+    -- Clear both layers so a mode switch removes the previous one.
     vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
     vim.fn.sign_unplace("DimfortCoverage", { buffer = bufnr })
     for _, entry in ipairs(result.lines) do
-      vim.fn.sign_place(0, "DimfortCoverage", "DimfortCover" .. capitalize(entry.status),
-                        bufnr, { lnum = entry.line })
-      if mode == "verbose" then
+      if mode == "gutter" then
+        vim.fn.sign_place(0, "DimfortCoverage", "DimfortCover" .. capitalize(entry.status),
+                          bufnr, { lnum = entry.line })
+      elseif mode == "background" then
         vim.api.nvim_buf_set_extmark(bufnr, ns, entry.line - 1, 0, {
           line_hl_group = "DimfortCoverBg" .. capitalize(entry.status),
         })
@@ -477,20 +503,23 @@ end
     (lsp-request-async "dimfort/lineStatus"
                        `(:uri ,uri)
                        (lambda (result)
+                         ;; Clear so a mode switch removes the previous layer.
                          (dolist (ov dimfort-coverage--overlays) (delete-overlay ov))
                          (setq dimfort-coverage--overlays nil)
                          (dolist (entry (gethash "lines" result))
                            (let* ((line (gethash "line" entry))
                                   (status (gethash "status" entry))
                                   (face (intern (format "dimfort-coverage-%s" status))))
-                             ;; Fringe (gutter).
-                             (overlay-put (make-overlay ...) 'before-string
-                                          (propertize " " 'display
-                                                      `((left-fringe dimfort-cover-bitmap ,face))))
-                             ;; Background (verbose mode).
-                             (when (eq dimfort-coverage-mode 'verbose)
+                             (cond
+                              ((eq dimfort-coverage-mode 'gutter)
+                               ;; Fringe (gutter mode).
+                               (overlay-put (make-overlay ...) 'before-string
+                                            (propertize " " 'display
+                                                        `((left-fringe dimfort-cover-bitmap ,face)))))
+                              ((eq dimfort-coverage-mode 'background)
+                               ;; Background tint (background mode).
                                (overlay-put (make-overlay ...) 'face
-                                            `(:background ,(face-background face))))))))))
+                                            `(:background ,(face-background face)))))))))))
 ```
 
 ## 10. Server-side implementation
