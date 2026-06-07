@@ -834,22 +834,79 @@ work:
 
 ## 13. Migration
 
-For implementation in 0.2.4:
+Originally scoped as a single 0.2.4 release; revised after the
+in-editor smoke walk on a real Fortran codebase (1900-file
+workset, 50 s cold `check_files` per WS refresh) surfaced a
+performance ceiling outside the coverage handler's control. The
+release plan now spans three minor versions:
 
-1. Server-side: add `lsp/coverage.py` with `resolve` (lineStatus) and
-   `stats` handlers. Wire to `server.py`. Add CLI subcommand to
-   `cli.py`. Tests under `tests/unit/test_lsp_coverage.py` and
-   `tests/unit/test_cli_coverage.py`.
-2. Companion-side: per-companion PR adding the decoration layer,
-   setting key, status-bar widget. VSCode first (richest test
-   surface), then Nvim, then Emacs.
-3. Documentation: this doc moves from `docs/design/future/` to
-   `docs/design/shipped/` when the implementation lands. A
-   user-facing page at `docs/editor-integration/coverage.md`
-   describes how to enable it per companion.
-4. Release sequencing: server-side and CLI ship in DimFort 0.2.4
-   together. Companions ship at the matching companion version
-   tracking server 0.2.4.
+### 13.1 What landed in 0.2.4 already (paint + CLI + per-file LSP)
+
+Shipped pre-feature in DimFort 0.2.4 main:
+
+- `core/coverage.py` per-line projection.
+- `lsp/coverage.py` `resolve` (`dimfort/lineStatus`) handler +
+  per-file `stats` (`dimfort/coverageStats` with a `uri`).
+- `dimfort coverage <paths>` CLI subcommand.
+- Per-file projection cache keyed by `WorksetResult` identity.
+- §8.1 formula refinement (`ok / (ok + warn + fire) × 100`).
+- Three companion paint integrations: VSCompanion, Nvim, Emacs.
+
+### 13.2 0.2.4: the stats bar (current target)
+
+Server side:
+
+- `lsp/coverage.py` workspace-scope branch: `dimfort
+  /coverageStats` with no `uri` returns a workspace-wide aggregate
+  rather than the per-active-file workset.
+- Architecture: the workspace check runs on a daemon thread; the
+  stats handler returns the last-cached aggregate instantly + a
+  `wsStale` flag. Background refresh fires on dirty marks from
+  `server.py`'s `didChange` / `didSave` handlers, behind an idle
+  debounce so active typing doesn't trigger constant refreshes.
+- Defensive cache (dedicated `CacheStore` in tempdir, independent
+  of the user's `cache_mode`) so the cached-side cost stays low.
+
+Companion side (one PR per editor, VSCode first):
+
+- Side-panel bottom-bar segment: `File: <pct>% (🟡 N 🔴 M)  ·
+  WS: <pct>% (🟡 N 🔴 M)` (per §8.3.1).
+- New companion setting `dimfort.coverage.workspace_stats`:
+  `disabled | manual | automatic`.
+  - **`manual`** is the shipping default — the bar shows `WS: ?`
+    with a click / palette command to compute on demand. Safe on
+    every codebase, including large ones where `automatic` would
+    feel heavy without the 0.2.5 cache work.
+  - **`automatic`** wires the bar to the server's async refresh
+    cycle; recommended for small-to-medium worksets.
+  - **`disabled`** suppresses the WS segment entirely.
+- Coverage report buffer (per §8.3.2) — single-buffer with
+  workspace header + per-file rows, click-to-jump.
+
+Spec moves nothing; this section accumulates entries as pieces
+ship.
+
+### 13.3 0.2.5: multifile cache (deep optimisation)
+
+DimFort-wide infrastructure work that benefits the active-file
+LSP loop, `dimfort.checkWorkspace`, AND the WS coverage bar
+simultaneously. Captured in its own design doc:
+[multifile-cache.md](multifile-cache.md). Headline targets:
+load phase from 17.84 s → ~10 ms per edit, index phase from
+3.51 s → ~50 ms.
+
+On the coverage side, 0.2.5 flips the companion default from
+`manual` to `automatic` and may shorten the server-side idle
+debounce. No re-architecture; one-line default changes.
+
+### 13.4 0.2.6+: other planned 0.2.4 items deferred
+
+Panel sort order, LaTeX / siunitx symbol-table export,
+backward-traced H004 diagnostic, infer-unit quick-fix. Each
+listed in the corresponding parked-idea memory entry. None
+depend on the coverage work; they were pushed back to make room
+for the bar's architectural surprises (and the 0.2.5 cache
+investment that follows).
 
 ## 14. Out of scope for this design
 
