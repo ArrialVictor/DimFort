@@ -31,12 +31,25 @@ if TYPE_CHECKING:
 # Diagnostic code → coverage tier
 # ---------------------------------------------------------------------------
 
-# Codes whose presence on a line paints it red (hard fire).
-_RED_CODES: frozenset[str] = frozenset({"H001", "H002", "H003", "H004"})
+# Codes whose presence on a line paints it red (hard fire). Covers the
+# full ERROR-severity consistency family — dimension homogeneity
+# (H001-H004), polymorphism unification failures (H020-H023), affine-
+# conversion-directive validation (S003), and unparseable annotation
+# (U002 — the user's @unit{...} text itself failed to parse).
+_RED_CODES: frozenset[str] = frozenset({
+    "H001", "H002", "H003", "H004",
+    "H020", "H021", "H022", "H023",
+    "S003",
+    "U002",
+})
 
 # Codes whose presence on a line paints it yellow (needs attention).
-# Includes both U005 (unannotated-but-used) and H010 (hint-level fires).
-_YELLOW_CODES: frozenset[str] = frozenset({"U005", "H010"})
+# Covers WARNING-severity quality and scale diagnostics: U005
+# (unannotated-but-used), H010 (hint-level fires — implicit literal
+# cast etc.), S001 / S002 (scale and offset mismatches).
+_YELLOW_CODES: frozenset[str] = frozenset({
+    "U005", "H010", "S001", "S002",
+})
 
 # Codes whose presence on a line paints it blue (unparsed region).
 _BLUE_CODES: frozenset[str] = frozenset({"P001"})
@@ -132,6 +145,148 @@ def _unannotated_names_for_file(
         if m is not None:
             names.add(m.group(1).lower())
     return frozenset(names)
+
+
+# Substring marker for an annotation comment. Every canonical directive
+# (``@unit{...}``, ``@unit_assume{...}``, ``@unit_affine_conversion{...}``)
+# starts with this token. User-configured comment delimiters (e.g.
+# ``[m/s]``) would not match — those rely on the ``var_units_span``
+# first-seen-wins fallback, which is itself a known limitation called
+# out in the §10.2 projection notes.
+_ANNOTATION_MARKER: bytes = b"@unit"
+
+# Intrinsic-type texts that carry a meaningful unit. A declaration of
+# one of these types without an ``@unit`` annotation paints yellow as
+# an "unannotated, could carry a unit" signal — matching the panel /
+# hover resolution-axis 🟡. Integer / character / logical types are
+# not unit-bearing and do not paint at all.
+_UNIT_BEARING_TYPES: frozenset[str] = frozenset({
+    "real",
+    "double precision",
+    "double",
+})
+
+
+def _walk_annotation_comment_lines(tree: Tree) -> set[int]:
+    """Collect 1-based line numbers carrying an ``@unit`` annotation comment.
+
+    Tree-sitter Fortran parses an inline annotation
+    (``real :: x  !< @unit{m}``) as a ``comment`` node sibling of the
+    ``variable_declaration``, not as a child of it. Walking for the
+    declaration node alone therefore misses the comment that carries
+    the annotation marker. This helper walks every ``comment`` node
+    and records its line iff its text contains :data:`_ANNOTATION_MARKER`.
+
+    The line of an annotation comment is the line of the declaration
+    it documents (Fortran's ``!<`` trails the declaration on the same
+    line) so painting that line green is equivalent to painting the
+    declaration line — without depending on
+    :attr:`AttachmentResult.var_units_span`, which is keyed
+    first-seen-wins on the variable name and therefore misses
+    same-name declarations across scopes (e.g. a polymorphic ``x``
+    declared in every routine of a module).
+
+    Args:
+        tree: Parse tree for the file. Caller must hold any required
+            traversal lock.
+
+    Returns:
+        Set of 1-based line numbers carrying an annotation marker.
+    """
+    lines: set[int] = set()
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "comment":
+            text = node.text
+            if text is not None and _ANNOTATION_MARKER in text:
+                for row in range(node.start_point[0], node.end_point[0] + 1):
+                    lines.add(row + 1)
+            # Comments don't have meaningful children.
+            continue
+        stack.extend(node.children)
+    return lines
+
+
+def _walk_unannotated_unit_bearing_declaration_lines(tree: Tree) -> set[int]:
+    """Collect lines spanned by unit-bearing declarations without an annotation.
+
+    A declaration of a unit-bearing intrinsic type (real, double
+    precision) that lacks an ``@unit`` annotation comment paints yellow
+    in the coverage view. This matches the panel / hover resolution
+    axis: 🟡 means "could carry a unit, doesn't yet" — the same signal
+    surfaces independent of whether ``U005`` happened to fire (``U005``
+    only fires on declarations whose variables are also *used* in a
+    unit-checked expression; a declared-but-never-used real variable
+    has no diagnostic but is still unannotated).
+
+    "Annotated" is judged by looking at every sibling ``comment`` node
+    on the declaration's last line: if any such comment carries the
+    ``@unit`` marker, the declaration is annotated and this walker
+    skips it (the annotated case is painted green by
+    :func:`_walk_annotation_comment_lines`).
+
+    Non-unit-bearing types (``integer``, ``character``, ``logical``,
+    derived types) are not painted by this walker — they carry no
+    coverage signal at all.
+
+    Args:
+        tree: Parse tree for the file. Caller must hold any required
+            traversal lock.
+
+    Returns:
+        Set of 1-based line numbers spanned by unit-bearing
+        declarations that lack an inline ``@unit`` annotation.
+    """
+    lines: set[int] = set()
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        # Look at this node's children so we can match a
+        # variable_declaration against its sibling comments.
+        children = list(node.children)
+        for child in children:
+            if child.type != "variable_declaration":
+                stack.append(child)
+                continue
+            # Detect the declaration's intrinsic type. Skip non-unit-
+            # bearing types entirely; they carry no coverage signal.
+            intrinsic = next(
+                (c for c in child.children if c.type == "intrinsic_type"),
+                None,
+            )
+            if intrinsic is None or intrinsic.text is None:
+                continue
+            type_text = (
+                intrinsic.text.decode("utf-8", errors="replace")
+                .lower()
+                .strip()
+            )
+            if type_text not in _UNIT_BEARING_TYPES:
+                continue
+            # Is there an annotation comment on the declaration's end
+            # line? Scan sibling comments — declarations and their
+            # ``!<`` annotations live as siblings in the tree, not in
+            # a parent/child relationship.
+            decl_end_row = child.end_point[0]
+            is_annotated = False
+            for sibling in children:
+                if sibling.type != "comment":
+                    continue
+                if sibling.start_point[0] != decl_end_row:
+                    continue
+                comment_text = sibling.text
+                if (
+                    comment_text is not None
+                    and _ANNOTATION_MARKER in comment_text
+                ):
+                    is_annotated = True
+                    break
+            if is_annotated:
+                continue
+            for row in range(child.start_point[0], child.end_point[0] + 1):
+                lines.add(row + 1)
+    return lines
 
 
 def _walk_expression_lines(
@@ -272,22 +427,42 @@ def project_file(
     if attached is None:
         return statuses
 
-    # Declaration lines: the line carrying the @unit{} token. Always
-    # green for annotated declarations unless step 1 already painted a
-    # higher tier (e.g. an H001 landing on the declaration line via a
-    # multi-line continued statement).
-    for line, _start_col, _end_col in attached.var_units_span.values():
-        if line not in statuses:
-            statuses[line] = "green"
-
-    # Use-sites: walk expression-bearing statements once and bucket
-    # their spanned lines into green / yellow tiers. Skip when no
-    # tree is cached (e.g. a load failure).
+    # Declaration lines: every ``variable_declaration`` node carrying
+    # an ``@unit`` annotation in its source span paints green.
+    #
+    # The earlier implementation read ``attached.var_units_span``, but
+    # that table is first-seen-wins on the variable NAME — in a file
+    # where the same name appears in multiple scopes (e.g. a
+    # polymorphic ``x`` declared in every routine of a module), only
+    # the first scope's declaration line is recorded and the others
+    # show uncoloured. Walking the tree once recovers every annotated
+    # declaration regardless of scope.
     tree_entry = result.trees.get(path)
     if tree_entry is None:
+        # No tree → fall back to the (incomplete) span-only painting
+        # so single-scope files still work when the tree isn't cached.
+        for line, _start_col, _end_col in attached.var_units_span.values():
+            if line not in statuses:
+                statuses[line] = "green"
         return statuses
     tree, _source = tree_entry
 
+    for decl_line in _walk_annotation_comment_lines(tree):
+        if decl_line not in statuses:
+            statuses[decl_line] = "green"
+
+    # Unannotated unit-bearing declarations: paint yellow. Matches the
+    # panel / hover resolution-axis 🟡 — a real / double-precision
+    # variable without an @unit{} annotation is "unannotated, could
+    # carry a unit." Fires even when U005 doesn't (a declared-but-
+    # never-used variable has no diagnostic but is still unannotated).
+    for decl_line in _walk_unannotated_unit_bearing_declaration_lines(tree):
+        current = statuses.get(decl_line)
+        if current is None or _TIER_ORDER["yellow"] > _TIER_ORDER[current]:
+            statuses[decl_line] = "yellow"
+
+    # Use-sites: walk expression-bearing statements once and bucket
+    # their spanned lines into green / yellow tiers.
     annotated_lc = frozenset(name.lower() for name in attached.var_units)
     unannotated_lc = _unannotated_names_for_file(result, path)
     green_lines, yellow_lines = _walk_expression_lines(
