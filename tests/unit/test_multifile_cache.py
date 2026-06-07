@@ -183,6 +183,40 @@ def test_exports_cache_invalidates_on_content_change(tmp_path: Path):
     assert len(exports_cache) == 2
 
 
+def test_parsed_units_memo_persists_across_calls(tmp_path: Path):
+    """ModuleExportsCache.parsed_units_memo retains parsed dicts."""
+    src = _write(tmp_path, "a.f90", SAMPLE)
+    exports_cache = ModuleExportsCache()
+    check_files([src], exports_cache=exports_cache)
+    assert exports_cache.parsed_units_memo, "memo should be populated"
+    # Second call hits the memo; values must round-trip equal.
+    snapshot = dict(exports_cache.parsed_units_memo)
+    check_files([src], exports_cache=exports_cache)
+    for key, parsed in snapshot.items():
+        # Identity check — the memo returns the cached dict directly.
+        assert exports_cache.parsed_units_memo[key] is parsed
+
+
+def test_digest_memo_persists_across_calls(tmp_path: Path):
+    """ModuleExportsCache.digest_memo accumulates across check_files calls."""
+    src = _write(tmp_path, "a.f90", SAMPLE)
+    exports_cache = ModuleExportsCache()
+    import tempfile
+
+    from dimfort.core.cache_store import CacheStore
+    cache_root = Path(tempfile.mkdtemp())
+    cstore = CacheStore(root=cache_root)
+    check_files([src], exports_cache=exports_cache,
+                cache=cstore, cache_mode="read-write")
+    first = dict(exports_cache.digest_memo)
+    check_files([src], exports_cache=exports_cache,
+                cache=cstore, cache_mode="read-write")
+    # Same module-export objects → memo entries persist (we never see
+    # them recomputed). Use the first call's id-keys as the proof.
+    for k in first:
+        assert k in exports_cache.digest_memo
+
+
 def test_tree_cache_isolation_across_two_files(tmp_path: Path):
     """Two distinct files in one workset produce two distinct cache entries."""
     a = _write(tmp_path, "a.f90", SAMPLE)

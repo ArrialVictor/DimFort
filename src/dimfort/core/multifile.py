@@ -582,38 +582,88 @@ def _attachment_diags(
     return out
 
 
+def _digest_text_dict(text: dict, /) -> str:
+    """Stable short hash of a ``str → str`` (or tuple-keyed) text dict.
+
+    Used as a key into the parsed-unit-table memo; sorts keys so two
+    dicts with the same contents but different insertion order
+    digest the same.
+    """
+    h = hashlib.sha256()
+    for k in sorted(text, key=repr):
+        h.update(repr(k).encode("utf-8"))
+        h.update(b"=")
+        h.update(text[k].encode("utf-8"))
+        h.update(b"\0")
+    return h.hexdigest()[:16]
+
+
 def _parse_var_units(
-    text: dict[str, str], table: UnitTable
+    text: dict[str, str],
+    table: UnitTable,
+    *,
+    memo: dict[tuple[str, int], dict[str, UnitExpr]] | None = None,
 ) -> dict[str, UnitExpr]:
     """Parse every ``name → unit-text`` entry against ``table``.
 
     Entries that fail to parse are silently dropped; the U002
     diagnostic is emitted from a separate code path so the parsing
     failure is surfaced exactly once.
+
+    Args:
+        text: Map of variable names to unit-text strings.
+        table: Unit table the strings parse against.
+        memo: Optional ``(text_digest, id(table)) → parsed`` dict.
+            When supplied, identical inputs return the cached parsed
+            table instead of re-parsing every string.
     """
+    key: tuple[str, int] | None = None
+    if memo is not None:
+        key = (_digest_text_dict(text), id(table))
+        cached = memo.get(key)
+        if cached is not None:
+            return cached
     out: dict[str, UnitExpr] = {}
     for name, raw in text.items():
         try:
             out[name] = _units_mod.parse(raw, table)
         except UnitError:
             continue
+    if memo is not None and key is not None:
+        memo[key] = out
     return out
 
 
 def _parse_var_units_by_scope(
-    text: dict[tuple[str | None, str], str], table: UnitTable
+    text: dict[tuple[str | None, str], str],
+    table: UnitTable,
+    *,
+    memo: dict[tuple[str, int], dict[tuple[str | None, str], UnitExpr]] | None = None,
 ) -> dict[tuple[str | None, str], UnitExpr]:
     """Scope-keyed variant of :func:`_parse_var_units`.
 
     Keys are ``(scope_lc_or_None, name)`` pairs. Unparseable entries
     are dropped (U002 is emitted elsewhere).
+
+    Args:
+        text: Map of ``(scope, name) → unit-text`` entries.
+        table: Unit table the strings parse against.
+        memo: Optional memo (same shape as :func:`_parse_var_units`).
     """
+    key: tuple[str, int] | None = None
+    if memo is not None:
+        key = (_digest_text_dict(text), id(table))
+        cached = memo.get(key)
+        if cached is not None:
+            return cached
     out: dict[tuple[str | None, str], UnitExpr] = {}
-    for key, raw in text.items():
+    for k, raw in text.items():
         try:
-            out[key] = _units_mod.parse(raw, table)
+            out[k] = _units_mod.parse(raw, table)
         except UnitError:
             continue
+    if memo is not None and key is not None:
+        memo[key] = out
     return out
 
 
@@ -932,6 +982,15 @@ def check_files(
     result = WorksetResult()
     t_total_start = time.perf_counter()
 
+    # Session-scoped memo (when an exports_cache is wired in) so the
+    # 120k-call ``units.parse`` workload during Phase B + index +
+    # check collapses on repeat calls. Per-call dict when no cache —
+    # still helps because the same text dicts often recur across
+    # phases of one call.
+    parsed_units_memo: dict[tuple[str, int], dict] = (
+        exports_cache.parsed_units_memo if exports_cache is not None else {}
+    )
+
     # Phase A — load + parse in parallel.
     t_phase_start = time.perf_counter()
     total = len(abs_sources)
@@ -1010,7 +1069,9 @@ def check_files(
         for k, u in entry.attachment.field_units.items():
             merged_field_units_text.setdefault(k, u)
     result.attachments = {entry.path: entry.attachment for entry in loaded}
-    merged_var_units = _parse_var_units(merged_var_units_text, active_table)
+    merged_var_units = _parse_var_units(
+        merged_var_units_text, active_table, memo=parsed_units_memo,
+    )
     result.merged_var_units = merged_var_units
     for (tn, fn), t in merged_field_units_text.items():
         try:
@@ -1056,7 +1117,8 @@ def check_files(
     for i, entry in enumerate(loaded, start=1):
         if entry.tree is not None:
             file_scoped = _parse_var_units_by_scope(
-                entry.attachment.var_units_by_scope, active_table
+                entry.attachment.var_units_by_scope, active_table,
+                memo=parsed_units_memo,
             )
             per_file_var_units_by_scope[entry.path] = file_scoped
             # Pass the scoped table even when empty — switching to the
@@ -1255,7 +1317,7 @@ def check_files(
         # through explicit ``use`` clauses below.
         uses = _wsi.extract_uses(entry.text)
         file_var_units = _parse_var_units(
-            entry.attachment.var_units, active_table
+            entry.attachment.var_units, active_table, memo=parsed_units_memo,
         )
         per_file_var_units, per_file_sigs, unresolved = apply_use_clauses(
             uses, module_exports, file_var_units, global_signatures,

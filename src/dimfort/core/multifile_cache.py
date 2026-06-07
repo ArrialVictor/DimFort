@@ -177,6 +177,12 @@ class ModuleExportsCache:
         # is the entire LSP session because ``_entries`` (above) holds
         # references to the same objects.
         self.digest_memo: dict[int, str] = {}
+        # (input_text_digest, id(table)) → parsed UnitExpr table.
+        # Shared across the flat ``_parse_var_units`` and the scoped
+        # ``_parse_var_units_by_scope`` (different key+value shapes
+        # but the same memo dict works because the input_digest fully
+        # distinguishes them).
+        self.parsed_units_memo: dict[tuple[str, int], dict] = {}
 
     def get(
         self, key: ExportsKey
