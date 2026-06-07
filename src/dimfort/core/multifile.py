@@ -622,7 +622,11 @@ def _parse_var_units_by_scope(
 # ---------------------------------------------------------------------------
 
 
-def _digest_module_exports(exports: ModuleExports | None) -> str:
+def _digest_module_exports(
+    exports: ModuleExports | None,
+    *,
+    memo: dict[int, str] | None = None,
+) -> str:
     """Stable hex digest of a module's exports, used for dep-validation.
 
     A cached file's entry is dirty when any module it consumed has a
@@ -631,6 +635,12 @@ def _digest_module_exports(exports: ModuleExports | None) -> str:
     Args:
         exports: Module exports record, or ``None`` when the module is
             no longer in the workspace.
+        memo: Optional ``id(exports) → digest`` dict; when supplied,
+            the digest is computed at most once per ``exports``
+            object lifetime. Owned by
+            :class:`~dimfort.core.multifile_cache.ModuleExportsCache`
+            in LSP runs; ``None`` in CLI / test paths is functionally
+            identical, just slower.
 
     Returns:
         A SHA-256 hex digest of the serialised exports, or the literal
@@ -639,10 +649,17 @@ def _digest_module_exports(exports: ModuleExports | None) -> str:
     """
     if exports is None:
         return "absent"
+    if memo is not None:
+        cached = memo.get(id(exports))
+        if cached is not None:
+            return cached
     blob = json.dumps(
         dump_module_exports(exports), sort_keys=True, separators=(",", ":"),
     ).encode()
-    return hashlib.sha256(blob).hexdigest()
+    digest = hashlib.sha256(blob).hexdigest()
+    if memo is not None:
+        memo[id(exports)] = digest
+    return digest
 
 
 def _hash_file(path: Path) -> str:
@@ -713,6 +730,7 @@ def _try_replay_from_cache(
     cache_config_view: dict[str, object],
     module_exports: dict[str, ModuleExports],
     result: WorksetResult,
+    digest_memo: dict[int, str] | None = None,
 ) -> tuple[str | None, list[Diagnostic] | None]:
     """Attempt to serve an entry from cache.
 
@@ -726,6 +744,9 @@ def _try_replay_from_cache(
         module_exports: Current workspace module-exports map (used to
             validate dep digests).
         result: Workset result whose cache counters are mutated.
+        digest_memo: Optional ``id(exports) → digest`` dict shared
+            across calls so each module's dep digest is computed at
+            most once per session.
 
     Returns:
         A ``(key, diags)`` pair:
@@ -757,7 +778,10 @@ def _try_replay_from_cache(
     # match what we stored when the entry was written.
     deps_snapshot = payload.get("deps_signature", {})
     for mod_lc, stored_digest in deps_snapshot.items():
-        if _digest_module_exports(module_exports.get(mod_lc)) != stored_digest:
+        current = _digest_module_exports(
+            module_exports.get(mod_lc), memo=digest_memo,
+        )
+        if current != stored_digest:
             result.cache_dirty += 1
             return key, None
 
@@ -773,6 +797,7 @@ def _write_cache_entry(
     module_exports: dict[str, ModuleExports],
     remapped_diags: list[Diagnostic],
     result: WorksetResult,
+    digest_memo: dict[int, str] | None = None,
 ) -> None:
     """Persist a fresh check's output to the cache.
 
@@ -791,9 +816,14 @@ def _write_cache_entry(
             second remap.
         result: Workset result whose ``cache_writes`` counter is
             incremented on success.
+        digest_memo: Optional ``id(exports) → digest`` dict shared
+            across calls so each module's dep digest is computed at
+            most once per session.
     """
     deps_signature = {
-        mod_lc: _digest_module_exports(module_exports.get(mod_lc))
+        mod_lc: _digest_module_exports(
+            module_exports.get(mod_lc), memo=digest_memo,
+        )
         for mod_lc in deps_consumed
     }
     try:
@@ -1093,6 +1123,14 @@ def check_files(
         assume_patterns=assume_patterns,
         affine_patterns=affine_patterns,
     )
+    # Session-scoped memo when an exports_cache is wired in (LSP path);
+    # per-call dict otherwise. Both forms still help within one call —
+    # a workspace's ~1900 files typically share ~10-20 module-export
+    # dependencies, each digested over and over inside the cache-replay
+    # loop without this memo.
+    digest_memo: dict[int, str] = (
+        exports_cache.digest_memo if exports_cache is not None else {}
+    )
 
     for di, entry in enumerate(loaded, start=1):
         diags: list[Diagnostic] = []
@@ -1258,6 +1296,7 @@ def check_files(
                 cache_config_view=cache_config_view,
                 module_exports=module_exports,
                 result=result,
+                digest_memo=digest_memo,
             )
 
         if replayed is not None:
@@ -1302,6 +1341,7 @@ def check_files(
                     module_exports=module_exports,
                     remapped_diags=remapped,
                     result=result,
+                    digest_memo=digest_memo,
                 )
 
         result.diagnostics[entry.path] = diags

@@ -157,7 +157,14 @@ def digest_merged_var_units(merged_var_units: dict[str, object]) -> str:
 
 
 class ModuleExportsCache:
-    """Thread-safe cache of ``collect_function_signatures_and_module_exports``."""
+    """Thread-safe cache of ``collect_function_signatures_and_module_exports``.
+
+    Also holds a session-lifetime ``digest_memo`` keyed by
+    ``id(ModuleExports)`` — the per-file diagnostic cache asks for a
+    digest of every consumed module on every check, and once
+    ``ModuleExports`` identity is stable across calls (which this
+    cache provides) the digest is also stable.
+    """
 
     def __init__(self) -> None:
         """Create an empty cache."""
@@ -165,6 +172,11 @@ class ModuleExportsCache:
             ExportsKey, tuple[object, ModuleExports | None]
         ] = {}
         self._lock = threading.Lock()
+        # id(exports) → digest; populated lazily by callers. The id is
+        # only stable while the underlying object stays alive, which
+        # is the entire LSP session because ``_entries`` (above) holds
+        # references to the same objects.
+        self.digest_memo: dict[int, str] = {}
 
     def get(
         self, key: ExportsKey
