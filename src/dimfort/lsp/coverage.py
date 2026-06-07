@@ -10,6 +10,7 @@ spec.
 """
 from __future__ import annotations
 
+import logging
 import threading
 from pathlib import Path
 from typing import Any
@@ -22,9 +23,15 @@ from dimfort.core.coverage import (
     aggregate_workset,
     project_file,
 )
-from dimfort.core.multifile import WorksetResult
+from dimfort.core.multifile import WorksetResult, check_files
+from dimfort.core.unit_patterns import (
+    compile_structured_patterns,
+    compile_unit_patterns,
+)
 from dimfort.lsp.state import state
 from dimfort.lsp.tree_access import _uri_to_path
+
+log = logging.getLogger(__name__)
 
 # Per-file coverage cache. Populated by ``_get_file_coverage`` and
 # invalidated whenever ``state.last_result`` is replaced (identity
@@ -151,6 +158,104 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
     return {"uri": uri, "lines": lines}
 
 
+def _run_workspace_check() -> WorksetResult | None:
+    """Run ``check_files`` over every file in the workspace index.
+
+    Used by the workspace-scope branch of :func:`stats` to compute a
+    project-level coverage aggregate that doesn't depend on which
+    file the user happens to be editing. Distinct from the
+    per-active-file workset path that backs ``state.last_result``
+    — calling this does not replace ``state.last_result``, so the
+    per-file diagnostic flow continues to use whichever workset was
+    last published.
+
+    Returns:
+        A :class:`WorksetResult` covering every indexed Fortran file
+        in the workspace. ``None`` when the workspace index isn't
+        built yet, the index has no files, or the check raised.
+
+    Note:
+        Synchronous. Holds ``state.check_lock`` for the duration to
+        avoid racing with per-file ``didChange`` / ``didSave`` checks
+        on the same shared cache + config. On larger real-world
+        Fortran codebases this can take seconds; the companion is
+        expected to debounce its workspace-scope requests, and the
+        per-file ``lineStatus`` handler remains cheap because it
+        reads from the pre-existing ``state.last_result``.
+    """
+    with state.workspace_index_lock:
+        idx = state.workspace_index
+    if idx is None:
+        return None
+    files = sorted(idx.uses_by_file.keys())
+    if not files:
+        return None
+
+    with state.check_lock:
+        try:
+            return check_files(
+                files,
+                external_modules=state.external_modules,
+                cpp_defines=state.project_config.cpp_defines,
+                include_paths=state.project_config.include_paths,
+                cache=state.cache,
+                cache_mode=state.cache_mode,
+                units_file=state.project_config.units_file,
+                diagnostic_severities=state.project_config.diagnostic_severities,
+                scale_mode=state.scale_mode,
+                unit_patterns=compile_unit_patterns(
+                    state.project_config.unit_comment_delimiters
+                ),
+                assume_patterns=compile_structured_patterns(
+                    state.project_config.unit_assume_comment_delimiters
+                ),
+                affine_patterns=compile_structured_patterns(
+                    state.project_config.unit_affine_comment_delimiters
+                ),
+            )
+        except Exception:
+            log.exception("workspace coverage stats check failed")
+            return None
+
+
+def _project_and_aggregate(
+    paths: list[Path], result: WorksetResult,
+) -> Any:
+    """Project per-file coverage over ``paths`` and aggregate into a workset.
+
+    Used by both stats branches. Walks each path's tree under
+    ``state.ts_handler_lock`` (matching the documented concurrency
+    contract), computes the per-line status projection, and tallies
+    into per-file + workset totals.
+
+    Args:
+        paths: File paths to project. Must be present in ``result``
+            (either with diagnostics, attachments, or a cached tree
+            entry); paths absent from ``result`` produce empty
+            projections.
+        result: The :class:`WorksetResult` to read from. May be
+            ``state.last_result`` (per-active-file scope) or a fresh
+            whole-workspace result from :func:`_run_workspace_check`.
+
+    Returns:
+        A :class:`WorksetCoverage` with per-file rows and the
+        aggregated totals.
+    """
+    per_file = []
+    for p in paths:
+        with state.ts_handler_lock:
+            statuses = project_file(p, result)
+        tree_entry = result.trees.get(p)
+        if tree_entry is not None:
+            total_lines = tree_entry[1].count(b"\n") + 1
+        elif statuses:
+            total_lines = max(statuses)
+        else:
+            total_lines = 0
+        per_file.append(aggregate_file(p, statuses, total_lines=total_lines))
+    return aggregate_workset(per_file)
+
+
 def stats(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
     """Resolve the ``dimfort/coverageStats`` payload.
 
@@ -174,28 +279,36 @@ def stats(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
     del ls
 
     uri = _get(params, "uri")
-    with state.last_result_lock:
-        result = state.last_result
-    if result is None:
-        return {
-            "scope": "workspace" if uri is None else "file",
-            "files": [],
-            "total": {"ok": 0, "warn": 0, "fire": 0, "unparsed": 0, "out": 0, "coverage_pct": 0.0},
-        }
+    zero_total = {"ok": 0, "warn": 0, "fire": 0, "unparsed": 0, "out": 0, "coverage_pct": 0.0}
 
-    if uri is not None:
+    if uri is None:
+        # Workspace-scope: run check_files over EVERY file in the
+        # workspace index, independent of which file the user is
+        # editing. The returned aggregate is therefore a stable
+        # project-level number that doesn't shift when the active
+        # editor changes. Distinct from state.last_result, which is
+        # always scoped to the active-file workset.
+        ws_result = _run_workspace_check()
+        if ws_result is None:
+            return {"scope": "workspace", "files": [], "total": zero_total}
+        paths = sorted(ws_result.diagnostics.keys() | ws_result.attachments.keys())
+        workset = _project_and_aggregate(paths, ws_result)
+        scope = "workspace"
+    else:
+        # File-scope: serve from the per-active-file ``last_result``
+        # via the per-file cache. Cheap (one file's projection); the
+        # cache makes repeated requests from the same result O(1).
+        with state.last_result_lock:
+            result = state.last_result
+        if result is None:
+            return {"scope": "file", "files": [], "total": zero_total}
         path = _uri_to_path(uri)
         if path is None:
             return None
-        paths = [path.resolve()]
+        fc = _get_file_coverage(path.resolve(), result)
+        workset = aggregate_workset([fc])
         scope = "file"
-    else:
-        paths = sorted(result.diagnostics.keys() | result.attachments.keys())
-        scope = "workspace"
 
-    per_file = [_get_file_coverage(p, result) for p in paths]
-
-    workset = aggregate_workset(per_file)
     payload: dict[str, Any] = {
         "scope": scope,
         "files": [

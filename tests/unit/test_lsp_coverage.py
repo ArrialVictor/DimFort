@@ -121,19 +121,35 @@ def test_resolve_returns_empty_for_uri_not_in_workset(tmp_path: Path):
 
 
 def test_stats_workspace_scope_aggregates_across_files(tmp_path: Path):
-    """Without a ``uri``, stats covers the whole cached workset."""
-    from dimfort.core.multifile import check_files
+    """Without a ``uri``, stats runs a workspace-wide check over the index.
+
+    Distinct from the file-scope path, which reads from
+    ``state.last_result``. Workspace scope does its own
+    ``check_files`` run so the WS aggregate is a stable project-level
+    number, not a function of which file the user is editing.
+    """
+    from dimfort.core.workspace_index import scan_workspace
     from dimfort.lsp import coverage
     from dimfort.lsp.state import state
 
-    src = _clean_src(tmp_path)
-    result = check_files([src])
-    saved = state.last_result
-    _set_last_result(result)
+    # Two-file workspace so the aggregate covers more than one file.
+    _clean_src(tmp_path)
+    other = tmp_path / "other.f90"
+    other.write_text(
+        "subroutine other(a, b, c)\n"
+        "  real :: a  !< @unit{kg}\n"
+        "  real :: b  !< @unit{kg}\n"
+        "  real :: c  !< @unit{kg}\n"
+        "  c = a + b\n"
+        "end subroutine\n"
+    )
+    index = scan_workspace([tmp_path])
+    saved_idx = state.workspace_index
+    state.workspace_index = index
     try:
         payload = coverage.stats(None, {})  # type: ignore[arg-type]
     finally:
-        state.last_result = saved  # type: ignore[assignment]
+        state.workspace_index = saved_idx
 
     assert payload is not None
     assert payload["scope"] == "workspace"
@@ -141,8 +157,28 @@ def test_stats_workspace_scope_aggregates_across_files(tmp_path: Path):
     assert "total" in payload
     total = payload["total"]
     assert set(total.keys()) == {"ok", "warn", "fire", "unparsed", "out", "coverage_pct"}
-    # A fully-annotated clean file: at least one green line.
-    assert total["ok"] >= 1
+    # Both files fully annotated: aggregate ok count covers both.
+    assert total["ok"] >= 2
+    assert len(payload["files"]) == 2
+
+
+def test_stats_workspace_scope_returns_empty_without_index():
+    """Workspace scope falls back to a zero payload when the index isn't ready."""
+    from dimfort.lsp import coverage
+    from dimfort.lsp.state import state
+
+    saved_idx = state.workspace_index
+    state.workspace_index = None
+    try:
+        payload = coverage.stats(None, {})  # type: ignore[arg-type]
+    finally:
+        state.workspace_index = saved_idx
+
+    assert payload is not None
+    assert payload["scope"] == "workspace"
+    assert payload["files"] == []
+    assert payload["total"]["ok"] == 0
+    assert payload["total"]["coverage_pct"] == 0.0
 
 
 def test_stats_file_scope_with_uri_returns_single_file(tmp_path: Path):
@@ -168,16 +204,19 @@ def test_stats_file_scope_with_uri_returns_single_file(tmp_path: Path):
 
 
 def test_stats_returns_empty_when_no_cached_result():
-    """Before the first check, stats returns zeroed totals."""
+    """Without a workspace index, the workspace scope returns zeroed totals."""
     from dimfort.lsp import coverage
     from dimfort.lsp.state import state
 
-    saved = state.last_result
+    saved_result = state.last_result
+    saved_idx = state.workspace_index
     state.last_result = None
+    state.workspace_index = None
     try:
         payload = coverage.stats(None, {})  # type: ignore[arg-type]
     finally:
-        state.last_result = saved  # type: ignore[assignment]
+        state.last_result = saved_result  # type: ignore[assignment]
+        state.workspace_index = saved_idx
 
     assert payload is not None
     assert payload["scope"] == "workspace"
@@ -192,7 +231,12 @@ def test_stats_returns_empty_when_no_cached_result():
 
 
 def test_stats_cache_hits_on_same_result(tmp_path: Path):
-    """Repeat ``stats()`` calls on the same WorksetResult skip the tree walk."""
+    """Repeat file-scope ``stats()`` calls on the same WorksetResult skip the tree walk.
+
+    The per-file cache backs file-scope queries (``{uri: ...}``) only;
+    workspace scope runs its own ``check_files`` and bypasses this
+    cache (covered by the workspace-scope tests above).
+    """
     from dimfort.core.multifile import check_files
     from dimfort.lsp import coverage
     from dimfort.lsp.state import state
@@ -205,14 +249,15 @@ def test_stats_cache_hits_on_same_result(tmp_path: Path):
     coverage._cache_result = None
     coverage._cache_files = {}
     _set_last_result(result)
+    params = {"uri": src.resolve().as_uri()}
     try:
-        first = coverage.stats(None, {})  # type: ignore[arg-type]
+        first = coverage.stats(None, params)  # type: ignore[arg-type]
         # Cache should now contain the file's FileCoverage.
         assert coverage._cache_result is result
         assert src.resolve() in coverage._cache_files
 
         # Second call: same result identity → cache populated, payload identical.
-        second = coverage.stats(None, {})  # type: ignore[arg-type]
+        second = coverage.stats(None, params)  # type: ignore[arg-type]
         assert first == second
     finally:
         state.last_result = saved  # type: ignore[assignment]
@@ -221,7 +266,7 @@ def test_stats_cache_hits_on_same_result(tmp_path: Path):
 
 
 def test_stats_cache_invalidates_on_new_result(tmp_path: Path):
-    """A new WorksetResult identity drops the previous cache entries."""
+    """A new WorksetResult identity drops the previous file-scope cache entries."""
     from dimfort.core.multifile import check_files
     from dimfort.lsp import coverage
     from dimfort.lsp.state import state
@@ -234,13 +279,14 @@ def test_stats_cache_invalidates_on_new_result(tmp_path: Path):
     saved = state.last_result
     coverage._cache_result = None
     coverage._cache_files = {}
+    params = {"uri": src.resolve().as_uri()}
     _set_last_result(result_a)
     try:
-        coverage.stats(None, {})  # type: ignore[arg-type]
+        coverage.stats(None, params)  # type: ignore[arg-type]
         assert coverage._cache_result is result_a
 
         _set_last_result(result_b)
-        coverage.stats(None, {})  # type: ignore[arg-type]
+        coverage.stats(None, params)  # type: ignore[arg-type]
         # Cache should have rotated to result_b; result_a entries dropped.
         assert coverage._cache_result is result_b
     finally:
