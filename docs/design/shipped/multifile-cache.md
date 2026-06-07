@@ -1,8 +1,11 @@
-# Multifile cache — design spec (FUTURE)
+# Multifile cache — design spec (SHIPPED)
 
-**Status:** future feature, design exploration. Captures the
-optimisation direction surfaced during the in-editor smoke walk for
-the 0.2.4 coverage stats bar. Targets 0.2.5.
+**Status:** shipped in 0.2.5. Originally drafted during the
+in-editor smoke walk for the 0.2.4 coverage stats bar; captures
+the load + index + per-file diagnostic optimisations now in main.
+The complementary perf-audit findings (Q1-Q4 cheap wins, plus the
+M1/M2/M3 follow-up items still in flight) live at
+[`docs/design/future/perf-audit-0.2.5.md`](../future/perf-audit-0.2.5.md).
 
 The goal is to make `check_files` cheap on repeated invocations
 across a session by caching the load + index phases in addition to

@@ -923,9 +923,12 @@ modes.
 DimFort-wide infrastructure work that benefits the active-file
 LSP loop, `dimfort.checkWorkspace`, AND the WS coverage bar
 simultaneously. Captured in its own design doc:
-[multifile-cache.md](multifile-cache.md). Headline targets:
-load phase from 17.84 s → ~10 ms per edit, index phase from
-3.51 s → ~50 ms.
+[`../shipped/multifile-cache.md`](../shipped/multifile-cache.md).
+Measured (post-shipping): load 17.84 s → ~6 s warm, index 3.51 s
+→ ~0.1 s warm, check 28.63 s → ~1.4 s warm on a 2435-file
+real-world Fortran workset (4.3× total speedup). Q1-Q4 cheap
+follow-ups and remaining M1/M2/M3 architectural items captured
+at [`perf-audit-0.2.5.md`](perf-audit-0.2.5.md).
 
 On the coverage side, 0.2.5 flips the companion default from
 `manual` to `automatic` and may shorten the server-side idle
