@@ -596,6 +596,8 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
             affine_patterns=compile_structured_patterns(
                 state.project_config.unit_affine_comment_delimiters
             ),
+            tree_cache=state.tree_cache,
+            exports_cache=state.exports_cache,
         )
     except Exception:
         log.exception("dimfort pipeline crashed on %s", active)
@@ -1824,6 +1826,8 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
                 affine_patterns=compile_structured_patterns(
                     state.project_config.unit_affine_comment_delimiters
                 ),
+                tree_cache=state.tree_cache,
+                exports_cache=state.exports_cache,
             )
         except Exception:
             log.exception("workspace check failed")

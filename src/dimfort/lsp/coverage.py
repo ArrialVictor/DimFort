@@ -424,6 +424,8 @@ def _run_workspace_check(ls: LanguageServer) -> WorksetResult | None:
                 affine_patterns=compile_structured_patterns(
                     state.project_config.unit_affine_comment_delimiters
                 ),
+                tree_cache=state.tree_cache,
+                exports_cache=state.exports_cache,
             )
         except Exception:
             log.exception("workspace coverage stats check failed")

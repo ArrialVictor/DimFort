@@ -42,6 +42,7 @@ from pathlib import Path
 from dimfort.config import DimfortConfig
 from dimfort.core.cache_store import CacheStore
 from dimfort.core.multifile import WorksetResult
+from dimfort.core.multifile_cache import ModuleExportsCache, TreeCache
 from dimfort.core.workspace_index import WorkspaceIndex
 
 # Modules treated as known-external (Fortran intrinsics + common libs).
@@ -136,6 +137,13 @@ class _ServerState:
         cache_mode: One of ``"off"`` / ``"read-only"`` /
             ``"read-write"`` matching the CLI flag, surfaced for
             diagnostics and tests.
+        tree_cache: Session-scoped tree-sitter parse cache. Threaded
+            through every internal ``check_files`` call so the load
+            phase collapses on unchanged files. See
+            ``docs/design/future/multifile-cache.md``.
+        exports_cache: Session-scoped module-exports + signatures
+            cache. Pairs with :attr:`tree_cache`; same invalidation
+            model.
 
     Note:
         :attr:`project_config`, :attr:`external_modules`,
@@ -206,6 +214,14 @@ class _ServerState:
         # before the cache landed.
         self.cache: CacheStore | None = None
         self.cache_mode: str = "off"
+        # In-memory tree + exports caches (see
+        # docs/design/future/multifile-cache.md). Instantiated eagerly:
+        # both are cheap empty dicts behind a Lock; the LSP routes every
+        # internal check_files call through them so the load + index
+        # phases collapse on unchanged files. Lifetime = LSP session;
+        # not persisted.
+        self.tree_cache: TreeCache = TreeCache()
+        self.exports_cache: ModuleExportsCache = ModuleExportsCache()
 
 
 state = _ServerState()
