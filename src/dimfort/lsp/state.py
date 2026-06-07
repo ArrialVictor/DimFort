@@ -219,9 +219,10 @@ class _ServerState:
         # both are cheap empty dicts behind a Lock; the LSP routes every
         # internal check_files call through them so the load + index
         # phases collapse on unchanged files. Lifetime = LSP session;
-        # not persisted.
-        self.tree_cache: TreeCache = TreeCache()
-        self.exports_cache: ModuleExportsCache = ModuleExportsCache()
+        # not persisted. Either field is ``None`` when the matching
+        # ``dimfort lsp --no-{tree,exports}-cache`` flag is set.
+        self.tree_cache: TreeCache | None = TreeCache()
+        self.exports_cache: ModuleExportsCache | None = ModuleExportsCache()
 
 
 state = _ServerState()
