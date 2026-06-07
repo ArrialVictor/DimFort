@@ -462,22 +462,35 @@ report buffer / view.
 #### 8.3.1 Panel bottom bar
 
 The side panel already has a bottom bar; the coverage feature
-adds a single line:
+adds a single line.
+
+**Default (0.2.4 ship form)** — File segment only:
+
+    File: 78% (🟡 18 🔴 2)
+
+Cheap (one file's projection, refreshed on every
+diagnostic-change signal). Collapses to `File: —` when no `.f90`
+file is active. Always on; no opt-in needed.
+
+**Full form** (opt-in via `dimfort.coverage.workspace_stats =
+manual | automatic` — see §13.2 for the rationale):
 
     File: 78% (🟡 18 🔴 2)  ·  WS: 73% (🟡 412 🔴 38)
 
-Two segments — current file, whole workset — same glyph family as
-the in-buffer paint, so the bar reads as a direct summary of what
-the user sees in the gutter / background.
+The `WS:` segment aggregates over **every Fortran file in the
+workspace**, not just the active file's transitive `use`-closure.
+This is a deliberate choice: a user expecting "workspace
+coverage" expects a stable project-level number, not one that
+shifts as they switch tabs. The server runs a dedicated
+`check_files` over all indexed files for this scope; the `File:`
+segment continues to serve from the per-active-file cache
+produced by the normal diagnostic flow.
 
-When no `.f90` file is active, the workset is empty, or
-`coverage.mode = disabled`, the bar collapses to the inert form:
-
-    File: —  ·  WS: —
-
-rather than `0% (🟡 0 🔴 0)`, which would read as "everything is
-broken." The bar is gated on `coverage.mode != disabled` — same
-opt-in as the painting.
+When the WS segment is opted in and has no data yet (cold start,
+or pre-`?` placeholder in `manual` mode), the renderer shows
+either `WS: ?` (manual, clickable) or `WS: …` (automatic /
+manual mid-compute), never `WS: 0%` — distinguishable from a
+real 0% workspace, which carries at least one warn or fire.
 
 **No diagnostic-event counts in the bar.** Editor chrome already
 shows workspace W/E totals (VSCode status bar by default; Nvim
@@ -869,22 +882,41 @@ Server side:
 
 Companion side (one PR per editor, VSCode first):
 
-- Side-panel bottom-bar segment: `File: <pct>% (🟡 N 🔴 M)  ·
-  WS: <pct>% (🟡 N 🔴 M)` (per §8.3.1).
+- Side-panel bottom-bar segment: `File: <pct>% (🟡 N 🔴 M)` is
+  the default shipped surface. The full `· WS: …` extension
+  exists but is opt-in (per §8.3.1).
 - New companion setting `dimfort.coverage.workspace_stats`:
-  `disabled | manual | automatic`.
-  - **`manual`** is the shipping default — the bar shows `WS: ?`
-    with a click / palette command to compute on demand. Safe on
-    every codebase, including large ones where `automatic` would
-    feel heavy without the 0.2.5 cache work.
-  - **`automatic`** wires the bar to the server's async refresh
-    cycle; recommended for small-to-medium worksets.
-  - **`disabled`** suppresses the WS segment entirely.
+  `disabled | manual | automatic`. **Shipping default:
+  `disabled`** — the WS segment is omitted from the bar entirely
+  (no separator, no placeholder). Rationale: in-editor smoke
+  testing on a larger real-world Fortran codebase confirmed that
+  the background workspace check holds the LSP `check_lock` for
+  tens of seconds at a time, which freezes per-file diagnostic
+  checks (squiggles + panel updates) for the duration. The
+  async architecture moves the check off the request thread —
+  but as long as `check_files` is slow, `check_lock` contention
+  makes the editor feel unresponsive every time WS refreshes.
+  The default ships off until 0.2.5's multifile cache makes the
+  underlying check cheap enough.
+  - **`manual`** (opt-in): WS shows `?` with a click / palette
+    command to compute on demand. User accepts the freeze cost
+    in exchange for the data.
+  - **`automatic`** (opt-in): bar wires to the server's async
+    refresh cycle. Same cost characteristics; recommended only
+    on small worksets where the freeze is sub-second.
 - Coverage report buffer (per §8.3.2) — single-buffer with
-  workspace header + per-file rows, click-to-jump.
+  workspace header + per-file rows, click-to-jump. Same opt-in
+  story: visible / functional only when `workspace_stats` is
+  enabled.
 
 Spec moves nothing; this section accumulates entries as pieces
 ship.
+
+When 0.2.5's multifile cache lands, the companion default flips
+from `disabled` to (probably) `automatic`. That's a one-line
+companion change — no re-architecture needed; the
+infrastructure built for 0.2.4 already supports all three
+modes.
 
 ### 13.3 0.2.5: multifile cache (deep optimisation)
 
