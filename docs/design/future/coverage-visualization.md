@@ -50,8 +50,8 @@ Four tiers + a no-decoration default. Reuses every shipped colour from
 
 | Tier | Trigger | Existing parity |
 | --- | --- | --- |
-| **Green** | Line carries unit-typed expressions; checker resolved them and no consistency-family diagnostic owns the line | matches panel/hover green |
-| **Yellow** | A `U005` (unannotated-but-used) or `H010` (hint-level) diagnostic owns the line | matches panel/hover yellow |
+| **Green** | Line carries unit-typed expressions; checker resolved them and no consistency-family diagnostic owns the line, AND no identifier on the line is in the file's `U005` set | matches panel/hover green |
+| **Yellow** | A `U005` (unannotated-but-used) or `H010` (hint-level) diagnostic owns the line, OR an expression on the line references an identifier from the file's `U005` set (use-site propagation; see §3.3) | matches panel/hover yellow |
 | **Red** | An `H001` / `H002` / `H003` / `H004` (hard fire) diagnostic owns the line | matches panel/hover red |
 | **Blue** | A `P001` (unparsed region) diagnostic owns the line | matches panel/hover blue |
 | **— (no decoration)** | Line has no unit semantics (string assignments, control flow, comments, blank lines, decl-only lines with no expression) | uncoloured |
@@ -81,6 +81,59 @@ doesn't justify it: `H010` is a hint-level fire that the panel and
 hover already render in yellow, and the coverage layer's purpose is
 "what's the status here" — `H010` is "needs attention," which yellow
 already conveys. Folded into the yellow tier.
+
+### 3.3 U005 propagation to use sites (validated 2026-06-06)
+
+The checker emits one `U005` diagnostic per unannotated declaration,
+attached to the *declaration line*. The coverage projection
+deliberately propagates the yellow signal to every line that
+*uses* the unannotated variable, not only the declaration line.
+
+**Why.** Without propagation, removing an annotation from a
+declaration can make a previously-flagged use site look *better*:
+a line that fired `H001` (because the variable's now-missing unit
+mismatched another) loses its red diagnostic (the checker can no
+longer compute the RHS) and falls back to green via the other
+annotated identifiers on the same line. That reads as "removing
+an annotation fixed the line" — exactly the wrong signal.
+
+**Rule.** During the green-paint walk, the projection inspects
+expression-bearing statement nodes (per the existing walk) and
+classifies each statement against two name sets:
+
+- **Annotated names**: lower-cased keys of `attachments.var_units`.
+- **Unannotated names**: lower-cased names extracted from the
+  file's `U005` diagnostic messages (the variable name appears as
+  a single-quoted token at the start of the message — stable
+  across server versions because the message shape is part of the
+  documented diagnostic surface).
+
+A statement that references at least one unannotated name paints
+its spanned lines yellow. A statement that references only
+annotated names paints green. A statement with neither stays
+uncoloured. Worst-wins still applies: a line already painted red
+by step 1 stays red.
+
+**Worked example** (qa.f90, 2026-06-06):
+
+```
+real :: c_sound   !< @unit{m/s}    (annotated)
+real :: t                          (unannotated → in U005 set)
+real :: bogus     !< @unit{kg}     (annotated)
+bogus = c_sound * t                ! line N
+```
+
+Line N references `bogus` and `c_sound` (annotated) AND `t`
+(unannotated). The unannotated reference dominates: line N paints
+yellow. When `@unit{s}` is restored on `t`, the H001 fires (RHS
+resolves to m, LHS is kg) and line N becomes red. The transition
+on annotation removal is therefore red → yellow, never red → green.
+
+This rule moves the yellow / green boundary from the literal
+"diagnostic owns the line" interpretation to "the line participates
+in an unannotated variable." It costs one regex match per `U005`
+diagnostic on projection (cheap; bounded by the number of `U005`
+diagnostics in the file, typically O(declarations)).
 
 ### 3.2 No green sub-tier for polymorphic verification
 
@@ -459,14 +512,27 @@ For each file in the last `WorksetResult`:
 For each file:
 
 1. Initialise an empty per-line status map.
-2. Walk the diagnostics: for each, map its tier (red / yellow / blue)
-   to every line in `start.line ..= end.line`, taking the worst tier
-   on collision.
-3. Walk the checker's visited expression nodes: for each line that
-   contains a resolved expression and isn't already painted by step
-   2, mark green.
-4. Lines not painted by 2 or 3 stay out-of-scope (omitted from the
-   response).
+2. Walk the diagnostics: for each in the tier-mapped set
+   (`H001/H002/H003/H004` → red, `U005`/`H010` → yellow, `P001` →
+   blue), assign its tier to every line in
+   `start.line ..= end.line`, taking the worst tier on collision.
+3. Mark every annotated-declaration line green via
+   `attachments.var_units_span` (if not already painted by step 2).
+4. Build the **unannotated name set** from the file's `U005`
+   diagnostics by extracting the quoted variable name from each
+   message (`'name' is used in a unit-checked expression...`). This
+   is the set of names whose use sites should propagate yellow per
+   §3.3.
+5. Walk expression-bearing statement nodes. For each statement,
+   classify by descendant identifier text against the annotated
+   set and the unannotated set:
+   - If any descendant matches an unannotated name → paint every
+     spanned line yellow (worst-wins against an already-green or
+     uncoloured line; red / blue / yellow from step 2 stand).
+   - Else if any descendant matches an annotated name → paint
+     every spanned line green (only on lines still uncoloured).
+6. Lines not painted by any step stay out-of-scope (omitted from
+   the response).
 
 This is one extra pass over data already in memory; no re-check.
 

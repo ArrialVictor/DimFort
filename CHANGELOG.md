@@ -4,6 +4,23 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### Changed
+
+- **Coverage projection: propagate `U005` to use sites**. The previous
+  implementation followed the literal "diagnostic owns the line" rule
+  and painted the use site of an unannotated variable green when no
+  diagnostic happened to own that specific line. The consequence,
+  observed during the VSCompanion smoke walk: removing an annotation
+  could make a previously-red use site look green, because the H001
+  that had been firing on the mismatched expression now had no unit
+  to evaluate. The projection now lifts the unannotated names out of
+  the file's `U005` diagnostic messages and paints every use site of
+  those names yellow. The transition on annotation removal is now
+  red → yellow rather than red → green. Worst-wins still applies;
+  red / blue diagnostics still win. New helper
+  `_unannotated_names_for_file` in `core/coverage.py`; design spec
+  §3.3 documents the rule.
+
 ### Added
 
 - **Coverage visualisation (server-side)**: new `dimfort/lineStatus`
