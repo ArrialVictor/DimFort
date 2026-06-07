@@ -223,14 +223,17 @@ def _ws_refresh_worker(ls: LanguageServer) -> None:
             # (high miss) from "dep ripple invalidating entries"
             # (high dirty) — the two failure modes that produce a
             # slow refresh look identical without these numbers.
-            log.info(
-                "dimfort workspace coverage refresh complete: "
-                "%d files in %.1f s "
-                "[cache: %d hit / %d miss / %d dirty / %d write]",
-                len(result.trees) + len(result.load_failures),
-                elapsed,
-                result.cache_hits, result.cache_misses,
-                result.cache_dirty, result.cache_writes,
+            # Lazy-import _notify to avoid a server↔coverage cycle.
+            from dimfort.lsp.server import _notify
+            n_files = len(result.trees) + len(result.load_failures)
+            _notify(
+                ls,
+                f"DimFort workspace coverage refresh complete: "
+                f"{n_files} files in {elapsed:.1f} s "
+                f"[cache: {result.cache_hits} hit / "
+                f"{result.cache_misses} miss / "
+                f"{result.cache_dirty} dirty / "
+                f"{result.cache_writes} write]",
             )
     except Exception:
         log.exception("workspace coverage refresh worker crashed")
