@@ -119,6 +119,99 @@ Response:
 
 Spec: [design/interaction-points.md](../design/shipped/interaction-points.md).
 
+### Per-line coverage tiers (`dimfort/lineStatus`)
+
+Custom request returning a per-line coverage tier for one file
+— used by editor companions to paint a gutter / background
+decoration showing which lines DimFort verified, which need
+attention, which fired a hard error, and which sit in an
+unparsed region.
+
+Method: `dimfort/lineStatus`
+
+Request:
+
+```jsonc
+{ "uri": "file:///…/foo.f90" }
+```
+
+Response:
+
+```jsonc
+{
+  "uri":   "file:///…/foo.f90",
+  "lines": [
+    { "line": 12, "status": "green"  },
+    { "line": 13, "status": "yellow" },
+    { "line": 14, "status": "red"    }
+  ]
+}
+```
+
+Lines omitted from the response are out-of-scope (no
+decoration). Status values: `green` (verified-OK), `yellow`
+(needs attention — `U005`, `H010`, `S001`, `S002`, or
+propagation), `red` (hard fire — `H001`-`H004`, `H020`-`H023`,
+`S003`, `U002`), `blue` (`P001` unparsed region).
+
+### Coverage stats (`dimfort/coverageStats`)
+
+Custom request returning per-file or workspace-wide coverage
+aggregates: tier counts plus a percentage. Used by editor
+panels to surface a stats bar / report buffer alongside the
+per-line decoration.
+
+Method: `dimfort/coverageStats`
+
+Request (file scope):
+
+```jsonc
+{ "uri": "file:///…/foo.f90" }
+```
+
+Request (workspace scope — aggregate over every file in the
+workspace index):
+
+```jsonc
+{}
+```
+
+Optional `force_refresh: true` on workspace-scope bypasses the
+server-side idle debounce; used by companions exposing an
+explicit on-demand refresh.
+
+Response:
+
+```jsonc
+{
+  "scope": "file",                        // or "workspace"
+  "uri":   "file:///…/foo.f90",           // present when scope=file
+  "files": [
+    { "uri": "file:///…/foo.f90",
+      "ok": 164, "warn": 3, "fire": 0,
+      "unparsed": 0, "out": 78,
+      "coverage_pct": 98.2 }
+  ],
+  "total": { "ok": 164, "warn": 3, "fire": 0,
+             "unparsed": 0, "out": 78,
+             "coverage_pct": 98.2 },
+  "ws_stale": false                       // workspace scope only
+}
+```
+
+`coverage_pct` is `ok / (ok + warn + fire) * 100` —
+unparsed and out-of-scope lines are excluded from the
+denominator. `ws_stale` (workspace scope only) is `true` when
+the cached aggregate is out of date or a background refresh is
+in flight; companions render the bar segment muted while stale.
+
+Workspace-scope checks run on a daemon thread inside the
+server with a built-in idle debounce; calling this method
+during active editing does not block the request thread and is
+not a synchronous re-check.
+
+Spec: [design/future/coverage-visualization.md](../design/future/coverage-visualization.md).
+
 ### Inlay hints, definition, code actions, completion
 
 - **Inlay hints** — `[unit]` ghost text at variable uses, calls, and

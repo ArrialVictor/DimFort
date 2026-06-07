@@ -4,148 +4,225 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
-### Fixed
+## [0.2.4] — 2026-06-07
 
-- **Coverage projection: expand red and yellow tier code sets**.
-  Surfaced during the poly_qa.f90 smoke walk: H020 / H021 / H022 /
-  H023 (polymorphism unification failures) fire at ERROR severity
-  but were missing from `_RED_CODES`, so lines firing those codes
-  painted green instead of red. Also added S003 (invalid affine
-  conversion) and U002 (unparseable annotation) to the red tier,
-  and S001 / S002 (scale / offset mismatch) to the yellow tier.
-  All severity-ERROR consistency-family codes now paint red and
-  all severity-WARNING quality / scale codes paint yellow.
-- **Coverage projection: paint unannotated unit-bearing declarations
-  yellow**. Surfaced during the imports_qa.f90 smoke walk: a
-  `real :: density` declaration with no `@unit{}` and no use site
-  shows yellow in the panel / hover (resolution-axis 🟡) but the
-  coverage layer left it uncoloured — `U005` only fires when the
-  variable is *also* used, and a declared-but-never-used variable
-  has no diagnostic. The projection now walks `variable_declaration`
-  nodes of unit-bearing intrinsic types (`real`, `double precision`)
-  and paints yellow when no sibling comment carries `@unit`. Matches
-  the panel / hover signal. Non-unit-bearing types (`integer`,
-  `character`, `logical`) are unaffected. Design spec §3.4 documents
-  the rule.
-- **Coverage projection: paint every annotated declaration regardless
-  of scope**. Surfaced during the same smoke walk: a polymorphic
-  variable name (`x`, `mean`, `half`) declared in multiple routines
-  of a module would show uncoloured at every declaration except the
-  first. Cause: the projection read
-  `attachments.var_units_span`, which is keyed first-seen-wins on
-  the variable NAME, so same-name declarations across scopes
-  weren't recorded. Fix: walk tree-sitter `comment` nodes for an
-  ``@unit`` substring and paint every line carrying an annotation
-  comment green. Robust against name collisions across scopes.
-  Design spec §10.2 updated accordingly.
+### Highlight
 
-### Changed
+Coverage stats foundation: the `dimfort coverage` CLI subcommand
++ LSP `dimfort/lineStatus` and `dimfort/coverageStats` endpoints,
+together with the async architecture and idle debounce that let
+companions ask "how covered is this workspace?" without blocking
+the LSP request thread. The companion-side UI ships per editor
+across follow-up releases; this release lands the load-bearing
+server + CLI half.
 
-- **Coverage projection: propagate `U005` to use sites**. The previous
-  implementation followed the literal "diagnostic owns the line" rule
-  and painted the use site of an unannotated variable green when no
-  diagnostic happened to own that specific line. The consequence,
-  observed during the VSCompanion smoke walk: removing an annotation
-  could make a previously-red use site look green, because the H001
-  that had been firing on the mismatched expression now had no unit
-  to evaluate. The projection now lifts the unannotated names out of
-  the file's `U005` diagnostic messages and paints every use site of
-  those names yellow. The transition on annotation removal is now
-  red → yellow rather than red → green. Worst-wins still applies;
-  red / blue diagnostics still win. New helper
-  `_unannotated_names_for_file` in `core/coverage.py`; design spec
-  §3.3 documents the rule.
+Also rolls up the pre-release polish: a Google-style docstring
+sweep across `src/dimfort/` enforced by ruff, plus a handful of
+coverage-projection correctness fixes surfaced during in-editor
+smoke walks (red/yellow tier code-set expansion, unannotated
+unit-bearing declarations, same-name declarations across scopes,
+U005 use-site propagation).
 
 ### Added
 
-- **Coverage visualisation (server-side)**: new `dimfort/lineStatus`
-  and `dimfort/coverageStats` LSP methods, plus a new `dimfort
-  coverage` CLI subcommand. The four-tier projection (green / yellow
-  / red / blue + no-decoration) is computed from the cached workset
-  check result without re-running the checker. New module at
-  `core/coverage.py` carries the pure projection logic; the LSP
-  wrapper in `lsp/coverage.py` serialises tree traversal under
-  `state.ts_handler_lock`. CLI flags: `--summary`, `--by-module`,
-  `--json`, `--no-color`. Companion-side rendering work follows in
-  separate PRs. See `docs/design/future/coverage-visualization.md`
-  for the design spec.
-
-### Fixed
-
-- **Stale doc-path references in `lsp/` comments**: four `#` comments
-  and docstrings in `lsp/server.py` and `lsp/panel.py` pointed at
-  `docs/design/panel-info.md`; the actual file lives at
-  `docs/design/shipped/panel-info.md`. A fifth reference introduced
-  in the `lsp/` docstring sweep mis-targeted `docs/design/side-panel.md`
-  (no such file — the user-facing description is at
-  `docs/editor-integration/side-panel.md`; the implementer-facing
-  wire spec is the `shipped/panel-info.md` path); both reference
-  styles now point at the correct location.
-- **Stale "non-VSCode clients see this as a no-op" framing in
-  `lsp/code_action.py`**: two `#` comments described the
-  `dimfort.insertSnippet` and `dimfort.extractToParameter` code
-  actions as VSCode-only, with non-VSCode clients seeing them as
-  no-ops. All three shipped editor companions (VSCode, Nvim, Emacs)
-  register both commands; the comments now say so.
-- **Over-claiming VSCode-specific framing in `lsp/hover_render.py`**:
-  the module-hover cap comment treated truncation as a cosmetic
-  safety belt because "VSCode's hover popup is scrollable." Some
-  clients (e.g. Neovim's default floating preview) do not scroll, so
-  the cap is load-bearing for both cases; updated.
-
-### Added
-
-- **Docstring style enforcement**: ruff now selects the `D` rule set
-  with `[tool.ruff.lint.pydocstyle] convention = "google"`. Missing
-  or malformed docstrings in `src/dimfort/` fire under `ruff check .`,
-  keeping the post-sweep Google style from drifting. Tests under
-  `tests/` and dev utilities under `scripts/` are exempt; the empty
-  `lsp/__init__.py`, the side-effect `core/__init__.py` shim, and the
-  thin `__main__.py` entry stub carry narrow per-file exemptions.
-  `CONTRIBUTING.md` tightened to mention the convention. Two
-  previously-missed public functions in `cli.py` (`build_parser`,
-  `main`) gained their docstrings; three `D301` fires on docstrings
-  containing literal backslashes gained their `r"""` prefix; one
-  `D205` fire on the module docstring of `core/unit_patterns.py` was
+- **Coverage visualisation (server-side)**: new
+  `dimfort/lineStatus` and `dimfort/coverageStats` LSP methods,
+  plus the `dimfort coverage` CLI subcommand. The four-tier
+  projection (green / yellow / red / blue + no-decoration) is
+  computed from the cached workset check result without
+  re-running the checker. New module at `core/coverage.py`
+  carries the pure projection logic; the LSP wrapper in
+  `lsp/coverage.py` serialises tree traversal under
+  `state.ts_handler_lock`. CLI flags: `--summary`,
+  `--by-module`, `--json`, `--no-color`. See
+  `docs/design/future/coverage-visualization.md` for the design
+  spec.
+- **`dimfort/coverageStats` workspace scope + async refresh**:
+  calling `dimfort/coverageStats` with no `uri` now returns an
+  aggregate over every Fortran file the workspace index knows
+  about, not just the active file's transitive `use`-closure.
+  The check itself runs on a daemon thread; the handler returns
+  the last-known aggregate plus a `ws_stale` flag instantly,
+  never blocking the LSP request thread. New `force_refresh:
+  true` request param lets companions bypass the server-side
+  idle debounce (12 s) for explicit on-demand refresh —
+  intended for opt-in "manual" companion modes. New
+  `mark_workspace_dirty` hook called from
+  `didChange` / `didSave` invalidates the cached aggregate.
+  Dedicated in-memory `CacheStore` (independent of the user's
+  `cache_mode` setting) keeps repeat refreshes cheap. Spec
+  §13.2 covers the architectural rationale.
+- **`docs/design/future/multifile-cache.md`**: design spec for
+  the 0.2.5 tree + ModuleExports caching layer that will make
+  workspace `check_files` calls cheap enough for the companion
+  bar's `automatic` mode to enable by default. Captures the
+  three adjacent optimisations (LSP-side diff-skip, incremental
+  WS aggregation, per-file projection cache) we may layer on
+  top.
+- **`demos/multifile/`**: four-file demo (`constants_mod.f90`,
+  `pressure_clean.f90`, `pressure_broken.f90`, `driver.f90`)
+  exercising the cross-file `use` chain. Opening different
+  files yields worksets of different sizes (1, 2, 4), useful
+  for exercising the workspace stats path beyond the
+  single-file demos in the parent directory.
+- **`dimfort coverage` CLI documented** in
+  `docs/reference/cli.md` (flags table + brief description).
+- **`dimfort/lineStatus` + `dimfort/coverageStats` LSP wire
+  format documented** in
+  `docs/editor-integration/lsp-protocol.md` — request shapes,
+  response shapes, `coverage_pct` formula, `ws_stale`
+  semantics, `force_refresh` opt-out from server-side idle
+  debounce.
+- **Docstring style enforcement**: ruff now selects the `D`
+  rule set with `[tool.ruff.lint.pydocstyle] convention =
+  "google"`. Missing or malformed docstrings in
+  `src/dimfort/` fire under `ruff check .`, keeping the
+  post-sweep Google style from drifting. Tests under `tests/`
+  and dev utilities under `scripts/` are exempt; the empty
+  `lsp/__init__.py`, the side-effect `core/__init__.py`
+  shim, and the thin `__main__.py` entry stub carry narrow
+  per-file exemptions. `CONTRIBUTING.md` tightened to mention
+  the convention. Two previously-missed public functions in
+  `cli.py` (`build_parser`, `main`) gained their docstrings;
+  three `D301` fires on docstrings containing literal
+  backslashes gained their `r"""` prefix; one `D205` fire on
+  the module docstring of `core/unit_patterns.py` was
   reflowed to a single-line summary.
 
 ### Changed
 
-- **Top-level docstring sweep**: module + class + public-function
-  docstrings under `src/dimfort/` (top level only: `__init__.py`,
-  `cli.py`, `config.py`) rewritten in Google style (Args / Returns /
-  Attributes / Note sections), with each docstring verified against
-  current behaviour. No code changes; behaviour unchanged. First of
-  three sweep PRs (top-level → `core/` → `lsp/`); convention is
-  enforced via ruff in a follow-up.
-- **`core/` docstring sweep**: same treatment applied across 16 of
-  the 19 modules under `src/dimfort/core/` (the 17th, `__init__.py`,
-  carries only a side-effect import comment and was unchanged).
-  ~136 existing docstrings reshaped to Google style and ~98 added
-  to previously-undocumented callables (including private helpers).
-  Class-level `Attributes:` blocks consolidate per-field rationale
-  where appropriate; rich inline per-field comments are preserved
-  when richer than an `Attributes:` block could carry. Every claim
-  was verified against current behaviour; no stale docstring was
-  found. No code changes; behaviour unchanged.
-- **`core/ts_checker.py` heavier follow-up pass**: the prior pass
-  left the 3.7k-line checker's existing one-line docstrings on
-  AST-dispatch helpers in their original prose form. This follow-up
-  reshapes ~65 of them into multi-section Google form (explicit
-  `Args:` / `Returns:` / `Raises:` / `Note:`), bringing the file in
-  line with the rest of `core/`. No new docstrings (those were added
-  in the prior pass). No code changes; behaviour unchanged.
-- **`lsp/` docstring sweep**: same treatment applied across all 17
-  populated modules under `src/dimfort/lsp/` (`__init__.py` is empty
-  and was unchanged). ~98 existing docstrings reshaped to full Google
-  form and ~35 added to previously-undocumented callables (including
-  private helpers and nested closures). LSP handler docstrings now
+- **Coverage projection percentage formula**:
+  `FileCoverage.coverage_pct` and `WorksetCoverage.coverage_pct`
+  now compute `ok / (ok + warn + fire) * 100`. Unparsed (`P001`)
+  regions are no longer in the denominator — they're a tool
+  limitation rather than a missing annotation, and counting them
+  against the user conflated annotation effort with parser
+  coverage. A fully annotated workset reaches 100% even when
+  unparseable regions exist. Unparsed still appears as a
+  per-row column in CLI / LSP responses so a large P001 area
+  remains visible; it just doesn't drag the headline number.
+- **Per-file stats cache in `lsp/coverage.py`**:
+  `dimfort/coverageStats` now caches per-file `FileCoverage`
+  records keyed by the identity of the current
+  `WorksetResult`. Repeated calls from the same result (e.g.
+  bar + report buffer both querying) are O(1). Identity
+  comparison (`is`) rather than `id()` avoids the id-reuse
+  footgun.
+- **Coverage projection: propagate `U005` to use sites**. The
+  previous implementation followed the literal "diagnostic
+  owns the line" rule and painted the use site of an
+  unannotated variable green when no diagnostic happened to
+  own that specific line. The consequence, observed during the
+  VSCompanion smoke walk: removing an annotation could make a
+  previously-red use site look green, because the H001 that
+  had been firing on the mismatched expression now had no unit
+  to evaluate. The projection now lifts the unannotated names
+  out of the file's `U005` diagnostic messages and paints
+  every use site of those names yellow. The transition on
+  annotation removal is now red → yellow rather than red →
+  green. Worst-wins still applies; red / blue diagnostics
+  still win. New helper `_unannotated_names_for_file` in
+  `core/coverage.py`; design spec §3.3 documents the rule.
+- **Top-level docstring sweep**: module + class + public-
+  function docstrings under `src/dimfort/` (top level only:
+  `__init__.py`, `cli.py`, `config.py`) rewritten in Google
+  style (Args / Returns / Attributes / Note sections), with
+  each docstring verified against current behaviour. No code
+  changes; behaviour unchanged.
+- **`core/` docstring sweep**: same treatment applied across
+  16 of the 19 modules under `src/dimfort/core/` (the 17th,
+  `__init__.py`, carries only a side-effect import comment
+  and was unchanged). ~136 existing docstrings reshaped to
+  Google style and ~98 added to previously-undocumented
+  callables (including private helpers). Class-level
+  `Attributes:` blocks consolidate per-field rationale where
+  appropriate; rich inline per-field comments are preserved
+  when richer than an `Attributes:` block could carry. Every
+  claim was verified against current behaviour; no stale
+  docstring was found. No code changes; behaviour unchanged.
+- **`core/ts_checker.py` heavier follow-up pass**: the prior
+  pass left the 3.7k-line checker's existing one-line
+  docstrings on AST-dispatch helpers in their original prose
+  form. This follow-up reshapes ~65 of them into
+  multi-section Google form (explicit `Args:` / `Returns:` /
+  `Raises:` / `Note:`), bringing the file in line with the
+  rest of `core/`. No code changes; behaviour unchanged.
+- **`lsp/` docstring sweep**: same treatment applied across
+  all 17 populated modules under `src/dimfort/lsp/`
+  (`__init__.py` is empty and was unchanged). ~98 existing
+  docstrings reshaped to full Google form and ~35 added to
+  previously-undocumented callables (including private
+  helpers and nested closures). LSP handler docstrings now
   call out the LSP method they implement (e.g. "Implements
-  ``textDocument/hover``."). Two small staleness corrections: a
-  VSCode-specific reference in `hover.py` generalised to "the editor"
-  (LSP serves all four companions); a `docs/design/panel-info.md`
-  pointer in `server.py` updated to the canonical
-  `docs/design/side-panel.md`. No code changes; behaviour unchanged.
+  ``textDocument/hover``."). Two small staleness corrections
+  in adjacent comments (VSCode-specific reference in
+  `hover.py` generalised; `docs/design/panel-info.md` pointer
+  in `server.py` corrected). No code changes; behaviour
+  unchanged.
+
+### Fixed
+
+- **Coverage projection: expand red and yellow tier code
+  sets**. Surfaced during the poly_qa.f90 smoke walk: H020 /
+  H021 / H022 / H023 (polymorphism unification failures) fire
+  at ERROR severity but were missing from `_RED_CODES`, so
+  lines firing those codes painted green instead of red. Also
+  added S003 (invalid affine conversion) and U002
+  (unparseable annotation) to the red tier, and S001 / S002
+  (scale / offset mismatch) to the yellow tier. All
+  severity-ERROR consistency-family codes now paint red and
+  all severity-WARNING quality / scale codes paint yellow.
+- **Coverage projection: paint unannotated unit-bearing
+  declarations yellow**. Surfaced during the imports_qa.f90
+  smoke walk: a `real :: density` declaration with no
+  `@unit{}` and no use site shows yellow in the panel /
+  hover (resolution-axis 🟡) but the coverage layer left it
+  uncoloured — `U005` only fires when the variable is *also*
+  used, and a declared-but-never-used variable has no
+  diagnostic. The projection now walks
+  `variable_declaration` nodes of unit-bearing intrinsic
+  types (`real`, `double precision`) and paints yellow when
+  no sibling comment carries `@unit`. Matches the panel /
+  hover signal. Non-unit-bearing types (`integer`,
+  `character`, `logical`) are unaffected. Design spec §3.4
+  documents the rule.
+- **Coverage projection: paint every annotated declaration
+  regardless of scope**. Surfaced during the same smoke walk:
+  a polymorphic variable name (`x`, `mean`, `half`) declared
+  in multiple routines of a module would show uncoloured at
+  every declaration except the first. Cause: the projection
+  read `attachments.var_units_span`, which is keyed
+  first-seen-wins on the variable NAME, so same-name
+  declarations across scopes weren't recorded. Fix: walk
+  tree-sitter `comment` nodes for an ``@unit`` substring and
+  paint every line carrying an annotation comment green.
+  Robust against name collisions across scopes. Design spec
+  §10.2 updated accordingly.
+- **Stale doc-path references in `lsp/` comments**: four `#`
+  comments and docstrings in `lsp/server.py` and
+  `lsp/panel.py` pointed at `docs/design/panel-info.md`;
+  the actual file lives at
+  `docs/design/shipped/panel-info.md`. A fifth reference
+  introduced in the `lsp/` docstring sweep mis-targeted
+  `docs/design/side-panel.md` (no such file — the
+  user-facing description is at
+  `docs/editor-integration/side-panel.md`; the
+  implementer-facing wire spec is the
+  `shipped/panel-info.md` path); both reference styles now
+  point at the correct location.
+- **Stale "non-VSCode clients see this as a no-op" framing
+  in `lsp/code_action.py`**: two `#` comments described the
+  `dimfort.insertSnippet` and `dimfort.extractToParameter`
+  code actions as VSCode-only, with non-VSCode clients
+  seeing them as no-ops. All three shipped editor companions
+  (VSCode, Nvim, Emacs) register both commands; the comments
+  now say so.
+- **Over-claiming VSCode-specific framing in
+  `lsp/hover_render.py`**: the module-hover cap comment
+  treated truncation as a cosmetic safety belt because
+  "VSCode's hover popup is scrollable." Some clients (e.g.
+  Neovim's default floating preview) do not scroll, so the
+  cap is load-bearing for both cases; updated.
 
 ## [0.2.3.1] — 2026-06-07
 

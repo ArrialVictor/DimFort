@@ -67,6 +67,32 @@ matched case-insensitively.
 The same query is available over LSP as the `dimfort/interactions`
 custom request — see [editor-integration/lsp-protocol.md](../editor-integration/lsp-protocol.md#cross-site-analysis-dimfortinteractions).
 
+## `dimfort coverage`
+
+```bash
+dimfort coverage <paths>...
+```
+
+Print a per-file coverage breakdown — how many lines DimFort
+verified as dimensionally consistent (`OK`), how many need
+attention (`Warn`), how many fired a hard error (`Fire`), how
+many sit in an unparsed region (`Unpars`), and how many are out
+of scope (no unit semantics). The `Coverage` percentage is
+`OK / (OK + Warn + Fire)` — unparsed and out-of-scope lines are
+excluded from the denominator because they're not annotatable.
+
+| Flag | Effect |
+|---|---|
+| `--summary`     | Workset total only; suppress per-file rows. |
+| `--by-module`   | Group rows by module name (derived from the file's `module` statement) instead of by file path. |
+| `--json`        | Emit the breakdown as machine-readable JSON for downstream tooling. |
+| `--no-color`    | Disable ANSI colour. |
+
+The same projection is available over LSP via the
+`dimfort/coverageStats` custom request (per-file or
+workspace-wide) and `dimfort/lineStatus` (per-line tiers for the
+editor companions to render). See [editor-integration/lsp-protocol.md](../editor-integration/lsp-protocol.md#coverage-stats-dimfortcoveragestats).
+
 ## `dimfort lsp`
 
 Start the language server over stdio. Accepts no arguments beyond
