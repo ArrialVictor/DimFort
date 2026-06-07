@@ -63,6 +63,17 @@ Estimated saving on the reference workset: 17.84 s → ~10 ms for
 the case where only one file changed between calls (every other
 file's tree comes from cache, the changed file re-parses).
 
+**Implementation note (2026-06-07):** the scanner in
+`core/annotations.py` (`_scan_declarations` → `_ts.parse_text`)
+runs its own parse over the same source as part of `scan_text`,
+ahead of the parse the cache covers in `_load_one`. The tree
+cache as initially landed therefore skips only the second of
+those two parses on a hit. Eliminating the scan-internal parse —
+either by hoisting the parse above `scan_text` and threading the
+tree in, or by letting the scanner consult the same cache —
+should roughly double the load-phase saving and is queued as a
+follow-up in the 0.2.5 window.
+
 ### 2.2 ModuleExports cache
 
 Key: `(tree_identity, var_units_table_identity)` — both inputs

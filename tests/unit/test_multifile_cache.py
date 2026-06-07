@@ -1,13 +1,20 @@
 """Tests for the session-scoped multifile caches.
 
-Module-level tests for the dataclasses + hashing helpers. End-to-end
-tests covering the ``check_files`` wiring live alongside the call-site
-changes (added in the follow-up commit).
+Module-level tests cover the dataclasses + hashing helpers; the
+``check_files``-driven tests exercise the wiring end-to-end (cache hit
+skips parse, content edit invalidates, no-cache parity).
 """
 from __future__ import annotations
 
 from pathlib import Path
+from unittest import mock
 
+from dimfort.core import (
+    ts_checker,
+    unit_config,  # noqa: F401  (installs DEFAULT_TABLE)
+)
+from dimfort.core import ts_parser as _ts
+from dimfort.core.multifile import check_files
 from dimfort.core.multifile_cache import (
     CachedParse,
     ExportsKey,
@@ -18,6 +25,20 @@ from dimfort.core.multifile_cache import (
     cpp_fingerprint,
     digest_merged_var_units,
 )
+
+SAMPLE = """\
+module mymod
+  implicit none
+  !@unit{m}
+  real :: x
+end module mymod
+"""
+
+
+def _write(tmp_path: Path, name: str, body: str) -> Path:
+    p = tmp_path / name
+    p.write_text(body)
+    return p.resolve()
 
 
 def test_content_hash_stable():
@@ -66,3 +87,110 @@ def test_digest_merged_var_units_stable_and_order_independent():
     c = digest_merged_var_units({"x": "m/s", "y": "kg"})
     assert a == b
     assert a != c
+
+
+def test_check_files_without_cache_is_unchanged(tmp_path: Path):
+    """Baseline: passing no cache must not change the result shape."""
+    src = _write(tmp_path, "a.f90", SAMPLE)
+    r1 = check_files([src])
+    r2 = check_files([src])
+    assert set(r1.diagnostics) == set(r2.diagnostics)
+    assert set(r1.trees) == set(r2.trees)
+
+
+def test_tree_cache_skips_parse_on_hit(tmp_path: Path):
+    """A warm pass must perform strictly fewer ``parse_text`` calls.
+
+    ``_load_one`` parses once; ``scan_text`` parses once more (independent
+    code path). The TreeCache only skips the ``_load_one`` parse, so warm
+    < cold rather than warm == 0. Eliminating the scan-internal parse is
+    tracked as a follow-up in ``docs/design/future/multifile-cache.md``.
+    """
+    src = _write(tmp_path, "a.f90", SAMPLE)
+    cache = TreeCache()
+    real_parse = _ts.parse_text
+
+    cold_calls = {"n": 0}
+    with mock.patch.object(
+        _ts, "parse_text",
+        side_effect=lambda t: (cold_calls.__setitem__("n", cold_calls["n"] + 1)
+                               or real_parse(t)),
+    ):
+        check_files([src], tree_cache=cache)
+    assert len(cache) == 1
+
+    warm_calls = {"n": 0}
+    with mock.patch.object(
+        _ts, "parse_text",
+        side_effect=lambda t: (warm_calls.__setitem__("n", warm_calls["n"] + 1)
+                               or real_parse(t)),
+    ):
+        check_files([src], tree_cache=cache)
+    assert warm_calls["n"] < cold_calls["n"], (
+        f"cache should reduce parse calls (cold={cold_calls['n']}, "
+        f"warm={warm_calls['n']})"
+    )
+
+
+def test_tree_cache_invalidates_on_content_change(tmp_path: Path):
+    src = _write(tmp_path, "a.f90", SAMPLE)
+    cache = TreeCache()
+    check_files([src], tree_cache=cache)
+    assert len(cache) == 1
+
+    # Edit the file: content hash changes → cache miss for this file.
+    src.write_text(SAMPLE + "\n! tail comment\n")
+    call_count = {"n": 0}
+    real_parse = _ts.parse_text
+
+    def counting_parse(text):
+        call_count["n"] += 1
+        return real_parse(text)
+
+    with mock.patch.object(_ts, "parse_text", side_effect=counting_parse):
+        check_files([src], tree_cache=cache)
+    assert call_count["n"] >= 1, "edited file must trigger a fresh parse"
+    # Cache now holds both the old and the new entry.
+    assert len(cache) == 2
+
+
+def test_exports_cache_skips_index_walk_on_hit(tmp_path: Path):
+    """Warm pass with an ``exports_cache`` must not re-invoke the index walker."""
+    src = _write(tmp_path, "a.f90", SAMPLE)
+    tree_cache = TreeCache()
+    exports_cache = ModuleExportsCache()
+    check_files([src], tree_cache=tree_cache, exports_cache=exports_cache)
+    assert len(exports_cache) == 1
+
+    with mock.patch.object(
+        ts_checker,
+        "collect_function_signatures_and_module_exports",
+        side_effect=AssertionError("index walk should be skipped"),
+    ) as spy:
+        check_files([src], tree_cache=tree_cache, exports_cache=exports_cache)
+    spy.assert_not_called()
+
+
+def test_exports_cache_invalidates_on_content_change(tmp_path: Path):
+    src = _write(tmp_path, "a.f90", SAMPLE)
+    exports_cache = ModuleExportsCache()
+    check_files([src], exports_cache=exports_cache)
+    assert len(exports_cache) == 1
+
+    src.write_text(SAMPLE.replace("mymod", "renamed_mod"))
+    check_files([src], exports_cache=exports_cache)
+    # Both old and new entries now sit in the cache.
+    assert len(exports_cache) == 2
+
+
+def test_tree_cache_isolation_across_two_files(tmp_path: Path):
+    """Two distinct files in one workset produce two distinct cache entries."""
+    a = _write(tmp_path, "a.f90", SAMPLE)
+    b = _write(
+        tmp_path,
+        "b.f90",
+        SAMPLE.replace("mymod", "othermod").replace(":: x", ":: y"),
+    )
+    cache = TreeCache()
+    check_files([a, b], tree_cache=cache)
+    assert len(cache) == 2

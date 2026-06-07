@@ -35,6 +35,7 @@ from pathlib import Path
 
 from tree_sitter import Tree
 
+from dimfort.core import multifile_cache as _mfc
 from dimfort.core import ts_checker
 from dimfort.core import ts_parser as _ts
 from dimfort.core import units as _units_mod
@@ -49,6 +50,12 @@ from dimfort.core.cache_serde import (
 )
 from dimfort.core.cache_store import CacheStore
 from dimfort.core.diagnostics import AutocastEvent, Diagnostic, Position, Severity
+from dimfort.core.multifile_cache import (
+    ExportsKey,
+    ModuleExportsCache,
+    TreeCache,
+    TreeKey,
+)
 from dimfort.core.rewrite import suggest_rewrite as _suggest_rewrite
 from dimfort.core.symbols import (
     FuncSig,
@@ -247,6 +254,7 @@ def _load_one(
     unit_patterns: tuple[UnitPattern, ...] = DEFAULT_UNIT_PATTERNS,
     assume_patterns: tuple[StructuredPattern, ...] = DEFAULT_ASSUME_PATTERNS,
     affine_patterns: tuple[StructuredPattern, ...] = DEFAULT_AFFINE_PATTERNS,
+    tree_cache: TreeCache | None = None,
 ) -> _Loaded:
     """Read source, scan + attach annotations, parse with tree-sitter.
 
@@ -272,6 +280,9 @@ def _load_one(
         assume_patterns: Configured ``@unit_assume{...}`` delimiters.
         affine_patterns: Configured ``@unit_affine_conversion{...}``
             delimiters.
+        tree_cache: Optional session-scoped tree cache; on a hit the
+            parse step is skipped entirely and the cached
+            tree-sitter outputs replay into ``_Loaded``.
 
     Returns:
         A ``_Loaded`` record. On any pre-parse failure (read,
@@ -302,6 +313,24 @@ def _load_one(
         and (cpp_defines or include_paths)
         and has_directives
     )
+    cache_key: TreeKey | None = None
+    if tree_cache is not None:
+        mode = (
+            f"cpp:{_mfc.cpp_fingerprint(cpp_defines, include_paths)}"
+            if use_cpp
+            else "raw"
+        )
+        cache_key = TreeKey(_mfc.content_hash(source), mode)
+        hit = tree_cache.get(cache_key)
+        if hit is not None:
+            if use_cpp:
+                return _Loaded(
+                    path, text, hit.source, scan, attachment,
+                    hit.tree, None, line_map=hit.line_map,
+                    raw_tree=hit.raw_tree, raw_source=source,
+                    cpp_closure=hit.cpp_closure,
+                )
+            return _Loaded(path, text, hit.source, scan, attachment, hit.tree, None)
     try:
         if use_cpp:
             try:
@@ -319,6 +348,12 @@ def _load_one(
             # positions). Cost is ~3 ms extra per .F90 file; tree-
             # sitter parses in single-digit ms.
             raw_tree = _ts.parse_text(source)
+            if cache_key is not None and tree_cache is not None:
+                tree_cache.put(cache_key, _mfc.CachedParse(
+                    tree=pre.tree, source=pre.expanded_text,
+                    expanded_text=pre.expanded_text, line_map=pre.line_map,
+                    raw_tree=raw_tree, cpp_closure=pre.cpp_closure,
+                ))
             return _Loaded(
                 path, text, pre.expanded_text, scan, attachment,
                 pre.tree, None, line_map=pre.line_map,
@@ -326,6 +361,8 @@ def _load_one(
                 cpp_closure=pre.cpp_closure,
             )
         tree = _ts.parse_text(source)
+        if cache_key is not None and tree_cache is not None:
+            tree_cache.put(cache_key, _mfc.CachedParse(tree=tree, source=source))
     except Exception as exc:
         # tree-sitter shouldn't fail on valid bytes, but we mirror the
         # error path so callers can rely on a uniform _Loaded shape.
@@ -733,6 +770,8 @@ def check_files(
     unit_patterns: tuple[UnitPattern, ...] = DEFAULT_UNIT_PATTERNS,
     assume_patterns: tuple[StructuredPattern, ...] = DEFAULT_ASSUME_PATTERNS,
     affine_patterns: tuple[StructuredPattern, ...] = DEFAULT_AFFINE_PATTERNS,
+    tree_cache: TreeCache | None = None,
+    exports_cache: ModuleExportsCache | None = None,
 ) -> WorksetResult:
     """Scan, attach, and check every file in ``sources`` together.
 
@@ -770,6 +809,16 @@ def check_files(
         assume_patterns: Configured ``@unit_assume{...}`` delimiters.
         affine_patterns: Configured ``@unit_affine_conversion{...}``
             delimiters.
+        tree_cache: Optional session-scoped
+            :class:`~dimfort.core.multifile_cache.TreeCache`; when set,
+            unchanged files skip tree-sitter parsing entirely. ``None``
+            (the default) keeps behaviour byte-identical to the
+            un-cached path.
+        exports_cache: Optional session-scoped
+            :class:`~dimfort.core.multifile_cache.ModuleExportsCache`;
+            when set, unchanged files skip the per-file
+            ``collect_function_signatures_and_module_exports`` walk in
+            the index phase.
 
     Returns:
         A :class:`WorksetResult` carrying per-file diagnostics,
@@ -824,6 +873,7 @@ def check_files(
                 unit_patterns=unit_patterns,
                 assume_patterns=assume_patterns,
                 affine_patterns=affine_patterns,
+                tree_cache=tree_cache,
             ), None
         except Exception as exc:
             # Widened from ``OSError`` only — the three pre-parse
@@ -905,6 +955,14 @@ def check_files(
     per_file_var_units_by_scope: dict[
         Path, dict[tuple[str | None, str], UnitExpr]
     ] = {}
+    # ExportsCache reads "merged_var_units" as a fallback context; digest
+    # it once per call so each file's lookup is O(1) rather than
+    # re-hashing for every file.
+    merged_units_digest = (
+        _mfc.digest_merged_var_units(merged_var_units)
+        if exports_cache is not None
+        else ""
+    )
     for i, entry in enumerate(loaded, start=1):
         if entry.tree is not None:
             file_scoped = _parse_var_units_by_scope(
@@ -918,10 +976,24 @@ def check_files(
             # elsewhere in the workset (e.g. a wind ``v: m/s``). The
             # by-scope path returns ``None`` for unannotated names,
             # which is the correct semantic.
-            sigs, modules = ts_checker.collect_function_signatures_and_module_exports(
-                entry.tree, merged_var_units, entry.source,
-                var_units_by_scope=file_scoped,
-            )
+            exports_key: ExportsKey | None = None
+            cached_exports: tuple[object, ModuleExports | None] | None = None
+            if exports_cache is not None:
+                exports_key = ExportsKey(
+                    _mfc.content_hash(entry.source), merged_units_digest,
+                )
+                cached_exports = exports_cache.get(exports_key)
+            if cached_exports is not None:
+                sigs, modules = cached_exports  # type: ignore[assignment]
+            else:
+                sigs, modules = (
+                    ts_checker.collect_function_signatures_and_module_exports(
+                        entry.tree, merged_var_units, entry.source,
+                        var_units_by_scope=file_scoped,
+                    )
+                )
+                if exports_cache is not None and exports_key is not None:
+                    exports_cache.put(exports_key, (sigs, modules))
             for mname, exp in modules.items():
                 module_exports.setdefault(mname, exp)
             for fname, sig in sigs.items():
