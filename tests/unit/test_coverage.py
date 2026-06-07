@@ -361,9 +361,35 @@ def test_aggregate_file_counts_each_tier(tmp_path: Path):
     assert cov.warn == 1
     assert cov.fire == 1
     assert cov.unparsed == 1
-    # total 10, in-scope 5 → out is 5.
+    # total 10, tier-painted 5 → out is 5.
     assert cov.out == 5
-    assert cov.coverage_pct == pytest.approx(40.0)
+    # 2 / (2 + 1 + 1) = 50.0% — unparsed excluded from denominator.
+    assert cov.coverage_pct == pytest.approx(50.0)
+
+
+def test_coverage_pct_excludes_unparsed(tmp_path: Path):
+    """A fully annotated file with a P001 region still reports 100%."""
+    from dimfort.core.coverage import FileCoverage
+
+    # 50 green, 0 warn, 0 fire, 10 unparsed — well-annotated surface,
+    # P001 region present. Denominator is 50 (ok + warn + fire), not 60.
+    cov = FileCoverage(
+        path=tmp_path / "x.f90",
+        ok=50, warn=0, fire=0, unparsed=10, out=0,
+    )
+    assert cov.coverage_pct == pytest.approx(100.0)
+
+
+def test_coverage_pct_all_unparsed_is_zero(tmp_path: Path):
+    """A file with only unparsed lines has no annotatable surface."""
+    from dimfort.core.coverage import FileCoverage
+
+    cov = FileCoverage(
+        path=tmp_path / "x.f90",
+        ok=0, warn=0, fire=0, unparsed=42, out=0,
+    )
+    # No annotatable lines → 0.0 (denominator zero).
+    assert cov.coverage_pct == 0.0
 
 
 def test_aggregate_file_all_out_of_scope_yields_zero_pct(tmp_path: Path):

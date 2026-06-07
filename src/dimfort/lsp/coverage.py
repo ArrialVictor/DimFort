@@ -10,17 +10,74 @@ spec.
 """
 from __future__ import annotations
 
+import threading
+from pathlib import Path
 from typing import Any
 
 from pygls.lsp.server import LanguageServer
 
 from dimfort.core.coverage import (
+    FileCoverage,
     aggregate_file,
     aggregate_workset,
     project_file,
 )
+from dimfort.core.multifile import WorksetResult
 from dimfort.lsp.state import state
 from dimfort.lsp.tree_access import _uri_to_path
+
+# Per-file coverage cache. Populated by ``_get_file_coverage`` and
+# invalidated whenever ``state.last_result`` is replaced (identity
+# comparison). The aggregation in ``stats()`` walks every workset
+# file under ``state.ts_handler_lock``; on larger real-world
+# Fortran codebases the un-cached cost is in the tens-to-hundreds
+# of milliseconds. Caching the per-file ``FileCoverage`` records
+# keyed by the current ``WorksetResult`` makes repeat hits from
+# the same result O(1) — relevant when bar + report buffer both
+# query, or when multiple companions are connected.
+#
+# Identity (``is``) rather than ``id()`` because Python may reuse a
+# freed object's id; holding a strong ref to the cached result
+# avoids that footgun. Memory cost: one extra WorksetResult ref.
+_cache_lock = threading.Lock()
+_cache_result: WorksetResult | None = None
+_cache_files: dict[Path, FileCoverage] = {}
+
+
+def _get_file_coverage(p: Path, result: WorksetResult) -> FileCoverage:
+    """Return cached :class:`FileCoverage` for ``p``, computing on miss.
+
+    Cache is keyed by the identity of ``result``; replacement of
+    ``state.last_result`` invalidates the cache on the next call.
+    The tree-sitter walk in :func:`project_file` runs under
+    ``state.ts_handler_lock``; the cache lock is released for the
+    walk so concurrent callers don't serialise on the cache.
+    """
+    global _cache_result, _cache_files
+    with _cache_lock:
+        if _cache_result is not result:
+            _cache_result = result
+            _cache_files = {}
+        cached = _cache_files.get(p)
+        if cached is not None:
+            return cached
+
+    with state.ts_handler_lock:
+        statuses = project_file(p, result)
+    tree_entry = result.trees.get(p)
+    if tree_entry is not None:
+        total_lines = tree_entry[1].count(b"\n") + 1
+    elif statuses:
+        total_lines = max(statuses)
+    else:
+        total_lines = 0
+    fc = aggregate_file(p, statuses, total_lines=total_lines)
+
+    with _cache_lock:
+        # Only store if no concurrent caller swapped the result key.
+        if _cache_result is result:
+            _cache_files[p] = fc
+    return fc
 
 
 def _get(obj: Any, key: str) -> Any:
@@ -136,20 +193,7 @@ def stats(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
         paths = sorted(result.diagnostics.keys() | result.attachments.keys())
         scope = "workspace"
 
-    per_file = []
-    for p in paths:
-        with state.ts_handler_lock:
-            statuses = project_file(p, result)
-        # Total source-file line count: pull from the cached source bytes
-        # when available; fall back to the maximum status-key line + 1.
-        tree_entry = result.trees.get(p)
-        if tree_entry is not None:
-            total_lines = tree_entry[1].count(b"\n") + 1
-        elif statuses:
-            total_lines = max(statuses)
-        else:
-            total_lines = 0
-        per_file.append(aggregate_file(p, statuses, total_lines=total_lines))
+    per_file = [_get_file_coverage(p, result) for p in paths]
 
     workset = aggregate_workset(per_file)
     payload: dict[str, Any] = {

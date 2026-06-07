@@ -509,18 +509,28 @@ class FileCoverage:
 
     @property
     def coverage_pct(self) -> float:
-        """Percentage of in-scope lines painted green.
+        """Percentage of checkable, parseable lines painted green.
 
         Returns:
-            ``ok / (ok + warn + fire + unparsed) * 100`` rounded to one
-            decimal place. ``0.0`` when the denominator is zero
-            (entire file out of scope — typical for a file with no
-            annotations and no diagnostics).
+            ``ok / (ok + warn + fire) * 100`` rounded to one decimal
+            place. ``0.0`` when the denominator is zero (no
+            annotatable lines — typical for a file with no
+            annotations and no diagnostics, or one entirely covered
+            by P001 unparsed regions).
+
+        Note:
+            ``unparsed`` is excluded from the denominator because P001
+            regions are a tool limitation rather than a missing
+            annotation — counting them against the user would conflate
+            annotation effort with parser coverage. A fully annotated
+            workset reaches 100% even when P001 regions exist.
+            ``out`` is excluded for the same reason it always was: not
+            a checkable line.
         """
-        in_scope = self.ok + self.warn + self.fire + self.unparsed
-        if in_scope == 0:
+        annotatable = self.ok + self.warn + self.fire
+        if annotatable == 0:
             return 0.0
-        return round((self.ok / in_scope) * 100.0, 1)
+        return round((self.ok / annotatable) * 100.0, 1)
 
 
 def aggregate_file(
@@ -583,14 +593,14 @@ class WorksetCoverage:
         """Workset-wide coverage percentage, computed like :attr:`FileCoverage.coverage_pct`.
 
         Returns:
-            ``ok / (ok + warn + fire + unparsed) * 100`` rounded to one
-            decimal place. ``0.0`` when no file in the workset has any
-            in-scope lines.
+            ``ok / (ok + warn + fire) * 100`` rounded to one decimal
+            place. ``0.0`` when no file in the workset has any
+            annotatable lines.
         """
-        in_scope = self.ok + self.warn + self.fire + self.unparsed
-        if in_scope == 0:
+        annotatable = self.ok + self.warn + self.fire
+        if annotatable == 0:
             return 0.0
-        return round((self.ok / in_scope) * 100.0, 1)
+        return round((self.ok / annotatable) * 100.0, 1)
 
 
 def aggregate_workset(files: Iterable[FileCoverage]) -> WorksetCoverage:
