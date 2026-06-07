@@ -831,6 +831,21 @@ work:
    with frequent edits, the per-line projection runs once per
    `didChange` debounce. Cheap, but worth measuring on a
    representative large workset before shipping to confirm.
+3. **Panel stats-bar default visibility.** §8.3.1 originally said
+   the bar is gated on `coverage.mode != disabled` — same opt-in
+   as the painting. The counter-argument: paint mode governs
+   in-buffer visual noise (per-line decoration on every line);
+   the bar is one summary line in side-panel chrome — different
+   cost profile, different visibility profile. Making the bar
+   depend on opting into the loudest surface (painting every
+   line) is backwards for discoverability. During implementation
+   the bar is shipped **always-on** in a `.f90` file with a
+   workset (collapsing to inert `File: — · WS: —` otherwise),
+   independent of paint mode, so the feature can be exercised
+   during testing. The final pre-release default — keep
+   always-on vs. gate on a separate `coverage.stats_bar` setting
+   vs. tie back to `coverage.mode` — is to be decided based on
+   in-editor smoke walks before tagging 0.2.4.
 
 ## 13. Migration
 
