@@ -53,6 +53,10 @@ class CachedParse:
     line_map: tuple[int | None, ...] | None = None
     raw_tree: Tree | None = None
     cpp_closure: frozenset[str] = frozenset()
+    # SHA-256 hex of ``source`` (the bytes the tree was built from —
+    # cpp-expanded for cpp files, raw otherwise). Lets the index loop's
+    # ExportsKey reuse the hash _load_one already computed.
+    source_hash: str = ""
 
 
 def cpp_fingerprint(

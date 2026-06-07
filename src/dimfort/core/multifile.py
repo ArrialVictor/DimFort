@@ -230,6 +230,12 @@ class _Loaded:
         raw_source: Bytes for ``raw_tree``.
         cpp_closure: Set of include files cpp pulled in (used to feed
             include-hashing for the cache key).
+        source_hash: SHA-256 hex of :attr:`source` (the bytes the
+            primary :attr:`tree` was built from — cpp-expanded for
+            cpp files, raw otherwise). Computed in ``_load_one`` and
+            reused by the index loop's ``ExportsKey`` so the workset
+            doesn't hash each file twice. Empty string on load
+            failure.
     """
 
     path: Path
@@ -243,6 +249,7 @@ class _Loaded:
     raw_tree: Tree | None = None
     raw_source: bytes | None = None
     cpp_closure: frozenset[str] = frozenset()
+    source_hash: str = ""
 
 
 def _load_one(
@@ -306,6 +313,9 @@ def _load_one(
         and (cpp_defines or include_paths)
         and has_directives
     )
+    # Hash once and reuse for both TreeKey here and ExportsKey in the
+    # index loop (via _Loaded.source_hash). Halves SHA-256 work per file.
+    src_hash = _mfc.content_hash(source)
     cache_key: TreeKey | None = None
     hit: _mfc.CachedParse | None = None
     if tree_cache is not None:
@@ -314,7 +324,7 @@ def _load_one(
             if use_cpp
             else "raw"
         )
-        cache_key = TreeKey(_mfc.content_hash(source), mode)
+        cache_key = TreeKey(src_hash, mode)
         hit = tree_cache.get(cache_key)
 
     # Source-coordinate tree, shared between scan_text and the result.
@@ -343,19 +353,28 @@ def _load_one(
     attachment = attach(scan)
 
     if hit is not None:
+        # Non-cpp: source_hash == src_hash. Cpp: source_hash is the
+        # post-cpp digest stored at cache-write time.
         if use_cpp:
             return _Loaded(
                 path, text, hit.source, scan, attachment,
                 hit.tree, None, line_map=hit.line_map,
                 raw_tree=hit.raw_tree, raw_source=source,
                 cpp_closure=hit.cpp_closure,
+                source_hash=hit.source_hash or _mfc.content_hash(hit.source),
             )
-        return _Loaded(path, text, hit.source, scan, attachment, hit.tree, None)
+        return _Loaded(
+            path, text, hit.source, scan, attachment, hit.tree, None,
+            source_hash=src_hash,
+        )
 
     if parse_error is not None and not use_cpp:
         # tree-sitter shouldn't fail on valid bytes, but the workset
         # contract is uniform-shape entries.
-        return _Loaded(path, text, source, scan, attachment, None, parse_error)
+        return _Loaded(
+            path, text, source, scan, attachment, None, parse_error,
+            source_hash=src_hash,
+        )
 
     try:
         if use_cpp:
@@ -368,31 +387,47 @@ def _load_one(
                 # syntax error in a directive). Surface as a load
                 # failure; tree-sitter's raw parse would garble
                 # continuations anyway.
-                return _Loaded(path, text, source, scan, attachment, None, exc.stderr)
+                return _Loaded(
+                    path, text, source, scan, attachment, None, exc.stderr,
+                    source_hash=src_hash,
+                )
             # Two-tree mode: cpp'd tree for the checker (correct
             # semantics), raw tree for the LSP (source-coordinate
             # positions). The raw tree was already parsed above (or
             # parse failed there; re-attempt for the cpp branch).
             raw_tree = source_tree if source_tree is not None else _ts.parse_text(source)
+            # Cpp-expanded bytes differ from raw, so we have to hash
+            # twice on cpp files. Non-cpp files (the common case) only
+            # pay one hash because src_hash matches the post-cpp hash.
+            post_cpp_hash = _mfc.content_hash(pre.expanded_text)
             if cache_key is not None and tree_cache is not None:
                 tree_cache.put(cache_key, _mfc.CachedParse(
                     tree=pre.tree, source=pre.expanded_text,
                     expanded_text=pre.expanded_text, line_map=pre.line_map,
                     raw_tree=raw_tree, cpp_closure=pre.cpp_closure,
+                    source_hash=post_cpp_hash,
                 ))
             return _Loaded(
                 path, text, pre.expanded_text, scan, attachment,
                 pre.tree, None, line_map=pre.line_map,
                 raw_tree=raw_tree, raw_source=source,
-                cpp_closure=pre.cpp_closure,
+                cpp_closure=pre.cpp_closure, source_hash=post_cpp_hash,
             )
         if cache_key is not None and tree_cache is not None:
             tree_cache.put(
-                cache_key, _mfc.CachedParse(tree=source_tree, source=source),
+                cache_key, _mfc.CachedParse(
+                    tree=source_tree, source=source, source_hash=src_hash,
+                ),
             )
     except Exception as exc:
-        return _Loaded(path, text, source, scan, attachment, None, str(exc))
-    return _Loaded(path, text, source, scan, attachment, source_tree, None)
+        return _Loaded(
+            path, text, source, scan, attachment, None, str(exc),
+            source_hash=src_hash,
+        )
+    return _Loaded(
+        path, text, source, scan, attachment, source_tree, None,
+        source_hash=src_hash,
+    )
 
 
 def _remap_diagnostic(
@@ -1004,9 +1039,12 @@ def check_files(
             exports_key: ExportsKey | None = None
             cached_exports: tuple[object, ModuleExports | None] | None = None
             if exports_cache is not None:
-                exports_key = ExportsKey(
-                    _mfc.content_hash(entry.source), merged_units_digest,
-                )
+                # ``entry.source_hash`` was computed once in ``_load_one``
+                # over ``text.encode()`` (the raw on-disk bytes). Fall
+                # back to hashing if a load path didn't populate it
+                # (e.g. parallel error slot).
+                src_hash = entry.source_hash or _mfc.content_hash(entry.source)
+                exports_key = ExportsKey(src_hash, merged_units_digest)
                 cached_exports = exports_cache.get(exports_key)
             if cached_exports is not None:
                 sigs, modules = cached_exports  # type: ignore[assignment]
