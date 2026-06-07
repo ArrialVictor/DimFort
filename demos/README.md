@@ -211,3 +211,13 @@ demos/broken.f90:28: error: H003 Intrinsic 'sin' requires a dimensionless argume
 demos/broken.f90:31: error: H004 Call to 'require_seconds': argument 1 (s_arg) unit mismatch: expected s, got m
 demos/broken.f90:34: warning: H010 Implicit cast: literal '2.0' to m (prefer a named PARAMETER, e.g. `REAL, PARAMETER :: <name> = 2.0   !< @unit{m}`)
 ```
+
+### [`demos/multifile/`](multifile/) — cross-file `use` chain
+
+A four-file program (shared constants module + clean and broken
+pressure modules + a driver) demonstrating how DimFort behaves across
+a `use` chain: workset discovery, cross-file diagnostics, and
+coverage aggregation. Useful for exercising the side panel's
+file-vs-workspace stats segment, which differs visibly as you switch
+between tabs of different workset sizes. See
+[`demos/multifile/README.md`](multifile/README.md) for the walk.
