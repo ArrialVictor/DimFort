@@ -158,7 +158,43 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
     return {"uri": uri, "lines": lines}
 
 
-def _run_workspace_check() -> WorksetResult | None:
+def _collect_open_overrides(ls: LanguageServer) -> dict[Path, str]:
+    """Snapshot the current in-memory text of every open document.
+
+    Used so the workspace check sees unsaved buffer edits rather than
+    only what's on disk — matching the per-active-file path, which
+    passes the active file's buffer text as an override. Without
+    this, the workspace coverage aggregate would lag every keystroke
+    until the user pressed Save.
+
+    Args:
+        ls: Active language server. Reads from
+            ``ls.workspace.text_documents``.
+
+    Returns:
+        Mapping from resolved absolute path to the document's
+        current source text. Paths whose URI can't be resolved are
+        silently skipped. Returns an empty dict on any pygls API
+        change that breaks the lookup (defensive — the workspace
+        check still runs, just against on-disk state).
+    """
+    overrides: dict[Path, str] = {}
+    try:
+        documents = ls.workspace.text_documents
+    except Exception:
+        return overrides
+    for uri, doc in documents.items():
+        path = _uri_to_path(uri)
+        if path is None:
+            continue
+        try:
+            overrides[path.resolve()] = doc.source
+        except Exception:
+            continue
+    return overrides
+
+
+def _run_workspace_check(ls: LanguageServer) -> WorksetResult | None:
     """Run ``check_files`` over every file in the workspace index.
 
     Used by the workspace-scope branch of :func:`stats` to compute a
@@ -168,6 +204,11 @@ def _run_workspace_check() -> WorksetResult | None:
     — calling this does not replace ``state.last_result``, so the
     per-file diagnostic flow continues to use whichever workset was
     last published.
+
+    Args:
+        ls: Active language server. Used to snapshot open-document
+            text via :func:`_collect_open_overrides` so unsaved
+            buffer edits are reflected in the WS aggregate.
 
     Returns:
         A :class:`WorksetResult` covering every indexed Fortran file
@@ -191,10 +232,13 @@ def _run_workspace_check() -> WorksetResult | None:
     if not files:
         return None
 
+    overrides = _collect_open_overrides(ls)
+
     with state.check_lock:
         try:
             return check_files(
                 files,
+                overrides=overrides,
                 external_modules=state.external_modules,
                 cpp_defines=state.project_config.cpp_defines,
                 include_paths=state.project_config.include_paths,
@@ -276,8 +320,6 @@ def stats(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
         ``files``). ``None`` only when ``uri`` was supplied but
         didn't map to a known path.
     """
-    del ls
-
     uri = _get(params, "uri")
     zero_total = {"ok": 0, "warn": 0, "fire": 0, "unparsed": 0, "out": 0, "coverage_pct": 0.0}
 
@@ -287,8 +329,10 @@ def stats(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
         # editing. The returned aggregate is therefore a stable
         # project-level number that doesn't shift when the active
         # editor changes. Distinct from state.last_result, which is
-        # always scoped to the active-file workset.
-        ws_result = _run_workspace_check()
+        # always scoped to the active-file workset. ``ls`` is used
+        # to snapshot open buffer text so unsaved edits flow into
+        # the WS aggregate.
+        ws_result = _run_workspace_check(ls)
         if ws_result is None:
             return {"scope": "workspace", "files": [], "total": zero_total}
         paths = sorted(ws_result.diagnostics.keys() | ws_result.attachments.keys())
