@@ -1175,6 +1175,9 @@ def _did_save(ls: LanguageServer, params: lsp.DidSaveTextDocumentParams) -> None
     saved = _uri_to_path(uri)
     if saved is not None:
         _update_index_for(saved.resolve())
+    # Workspace coverage stats: mark dirty so the next stats request
+    # (after idle debounce) triggers a background refresh.
+    coverage.mark_workspace_dirty()
 
     def worker() -> None:
         """Run the pipeline for ``uri`` under ``state.check_lock``.
@@ -1273,6 +1276,9 @@ def _did_change(ls: LanguageServer, params: lsp.DidChangeTextDocumentParams) -> 
     uri = params.text_document.uri
     _remember_uri(uri)
     version = _bump_version(uri)
+    # Workspace coverage stats: mark dirty so the next stats request
+    # (after idle debounce) triggers a background refresh.
+    coverage.mark_workspace_dirty()
 
     # Pygls keeps a TextDocument with the up-to-date buffer source.
     doc = ls.workspace.get_text_document(uri)

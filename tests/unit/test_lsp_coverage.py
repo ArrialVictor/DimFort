@@ -36,6 +36,24 @@ def _set_last_result(result: object) -> None:
     state.last_result = result  # type: ignore[assignment]
 
 
+def _reset_ws_async_state() -> None:
+    """Reset coverage module's async workspace state.
+
+    The async refresh state (``_ws_result_cache``, ``_ws_dirty``,
+    ``_ws_last_dirty_at``, ``_ws_refresh_in_flight``) persists at
+    module level across tests; without an explicit reset earlier
+    tests' results leak into later ones. Tests touching the
+    workspace-scope stats path should call this in setup and
+    teardown.
+    """
+    from dimfort.lsp import coverage
+
+    coverage._ws_result_cache = None
+    coverage._ws_dirty = False  # explicit: no kickoff during the test
+    coverage._ws_last_dirty_at = 0.0
+    coverage._ws_refresh_in_flight = False
+
+
 # ---------------------------------------------------------------------------
 # resolve (dimfort/lineStatus)
 # ---------------------------------------------------------------------------
@@ -120,20 +138,19 @@ def test_resolve_returns_empty_for_uri_not_in_workset(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_stats_workspace_scope_aggregates_across_files(tmp_path: Path):
-    """Without a ``uri``, stats runs a workspace-wide check over the index.
+def test_stats_workspace_scope_serves_from_cache(tmp_path: Path):
+    """Workspace stats returns the cached aggregate; refresh is asynchronous.
 
-    Distinct from the file-scope path, which reads from
-    ``state.last_result``. Workspace scope does its own
-    ``check_files`` run so the WS aggregate is a stable project-level
-    number, not a function of which file the user is editing.
+    The handler doesn't run ``check_files`` synchronously — it
+    returns whatever's in ``_ws_result_cache``. Tests that need a
+    real workspace aggregate seed the cache directly via the
+    refresh worker, since the production path spawns a daemon
+    thread we can't reliably join in a test.
     """
-    from dimfort.core.workspace_index import scan_workspace
+    from dimfort.core.multifile import check_files
     from dimfort.lsp import coverage
-    from dimfort.lsp.state import state
 
-    # Two-file workspace so the aggregate covers more than one file.
-    _clean_src(tmp_path)
+    src = _clean_src(tmp_path)
     other = tmp_path / "other.f90"
     other.write_text(
         "subroutine other(a, b, c)\n"
@@ -143,42 +160,44 @@ def test_stats_workspace_scope_aggregates_across_files(tmp_path: Path):
         "  c = a + b\n"
         "end subroutine\n"
     )
-    index = scan_workspace([tmp_path])
-    saved_idx = state.workspace_index
-    state.workspace_index = index
+    result = check_files([src, other])
+
+    _reset_ws_async_state()
+    coverage._ws_result_cache = result
     try:
         payload = coverage.stats(None, {})  # type: ignore[arg-type]
     finally:
-        state.workspace_index = saved_idx
+        _reset_ws_async_state()
 
     assert payload is not None
     assert payload["scope"] == "workspace"
-    assert "files" in payload
-    assert "total" in payload
     total = payload["total"]
     assert set(total.keys()) == {"ok", "warn", "fire", "unparsed", "out", "coverage_pct"}
     # Both files fully annotated: aggregate ok count covers both.
     assert total["ok"] >= 2
     assert len(payload["files"]) == 2
+    # Cache present + not dirty + no refresh in flight → not stale.
+    assert payload["ws_stale"] is False
 
 
-def test_stats_workspace_scope_returns_empty_without_index():
-    """Workspace scope falls back to a zero payload when the index isn't ready."""
+def test_stats_workspace_scope_returns_empty_with_stale_when_cache_unset():
+    """Cold start: no cache, no kickoff possible — return empty + stale=True."""
     from dimfort.lsp import coverage
-    from dimfort.lsp.state import state
 
-    saved_idx = state.workspace_index
-    state.workspace_index = None
+    _reset_ws_async_state()
+    # Mark dirty so the handler attempts a kickoff (which will no-op
+    # because the workspace_index is None on a fresh test environment).
+    coverage._ws_dirty = True
     try:
         payload = coverage.stats(None, {})  # type: ignore[arg-type]
     finally:
-        state.workspace_index = saved_idx
+        _reset_ws_async_state()
 
     assert payload is not None
     assert payload["scope"] == "workspace"
     assert payload["files"] == []
     assert payload["total"]["ok"] == 0
-    assert payload["total"]["coverage_pct"] == 0.0
+    assert payload["ws_stale"] is True
 
 
 def test_stats_file_scope_with_uri_returns_single_file(tmp_path: Path):
@@ -204,7 +223,7 @@ def test_stats_file_scope_with_uri_returns_single_file(tmp_path: Path):
 
 
 def test_stats_returns_empty_when_no_cached_result():
-    """Without a workspace index, the workspace scope returns zeroed totals."""
+    """Default state (no cache, no dirty): workspace scope returns zeroed totals."""
     from dimfort.lsp import coverage
     from dimfort.lsp.state import state
 
@@ -212,17 +231,21 @@ def test_stats_returns_empty_when_no_cached_result():
     saved_idx = state.workspace_index
     state.last_result = None
     state.workspace_index = None
+    _reset_ws_async_state()
     try:
         payload = coverage.stats(None, {})  # type: ignore[arg-type]
     finally:
         state.last_result = saved_result  # type: ignore[assignment]
         state.workspace_index = saved_idx
+        _reset_ws_async_state()
 
     assert payload is not None
     assert payload["scope"] == "workspace"
     assert payload["files"] == []
     assert payload["total"]["ok"] == 0
     assert payload["total"]["coverage_pct"] == 0.0
+    # Cache empty, dirty False after reset → not stale.
+    assert payload["ws_stale"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -293,3 +316,154 @@ def test_stats_cache_invalidates_on_new_result(tmp_path: Path):
         state.last_result = saved  # type: ignore[assignment]
         coverage._cache_result = None
         coverage._cache_files = {}
+
+
+# ---------------------------------------------------------------------------
+# Async workspace refresh
+# ---------------------------------------------------------------------------
+
+
+def test_mark_workspace_dirty_sets_flag():
+    """``mark_workspace_dirty`` flips ``_ws_dirty`` and stamps the timestamp."""
+    import time
+
+    from dimfort.lsp import coverage
+
+    _reset_ws_async_state()
+    try:
+        assert coverage._ws_dirty is False
+        coverage.mark_workspace_dirty()
+        assert coverage._ws_dirty is True
+        assert coverage._ws_last_dirty_at > 0.0
+        # Timestamp is a monotonic clock value.
+        assert coverage._ws_last_dirty_at <= time.monotonic()
+    finally:
+        _reset_ws_async_state()
+
+
+def test_maybe_start_refresh_respects_idle_debounce():
+    """A fresh dirty mark should NOT immediately trigger a refresh.
+
+    The idle debounce keeps active typing from firing back-to-back
+    refreshes. The mark must sit for ``_WS_IDLE_DEBOUNCE_S`` seconds
+    before the next ``_maybe_start_refresh`` call kicks off a worker.
+    """
+    from dimfort.lsp import coverage
+
+    _reset_ws_async_state()
+    try:
+        coverage.mark_workspace_dirty()
+        # No workspace_index → worker would no-op even if it spawned,
+        # but the debounce check happens first so the thread should
+        # never start.
+        started = coverage._maybe_start_refresh(None)
+        assert started is False
+        # Dirty flag stays set since the refresh didn't run.
+        assert coverage._ws_dirty is True
+    finally:
+        _reset_ws_async_state()
+
+
+def test_maybe_start_refresh_force_bypasses_debounce():
+    """``force=True`` skips the idle-debounce check + spawns a worker.
+
+    Used by the companion's manual-mode refresh: the user explicitly
+    asked for fresh stats, so we don't wait for typing to settle.
+    The worker still no-ops harmlessly when the workspace index is
+    missing — the return value of ``_maybe_start_refresh`` tells us
+    whether spawn happened, independent of how fast the worker
+    drains.
+    """
+    import time
+
+    from dimfort.lsp import coverage
+
+    _reset_ws_async_state()
+    try:
+        # Return value is True iff a worker was actually started.
+        # Reliable indicator regardless of how fast the worker drains.
+        started = coverage._maybe_start_refresh(None, force=True)
+        assert started is True
+        # Drain the daemon thread before teardown so a racing call
+        # to _reset_ws_async_state doesn't fight the worker.
+        for _ in range(50):
+            if not coverage._ws_refresh_in_flight:
+                break
+            time.sleep(0.02)
+        assert coverage._ws_refresh_in_flight is False
+    finally:
+        _reset_ws_async_state()
+
+
+def test_maybe_start_refresh_no_double_spawn():
+    """Concurrent calls don't spawn two workers for the same dirty mark.
+
+    The first ``_maybe_start_refresh`` sets ``_ws_refresh_in_flight =
+    True`` *before* starting the thread, so a second call beating
+    the worker to in_flight=False reliably sees in_flight=True and
+    returns False. We assert the second call's return without
+    relying on observing the in-flight state directly.
+    """
+    import threading
+    import time
+
+    from dimfort.lsp import coverage
+
+    # Block the worker by patching _run_workspace_check to a wait
+    # we can release manually — ensures the second call hits while
+    # the first is in flight, regardless of system load.
+    release = threading.Event()
+    original = coverage._run_workspace_check
+    coverage._run_workspace_check = lambda ls: release.wait(timeout=2.0) or None
+    _reset_ws_async_state()
+    try:
+        first = coverage._maybe_start_refresh(None, force=True)
+        second = coverage._maybe_start_refresh(None, force=True)
+        assert first is True
+        assert second is False  # second call saw in_flight=True
+    finally:
+        release.set()  # let the worker exit
+        # Wait for the worker thread to finish so we don't leak.
+        for _ in range(100):
+            if not coverage._ws_refresh_in_flight:
+                break
+            time.sleep(0.02)
+        coverage._run_workspace_check = original
+        _reset_ws_async_state()
+
+
+def test_stats_handler_force_refresh_param_kicks_worker():
+    """``force_refresh: true`` in stats params triggers an immediate refresh.
+
+    Verifies the wire-up: the handler reads the param, forwards
+    ``force=True`` to ``_maybe_start_refresh``, and a worker spins
+    up. The worker drains immediately when no workspace index is
+    present.
+    """
+    import time
+
+    from dimfort.lsp import coverage
+
+    _reset_ws_async_state()
+    spawned = []
+    original = coverage._maybe_start_refresh
+
+    def stub(ls, *, force=False):
+        spawned.append(force)
+        return original(ls, force=force)
+
+    coverage._maybe_start_refresh = stub
+    try:
+        payload = coverage.stats(None, {"force_refresh": True})  # type: ignore[arg-type]
+        assert payload is not None
+        assert payload["scope"] == "workspace"
+        assert spawned == [True]  # handler passed force=True through
+
+        # Drain.
+        for _ in range(50):
+            if not coverage._ws_refresh_in_flight:
+                break
+            time.sleep(0.02)
+    finally:
+        coverage._maybe_start_refresh = original
+        _reset_ws_async_state()
