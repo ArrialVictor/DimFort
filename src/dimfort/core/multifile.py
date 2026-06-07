@@ -293,13 +293,6 @@ def _load_one(
     from dimfort.core._source_io import read_text
     text = overrides[path] if path in overrides else read_text(path)
     source = text.encode("utf-8")
-    scan = scan_text(
-        text,
-        unit_patterns=unit_patterns,
-        assume_patterns=assume_patterns,
-        affine_patterns=affine_patterns,
-    )
-    attachment = attach(scan)
 
     # cpp short-circuit: even when defines/includes are configured, a
     # ``.F90`` file with no ``#`` directives produces output identical
@@ -314,6 +307,7 @@ def _load_one(
         and has_directives
     )
     cache_key: TreeKey | None = None
+    hit: _mfc.CachedParse | None = None
     if tree_cache is not None:
         mode = (
             f"cpp:{_mfc.cpp_fingerprint(cpp_defines, include_paths)}"
@@ -322,15 +316,47 @@ def _load_one(
         )
         cache_key = TreeKey(_mfc.content_hash(source), mode)
         hit = tree_cache.get(cache_key)
-        if hit is not None:
-            if use_cpp:
-                return _Loaded(
-                    path, text, hit.source, scan, attachment,
-                    hit.tree, None, line_map=hit.line_map,
-                    raw_tree=hit.raw_tree, raw_source=source,
-                    cpp_closure=hit.cpp_closure,
-                )
-            return _Loaded(path, text, hit.source, scan, attachment, hit.tree, None)
+
+    # Source-coordinate tree, shared between scan_text and the result.
+    # On a cache hit, take it from the cached entry (raw_tree for cpp,
+    # tree otherwise); on a miss, parse once now. tree-sitter rarely
+    # fails on valid bytes; on the rare failure, scan_text falls back
+    # to its internal parse and the surrounding error path catches it
+    # below.
+    source_tree: object | None = None
+    parse_error: str | None = None
+    if hit is not None:
+        source_tree = hit.raw_tree if use_cpp else hit.tree
+    else:
+        try:
+            source_tree = _ts.parse_text(source)
+        except Exception as exc:
+            parse_error = str(exc)
+
+    scan = scan_text(
+        text,
+        unit_patterns=unit_patterns,
+        assume_patterns=assume_patterns,
+        affine_patterns=affine_patterns,
+        tree=source_tree,
+    )
+    attachment = attach(scan)
+
+    if hit is not None:
+        if use_cpp:
+            return _Loaded(
+                path, text, hit.source, scan, attachment,
+                hit.tree, None, line_map=hit.line_map,
+                raw_tree=hit.raw_tree, raw_source=source,
+                cpp_closure=hit.cpp_closure,
+            )
+        return _Loaded(path, text, hit.source, scan, attachment, hit.tree, None)
+
+    if parse_error is not None and not use_cpp:
+        # tree-sitter shouldn't fail on valid bytes, but the workset
+        # contract is uniform-shape entries.
+        return _Loaded(path, text, source, scan, attachment, None, parse_error)
+
     try:
         if use_cpp:
             try:
@@ -345,9 +371,9 @@ def _load_one(
                 return _Loaded(path, text, source, scan, attachment, None, exc.stderr)
             # Two-tree mode: cpp'd tree for the checker (correct
             # semantics), raw tree for the LSP (source-coordinate
-            # positions). Cost is ~3 ms extra per .F90 file; tree-
-            # sitter parses in single-digit ms.
-            raw_tree = _ts.parse_text(source)
+            # positions). The raw tree was already parsed above (or
+            # parse failed there; re-attempt for the cpp branch).
+            raw_tree = source_tree if source_tree is not None else _ts.parse_text(source)
             if cache_key is not None and tree_cache is not None:
                 tree_cache.put(cache_key, _mfc.CachedParse(
                     tree=pre.tree, source=pre.expanded_text,
@@ -360,14 +386,13 @@ def _load_one(
                 raw_tree=raw_tree, raw_source=source,
                 cpp_closure=pre.cpp_closure,
             )
-        tree = _ts.parse_text(source)
         if cache_key is not None and tree_cache is not None:
-            tree_cache.put(cache_key, _mfc.CachedParse(tree=tree, source=source))
+            tree_cache.put(
+                cache_key, _mfc.CachedParse(tree=source_tree, source=source),
+            )
     except Exception as exc:
-        # tree-sitter shouldn't fail on valid bytes, but we mirror the
-        # error path so callers can rely on a uniform _Loaded shape.
         return _Loaded(path, text, source, scan, attachment, None, str(exc))
-    return _Loaded(path, text, source, scan, attachment, tree, None)
+    return _Loaded(path, text, source, scan, attachment, source_tree, None)
 
 
 def _remap_diagnostic(

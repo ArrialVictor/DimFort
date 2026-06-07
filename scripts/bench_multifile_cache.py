@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 from dimfort.core import unit_config  # noqa: F401  (installs DEFAULT_TABLE)
+from dimfort.core.cache_store import CacheStore
 from dimfort.core.multifile import check_files
 from dimfort.core.multifile_cache import ModuleExportsCache, TreeCache
 
@@ -49,6 +50,15 @@ def main(argv: list[str] | None = None) -> int:
         "--limit", type=int, default=None,
         help="Truncate the workset to the first N files (for quick checks).",
     )
+    parser.add_argument(
+        "--no-cache-store",
+        action="store_true",
+        help=(
+            "Skip the per-file diagnostic CacheStore (shipped in 0.2.4). "
+            "Default-on so the bench mirrors what users see in LSP use; "
+            "disable to isolate the load + index gains."
+        ),
+    )
     args = parser.parse_args(argv)
 
     files = _collect(args.path)
@@ -61,17 +71,32 @@ def main(argv: list[str] | None = None) -> int:
     tree_cache = TreeCache()
     exports_cache = ModuleExportsCache()
 
+    import tempfile
+    cache_store: CacheStore | None = None
+    cache_mode = "off"
+    if not args.no_cache_store:
+        cache_root = Path(tempfile.mkdtemp(prefix="dimfort-bench-cache-"))
+        cache_store = CacheStore(root=cache_root)
+        cache_mode = "read-write"
+
     print(f"workset: {len(files)} files under {args.path}")
+    print(
+        f"CacheStore: {'on (' + cache_mode + ')' if cache_store else 'off'}"
+    )
     print()
     print(f"{'phase':<10} {'cold':>10} {'warm':>10} {'speedup':>10}")
     print("-" * 44)
 
-    # Cold pass populates the empty caches; warm pass consumes them.
+    # Cold pass populates every cache; warm pass consumes them. The
+    # CacheStore default-on mirrors the LSP / `dimfort check` runtime
+    # contract where the diagnostic cache is engaged.
     cold = check_files(
         files, tree_cache=tree_cache, exports_cache=exports_cache,
+        cache=cache_store, cache_mode=cache_mode,
     )
     warm = check_files(
         files, tree_cache=tree_cache, exports_cache=exports_cache,
+        cache=cache_store, cache_mode=cache_mode,
     )
 
     for phase in ("load", "aggregate", "index", "check"):
