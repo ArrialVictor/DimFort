@@ -11,12 +11,14 @@ spec.
 from __future__ import annotations
 
 import logging
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any
 
 from pygls.lsp.server import LanguageServer
 
+from dimfort.core.cache_store import CacheStore
 from dimfort.core.coverage import (
     FileCoverage,
     aggregate_file,
@@ -32,6 +34,28 @@ from dimfort.lsp.state import state
 from dimfort.lsp.tree_access import _uri_to_path
 
 log = logging.getLogger(__name__)
+
+# Dedicated content-hash cache for the workspace coverage check.
+# Independent of ``state.cache`` (which mirrors the user's
+# ``cache_mode`` preference for their explicit CLI / LSP work):
+# we always want write access here so subsequent workspace-scope
+# requests benefit from content-hash hits — without it, every edit
+# triggers a full re-check of every workspace file (tens of
+# seconds on larger real-world Fortran codebases). Lifetime is the
+# LSP session; lazily created on first request, lives in a tempdir
+# that the OS reaps at boot.
+_ws_cache: CacheStore | None = None
+_ws_cache_lock = threading.Lock()
+
+
+def _get_or_create_ws_cache() -> CacheStore:
+    """Lazy-construct the session-scoped workspace coverage cache."""
+    global _ws_cache
+    with _ws_cache_lock:
+        if _ws_cache is None:
+            root = Path(tempfile.mkdtemp(prefix="dimfort-ws-coverage-"))
+            _ws_cache = CacheStore(root=root)
+        return _ws_cache
 
 # Per-file coverage cache. Populated by ``_get_file_coverage`` and
 # invalidated whenever ``state.last_result`` is replaced (identity
@@ -234,6 +258,8 @@ def _run_workspace_check(ls: LanguageServer) -> WorksetResult | None:
 
     overrides = _collect_open_overrides(ls)
 
+    ws_cache = _get_or_create_ws_cache()
+
     with state.check_lock:
         try:
             return check_files(
@@ -242,8 +268,8 @@ def _run_workspace_check(ls: LanguageServer) -> WorksetResult | None:
                 external_modules=state.external_modules,
                 cpp_defines=state.project_config.cpp_defines,
                 include_paths=state.project_config.include_paths,
-                cache=state.cache,
-                cache_mode=state.cache_mode,
+                cache=ws_cache,
+                cache_mode="read-write",
                 units_file=state.project_config.units_file,
                 diagnostic_severities=state.project_config.diagnostic_severities,
                 scale_mode=state.scale_mode,
