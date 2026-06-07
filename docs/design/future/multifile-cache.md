@@ -74,6 +74,23 @@ tree in, or by letting the scanner consult the same cache —
 should roughly double the load-phase saving and is queued as a
 follow-up in the 0.2.5 window.
 
+**Measured (2026-06-07, real-world Fortran workset of 2435 files,
+1923 parseable, all unchanged between calls):**
+
+| Phase | Cold | Warm | Speedup |
+| --- | --- | --- | --- |
+| load (A) | 12.64 s | 9.70 s | 1.3× |
+| aggregate (B) | 60 ms | 60 ms | 1.0× |
+| index (C) | 2.78 s | 307 ms | **9.1×** |
+| check (D) | 24.72 s | 25.21 s | 1.0× |
+| total | 80.4 s | 70.6 s | 1.1× |
+
+Index hits the spec target (3.51 s → ~50 ms expected;
+observed 2.78 s → 307 ms). Load saves ~3 s but is capped by
+the scan-internal parse footnoted above. Combined load+index
+saving: ~5.4 s per warm refresh. Reproduce with
+`python scripts/bench_multifile_cache.py <workset>`.
+
 ### 2.2 ModuleExports cache
 
 Key: `(tree_identity, var_units_table_identity)` — both inputs
