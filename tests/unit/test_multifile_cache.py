@@ -217,6 +217,54 @@ def test_digest_memo_persists_across_calls(tmp_path: Path):
         assert k in exports_cache.digest_memo
 
 
+def test_outer_lock_yields_periodically(tmp_path: Path):
+    """check_files releases + re-acquires outer_lock every yield_every files.
+
+    Synthesises 12 files so two yield windows fire when ``lock_yield_every=5``
+    (after files 5 and 10). Wraps a real ``threading.Lock`` in a counting
+    proxy because the builtin lock methods are read-only and can't be
+    monkey-patched directly.
+    """
+    import threading
+
+    class CountingLock:
+        """threading.Lock-shaped proxy that tallies release/acquire calls."""
+
+        def __init__(self):
+            self._lock = threading.Lock()
+            self.releases = 0
+            self.acquires = 0
+
+        def acquire(self, *args, **kwargs):
+            self.acquires += 1
+            return self._lock.acquire(*args, **kwargs)
+
+        def release(self):
+            self.releases += 1
+            self._lock.release()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, *exc):
+            self.release()
+
+    files = [
+        _write(tmp_path, f"f{i}.f90", SAMPLE.replace("mymod", f"mod_{i}"))
+        for i in range(12)
+    ]
+    proxy = CountingLock()
+
+    with proxy:
+        check_files(files, outer_lock=proxy, lock_yield_every=5)
+
+    # Two yield windows (after files 5 and 10) — each releases + reacquires
+    # once. Plus the initial caller-side acquire (+1) and final release (+1).
+    assert proxy.releases >= 3, f"expected >=3 releases, got {proxy.releases}"
+    assert proxy.acquires >= 3, f"expected >=3 acquires, got {proxy.acquires}"
+
+
 def test_tree_cache_isolation_across_two_files(tmp_path: Path):
     """Two distinct files in one workset produce two distinct cache entries."""
     a = _write(tmp_path, "a.f90", SAMPLE)

@@ -1828,6 +1828,7 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
                 ),
                 tree_cache=state.tree_cache,
                 exports_cache=state.exports_cache,
+                outer_lock=state.check_lock,
             )
         except Exception:
             log.exception("workspace check failed")

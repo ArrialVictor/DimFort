@@ -912,6 +912,8 @@ def check_files(
     affine_patterns: tuple[StructuredPattern, ...] = DEFAULT_AFFINE_PATTERNS,
     tree_cache: TreeCache | None = None,
     exports_cache: ModuleExportsCache | None = None,
+    outer_lock: threading.Lock | None = None,
+    lock_yield_every: int = 50,
 ) -> WorksetResult:
     """Scan, attach, and check every file in ``sources`` together.
 
@@ -959,6 +961,19 @@ def check_files(
             when set, unchanged files skip the per-file
             ``collect_function_signatures_and_module_exports`` walk in
             the index phase.
+        outer_lock: When the caller is holding a lock around this whole
+            ``check_files`` call (typically the LSP's ``check_lock``,
+            held by the workspace coverage refresh) and wants the lock
+            yielded periodically so other handlers can slot in, pass
+            it here. Phase D's per-file loop releases it every
+            ``lock_yield_every`` files and re-acquires before continuing.
+            ``None`` (default) means no yielding — the lock, if any,
+            stays held for the whole call.
+        lock_yield_every: Lock-yield cadence in files. Default 50 →
+            ~0.5 s of work per yield window on a typical real-world
+            workset, small enough that a yielded-in ``didChange``
+            check (~30-file closure, ~0.5 s) completes in one window
+            without re-triggering the outer-lock contention.
 
     Returns:
         A :class:`WorksetResult` carrying per-file diagnostics,
@@ -1198,6 +1213,20 @@ def check_files(
     )
 
     for di, entry in enumerate(loaded, start=1):
+        # Periodic outer-lock yield. Gives other handlers (active-file
+        # didChange / didSave, hover, panelInfo) a chance to slot in
+        # during long workspace checks instead of waiting tens of
+        # seconds for the lock. Doesn't affect the refresh's total
+        # duration measurably; addresses the typing-freeze UX.
+        if (
+            outer_lock is not None
+            and di > 1
+            and di % lock_yield_every == 0
+        ):
+            outer_lock.release()
+            time.sleep(0)  # surrender the timeslice to any waiter
+            outer_lock.acquire()
+
         diags: list[Diagnostic] = []
 
         diags.extend(_attachment_diags(
