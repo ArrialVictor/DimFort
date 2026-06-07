@@ -59,6 +59,28 @@ def _get_or_create_ws_cache() -> CacheStore:
         return _ws_cache
 
 
+def _resolve_coverage_cache() -> tuple[CacheStore, str]:
+    """Pick the cache + mode the workspace refresh should use.
+
+    Originally a dedicated session-scoped tempdir cache (``_ws_cache``)
+    so the coverage refresh always had ``read-write`` regardless of
+    the user's ``cache_mode`` preference for explicit work. The
+    side-effect was a fresh cache on every LSP session start — the
+    first refresh after server boot would re-check every file even
+    though ``state.cache`` already held perfectly valid entries from
+    the prior session.
+
+    Now we share ``state.cache`` in the common case (user keeps the
+    default ``read-write`` mode) so cross-session entries survive.
+    Users who explicitly set ``cache_mode`` to ``off`` or ``read-only``
+    keep the legacy tempdir behaviour so we don't silently override
+    their preference.
+    """
+    if state.cache is not None and state.cache_mode == "read-write":
+        return state.cache, "read-write"
+    return _get_or_create_ws_cache(), "read-write"
+
+
 # ---------------------------------------------------------------------------
 # Async workspace-coverage refresh
 # ---------------------------------------------------------------------------
@@ -188,11 +210,28 @@ def _ws_refresh_worker(ls: LanguageServer) -> None:
         with _ws_state_lock:
             started_at = time.monotonic()
         result = _run_workspace_check(ls)
+        elapsed = time.monotonic() - started_at
         if result is not None:
             with _ws_state_lock:
                 _ws_result_cache = result
                 if _ws_last_dirty_at < started_at:
                     _ws_dirty = False
+            # Per-refresh diagnostics: total files + cache hit / miss /
+            # dirty / write counts. Mirrors server.py's checkWorkspace
+            # log line so an LSP log scan can compare the two paths'
+            # cache effectiveness. Distinguishes "cold ws cache"
+            # (high miss) from "dep ripple invalidating entries"
+            # (high dirty) — the two failure modes that produce a
+            # slow refresh look identical without these numbers.
+            log.info(
+                "dimfort workspace coverage refresh complete: "
+                "%d files in %.1f s "
+                "[cache: %d hit / %d miss / %d dirty / %d write]",
+                len(result.trees) + len(result.load_failures),
+                elapsed,
+                result.cache_hits, result.cache_misses,
+                result.cache_dirty, result.cache_writes,
+            )
     except Exception:
         log.exception("workspace coverage refresh worker crashed")
     finally:
@@ -400,7 +439,7 @@ def _run_workspace_check(ls: LanguageServer) -> WorksetResult | None:
 
     overrides = _collect_open_overrides(ls)
 
-    ws_cache = _get_or_create_ws_cache()
+    ws_cache, ws_cache_mode = _resolve_coverage_cache()
 
     with state.check_lock:
         try:
@@ -411,7 +450,7 @@ def _run_workspace_check(ls: LanguageServer) -> WorksetResult | None:
                 cpp_defines=state.project_config.cpp_defines,
                 include_paths=state.project_config.include_paths,
                 cache=ws_cache,
-                cache_mode="read-write",
+                cache_mode=ws_cache_mode,
                 units_file=state.project_config.units_file,
                 diagnostic_severities=state.project_config.diagnostic_severities,
                 scale_mode=state.scale_mode,
