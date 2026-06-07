@@ -462,22 +462,35 @@ report buffer / view.
 #### 8.3.1 Panel bottom bar
 
 The side panel already has a bottom bar; the coverage feature
-adds a single line:
+adds a single line.
+
+**Default (0.2.4 ship form)** — File segment only:
+
+    File: 78% (🟡 18 🔴 2)
+
+Cheap (one file's projection, refreshed on every
+diagnostic-change signal). Collapses to `File: —` when no `.f90`
+file is active. Always on; no opt-in needed.
+
+**Full form** (opt-in via `dimfort.coverage.workspace_stats =
+manual | automatic` — see §13.2 for the rationale):
 
     File: 78% (🟡 18 🔴 2)  ·  WS: 73% (🟡 412 🔴 38)
 
-Two segments — current file, whole workset — same glyph family as
-the in-buffer paint, so the bar reads as a direct summary of what
-the user sees in the gutter / background.
+The `WS:` segment aggregates over **every Fortran file in the
+workspace**, not just the active file's transitive `use`-closure.
+This is a deliberate choice: a user expecting "workspace
+coverage" expects a stable project-level number, not one that
+shifts as they switch tabs. The server runs a dedicated
+`check_files` over all indexed files for this scope; the `File:`
+segment continues to serve from the per-active-file cache
+produced by the normal diagnostic flow.
 
-When no `.f90` file is active, the workset is empty, or
-`coverage.mode = disabled`, the bar collapses to the inert form:
-
-    File: —  ·  WS: —
-
-rather than `0% (🟡 0 🔴 0)`, which would read as "everything is
-broken." The bar is gated on `coverage.mode != disabled` — same
-opt-in as the painting.
+When the WS segment is opted in and has no data yet (cold start,
+or pre-`?` placeholder in `manual` mode), the renderer shows
+either `WS: ?` (manual, clickable) or `WS: …` (automatic /
+manual mid-compute), never `WS: 0%` — distinguishable from a
+real 0% workspace, which carries at least one warn or fire.
 
 **No diagnostic-event counts in the bar.** Editor chrome already
 shows workspace W/E totals (VSCode status bar by default; Nvim
@@ -834,22 +847,98 @@ work:
 
 ## 13. Migration
 
-For implementation in 0.2.4:
+Originally scoped as a single 0.2.4 release; revised after the
+in-editor smoke walk on a real Fortran codebase (1900-file
+workset, 50 s cold `check_files` per WS refresh) surfaced a
+performance ceiling outside the coverage handler's control. The
+release plan now spans three minor versions:
 
-1. Server-side: add `lsp/coverage.py` with `resolve` (lineStatus) and
-   `stats` handlers. Wire to `server.py`. Add CLI subcommand to
-   `cli.py`. Tests under `tests/unit/test_lsp_coverage.py` and
-   `tests/unit/test_cli_coverage.py`.
-2. Companion-side: per-companion PR adding the decoration layer,
-   setting key, status-bar widget. VSCode first (richest test
-   surface), then Nvim, then Emacs.
-3. Documentation: this doc moves from `docs/design/future/` to
-   `docs/design/shipped/` when the implementation lands. A
-   user-facing page at `docs/editor-integration/coverage.md`
-   describes how to enable it per companion.
-4. Release sequencing: server-side and CLI ship in DimFort 0.2.4
-   together. Companions ship at the matching companion version
-   tracking server 0.2.4.
+### 13.1 What landed in 0.2.4 already (paint + CLI + per-file LSP)
+
+Shipped pre-feature in DimFort 0.2.4 main:
+
+- `core/coverage.py` per-line projection.
+- `lsp/coverage.py` `resolve` (`dimfort/lineStatus`) handler +
+  per-file `stats` (`dimfort/coverageStats` with a `uri`).
+- `dimfort coverage <paths>` CLI subcommand.
+- Per-file projection cache keyed by `WorksetResult` identity.
+- §8.1 formula refinement (`ok / (ok + warn + fire) × 100`).
+- Three companion paint integrations: VSCompanion, Nvim, Emacs.
+
+### 13.2 0.2.4: the stats bar (current target)
+
+Server side:
+
+- `lsp/coverage.py` workspace-scope branch: `dimfort
+  /coverageStats` with no `uri` returns a workspace-wide aggregate
+  rather than the per-active-file workset.
+- Architecture: the workspace check runs on a daemon thread; the
+  stats handler returns the last-cached aggregate instantly + a
+  `wsStale` flag. Background refresh fires on dirty marks from
+  `server.py`'s `didChange` / `didSave` handlers, behind an idle
+  debounce so active typing doesn't trigger constant refreshes.
+- Defensive cache (dedicated `CacheStore` in tempdir, independent
+  of the user's `cache_mode`) so the cached-side cost stays low.
+
+Companion side (one PR per editor, VSCode first):
+
+- Side-panel bottom-bar segment: `File: <pct>% (🟡 N 🔴 M)` is
+  the default shipped surface. The full `· WS: …` extension
+  exists but is opt-in (per §8.3.1).
+- New companion setting `dimfort.coverage.workspace_stats`:
+  `disabled | manual | automatic`. **Shipping default:
+  `disabled`** — the WS segment is omitted from the bar entirely
+  (no separator, no placeholder). Rationale: in-editor smoke
+  testing on a larger real-world Fortran codebase confirmed that
+  the background workspace check holds the LSP `check_lock` for
+  tens of seconds at a time, which freezes per-file diagnostic
+  checks (squiggles + panel updates) for the duration. The
+  async architecture moves the check off the request thread —
+  but as long as `check_files` is slow, `check_lock` contention
+  makes the editor feel unresponsive every time WS refreshes.
+  The default ships off until 0.2.5's multifile cache makes the
+  underlying check cheap enough.
+  - **`manual`** (opt-in): WS shows `?` with a click / palette
+    command to compute on demand. User accepts the freeze cost
+    in exchange for the data.
+  - **`automatic`** (opt-in): bar wires to the server's async
+    refresh cycle. Same cost characteristics; recommended only
+    on small worksets where the freeze is sub-second.
+- Coverage report buffer (per §8.3.2) — single-buffer with
+  workspace header + per-file rows, click-to-jump. Same opt-in
+  story: visible / functional only when `workspace_stats` is
+  enabled.
+
+Spec moves nothing; this section accumulates entries as pieces
+ship.
+
+When 0.2.5's multifile cache lands, the companion default flips
+from `disabled` to (probably) `automatic`. That's a one-line
+companion change — no re-architecture needed; the
+infrastructure built for 0.2.4 already supports all three
+modes.
+
+### 13.3 0.2.5: multifile cache (deep optimisation)
+
+DimFort-wide infrastructure work that benefits the active-file
+LSP loop, `dimfort.checkWorkspace`, AND the WS coverage bar
+simultaneously. Captured in its own design doc:
+[multifile-cache.md](multifile-cache.md). Headline targets:
+load phase from 17.84 s → ~10 ms per edit, index phase from
+3.51 s → ~50 ms.
+
+On the coverage side, 0.2.5 flips the companion default from
+`manual` to `automatic` and may shorten the server-side idle
+debounce. No re-architecture; one-line default changes.
+
+### 13.4 0.2.6+: other planned 0.2.4 items deferred
+
+Panel sort order, LaTeX / siunitx symbol-table export,
+backward-traced H004 diagnostic, infer-unit quick-fix. Each
+listed in the corresponding parked-idea memory entry. None
+depend on the coverage work; they were pushed back to make room
+for the bar's architectural surprises (and the 0.2.5 cache
+investment that follows).
 
 ## 14. Out of scope for this design
 
