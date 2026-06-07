@@ -990,6 +990,9 @@ def check_files(
     parsed_units_memo: dict[tuple[str, int], dict] = (
         exports_cache.parsed_units_memo if exports_cache is not None else {}
     )
+    extract_uses_memo: dict[str, tuple] = (
+        exports_cache.extract_uses_memo if exports_cache is not None else {}
+    )
 
     # Phase A — load + parse in parallel.
     t_phase_start = time.perf_counter()
@@ -1315,7 +1318,10 @@ def check_files(
         # Scope each file to its OWN declared variables to avoid leaking
         # workset-wide name collisions. Cross-file imports arrive only
         # through explicit ``use`` clauses below.
-        uses = _wsi.extract_uses(entry.text)
+        uses = extract_uses_memo.get(entry.text)
+        if uses is None:
+            uses = _wsi.extract_uses(entry.text)
+            extract_uses_memo[entry.text] = uses
         file_var_units = _parse_var_units(
             entry.attachment.var_units, active_table, memo=parsed_units_memo,
         )

@@ -183,6 +183,11 @@ class ModuleExportsCache:
         # but the same memo dict works because the input_digest fully
         # distinguishes them).
         self.parsed_units_memo: dict[tuple[str, int], dict] = {}
+        # File-text → parsed ``use`` clauses. ``extract_uses`` walks
+        # the raw text per file every Phase D pass; memoizing by the
+        # str itself (Python interns hash on first compute) skips
+        # the walk when the file's text is unchanged across calls.
+        self.extract_uses_memo: dict[str, tuple] = {}
 
     def get(
         self, key: ExportsKey
