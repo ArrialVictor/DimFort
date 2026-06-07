@@ -1055,23 +1055,39 @@ def check_files(
             # proceeds.
             return idx, src, None, exc
 
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = [ex.submit(_do_load, i, src) for i, src in enumerate(abs_sources)]
-        for fut in as_completed(futures):
-            idx, src, entry, err = fut.result()
-            if err is not None:
-                result.load_failures[src] = FileLoadFailure(stderr=str(err))
-                empty_scan = scan_text("")
-                load_slots[idx] =_Loaded(
-                    src, "", b"", empty_scan, attach(empty_scan), None, str(err),
-                )
-            else:
-                load_slots[idx] =entry
-            if progress_cb is not None:
-                with progress_lock:
-                    progress_counter[0] += 1
-                    n = progress_counter[0]
-                progress_cb("load", n, total, src)
+    # Release the outer lock for the entire Phase A (load). The main
+    # thread sits in ``as_completed()`` waiting on worker threads —
+    # the lock provides no protection during that wait. Releasing it
+    # lets active-file ``didChange`` slot in continuously instead of
+    # waiting for the 6+ second load phase to finish. The tree +
+    # exports caches mutated by ``_load_one`` workers are
+    # individually thread-safe (their own Lock).
+    if outer_lock is not None:
+        outer_lock.release()
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = [
+                ex.submit(_do_load, i, src)
+                for i, src in enumerate(abs_sources)
+            ]
+            for fut in as_completed(futures):
+                idx, src, entry, err = fut.result()
+                if err is not None:
+                    result.load_failures[src] = FileLoadFailure(stderr=str(err))
+                    empty_scan = scan_text("")
+                    load_slots[idx] =_Loaded(
+                        src, "", b"", empty_scan, attach(empty_scan), None, str(err),
+                    )
+                else:
+                    load_slots[idx] =entry
+                if progress_cb is not None:
+                    with progress_lock:
+                        progress_counter[0] += 1
+                        n = progress_counter[0]
+                    progress_cb("load", n, total, src)
+    finally:
+        if outer_lock is not None:
+            outer_lock.acquire()
     loaded: list[_Loaded] = [e for e in load_slots if e is not None]
     if len(loaded) != total:
         raise RuntimeError("internal: parallel load left None entries")
