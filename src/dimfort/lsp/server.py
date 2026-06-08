@@ -1752,7 +1752,9 @@ def _cmd_check_workspace(
     """
     with state.workspace_check_lock:
         if state.workspace_check_in_progress:
-            _notify(ls, "DimFort: workspace check already in progress")
+            _notify(
+                ls, "DimFort: workspace check already in progress", toast=True,
+            )
             return {"started": False, "reason": "in-progress"}
         state.workspace_check_in_progress = True
     threading.Thread(
