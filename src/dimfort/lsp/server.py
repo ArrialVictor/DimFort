@@ -1928,9 +1928,21 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
                     ),
                 )
 
+    # Audit #14: keep the progress bar alive through the
+    # post-check projection window. Previously ``progress.end`` fired
+    # right after the publish loop, and the user saw "published
+    # 2435/2435" then a several-second silence before the bar
+    # updated. Now we report a "projecting…" step + only end after
+    # ``build_workspace_payload`` returns.
     if progress_started:
         with contextlib.suppress(Exception):
-            progress.end(token, lsp.WorkDoneProgressEnd(message="done"))
+            progress.report(
+                token,
+                lsp.WorkDoneProgressReport(
+                    message="projecting coverage…",
+                    percentage=100,
+                ),
+            )
 
     _refresh_inlay_hints(ls)
 
@@ -1938,12 +1950,16 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
     # ``dimfort/coverageStats`` request serves these numbers.
     coverage.seed_workspace_cache(result)
 
-    # Per-file projection (~1-2 s on a 2000-file workset). Done
-    # before the log line so the timing reflects the full
-    # user-perceived "refresh complete" event — historically the
-    # log fired before projection and the companion's bar took an
-    # extra ~1 s to update after the user saw the "complete" text.
+    # Per-file projection. Done before the log line so the timing
+    # reflects the full user-perceived "refresh complete" event —
+    # historically the log fired before projection and the
+    # companion's bar took an extra second to update after the
+    # user saw the "complete" text.
     payload = coverage.build_workspace_payload(result)
+
+    if progress_started:
+        with contextlib.suppress(Exception):
+            progress.end(token, lsp.WorkDoneProgressEnd(message="done"))
 
     h_count = sum(
         1 for diags in result.diagnostics.values() for d in diags
