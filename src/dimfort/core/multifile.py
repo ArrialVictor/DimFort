@@ -29,10 +29,10 @@ import multiprocessing
 import threading
 import time
 from collections.abc import Callable, Mapping
-from typing import Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from tree_sitter import Tree
 
