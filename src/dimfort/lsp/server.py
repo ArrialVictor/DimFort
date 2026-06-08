@@ -1955,19 +1955,29 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
     )
 
     # M4: persist the per-file projection cache so the next server
-    # start picks up where this one left off. Best-effort — any
-    # OSError is swallowed by the save function itself, and we don't
-    # want a slow disk write blocking the LSP response. Saved here
-    # rather than on shutdown because pygls doesn't reliably surface
-    # shutdown for us to hook, and this is the moment the cache is
-    # most-populated for the workset.
+    # start picks up where this one left off. Spawned on a daemon
+    # thread because the on-disk file is ~14 MB on a real workset and
+    # the JSON serialization + atomic write takes ~10 s — keeping it
+    # on the response thread would tack that delay onto the
+    # companion's perceived "refresh complete" event. Daemon threads
+    # die with the process so a still-running save during shutdown
+    # just drops the unfinished write — the cache survives at its
+    # previous good state because of the .tmp + replace dance.
+    # Saved here rather than on shutdown because pygls doesn't
+    # reliably surface shutdown for us to hook, and this is the
+    # moment the cache is most-populated for the workset.
     if state.cache is not None and state.projection_cache is not None:
         from dimfort.core.multifile_cache_persist import (
             save_persistent_projection_cache,
         )
-        save_persistent_projection_cache(
-            state.projection_cache, state.cache.root,
-        )
+        cache_root = state.cache.root
+        proj_cache = state.projection_cache
+        threading.Thread(
+            target=save_persistent_projection_cache,
+            args=(proj_cache, cache_root),
+            name="dimfort-projection-cache-save",
+            daemon=True,
+        ).start()
     return payload
 
 
