@@ -207,7 +207,7 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
     # Audit #15: ``recover_scopes`` was ALSO being run unconditionally
     # inside ``build_imports``. Cache the call here so both consumers
     # share the same recovered list.
-    recovered: tuple[tuple[str, str, int, int], ...] | None = None
+    recovered: list[tuple[str, str, int, int]] | None = None
     if not scopes:
         recovered = recover_scopes(tree, source_bytes)
         chain = [

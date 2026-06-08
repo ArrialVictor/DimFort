@@ -27,7 +27,8 @@ from dimfort.lsp.tree_access import _trees_for
 from dimfort.lsp.tree_nav import _identifier_at
 
 if TYPE_CHECKING:
-    from dimfort.core.interactions import InteractionPoint, InteractionReport
+    from dimfort.core.interactions import InteractionPoint, SymbolReport
+    from dimfort.core.multifile import WorksetResult
 
 
 # Audit #16: cache ``collect_interactions`` reports by
@@ -37,13 +38,13 @@ if TYPE_CHECKING:
 # burst) would otherwise re-scan every cached tree in the workset
 # for that symbol on every call.
 _report_cache_lock = threading.Lock()
-_report_cache_result: object | None = None
-_report_cache: dict[tuple[str, bool], InteractionReport] = {}
+_report_cache_result: WorksetResult | None = None
+_report_cache: dict[tuple[str, bool], SymbolReport] = {}
 
 
 def _get_cached_report(
-    result: object, symbol: str, scale: bool,
-) -> InteractionReport:
+    result: WorksetResult, symbol: str, scale: bool,
+) -> SymbolReport:
     """Return cached interactions report for ``(symbol, scale)``, computing on miss."""
     global _report_cache_result, _report_cache
     key = (symbol, scale)

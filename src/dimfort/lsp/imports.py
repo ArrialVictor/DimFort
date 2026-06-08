@@ -98,7 +98,7 @@ def build_imports(
     local_names_lc: frozenset[str],
     *,
     scale_mode: bool = False,
-    recovered: tuple[tuple[str, str, int, int], ...] | None = None,
+    recovered: list[tuple[str, str, int, int]] | None = None,
 ) -> list[dict[str, Any]]:
     """Build the in-scope imported-symbol rows for the side panel.
 
