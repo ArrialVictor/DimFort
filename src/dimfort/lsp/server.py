@@ -1894,30 +1894,39 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
         with state.last_result_lock:
             state.last_result = result
 
-        published = 0
-        for path in files:
-            diags = result.diagnostics.get(path, [])
-            try:
-                file_uri = _uri_for_path(path)
-            except ValueError:
-                continue
-            ls.text_document_publish_diagnostics(
-                lsp.PublishDiagnosticsParams(
-                    uri=file_uri,
-                    diagnostics=[_to_lsp_diagnostic(d) for d in diags],
-                )
+    # Audit #10: publish the per-file diagnostics OUTSIDE
+    # ``check_lock``. The lock exists to serialise ``check_files``
+    # against per-file didOpen/didSave/didChange checks; the publish
+    # fan-out is pure read on ``result`` (a local variable now) and
+    # only touches per-URI client state via the publishDiagnostics
+    # notification. Holding the lock across 2435 publish calls
+    # blocked every concurrent hover / definition / inlay request
+    # for several seconds with no functional benefit. ``result`` is
+    # already in ``state.last_result`` under its own lock above.
+    published = 0
+    for path in files:
+        diags = result.diagnostics.get(path, [])
+        try:
+            file_uri = _uri_for_path(path)
+        except ValueError:
+            continue
+        ls.text_document_publish_diagnostics(
+            lsp.PublishDiagnosticsParams(
+                uri=file_uri,
+                diagnostics=[_to_lsp_diagnostic(d) for d in diags],
             )
-            published += 1
-            # Throttle progress reports the same way the scan does.
-            if progress_started and (published % 100 == 0 or published == len(files)):
-                with contextlib.suppress(Exception):
-                    progress.report(
-                        token,
-                        lsp.WorkDoneProgressReport(
-                            message=f"published {published}/{len(files)}",
-                            percentage=int(published * 100 / len(files)),
-                        ),
-                    )
+        )
+        published += 1
+        # Throttle progress reports the same way the scan does.
+        if progress_started and (published % 100 == 0 or published == len(files)):
+            with contextlib.suppress(Exception):
+                progress.report(
+                    token,
+                    lsp.WorkDoneProgressReport(
+                        message=f"published {published}/{len(files)}",
+                        percentage=int(published * 100 / len(files)),
+                    ),
+                )
 
     if progress_started:
         with contextlib.suppress(Exception):
