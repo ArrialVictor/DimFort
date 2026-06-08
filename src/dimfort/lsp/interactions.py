@@ -15,6 +15,7 @@ hazard).
 """
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any
 
 from pygls.lsp.server import LanguageServer
@@ -26,7 +27,42 @@ from dimfort.lsp.tree_access import _trees_for
 from dimfort.lsp.tree_nav import _identifier_at
 
 if TYPE_CHECKING:
-    from dimfort.core.interactions import InteractionPoint
+    from dimfort.core.interactions import InteractionPoint, SymbolReport
+    from dimfort.core.multifile import WorksetResult
+
+
+# Audit #16: cache ``collect_interactions`` reports by
+# ``(symbol, scale)`` per WorksetResult identity. The panel fires
+# ``dimfort/interactions`` after every panelInfo; a cursor parked on
+# the same identifier (and the panel re-asks during e.g. a refresh
+# burst) would otherwise re-scan every cached tree in the workset
+# for that symbol on every call.
+_report_cache_lock = threading.Lock()
+_report_cache_result: WorksetResult | None = None
+_report_cache: dict[tuple[str, bool], SymbolReport] = {}
+
+
+def _get_cached_report(
+    result: WorksetResult, symbol: str, scale: bool,
+) -> SymbolReport:
+    """Return cached interactions report for ``(symbol, scale)``, computing on miss."""
+    global _report_cache_result, _report_cache
+    key = (symbol, scale)
+    with _report_cache_lock:
+        if _report_cache_result is not result:
+            _report_cache_result = result
+            _report_cache = {}
+        cached = _report_cache.get(key)
+        if cached is not None:
+            return cached
+
+    report = collect_interactions(result, symbol, scale=scale)
+
+    with _report_cache_lock:
+        # Only store if no concurrent caller swapped the result key.
+        if _report_cache_result is result:
+            _report_cache[key] = report
+    return report
 
 
 def _serialize_interaction_point(p: InteractionPoint) -> dict[str, Any]:
@@ -154,7 +190,7 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
     if not symbol:
         return None
 
-    report = collect_interactions(result, symbol, scale=scale)
+    report = _get_cached_report(result, symbol, scale)
 
     conflicts = [
         {

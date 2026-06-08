@@ -98,6 +98,7 @@ def build_imports(
     local_names_lc: frozenset[str],
     *,
     scale_mode: bool = False,
+    recovered: list[tuple[str, str, int, int]] | None = None,
 ) -> list[dict[str, Any]]:
     """Build the in-scope imported-symbol rows for the side panel.
 
@@ -135,6 +136,11 @@ def build_imports(
         scale_mode: Forwarded to the unit-normalisation helper so the
             ``unitNormalized`` field reflects the active scale-mode
             toggle.
+        recovered: Optional pre-computed output of
+            :func:`recover_scopes` for the same ``(tree, source)``.
+            Passed by ``panel.resolve`` when its no-scopes fallback
+            already ran ``recover_scopes`` so the walk doesn't run
+            twice per request. ``None`` (default) → compute locally.
 
     Returns:
         One ``dict`` per imported symbol in source order. Variable
@@ -152,7 +158,13 @@ def build_imports(
         freshly parsed by the caller (``panel.resolve``) and the
         workset trees are accessed read-only by name lookup.
     """
-    recovered = recover_scopes(tree, source)
+    # Audit #15: accept a pre-computed ``recovered`` from the
+    # caller so panel.resolve's fallback branch (which also runs
+    # ``recover_scopes`` for the same tree/source) doesn't pay
+    # the walk twice. Falls back to computing locally when the
+    # caller didn't pre-compute.
+    if recovered is None:
+        recovered = recover_scopes(tree, source)
     enclosing = {
         i for i, (_k, _n, s, e) in enumerate(recovered) if s <= cursor_line <= e
     }

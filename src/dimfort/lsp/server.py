@@ -84,6 +84,7 @@ from dimfort.core.diagnostics import (
     set_severity_overrides,
 )
 from dimfort.core.multifile import check_files
+from dimfort.core.multifile_cache_persist import save_persistent_projection_cache
 from dimfort.core.unit_patterns import (
     compile_structured_patterns,
     compile_unit_patterns,
@@ -1848,10 +1849,17 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
                 ),
             )
 
+    # Audit #3: snapshot unsaved buffer text so the workspace check
+    # sees what the user is actually editing rather than the
+    # last-saved on-disk version. ``_run_workspace_check`` in
+    # lsp/coverage.py already does this for the stats-scope path;
+    # this command path had silently diverged.
+    overrides = coverage.collect_open_overrides(ls)
     with state.check_lock:
         try:
             result = check_files(
                 files,
+                overrides=overrides,
                 external_modules=state.external_modules,
                 cpp_defines=state.project_config.cpp_defines,
                 include_paths=state.project_config.include_paths,
@@ -1887,34 +1895,62 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
         with state.last_result_lock:
             state.last_result = result
 
-        published = 0
-        for path in files:
-            diags = result.diagnostics.get(path, [])
-            try:
-                file_uri = _uri_for_path(path)
-            except ValueError:
-                continue
-            ls.text_document_publish_diagnostics(
-                lsp.PublishDiagnosticsParams(
-                    uri=file_uri,
-                    diagnostics=[_to_lsp_diagnostic(d) for d in diags],
-                )
+    # Audit #10: publish the per-file diagnostics OUTSIDE
+    # ``check_lock``. The lock exists to serialise ``check_files``
+    # against per-file didOpen/didSave/didChange checks; the publish
+    # fan-out is pure read on ``result`` (a local variable now) and
+    # only touches per-URI client state via the publishDiagnostics
+    # notification. Holding the lock across 2435 publish calls
+    # blocked every concurrent hover / definition / inlay request
+    # for several seconds with no functional benefit. ``result`` is
+    # already in ``state.last_result`` under its own lock above.
+    published = 0
+    for path in files:
+        diags = result.diagnostics.get(path, [])
+        try:
+            file_uri = _uri_for_path(path)
+        except ValueError:
+            continue
+        ls.text_document_publish_diagnostics(
+            lsp.PublishDiagnosticsParams(
+                uri=file_uri,
+                diagnostics=[_to_lsp_diagnostic(d) for d in diags],
             )
-            published += 1
-            # Throttle progress reports the same way the scan does.
-            if progress_started and (published % 100 == 0 or published == len(files)):
-                with contextlib.suppress(Exception):
-                    progress.report(
-                        token,
-                        lsp.WorkDoneProgressReport(
-                            message=f"published {published}/{len(files)}",
-                            percentage=int(published * 100 / len(files)),
-                        ),
-                    )
+        )
+        published += 1
+        # Throttle progress reports the same way the scan does.
+        if progress_started and (published % 100 == 0 or published == len(files)):
+            with contextlib.suppress(Exception):
+                progress.report(
+                    token,
+                    lsp.WorkDoneProgressReport(
+                        message=f"published {published}/{len(files)}",
+                        percentage=int(published * 100 / len(files)),
+                    ),
+                )
 
+    # Audit #14: keep the progress bar alive through the
+    # post-check projection window. Previously ``progress.end`` fired
+    # right after the publish loop, and the user saw "published
+    # 2435/2435" then a several-second silence before the bar
+    # updated. Now we report a "projecting…" step + only end after
+    # ``build_workspace_payload`` returns.
     if progress_started:
         with contextlib.suppress(Exception):
-            progress.end(token, lsp.WorkDoneProgressEnd(message="done"))
+            # No ``percentage`` — clients interpret 100% as
+            # "complete, hide the bar," which is the opposite of
+            # what we want here (the post-publish projection work
+            # is still running). Indeterminate progress (a spinning
+            # indicator with the message) is the correct shape.
+            progress.report(
+                token,
+                lsp.WorkDoneProgressReport(message="projecting coverage…"),
+            )
+    # Belt + suspenders: mirror the progress message to the output
+    # channel via ``window/logMessage`` so users whose LSP client
+    # doesn't render workDoneProgress (Neovim default, fidget-less
+    # setups) still see the post-publish step.
+    _notify(ls, "DimFort: projecting workspace coverage…")
 
     _refresh_inlay_hints(ls)
 
@@ -1922,12 +1958,16 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
     # ``dimfort/coverageStats`` request serves these numbers.
     coverage.seed_workspace_cache(result)
 
-    # Per-file projection (~1-2 s on a 2000-file workset). Done
-    # before the log line so the timing reflects the full
-    # user-perceived "refresh complete" event — historically the
-    # log fired before projection and the companion's bar took an
-    # extra ~1 s to update after the user saw the "complete" text.
+    # Per-file projection. Done before the log line so the timing
+    # reflects the full user-perceived "refresh complete" event —
+    # historically the log fired before projection and the
+    # companion's bar took an extra second to update after the
+    # user saw the "complete" text.
     payload = coverage.build_workspace_payload(result)
+
+    if progress_started:
+        with contextlib.suppress(Exception):
+            progress.end(token, lsp.WorkDoneProgressEnd(message="done"))
 
     h_count = sum(
         1 for diags in result.diagnostics.values() for d in diags
@@ -1967,9 +2007,9 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
     # reliably surface shutdown for us to hook, and this is the
     # moment the cache is most-populated for the workset.
     if state.cache is not None and state.projection_cache is not None:
-        from dimfort.core.multifile_cache_persist import (
-            save_persistent_projection_cache,
-        )
+        # Audit #20: import hoisted to module top so the call site
+        # doesn't pay the sys.modules lookup + locals write on every
+        # workspace check.
         cache_root = state.cache.root
         proj_cache = state.projection_cache
         threading.Thread(

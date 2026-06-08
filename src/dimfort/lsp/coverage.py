@@ -153,26 +153,25 @@ def build_workspace_payload(result: WorksetResult) -> dict[str, Any]:
 _cache_lock = threading.Lock()
 _cache_result: WorksetResult | None = None
 _cache_files: dict[Path, FileCoverage] = {}
+# Parallel cache of per-line statuses so handlers that want the
+# raw projection (``dimfort/lineStatus``) don't have to re-walk the
+# tree when the per-file aggregate is already cached. Same identity
+# invalidation as ``_cache_files``.
+_cache_statuses: dict[Path, dict[int, str]] = {}
 
 
-def _get_file_coverage(p: Path, result: WorksetResult) -> FileCoverage:
-    """Return cached :class:`FileCoverage` for ``p``, computing on miss.
+def _project_and_cache(p: Path, result: WorksetResult) -> tuple[
+    FileCoverage, dict[int, str],
+]:
+    """Compute statuses + aggregate for ``p`` and stash both in the cache.
 
-    Cache is keyed by the identity of ``result``; replacement of
-    ``state.last_result`` invalidates the cache on the next call.
-    The tree-sitter walk in :func:`project_file` runs under
-    ``state.ts_handler_lock``; the cache lock is released for the
-    walk so concurrent callers don't serialise on the cache.
+    Internal helper shared by :func:`_get_file_coverage` and
+    :func:`_get_file_statuses` so the expensive ``project_file`` walk
+    runs at most once per ``(result, p)`` pair across both callers.
+    Concurrent callers may both miss and both compute — last writer
+    wins, both see the same value because of result identity guarding.
     """
-    global _cache_result, _cache_files
-    with _cache_lock:
-        if _cache_result is not result:
-            _cache_result = result
-            _cache_files = {}
-        cached = _cache_files.get(p)
-        if cached is not None:
-            return cached
-
+    global _cache_result, _cache_files, _cache_statuses
     with state.ts_handler_lock:
         statuses = project_file(p, result)
     tree_entry = result.trees.get(p)
@@ -188,7 +187,53 @@ def _get_file_coverage(p: Path, result: WorksetResult) -> FileCoverage:
         # Only store if no concurrent caller swapped the result key.
         if _cache_result is result:
             _cache_files[p] = fc
+            _cache_statuses[p] = statuses
+    return fc, statuses
+
+
+def _get_file_coverage(p: Path, result: WorksetResult) -> FileCoverage:
+    """Return cached :class:`FileCoverage` for ``p``, computing on miss.
+
+    Cache is keyed by the identity of ``result``; replacement of
+    ``state.last_result`` invalidates the cache on the next call.
+    The tree-sitter walk in :func:`project_file` runs under
+    ``state.ts_handler_lock``; the cache lock is released for the
+    walk so concurrent callers don't serialise on the cache.
+    """
+    global _cache_result, _cache_files, _cache_statuses
+    with _cache_lock:
+        if _cache_result is not result:
+            _cache_result = result
+            _cache_files = {}
+            _cache_statuses = {}
+        cached = _cache_files.get(p)
+        if cached is not None:
+            return cached
+
+    fc, _ = _project_and_cache(p, result)
     return fc
+
+
+def _get_file_statuses(p: Path, result: WorksetResult) -> dict[int, str]:
+    """Return cached per-line statuses for ``p``, computing on miss.
+
+    Audit #6: the ``dimfort/lineStatus`` handler reads from this cache
+    rather than re-running ``project_file`` per request, so a typing
+    session that fires multiple lineStatus requests over the same
+    ``WorksetResult`` only pays for the tree walk once.
+    """
+    global _cache_result, _cache_files, _cache_statuses
+    with _cache_lock:
+        if _cache_result is not result:
+            _cache_result = result
+            _cache_files = {}
+            _cache_statuses = {}
+        cached = _cache_statuses.get(p)
+        if cached is not None:
+            return cached
+
+    _, statuses = _project_and_cache(p, result)
+    return statuses
 
 
 def _get(obj: Any, key: str) -> Any:
@@ -252,9 +297,13 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
     if result is None:
         return {"uri": uri, "lines": []}
 
-    with state.ts_handler_lock:
-        statuses = project_file(resolved, result)
-
+    # Audit #6: route through the per-file statuses cache so repeated
+    # lineStatus requests on the same WorksetResult collapse to O(1)
+    # — diagnostic-burst-driven refresh fires one lineStatus per
+    # affected URI, and a typing session produces several over the
+    # same result identity. The cache is shared with the file-coverage
+    # path so the tree walk runs at most once per file per result.
+    statuses = _get_file_statuses(resolved, result)
     lines = [
         {"line": line, "status": status}
         for line, status in sorted(statuses.items())
@@ -262,7 +311,7 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
     return {"uri": uri, "lines": lines}
 
 
-def _collect_open_overrides(ls: LanguageServer) -> dict[Path, str]:
+def collect_open_overrides(ls: LanguageServer) -> dict[Path, str]:
     """Snapshot the current in-memory text of every open document.
 
     Used so the workspace check sees unsaved buffer edits rather than
@@ -311,7 +360,7 @@ def _run_workspace_check(ls: LanguageServer) -> WorksetResult | None:
 
     Args:
         ls: Active language server. Used to snapshot open-document
-            text via :func:`_collect_open_overrides` so unsaved
+            text via :func:`collect_open_overrides` so unsaved
             buffer edits are reflected in the WS aggregate.
 
     Returns:
@@ -336,7 +385,7 @@ def _run_workspace_check(ls: LanguageServer) -> WorksetResult | None:
     if not files:
         return None
 
-    overrides = _collect_open_overrides(ls)
+    overrides = collect_open_overrides(ls)
 
     ws_cache, ws_cache_mode = _resolve_coverage_cache()
 
@@ -395,18 +444,14 @@ def _project_and_aggregate(
         A :class:`WorksetCoverage` with per-file rows and the
         aggregated totals.
     """
-    per_file = []
-    for p in paths:
-        with state.ts_handler_lock:
-            statuses = project_file(p, result)
-        tree_entry = result.trees.get(p)
-        if tree_entry is not None:
-            total_lines = tree_entry[1].count(b"\n") + 1
-        elif statuses:
-            total_lines = max(statuses)
-        else:
-            total_lines = 0
-        per_file.append(aggregate_file(p, statuses, total_lines=total_lines))
+    # Audit #1a: route through ``_get_file_coverage`` so the per-file
+    # FileCoverage cache populates here and survives for subsequent
+    # ``dimfort/coverageStats`` / ``dimfort/lineStatus`` requests on
+    # the same ``result`` identity. On a fresh ``WorksetResult`` every
+    # file misses (workspace check is one-shot), but follow-up
+    # single-file queries that the panel + bar fire during normal
+    # editing become O(1).
+    per_file = [_get_file_coverage(p, result) for p in paths]
     return aggregate_workset(per_file)
 
 

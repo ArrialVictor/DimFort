@@ -21,6 +21,33 @@ from dimfort.core import units as _units_mod
 # list).
 _UNIT_TRIGGER_RE = re.compile(r"@unit\s*\{([^}]*)$")
 
+# Audit #13: memoise the sorted (base, derived, prefix) name lists
+# keyed by table identity so a keystroke burst inside ``@unit{…}``
+# doesn't pay three full ``sorted()`` passes per request. The unit
+# table is rebuilt at startup and on config reload; identity-change
+# triggers a refresh.
+_sorted_names_cache: dict[int, tuple[
+    tuple[str, ...], tuple[str, ...], tuple[str, ...],
+]] = {}
+
+
+def _sorted_table_names(table: object) -> tuple[
+    tuple[str, ...], tuple[str, ...], tuple[str, ...],
+]:
+    """Return cached ``(base, derived, prefixes)`` sorted name tuples."""
+    key = id(table)
+    cached = _sorted_names_cache.get(key)
+    if cached is not None:
+        return cached
+    base = tuple(sorted(table.base))  # type: ignore[attr-defined]
+    derived = tuple(sorted(table.derived))  # type: ignore[attr-defined]
+    prefixes = tuple(sorted(table.prefixes))  # type: ignore[attr-defined]
+    # Bound memory: only the latest table identity survives. Anything
+    # else is stale (the prior table is unreferenced module-wide).
+    _sorted_names_cache.clear()
+    _sorted_names_cache[key] = (base, derived, prefixes)
+    return base, derived, prefixes
+
 
 def _inside_string_literal(prefix: str) -> bool:
     """Detect whether the cursor sits inside an unclosed string literal.
@@ -141,8 +168,9 @@ def complete(
     if not _comment_active(prefix):
         return None
 
+    base_names, derived_names, prefix_syms = _sorted_table_names(table)
     items: list[lsp.CompletionItem] = []
-    for name in sorted(table.base):
+    for name in base_names:
         items.append(
             lsp.CompletionItem(
                 label=name,
@@ -150,7 +178,7 @@ def complete(
                 detail="base unit",
             )
         )
-    for name in sorted(table.derived):
+    for name in derived_names:
         items.append(
             lsp.CompletionItem(
                 label=name,
@@ -158,7 +186,7 @@ def complete(
                 detail="derived unit",
             )
         )
-    for prefix_sym in sorted(table.prefixes):
+    for prefix_sym in prefix_syms:
         items.append(
             lsp.CompletionItem(
                 label=prefix_sym,

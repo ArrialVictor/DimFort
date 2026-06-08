@@ -25,7 +25,7 @@ from pygls.lsp.server import LanguageServer
 from tree_sitter import Node, Tree
 
 from dimfort.core import ts_parser as _ts
-from dimfort.lsp.decl_scan import _last_scan_declarations
+from dimfort.lsp.decl_scan import _scan_declarations_for_uri
 from dimfort.lsp.state import state
 from dimfort.lsp.tree_access import _trees_for, _uri_to_path
 
@@ -82,7 +82,14 @@ def resolve(ls: LanguageServer, params: lsp.CodeActionParams) -> list[lsp.CodeAc
     # Reach into the ScanResult to know which decls have no annotation
     # yet. attach.AttachmentResult doesn't track this directly, so we
     # diff: any declaration whose names aren't all in var_units|field_units.
-    scan_decls = _last_scan_declarations(path)
+    #
+    # Audit #18: read from the live buffer text (when the document is
+    # open) so a code action triggered on a freshly-typed declaration
+    # finds it without requiring a save. Falls back to a disk read
+    # when the URI isn't open, matching the panel handler's behaviour.
+    scan_decls = _scan_declarations_for_uri(
+        ls, params.text_document.uri, resolved,
+    )
     if scan_decls is None:
         return None
     for decl in scan_decls:
