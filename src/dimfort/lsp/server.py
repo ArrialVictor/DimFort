@@ -596,6 +596,8 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
             affine_patterns=compile_structured_patterns(
                 state.project_config.unit_affine_comment_delimiters
             ),
+            tree_cache=state.tree_cache,
+            exports_cache=state.exports_cache,
         )
     except Exception:
         log.exception("dimfort pipeline crashed on %s", active)
@@ -1175,9 +1177,6 @@ def _did_save(ls: LanguageServer, params: lsp.DidSaveTextDocumentParams) -> None
     saved = _uri_to_path(uri)
     if saved is not None:
         _update_index_for(saved.resolve())
-    # Workspace coverage stats: mark dirty so the next stats request
-    # (after idle debounce) triggers a background refresh.
-    coverage.mark_workspace_dirty()
 
     def worker() -> None:
         """Run the pipeline for ``uri`` under ``state.check_lock``.
@@ -1276,9 +1275,6 @@ def _did_change(ls: LanguageServer, params: lsp.DidChangeTextDocumentParams) -> 
     uri = params.text_document.uri
     _remember_uri(uri)
     version = _bump_version(uri)
-    # Workspace coverage stats: mark dirty so the next stats request
-    # (after idle debounce) triggers a background refresh.
-    coverage.mark_workspace_dirty()
 
     # Pygls keeps a TextDocument with the up-to-date buffer source.
     doc = ls.workspace.get_text_document(uri)
@@ -1824,6 +1820,9 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
                 affine_patterns=compile_structured_patterns(
                     state.project_config.unit_affine_comment_delimiters
                 ),
+                tree_cache=state.tree_cache,
+                exports_cache=state.exports_cache,
+                outer_lock=state.check_lock,
             )
         except Exception:
             log.exception("workspace check failed")
@@ -1892,6 +1891,34 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
         f"{h_count} H-diags, {u_count} U-diags{timing}{cache_note}",
         toast=True,
     )
+
+
+@server.command("dimfort.refreshWorkspaceCoverage")
+def _cmd_refresh_workspace_coverage(
+    ls: LanguageServer, *_args: Any,
+) -> dict[str, Any] | None:
+    """Implements ``workspace/executeCommand dimfort.refreshWorkspaceCoverage``.
+
+    Synchronously runs the workspace-coverage check and caches the
+    fresh result for subsequent ``dimfort/coverageStats`` requests.
+    Companions invoke this from the user's "Refresh Workspace
+    Coverage" command and show a progress indicator + dim the
+    coverage panel for the duration.
+
+    Returns the freshly-aggregated workspace payload so the
+    companion can update its bar without an extra round-trip.
+
+    Args:
+        ls: Active language server, forwarded for buffer-override
+            collection inside ``_run_workspace_check``.
+        *_args: Forwarded command arguments (none expected).
+
+    Returns:
+        The workspace payload (same shape as
+        ``dimfort/coverageStats`` workspace-scope), or ``None`` when
+        the underlying check failed.
+    """
+    return coverage.refresh_workspace_coverage(ls)
 
 
 def run_stdio() -> None:

@@ -183,6 +183,24 @@ def build_parser() -> argparse.ArgumentParser:
     lsp.add_argument(
         "--stdio", action="store_true", help=argparse.SUPPRESS
     )
+    lsp.add_argument(
+        "--no-tree-cache",
+        action="store_true",
+        help=(
+            "Disable the session-scoped tree-sitter parse cache; every "
+            "check_files call re-parses every file. Debugging knob — "
+            "use when chasing a suspected stale-tree bug."
+        ),
+    )
+    lsp.add_argument(
+        "--no-exports-cache",
+        action="store_true",
+        help=(
+            "Disable the session-scoped module-exports cache; every "
+            "check_files call re-runs the index walk. Debugging knob — "
+            "use when chasing a suspected stale-exports bug."
+        ),
+    )
 
     cov = sub.add_parser(
         "coverage",
@@ -747,7 +765,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_coverage(args)
     if args.command == "lsp":
         from dimfort.lsp.server import run_stdio
+        from dimfort.lsp.state import state
 
+        if args.no_tree_cache:
+            state.tree_cache = None
+        if args.no_exports_cache:
+            state.exports_cache = None
         run_stdio()
         return 0
 

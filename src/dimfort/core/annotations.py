@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from tree_sitter import Node
+from tree_sitter import Node, Tree
 
 from dimfort.core import ts_parser as _ts
 from dimfort.core.unit_patterns import (
@@ -833,6 +833,7 @@ def scan_text(
     unit_patterns: tuple[UnitPattern, ...] = DEFAULT_UNIT_PATTERNS,
     assume_patterns: tuple[StructuredPattern, ...] = DEFAULT_ASSUME_PATTERNS,
     affine_patterns: tuple[StructuredPattern, ...] = DEFAULT_AFFINE_PATTERNS,
+    tree: Tree | None = None,
 ) -> ScanResult:
     """Scan a single Fortran source string for annotations and declarations.
 
@@ -845,6 +846,11 @@ def scan_text(
         affine_patterns: Configured ``@unit_affine_conversion{}``-family
             patterns, in precedence order. Defaults to the canonical
             pattern.
+        tree: Optional pre-parsed tree-sitter ``Tree`` over the same
+            ``source`` bytes. When supplied, the scanner reuses it
+            instead of re-running ``_ts.parse_text(source)``. Lets
+            ``_load_one`` share one parse between scanning and the
+            primary tree returned to the checker.
 
     Returns:
         A :class:`ScanResult` carrying every annotation, declaration,
@@ -859,7 +865,9 @@ def scan_text(
         above-decl positions.
     """
     lines = source.splitlines()
-    declarations, routine_scopes, assignment_ranges = _scan_declarations(source)
+    declarations, routine_scopes, assignment_ranges = _scan_declarations(
+        source, tree=tree,
+    )
 
     # Per spec §3, plain ``!`` eligibility is decided by position
     # against the declaration set. Pre-compute two lookups:
@@ -1159,6 +1167,8 @@ def _ts_routine_name(node: Node) -> str | None:
 
 def _scan_declarations(
     source: str,
+    *,
+    tree: Tree | None = None,
 ) -> tuple[
     list[DeclarationSite],
     list[tuple[int, int, str]],
@@ -1168,6 +1178,9 @@ def _scan_declarations(
 
     Args:
         source: Full text of one Fortran source file.
+        tree: Optional pre-parsed tree-sitter ``Tree`` over the same
+            source. When supplied, the internal
+            ``_ts.parse_text(source)`` call is skipped.
 
     Returns:
         A three-tuple ``(declarations, routine_ranges,
@@ -1190,7 +1203,8 @@ def _scan_declarations(
         This matters for real-world Fortran files that occasionally
         contain idioms the grammar doesn't fully model.
     """
-    tree = _ts.parse_text(source)
+    if tree is None:
+        tree = _ts.parse_text(source)
     root = tree.root_node
 
     # First pass: every derived-type definition's byte-range → its name,

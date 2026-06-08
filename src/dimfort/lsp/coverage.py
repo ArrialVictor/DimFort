@@ -59,145 +59,98 @@ def _get_or_create_ws_cache() -> CacheStore:
         return _ws_cache
 
 
-# ---------------------------------------------------------------------------
-# Async workspace-coverage refresh
-# ---------------------------------------------------------------------------
-#
-# The workspace ``check_files`` call costs tens of seconds on larger
-# real-world Fortran codebases — too slow to run inside an LSP
-# request handler. We decouple it: the handler returns the
-# *last-known* WS aggregate instantly with a ``ws_stale`` flag; a
-# daemon thread refreshes the cache when files change.
-#
-# State machine:
-#   _ws_dirty: True iff at least one edit landed since the last
-#              successful refresh. Set by ``mark_workspace_dirty``
-#              (called from server.py's didChange / didSave) and by
-#              ``setup`` at server start. Cleared at the end of a
-#              successful refresh — but only if no edits arrived
-#              while the refresh was in flight, so concurrent
-#              edits don't get lost.
-#   _ws_last_dirty_at: monotonic timestamp of the most recent
-#              dirty mark. The refresh waits for ``_WS_IDLE_DEBOUNCE_S``
-#              seconds of no further dirty marks before firing —
-#              this keeps active typing from triggering continuous
-#              re-aggregation.
-#   _ws_refresh_in_flight: True while a daemon worker is running.
-#              Prevents overlapping refreshes.
+def _resolve_coverage_cache() -> tuple[CacheStore, str]:
+    """Pick the cache + mode the workspace refresh should use.
 
-# Idle period (seconds) the workspace stays dirty before a refresh
-# fires. Reset on every fresh dirty mark. Tuned so a burst of
-# keystrokes triggers at most one refresh after typing settles.
-_WS_IDLE_DEBOUNCE_S = 12.0
+    Originally a dedicated session-scoped tempdir cache (``_ws_cache``)
+    so the coverage refresh always had ``read-write`` regardless of
+    the user's ``cache_mode`` preference for explicit work. The
+    side-effect was a fresh cache on every LSP session start — the
+    first refresh after server boot would re-check every file even
+    though ``state.cache`` already held perfectly valid entries from
+    the prior session.
+
+    Now we share ``state.cache`` in the common case (user keeps the
+    default ``read-write`` mode) so cross-session entries survive.
+    Users who explicitly set ``cache_mode`` to ``off`` or ``read-only``
+    keep the legacy tempdir behaviour so we don't silently override
+    their preference.
+    """
+    if state.cache is not None and state.cache_mode == "read-write":
+        return state.cache, "read-write"
+    return _get_or_create_ws_cache(), "read-write"
+
+
+# ---------------------------------------------------------------------------
+# Manual workspace-coverage refresh
+# ---------------------------------------------------------------------------
+#
+# The workspace ``check_files`` call costs ~20-70 s on larger real-world
+# Fortran codebases. Early 0.2.5 iterations tried an async / auto-debounced
+# refresh on every file change — see git history before commit 3920622 —
+# and proved that the cost was fundamental (correctness requires re-checking
+# every consumer of a changed constants module). The right UX is explicit:
+# the user invokes the ``DimFort: Refresh Workspace Coverage`` command,
+# a progress indicator runs, the panel shows fresh numbers.
+#
+# Module state:
+#   _ws_result_cache: last refresh's WorksetResult. Read by the stats
+#                     handler; written by ``refresh_workspace_coverage``.
+#                     ``None`` until the first manual refresh.
 
 _ws_state_lock = threading.Lock()
 _ws_result_cache: WorksetResult | None = None
-_ws_dirty: bool = True
-_ws_last_dirty_at: float = 0.0
-_ws_refresh_in_flight: bool = False
 
 
-def mark_workspace_dirty() -> None:
-    """Signal that workspace coverage stats are out of date.
+def refresh_workspace_coverage(ls: LanguageServer) -> dict[str, Any] | None:
+    """Run a synchronous workspace-coverage refresh.
 
-    Call from any handler that observes a file change — ``didChange``
-    and ``didSave`` in ``server.py``. The next workspace-stats
-    request (after the idle debounce settles) triggers a background
-    refresh. Cheap: just sets two module-level variables under a
-    lock.
-    """
-    global _ws_dirty, _ws_last_dirty_at
-    with _ws_state_lock:
-        _ws_dirty = True
-        _ws_last_dirty_at = time.monotonic()
+    Entry point for the ``dimfort.refreshWorkspaceCoverage``
+    ``workspace/executeCommand`` handler. Blocks for the duration of
+    ``check_files`` (tens of seconds on large worksets) — the
+    companion is expected to show a progress indicator and dim the
+    panel until this returns.
 
-
-def _ws_snapshot() -> tuple[WorksetResult | None, bool, bool]:
-    """Read the current async state under the lock.
-
-    Returns:
-        ``(cached_result, dirty, in_flight)`` — used by the stats
-        handler to build a payload + decide whether to kick off a
-        refresh.
-    """
-    with _ws_state_lock:
-        return _ws_result_cache, _ws_dirty, _ws_refresh_in_flight
-
-
-def _maybe_start_refresh(ls: LanguageServer, *, force: bool = False) -> bool:
-    """Kick off a background workspace refresh if conditions are right.
-
-    Conditions:
-      - Workspace is dirty (or ``force`` is set, bypassing dirty).
-      - No refresh currently in flight.
-      - Idle debounce satisfied (at least ``_WS_IDLE_DEBOUNCE_S``
-        seconds since the most recent dirty mark) — also bypassed
-        when ``force`` is set.
+    Stores the resulting :class:`WorksetResult` in
+    ``_ws_result_cache`` so subsequent ``dimfort/coverageStats``
+    requests serve the fresh data.
 
     Args:
-        ls: Active language server, forwarded to the worker for
-            buffer-override collection.
-        force: When ``True``, fire even if the idle debounce hasn't
-            elapsed. Used by the ``manual`` companion mode's
-            on-demand refresh.
+        ls: Active language server, forwarded for buffer-override
+            collection during the check.
 
     Returns:
-        ``True`` if a refresh thread was started; ``False`` otherwise.
+        A payload with the same shape as :func:`stats`'s
+        workspace-scope response (``scope``, ``files``, ``total``),
+        or ``None`` if the underlying check failed.
     """
-    global _ws_refresh_in_flight
-    now = time.monotonic()
+    global _ws_result_cache
+    started_at = time.monotonic()
+    result = _run_workspace_check(ls)
+    elapsed = time.monotonic() - started_at
+    if result is None:
+        return None
+
     with _ws_state_lock:
-        if _ws_refresh_in_flight:
-            return False
-        if not force and not _ws_dirty:
-            return False
-        if not force and now - _ws_last_dirty_at < _WS_IDLE_DEBOUNCE_S:
-            return False
-        _ws_refresh_in_flight = True
+        _ws_result_cache = result
 
-    thread = threading.Thread(
-        target=_ws_refresh_worker,
-        args=(ls,),
-        daemon=True,
-        name="dimfort-ws-coverage-refresh",
+    # Per-refresh diagnostics; lazy-import _notify to avoid a
+    # server↔coverage import cycle.
+    from dimfort.lsp.server import _notify
+    n_files = len(result.trees) + len(result.load_failures)
+    _notify(
+        ls,
+        f"DimFort workspace coverage refresh complete: "
+        f"{n_files} files in {elapsed:.1f} s "
+        f"[cache: {result.cache_hits} hit / "
+        f"{result.cache_misses} miss / "
+        f"{result.cache_dirty} dirty / "
+        f"{result.cache_writes} write]",
     )
-    thread.start()
-    return True
 
-
-def _ws_refresh_worker(ls: LanguageServer) -> None:
-    """Background worker: run the workspace check, update the cache.
-
-    Holds ``state.check_lock`` for the duration of ``check_files``
-    so it doesn't race with per-file didChange / didSave checks on
-    shared config + caches. Other LSP handlers (panelInfo,
-    lineStatus, stats) don't take ``check_lock`` and remain
-    responsive while this runs.
-
-    Dirty-flag handling: snapshot ``_ws_last_dirty_at`` before the
-    check starts; if a fresh dirty mark arrived during the check,
-    leave ``_ws_dirty = True`` so the next stats request triggers
-    another refresh. Otherwise clear it.
-
-    Failures (None return from ``_run_workspace_check``, exceptions)
-    leave the previous cache intact — don't blank a good cache on
-    transient errors.
-    """
-    global _ws_result_cache, _ws_dirty, _ws_refresh_in_flight
-    try:
-        with _ws_state_lock:
-            started_at = time.monotonic()
-        result = _run_workspace_check(ls)
-        if result is not None:
-            with _ws_state_lock:
-                _ws_result_cache = result
-                if _ws_last_dirty_at < started_at:
-                    _ws_dirty = False
-    except Exception:
-        log.exception("workspace coverage refresh worker crashed")
-    finally:
-        with _ws_state_lock:
-            _ws_refresh_in_flight = False
+    paths = sorted(result.diagnostics.keys() | result.attachments.keys())
+    workset = _project_and_aggregate(paths, result)
+    return _build_workset_payload(workset, scope="workspace")
 
 # Per-file coverage cache. Populated by ``_get_file_coverage`` and
 # invalidated whenever ``state.last_result`` is replaced (identity
@@ -400,7 +353,7 @@ def _run_workspace_check(ls: LanguageServer) -> WorksetResult | None:
 
     overrides = _collect_open_overrides(ls)
 
-    ws_cache = _get_or_create_ws_cache()
+    ws_cache, ws_cache_mode = _resolve_coverage_cache()
 
     with state.check_lock:
         try:
@@ -411,7 +364,7 @@ def _run_workspace_check(ls: LanguageServer) -> WorksetResult | None:
                 cpp_defines=state.project_config.cpp_defines,
                 include_paths=state.project_config.include_paths,
                 cache=ws_cache,
-                cache_mode="read-write",
+                cache_mode=ws_cache_mode,
                 units_file=state.project_config.units_file,
                 diagnostic_severities=state.project_config.diagnostic_severities,
                 scale_mode=state.scale_mode,
@@ -424,6 +377,9 @@ def _run_workspace_check(ls: LanguageServer) -> WorksetResult | None:
                 affine_patterns=compile_structured_patterns(
                     state.project_config.unit_affine_comment_delimiters
                 ),
+                tree_cache=state.tree_cache,
+                exports_cache=state.exports_cache,
+                outer_lock=state.check_lock,
             )
         except Exception:
             log.exception("workspace coverage stats check failed")
@@ -476,75 +432,78 @@ def stats(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
     - **File scope** (``params`` carries ``uri``): synchronous, cheap.
       Projects the named file's per-line statuses out of the cached
       per-active-file ``state.last_result``. Cache makes repeats O(1).
-    - **Workspace scope** (``uri`` omitted): non-blocking. Returns
-      the last cached workspace aggregate immediately with a
-      ``ws_stale`` flag, and kicks off a background refresh if
-      conditions are right (dirty + idle debounce satisfied + no
-      refresh already running). The actual ``check_files`` runs on
-      a daemon thread; the handler completes in <1 ms.
+    - **Workspace scope** (``uri`` omitted): pure cache read of the
+      last :func:`refresh_workspace_coverage` result. Returns an
+      empty payload when no manual refresh has been run yet
+      (companion is expected to surface a "click to refresh" hint).
+      Never triggers a refresh — call the
+      ``dimfort.refreshWorkspaceCoverage`` command for that.
 
     Args:
-        ls: Active language server. Used by the workspace-scope
-            background worker to snapshot open buffer text.
+        ls: Active language server. Currently unused (cache-only
+            handler) but kept for signature parity with other
+            ``dimfort/*`` handlers.
         params: Raw LSP custom-method params object. Recognised
             fields:
 
             - ``uri``: scope the response to a single file.
-            - ``force_refresh``: workspace-scope only. When ``True``,
-              bypass the idle debounce and trigger a refresh
-              immediately. Used by the companion's ``manual`` mode
-              for explicit on-demand requests.
 
     Returns:
         A dict with keys ``scope`` (``"file"`` or ``"workspace"``),
-        optionally ``uri`` (when scoped to a single file), ``files``
-        (per-file rows), ``total`` (sum across the rows in
-        ``files``), and — for workspace scope — ``ws_stale``
-        (``True`` when the cached aggregate is out of date or a
-        refresh is in flight). ``None`` only when ``uri`` was
-        supplied but didn't map to a known path.
+        optionally ``uri`` (file scope only), ``files`` (per-file
+        rows), and ``total`` (sum across rows). ``None`` only when
+        ``uri`` was supplied but didn't map to a known path.
     """
+    del ls  # unused; kept for handler-signature parity
     uri = _get(params, "uri")
-    zero_total = {"ok": 0, "warn": 0, "fire": 0, "unparsed": 0, "out": 0, "coverage_pct": 0.0}
 
     if uri is None:
-        # Workspace-scope: cheap cache lookup + maybe fire a
-        # background refresh. Never blocks on check_files.
-        force_refresh = bool(_get(params, "force_refresh"))
-        cached, dirty, in_flight = _ws_snapshot()
-        _maybe_start_refresh(ls, force=force_refresh)
-        # After scheduling: re-read so the payload reflects the new
-        # in-flight state (refresh just-started counts as stale).
-        _, dirty, in_flight = _ws_snapshot()
-        stale = dirty or in_flight
-
+        # Workspace-scope: serve the last manual-refresh result. No
+        # background trigger, no staleness flag — staleness is a
+        # companion-side concern (it knows when files have been
+        # edited since the last refresh).
+        with _ws_state_lock:
+            cached = _ws_result_cache
         if cached is None:
-            return {
-                "scope": "workspace",
-                "files": [],
-                "total": zero_total,
-                "ws_stale": stale,
-            }
+            return _empty_payload("workspace")
         paths = sorted(cached.diagnostics.keys() | cached.attachments.keys())
         workset = _project_and_aggregate(paths, cached)
-        scope = "workspace"
-        ws_stale: bool | None = stale
-    else:
-        # File-scope: serve from the per-active-file ``last_result``
-        # via the per-file cache. Cheap (one file's projection); the
-        # cache makes repeated requests from the same result O(1).
-        with state.last_result_lock:
-            result = state.last_result
-        if result is None:
-            return {"scope": "file", "files": [], "total": zero_total}
-        path = _uri_to_path(uri)
-        if path is None:
-            return None
-        fc = _get_file_coverage(path.resolve(), result)
-        workset = aggregate_workset([fc])
-        scope = "file"
-        ws_stale = None
+        return _build_workset_payload(workset, scope="workspace")
 
+    # File-scope: serve from the per-active-file ``last_result``
+    # via the per-file cache. Cheap (one file's projection); the
+    # cache makes repeated requests from the same result O(1).
+    with state.last_result_lock:
+        result = state.last_result
+    if result is None:
+        return _empty_payload("file", uri=uri)
+    path = _uri_to_path(uri)
+    if path is None:
+        return None
+    fc = _get_file_coverage(path.resolve(), result)
+    workset = aggregate_workset([fc])
+    return _build_workset_payload(workset, scope="file", uri=uri)
+
+
+def _empty_payload(scope: str, *, uri: str | None = None) -> dict[str, Any]:
+    """Zero-total payload for cache misses + first-call responses."""
+    payload: dict[str, Any] = {
+        "scope": scope,
+        "files": [],
+        "total": {
+            "ok": 0, "warn": 0, "fire": 0, "unparsed": 0,
+            "out": 0, "coverage_pct": 0.0,
+        },
+    }
+    if uri is not None:
+        payload["uri"] = uri
+    return payload
+
+
+def _build_workset_payload(
+    workset: Any, *, scope: str, uri: str | None = None,
+) -> dict[str, Any]:
+    """Wire-format the ``aggregate_workset``-shaped record into the LSP payload."""
     payload: dict[str, Any] = {
         "scope": scope,
         "files": [
@@ -570,6 +529,4 @@ def stats(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
     }
     if uri is not None:
         payload["uri"] = uri
-    if ws_stale is not None:
-        payload["ws_stale"] = ws_stale
     return payload

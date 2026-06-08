@@ -28,13 +28,15 @@ import json
 import multiprocessing
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from tree_sitter import Tree
 
+from dimfort.core import multifile_cache as _mfc
 from dimfort.core import ts_checker
 from dimfort.core import ts_parser as _ts
 from dimfort.core import units as _units_mod
@@ -49,6 +51,12 @@ from dimfort.core.cache_serde import (
 )
 from dimfort.core.cache_store import CacheStore
 from dimfort.core.diagnostics import AutocastEvent, Diagnostic, Position, Severity
+from dimfort.core.multifile_cache import (
+    ExportsKey,
+    ModuleExportsCache,
+    TreeCache,
+    TreeKey,
+)
 from dimfort.core.rewrite import suggest_rewrite as _suggest_rewrite
 from dimfort.core.symbols import (
     FuncSig,
@@ -223,6 +231,12 @@ class _Loaded:
         raw_source: Bytes for ``raw_tree``.
         cpp_closure: Set of include files cpp pulled in (used to feed
             include-hashing for the cache key).
+        source_hash: SHA-256 hex of :attr:`source` (the bytes the
+            primary :attr:`tree` was built from — cpp-expanded for
+            cpp files, raw otherwise). Computed in ``_load_one`` and
+            reused by the index loop's ``ExportsKey`` so the workset
+            doesn't hash each file twice. Empty string on load
+            failure.
     """
 
     path: Path
@@ -236,6 +250,7 @@ class _Loaded:
     raw_tree: Tree | None = None
     raw_source: bytes | None = None
     cpp_closure: frozenset[str] = frozenset()
+    source_hash: str = ""
 
 
 def _load_one(
@@ -247,6 +262,7 @@ def _load_one(
     unit_patterns: tuple[UnitPattern, ...] = DEFAULT_UNIT_PATTERNS,
     assume_patterns: tuple[StructuredPattern, ...] = DEFAULT_ASSUME_PATTERNS,
     affine_patterns: tuple[StructuredPattern, ...] = DEFAULT_AFFINE_PATTERNS,
+    tree_cache: TreeCache | None = None,
 ) -> _Loaded:
     """Read source, scan + attach annotations, parse with tree-sitter.
 
@@ -272,6 +288,9 @@ def _load_one(
         assume_patterns: Configured ``@unit_assume{...}`` delimiters.
         affine_patterns: Configured ``@unit_affine_conversion{...}``
             delimiters.
+        tree_cache: Optional session-scoped tree cache; on a hit the
+            parse step is skipped entirely and the cached
+            tree-sitter outputs replay into ``_Loaded``.
 
     Returns:
         A ``_Loaded`` record. On any pre-parse failure (read,
@@ -282,13 +301,6 @@ def _load_one(
     from dimfort.core._source_io import read_text
     text = overrides[path] if path in overrides else read_text(path)
     source = text.encode("utf-8")
-    scan = scan_text(
-        text,
-        unit_patterns=unit_patterns,
-        assume_patterns=assume_patterns,
-        affine_patterns=affine_patterns,
-    )
-    attachment = attach(scan)
 
     # cpp short-circuit: even when defines/includes are configured, a
     # ``.F90`` file with no ``#`` directives produces output identical
@@ -302,6 +314,69 @@ def _load_one(
         and (cpp_defines or include_paths)
         and has_directives
     )
+    # Hash once and reuse for both TreeKey here and ExportsKey in the
+    # index loop (via _Loaded.source_hash). Halves SHA-256 work per file.
+    src_hash = _mfc.content_hash(source)
+    cache_key: TreeKey | None = None
+    hit: _mfc.CachedParse | None = None
+    if tree_cache is not None:
+        mode = (
+            f"cpp:{_mfc.cpp_fingerprint(cpp_defines, include_paths)}"
+            if use_cpp
+            else "raw"
+        )
+        cache_key = TreeKey(src_hash, mode)
+        hit = tree_cache.get(cache_key)
+
+    # Source-coordinate tree, shared between scan_text and the result.
+    # On a cache hit, take it from the cached entry (raw_tree for cpp,
+    # tree otherwise); on a miss, parse once now. tree-sitter rarely
+    # fails on valid bytes; on the rare failure, scan_text falls back
+    # to its internal parse and the surrounding error path catches it
+    # below.
+    source_tree: Tree | None = None
+    parse_error: str | None = None
+    if hit is not None:
+        source_tree = hit.raw_tree if use_cpp else hit.tree
+    else:
+        try:
+            source_tree = _ts.parse_text(source)
+        except Exception as exc:
+            parse_error = str(exc)
+
+    scan = scan_text(
+        text,
+        unit_patterns=unit_patterns,
+        assume_patterns=assume_patterns,
+        affine_patterns=affine_patterns,
+        tree=source_tree,
+    )
+    attachment = attach(scan)
+
+    if hit is not None:
+        # Non-cpp: source_hash == src_hash. Cpp: source_hash is the
+        # post-cpp digest stored at cache-write time.
+        if use_cpp:
+            return _Loaded(
+                path, text, hit.source, scan, attachment,
+                hit.tree, None, line_map=hit.line_map,
+                raw_tree=hit.raw_tree, raw_source=source,
+                cpp_closure=hit.cpp_closure,
+                source_hash=hit.source_hash or _mfc.content_hash(hit.source),
+            )
+        return _Loaded(
+            path, text, hit.source, scan, attachment, hit.tree, None,
+            source_hash=src_hash,
+        )
+
+    if parse_error is not None and not use_cpp:
+        # tree-sitter shouldn't fail on valid bytes, but the workset
+        # contract is uniform-shape entries.
+        return _Loaded(
+            path, text, source, scan, attachment, None, parse_error,
+            source_hash=src_hash,
+        )
+
     try:
         if use_cpp:
             try:
@@ -313,24 +388,51 @@ def _load_one(
                 # syntax error in a directive). Surface as a load
                 # failure; tree-sitter's raw parse would garble
                 # continuations anyway.
-                return _Loaded(path, text, source, scan, attachment, None, exc.stderr)
+                return _Loaded(
+                    path, text, source, scan, attachment, None, exc.stderr,
+                    source_hash=src_hash,
+                )
             # Two-tree mode: cpp'd tree for the checker (correct
             # semantics), raw tree for the LSP (source-coordinate
-            # positions). Cost is ~3 ms extra per .F90 file; tree-
-            # sitter parses in single-digit ms.
-            raw_tree = _ts.parse_text(source)
+            # positions). The raw tree was already parsed above (or
+            # parse failed there; re-attempt for the cpp branch).
+            raw_tree = source_tree if source_tree is not None else _ts.parse_text(source)
+            # Cpp-expanded bytes differ from raw, so we have to hash
+            # twice on cpp files. Non-cpp files (the common case) only
+            # pay one hash because src_hash matches the post-cpp hash.
+            post_cpp_hash = _mfc.content_hash(pre.expanded_text)
+            if cache_key is not None and tree_cache is not None:
+                tree_cache.put(cache_key, _mfc.CachedParse(
+                    tree=pre.tree, source=pre.expanded_text,
+                    expanded_text=pre.expanded_text, line_map=pre.line_map,
+                    raw_tree=raw_tree, cpp_closure=pre.cpp_closure,
+                    source_hash=post_cpp_hash,
+                ))
             return _Loaded(
                 path, text, pre.expanded_text, scan, attachment,
                 pre.tree, None, line_map=pre.line_map,
                 raw_tree=raw_tree, raw_source=source,
-                cpp_closure=pre.cpp_closure,
+                cpp_closure=pre.cpp_closure, source_hash=post_cpp_hash,
             )
-        tree = _ts.parse_text(source)
+        # By this point the no-cpp path has either returned with a
+        # parse_error _Loaded (above) or source_tree is non-None.
+        # Assert keeps mypy happy without changing runtime behavior.
+        assert source_tree is not None
+        if cache_key is not None and tree_cache is not None:
+            tree_cache.put(
+                cache_key, _mfc.CachedParse(
+                    tree=source_tree, source=source, source_hash=src_hash,
+                ),
+            )
     except Exception as exc:
-        # tree-sitter shouldn't fail on valid bytes, but we mirror the
-        # error path so callers can rely on a uniform _Loaded shape.
-        return _Loaded(path, text, source, scan, attachment, None, str(exc))
-    return _Loaded(path, text, source, scan, attachment, tree, None)
+        return _Loaded(
+            path, text, source, scan, attachment, None, str(exc),
+            source_hash=src_hash,
+        )
+    return _Loaded(
+        path, text, source, scan, attachment, source_tree, None,
+        source_hash=src_hash,
+    )
 
 
 def _remap_diagnostic(
@@ -485,38 +587,88 @@ def _attachment_diags(
     return out
 
 
+def _digest_text_dict(text: Mapping[Any, str], /) -> str:
+    """Stable short hash of a ``str → str`` (or tuple-keyed) text dict.
+
+    Used as a key into the parsed-unit-table memo; sorts keys so two
+    dicts with the same contents but different insertion order
+    digest the same.
+    """
+    h = hashlib.sha256()
+    for k in sorted(text, key=repr):
+        h.update(repr(k).encode("utf-8"))
+        h.update(b"=")
+        h.update(text[k].encode("utf-8"))
+        h.update(b"\0")
+    return h.hexdigest()[:16]
+
+
 def _parse_var_units(
-    text: dict[str, str], table: UnitTable
+    text: dict[str, str],
+    table: UnitTable,
+    *,
+    memo: dict[tuple[str, int], object] | None = None,
 ) -> dict[str, UnitExpr]:
     """Parse every ``name → unit-text`` entry against ``table``.
 
     Entries that fail to parse are silently dropped; the U002
     diagnostic is emitted from a separate code path so the parsing
     failure is surfaced exactly once.
+
+    Args:
+        text: Map of variable names to unit-text strings.
+        table: Unit table the strings parse against.
+        memo: Optional ``(text_digest, id(table)) → parsed`` dict.
+            When supplied, identical inputs return the cached parsed
+            table instead of re-parsing every string.
     """
+    key: tuple[str, int] | None = None
+    if memo is not None:
+        key = (_digest_text_dict(text), id(table))
+        cached = memo.get(key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
     out: dict[str, UnitExpr] = {}
     for name, raw in text.items():
         try:
             out[name] = _units_mod.parse(raw, table)
         except UnitError:
             continue
+    if memo is not None and key is not None:
+        memo[key] = out
     return out
 
 
 def _parse_var_units_by_scope(
-    text: dict[tuple[str | None, str], str], table: UnitTable
+    text: dict[tuple[str | None, str], str],
+    table: UnitTable,
+    *,
+    memo: dict[tuple[str, int], object] | None = None,
 ) -> dict[tuple[str | None, str], UnitExpr]:
     """Scope-keyed variant of :func:`_parse_var_units`.
 
     Keys are ``(scope_lc_or_None, name)`` pairs. Unparseable entries
     are dropped (U002 is emitted elsewhere).
+
+    Args:
+        text: Map of ``(scope, name) → unit-text`` entries.
+        table: Unit table the strings parse against.
+        memo: Optional memo (same shape as :func:`_parse_var_units`).
     """
+    key: tuple[str, int] | None = None
+    if memo is not None:
+        key = (_digest_text_dict(text), id(table))
+        cached = memo.get(key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
     out: dict[tuple[str | None, str], UnitExpr] = {}
-    for key, raw in text.items():
+    for k, raw in text.items():
         try:
-            out[key] = _units_mod.parse(raw, table)
+            out[k] = _units_mod.parse(raw, table)
         except UnitError:
             continue
+    if memo is not None and key is not None:
+        memo[key] = out
     return out
 
 
@@ -525,7 +677,11 @@ def _parse_var_units_by_scope(
 # ---------------------------------------------------------------------------
 
 
-def _digest_module_exports(exports: ModuleExports | None) -> str:
+def _digest_module_exports(
+    exports: ModuleExports | None,
+    *,
+    memo: dict[int, str] | None = None,
+) -> str:
     """Stable hex digest of a module's exports, used for dep-validation.
 
     A cached file's entry is dirty when any module it consumed has a
@@ -534,6 +690,12 @@ def _digest_module_exports(exports: ModuleExports | None) -> str:
     Args:
         exports: Module exports record, or ``None`` when the module is
             no longer in the workspace.
+        memo: Optional ``id(exports) → digest`` dict; when supplied,
+            the digest is computed at most once per ``exports``
+            object lifetime. Owned by
+            :class:`~dimfort.core.multifile_cache.ModuleExportsCache`
+            in LSP runs; ``None`` in CLI / test paths is functionally
+            identical, just slower.
 
     Returns:
         A SHA-256 hex digest of the serialised exports, or the literal
@@ -542,10 +704,17 @@ def _digest_module_exports(exports: ModuleExports | None) -> str:
     """
     if exports is None:
         return "absent"
+    if memo is not None:
+        cached = memo.get(id(exports))
+        if cached is not None:
+            return cached
     blob = json.dumps(
         dump_module_exports(exports), sort_keys=True, separators=(",", ":"),
     ).encode()
-    return hashlib.sha256(blob).hexdigest()
+    digest = hashlib.sha256(blob).hexdigest()
+    if memo is not None:
+        memo[id(exports)] = digest
+    return digest
 
 
 def _hash_file(path: Path) -> str:
@@ -616,6 +785,7 @@ def _try_replay_from_cache(
     cache_config_view: dict[str, object],
     module_exports: dict[str, ModuleExports],
     result: WorksetResult,
+    digest_memo: dict[int, str] | None = None,
 ) -> tuple[str | None, list[Diagnostic] | None]:
     """Attempt to serve an entry from cache.
 
@@ -629,6 +799,9 @@ def _try_replay_from_cache(
         module_exports: Current workspace module-exports map (used to
             validate dep digests).
         result: Workset result whose cache counters are mutated.
+        digest_memo: Optional ``id(exports) → digest`` dict shared
+            across calls so each module's dep digest is computed at
+            most once per session.
 
     Returns:
         A ``(key, diags)`` pair:
@@ -660,7 +833,10 @@ def _try_replay_from_cache(
     # match what we stored when the entry was written.
     deps_snapshot = payload.get("deps_signature", {})
     for mod_lc, stored_digest in deps_snapshot.items():
-        if _digest_module_exports(module_exports.get(mod_lc)) != stored_digest:
+        current = _digest_module_exports(
+            module_exports.get(mod_lc), memo=digest_memo,
+        )
+        if current != stored_digest:
             result.cache_dirty += 1
             return key, None
 
@@ -676,6 +852,7 @@ def _write_cache_entry(
     module_exports: dict[str, ModuleExports],
     remapped_diags: list[Diagnostic],
     result: WorksetResult,
+    digest_memo: dict[int, str] | None = None,
 ) -> None:
     """Persist a fresh check's output to the cache.
 
@@ -694,9 +871,14 @@ def _write_cache_entry(
             second remap.
         result: Workset result whose ``cache_writes`` counter is
             incremented on success.
+        digest_memo: Optional ``id(exports) → digest`` dict shared
+            across calls so each module's dep digest is computed at
+            most once per session.
     """
     deps_signature = {
-        mod_lc: _digest_module_exports(module_exports.get(mod_lc))
+        mod_lc: _digest_module_exports(
+            module_exports.get(mod_lc), memo=digest_memo,
+        )
         for mod_lc in deps_consumed
     }
     try:
@@ -733,6 +915,10 @@ def check_files(
     unit_patterns: tuple[UnitPattern, ...] = DEFAULT_UNIT_PATTERNS,
     assume_patterns: tuple[StructuredPattern, ...] = DEFAULT_ASSUME_PATTERNS,
     affine_patterns: tuple[StructuredPattern, ...] = DEFAULT_AFFINE_PATTERNS,
+    tree_cache: TreeCache | None = None,
+    exports_cache: ModuleExportsCache | None = None,
+    outer_lock: threading.Lock | None = None,
+    lock_yield_every: int = 50,
 ) -> WorksetResult:
     """Scan, attach, and check every file in ``sources`` together.
 
@@ -770,6 +956,29 @@ def check_files(
         assume_patterns: Configured ``@unit_assume{...}`` delimiters.
         affine_patterns: Configured ``@unit_affine_conversion{...}``
             delimiters.
+        tree_cache: Optional session-scoped
+            :class:`~dimfort.core.multifile_cache.TreeCache`; when set,
+            unchanged files skip tree-sitter parsing entirely. ``None``
+            (the default) keeps behaviour byte-identical to the
+            un-cached path.
+        exports_cache: Optional session-scoped
+            :class:`~dimfort.core.multifile_cache.ModuleExportsCache`;
+            when set, unchanged files skip the per-file
+            ``collect_function_signatures_and_module_exports`` walk in
+            the index phase.
+        outer_lock: When the caller is holding a lock around this whole
+            ``check_files`` call (typically the LSP's ``check_lock``,
+            held by the workspace coverage refresh) and wants the lock
+            yielded periodically so other handlers can slot in, pass
+            it here. Phase D's per-file loop releases it every
+            ``lock_yield_every`` files and re-acquires before continuing.
+            ``None`` (default) means no yielding — the lock, if any,
+            stays held for the whole call.
+        lock_yield_every: Lock-yield cadence in files. Default 50 →
+            ~0.5 s of work per yield window on a typical real-world
+            workset, small enough that a yielded-in ``didChange``
+            check (~30-file closure, ~0.5 s) completes in one window
+            without re-triggering the outer-lock contention.
 
     Returns:
         A :class:`WorksetResult` carrying per-file diagnostics,
@@ -792,6 +1001,18 @@ def check_files(
 
     result = WorksetResult()
     t_total_start = time.perf_counter()
+
+    # Session-scoped memo (when an exports_cache is wired in) so the
+    # 120k-call ``units.parse`` workload during Phase B + index +
+    # check collapses on repeat calls. Per-call dict when no cache —
+    # still helps because the same text dicts often recur across
+    # phases of one call.
+    parsed_units_memo: dict[tuple[str, int], object] = (
+        exports_cache.parsed_units_memo if exports_cache is not None else {}
+    )
+    extract_uses_memo: dict[str, tuple[object, ...]] = (
+        exports_cache.extract_uses_memo if exports_cache is not None else {}
+    )
 
     # Phase A — load + parse in parallel.
     t_phase_start = time.perf_counter()
@@ -824,6 +1045,7 @@ def check_files(
                 unit_patterns=unit_patterns,
                 assume_patterns=assume_patterns,
                 affine_patterns=affine_patterns,
+                tree_cache=tree_cache,
             ), None
         except Exception as exc:
             # Widened from ``OSError`` only — the three pre-parse
@@ -838,23 +1060,39 @@ def check_files(
             # proceeds.
             return idx, src, None, exc
 
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = [ex.submit(_do_load, i, src) for i, src in enumerate(abs_sources)]
-        for fut in as_completed(futures):
-            idx, src, entry, err = fut.result()
-            if err is not None:
-                result.load_failures[src] = FileLoadFailure(stderr=str(err))
-                empty_scan = scan_text("")
-                load_slots[idx] =_Loaded(
-                    src, "", b"", empty_scan, attach(empty_scan), None, str(err),
-                )
-            else:
-                load_slots[idx] =entry
-            if progress_cb is not None:
-                with progress_lock:
-                    progress_counter[0] += 1
-                    n = progress_counter[0]
-                progress_cb("load", n, total, src)
+    # Release the outer lock for the entire Phase A (load). The main
+    # thread sits in ``as_completed()`` waiting on worker threads —
+    # the lock provides no protection during that wait. Releasing it
+    # lets active-file ``didChange`` slot in continuously instead of
+    # waiting for the 6+ second load phase to finish. The tree +
+    # exports caches mutated by ``_load_one`` workers are
+    # individually thread-safe (their own Lock).
+    if outer_lock is not None:
+        outer_lock.release()
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = [
+                ex.submit(_do_load, i, src)
+                for i, src in enumerate(abs_sources)
+            ]
+            for fut in as_completed(futures):
+                idx, src, entry, err = fut.result()
+                if err is not None:
+                    result.load_failures[src] = FileLoadFailure(stderr=str(err))
+                    empty_scan = scan_text("")
+                    load_slots[idx] =_Loaded(
+                        src, "", b"", empty_scan, attach(empty_scan), None, str(err),
+                    )
+                else:
+                    load_slots[idx] =entry
+                if progress_cb is not None:
+                    with progress_lock:
+                        progress_counter[0] += 1
+                        n = progress_counter[0]
+                    progress_cb("load", n, total, src)
+    finally:
+        if outer_lock is not None:
+            outer_lock.acquire()
     loaded: list[_Loaded] = [e for e in load_slots if e is not None]
     if len(loaded) != total:
         raise RuntimeError("internal: parallel load left None entries")
@@ -870,7 +1108,9 @@ def check_files(
         for k, u in entry.attachment.field_units.items():
             merged_field_units_text.setdefault(k, u)
     result.attachments = {entry.path: entry.attachment for entry in loaded}
-    merged_var_units = _parse_var_units(merged_var_units_text, active_table)
+    merged_var_units = _parse_var_units(
+        merged_var_units_text, active_table, memo=parsed_units_memo,
+    )
     result.merged_var_units = merged_var_units
     for (tn, fn), t in merged_field_units_text.items():
         try:
@@ -905,10 +1145,19 @@ def check_files(
     per_file_var_units_by_scope: dict[
         Path, dict[tuple[str | None, str], UnitExpr]
     ] = {}
+    # ExportsCache reads "merged_var_units" as a fallback context; digest
+    # it once per call so each file's lookup is O(1) rather than
+    # re-hashing for every file.
+    merged_units_digest = (
+        _mfc.digest_merged_var_units(merged_var_units)
+        if exports_cache is not None
+        else ""
+    )
     for i, entry in enumerate(loaded, start=1):
         if entry.tree is not None:
             file_scoped = _parse_var_units_by_scope(
-                entry.attachment.var_units_by_scope, active_table
+                entry.attachment.var_units_by_scope, active_table,
+                memo=parsed_units_memo,
             )
             per_file_var_units_by_scope[entry.path] = file_scoped
             # Pass the scoped table even when empty — switching to the
@@ -918,10 +1167,29 @@ def check_files(
             # elsewhere in the workset (e.g. a wind ``v: m/s``). The
             # by-scope path returns ``None`` for unannotated names,
             # which is the correct semantic.
-            sigs, modules = ts_checker.collect_function_signatures_and_module_exports(
-                entry.tree, merged_var_units, entry.source,
-                var_units_by_scope=file_scoped,
-            )
+            exports_key: ExportsKey | None = None
+            cached_exports: (
+                tuple[dict[str, FuncSig], dict[str, ModuleExports]] | None
+            ) = None
+            if exports_cache is not None:
+                # ``entry.source_hash`` was computed once in ``_load_one``
+                # over ``text.encode()`` (the raw on-disk bytes). Fall
+                # back to hashing if a load path didn't populate it
+                # (e.g. parallel error slot).
+                src_hash = entry.source_hash or _mfc.content_hash(entry.source)
+                exports_key = ExportsKey(src_hash, merged_units_digest)
+                cached_exports = exports_cache.get(exports_key)
+            if cached_exports is not None:
+                sigs, modules = cached_exports
+            else:
+                sigs, modules = (
+                    ts_checker.collect_function_signatures_and_module_exports(
+                        entry.tree, merged_var_units, entry.source,
+                        var_units_by_scope=file_scoped,
+                    )
+                )
+                if exports_cache is not None and exports_key is not None:
+                    exports_cache.put(exports_key, (sigs, modules))
             for mname, exp in modules.items():
                 module_exports.setdefault(mname, exp)
             for fname, sig in sigs.items():
@@ -958,8 +1226,30 @@ def check_files(
         assume_patterns=assume_patterns,
         affine_patterns=affine_patterns,
     )
+    # Session-scoped memo when an exports_cache is wired in (LSP path);
+    # per-call dict otherwise. Both forms still help within one call —
+    # a workspace's ~1900 files typically share ~10-20 module-export
+    # dependencies, each digested over and over inside the cache-replay
+    # loop without this memo.
+    digest_memo: dict[int, str] = (
+        exports_cache.digest_memo if exports_cache is not None else {}
+    )
 
     for di, entry in enumerate(loaded, start=1):
+        # Periodic outer-lock yield. Gives other handlers (active-file
+        # didChange / didSave, hover, panelInfo) a chance to slot in
+        # during long workspace checks instead of waiting tens of
+        # seconds for the lock. Doesn't affect the refresh's total
+        # duration measurably; addresses the typing-freeze UX.
+        if (
+            outer_lock is not None
+            and di > 1
+            and di % lock_yield_every == 0
+        ):
+            outer_lock.release()
+            time.sleep(0)  # surrender the timeslice to any waiter
+            outer_lock.acquire()
+
         diags: list[Diagnostic] = []
 
         diags.extend(_attachment_diags(
@@ -1080,9 +1370,12 @@ def check_files(
         # Scope each file to its OWN declared variables to avoid leaking
         # workset-wide name collisions. Cross-file imports arrive only
         # through explicit ``use`` clauses below.
-        uses = _wsi.extract_uses(entry.text)
+        uses = extract_uses_memo.get(entry.text)
+        if uses is None:
+            uses = _wsi.extract_uses(entry.text)
+            extract_uses_memo[entry.text] = uses
         file_var_units = _parse_var_units(
-            entry.attachment.var_units, active_table
+            entry.attachment.var_units, active_table, memo=parsed_units_memo,
         )
         per_file_var_units, per_file_sigs, unresolved = apply_use_clauses(
             uses, module_exports, file_var_units, global_signatures,
@@ -1123,6 +1416,7 @@ def check_files(
                 cache_config_view=cache_config_view,
                 module_exports=module_exports,
                 result=result,
+                digest_memo=digest_memo,
             )
 
         if replayed is not None:
@@ -1167,6 +1461,7 @@ def check_files(
                     module_exports=module_exports,
                     remapped_diags=remapped,
                     result=result,
+                    digest_memo=digest_memo,
                 )
 
         result.diagnostics[entry.path] = diags

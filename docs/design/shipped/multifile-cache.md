@@ -1,8 +1,11 @@
-# Multifile cache — design spec (FUTURE)
+# Multifile cache — design spec (SHIPPED)
 
-**Status:** future feature, design exploration. Captures the
-optimisation direction surfaced during the in-editor smoke walk for
-the 0.2.4 coverage stats bar. Targets 0.2.5.
+**Status:** shipped in 0.2.5. Originally drafted during the
+in-editor smoke walk for the 0.2.4 coverage stats bar; captures
+the load + index + per-file diagnostic optimisations now in main.
+The complementary perf-audit findings (Q1-Q4 cheap wins, plus the
+M1/M2/M3 follow-up items still in flight) live at
+[`docs/design/future/perf-audit-0.2.5.md`](../future/perf-audit-0.2.5.md).
 
 The goal is to make `check_files` cheap on repeated invocations
 across a session by caching the load + index phases in addition to
@@ -62,6 +65,39 @@ return the cached tree.
 Estimated saving on the reference workset: 17.84 s → ~10 ms for
 the case where only one file changed between calls (every other
 file's tree comes from cache, the changed file re-parses).
+
+**Implementation note (2026-06-07):** the scanner in
+`core/annotations.py` originally ran its own
+`_ts.parse_text(source)` inside `scan_text`, duplicating the
+parse the cache would later cover. Fixed in the same 0.2.5
+window: `scan_text` now accepts an optional pre-parsed `tree`,
+and `_load_one` parses (or pulls from cache) once and shares
+that tree with the scanner. On cache miss, this halves the
+parse cost; on cache hit, the parse goes away entirely.
+
+**Measured (2026-06-07, real-world Fortran workset of 2435 files,
+1923 parseable, all unchanged between calls, CacheStore engaged):**
+
+| Phase | Cold | Warm | Speedup |
+| --- | --- | --- | --- |
+| load (A) | 11.27 s | 5.95 s | 1.9× |
+| aggregate (B) | 65 ms | 152 ms | 0.4× |
+| index (C) | 3.13 s | 298 ms | **10.5×** |
+| check (D) | 24.00 s | 3.23 s | 7.4× (CacheStore) |
+| total | **76.91 s** | **19.26 s** | **4.0×** |
+
+Saves ~57.6 s per warm refresh. Index collapses an order of
+magnitude (spec target met). Check phase reduction is the
+0.2.4 per-file diagnostic cache doing its job; engaging it in
+the bench keeps the headline number honest about what users
+actually see in LSP / repeated `dimfort check` use.
+
+The 6 s remaining in load is now scan-walking + read on
+**every** file even on hit (the parse is gone). That's a
+different optimization class — closer to spec §7.3 (per-file
+projection cache) — and is not in this PR.
+
+Reproduce with `python scripts/bench_multifile_cache.py <workset>`.
 
 ### 2.2 ModuleExports cache
 
