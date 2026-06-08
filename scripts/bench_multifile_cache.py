@@ -38,9 +38,8 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
-
 import time
+from pathlib import Path
 
 from dimfort.core import unit_config  # noqa: F401  (installs DEFAULT_TABLE)
 from dimfort.core.cache_store import CacheStore
