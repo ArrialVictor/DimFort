@@ -4,6 +4,33 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### Performance
+
+- **M4: disk-persistent per-file projection cache.** The
+  `ProjectionCache` (shipped in 0.2.5 / PR #66) caches `scan_text` +
+  `attach` outputs per `(content_hash, patterns_fingerprint)` —
+  previously in-memory only, so every fresh `dimfort lsp` process had
+  to rebuild it from scratch on the first workspace check even when
+  the on-disk `CacheStore` already covered the check phase. M4 adds a
+  JSON-on-disk layer (`.dimfort-cache/projection-cache.json`,
+  atomic-write, schema-versioned) loaded on workspace scan and
+  persisted at the end of every `dimfort.checkWorkspace`. On a
+  real-world Fortran codebase (2435 files), cold-after-server-restart
+  drops from ~27 s → ~16 s — a ~40 % improvement that matches the
+  pattern shipped for `WorkspaceIndex` in W3 (PR #65). See
+  `scripts/bench_multifile_cache.py` for the bench harness and the
+  new `post-rs` column.
+  - Implementation: new module
+    `dimfort/core/multifile_cache_persist.py` with hand-rolled JSON
+    codec for `ScanResult` + `AttachmentResult` (no pickle, no
+    external deps). Schema version constant
+    `_PROJECTION_SCHEMA_VERSION = 1`; mismatch causes silent drop
+    and warm rebuild.
+  - Remaining ~13 s of cold-after-restart cost lives in tree-sitter
+    parse (~4 s, structural — `py-tree-sitter` exposes no tree
+    serialization) and the module-exports index phase (~2.5 s,
+    candidate for an M5 follow-up).
+
 ## [0.2.4] — 2026-06-07
 
 ### Highlight

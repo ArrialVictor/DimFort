@@ -1021,11 +1021,22 @@ def _build_initial_index(ls: LanguageServer, roots: tuple[Path, ...]) -> None:
     # ``scan_workspace`` against the current file before reuse.
     prior_index = None
     if state.cache is not None:
+        from dimfort.core.multifile_cache_persist import (
+            load_persistent_projection_cache,
+        )
         from dimfort.core.workspace_index import (
             load_persistent_index,
             save_persistent_index,
         )
         prior_index = load_persistent_index(state.cache.root)
+        # M4: warm the per-file projection cache from disk so the
+        # first workspace check after server start doesn't pay the
+        # ~4-8 s scan_text + attach rebuild cost across every file.
+        # Best-effort: any failure (missing, corrupt, version mismatch)
+        # leaves the empty session cache intact for the warm rebuild.
+        prior_proj = load_persistent_projection_cache(state.cache.root)
+        if prior_proj is not None and state.projection_cache is not None:
+            state.projection_cache = prior_proj
 
     scan_started_at = time.monotonic()
     try:
@@ -1942,6 +1953,21 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
         f"{h_count} H-diags, {u_count} U-diags{timing}{cache_note}",
         toast=True,
     )
+
+    # M4: persist the per-file projection cache so the next server
+    # start picks up where this one left off. Best-effort — any
+    # OSError is swallowed by the save function itself, and we don't
+    # want a slow disk write blocking the LSP response. Saved here
+    # rather than on shutdown because pygls doesn't reliably surface
+    # shutdown for us to hook, and this is the moment the cache is
+    # most-populated for the workset.
+    if state.cache is not None and state.projection_cache is not None:
+        from dimfort.core.multifile_cache_persist import (
+            save_persistent_projection_cache,
+        )
+        save_persistent_projection_cache(
+            state.projection_cache, state.cache.root,
+        )
     return payload
 
 
