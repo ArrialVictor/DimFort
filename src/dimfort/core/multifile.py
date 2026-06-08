@@ -28,7 +28,8 @@ import json
 import multiprocessing
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from typing import Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -333,7 +334,7 @@ def _load_one(
     # fails on valid bytes; on the rare failure, scan_text falls back
     # to its internal parse and the surrounding error path catches it
     # below.
-    source_tree: object | None = None
+    source_tree: Tree | None = None
     parse_error: str | None = None
     if hit is not None:
         source_tree = hit.raw_tree if use_cpp else hit.tree
@@ -413,6 +414,10 @@ def _load_one(
                 raw_tree=raw_tree, raw_source=source,
                 cpp_closure=pre.cpp_closure, source_hash=post_cpp_hash,
             )
+        # By this point the no-cpp path has either returned with a
+        # parse_error _Loaded (above) or source_tree is non-None.
+        # Assert keeps mypy happy without changing runtime behavior.
+        assert source_tree is not None
         if cache_key is not None and tree_cache is not None:
             tree_cache.put(
                 cache_key, _mfc.CachedParse(
@@ -582,7 +587,7 @@ def _attachment_diags(
     return out
 
 
-def _digest_text_dict(text: dict, /) -> str:
+def _digest_text_dict(text: Mapping[Any, str], /) -> str:
     """Stable short hash of a ``str → str`` (or tuple-keyed) text dict.
 
     Used as a key into the parsed-unit-table memo; sorts keys so two
@@ -602,7 +607,7 @@ def _parse_var_units(
     text: dict[str, str],
     table: UnitTable,
     *,
-    memo: dict[tuple[str, int], dict[str, UnitExpr]] | None = None,
+    memo: dict[tuple[str, int], object] | None = None,
 ) -> dict[str, UnitExpr]:
     """Parse every ``name → unit-text`` entry against ``table``.
 
@@ -622,7 +627,7 @@ def _parse_var_units(
         key = (_digest_text_dict(text), id(table))
         cached = memo.get(key)
         if cached is not None:
-            return cached
+            return cached  # type: ignore[return-value]
     out: dict[str, UnitExpr] = {}
     for name, raw in text.items():
         try:
@@ -638,7 +643,7 @@ def _parse_var_units_by_scope(
     text: dict[tuple[str | None, str], str],
     table: UnitTable,
     *,
-    memo: dict[tuple[str, int], dict[tuple[str | None, str], UnitExpr]] | None = None,
+    memo: dict[tuple[str, int], object] | None = None,
 ) -> dict[tuple[str | None, str], UnitExpr]:
     """Scope-keyed variant of :func:`_parse_var_units`.
 
@@ -655,7 +660,7 @@ def _parse_var_units_by_scope(
         key = (_digest_text_dict(text), id(table))
         cached = memo.get(key)
         if cached is not None:
-            return cached
+            return cached  # type: ignore[return-value]
     out: dict[tuple[str | None, str], UnitExpr] = {}
     for k, raw in text.items():
         try:
@@ -1002,10 +1007,10 @@ def check_files(
     # check collapses on repeat calls. Per-call dict when no cache —
     # still helps because the same text dicts often recur across
     # phases of one call.
-    parsed_units_memo: dict[tuple[str, int], dict] = (
+    parsed_units_memo: dict[tuple[str, int], object] = (
         exports_cache.parsed_units_memo if exports_cache is not None else {}
     )
-    extract_uses_memo: dict[str, tuple] = (
+    extract_uses_memo: dict[str, tuple[object, ...]] = (
         exports_cache.extract_uses_memo if exports_cache is not None else {}
     )
 
@@ -1163,7 +1168,9 @@ def check_files(
             # by-scope path returns ``None`` for unannotated names,
             # which is the correct semantic.
             exports_key: ExportsKey | None = None
-            cached_exports: tuple[object, ModuleExports | None] | None = None
+            cached_exports: (
+                tuple[dict[str, FuncSig], dict[str, ModuleExports]] | None
+            ) = None
             if exports_cache is not None:
                 # ``entry.source_hash`` was computed once in ``_load_one``
                 # over ``text.encode()`` (the raw on-disk bytes). Fall
@@ -1173,7 +1180,7 @@ def check_files(
                 exports_key = ExportsKey(src_hash, merged_units_digest)
                 cached_exports = exports_cache.get(exports_key)
             if cached_exports is not None:
-                sigs, modules = cached_exports  # type: ignore[assignment]
+                sigs, modules = cached_exports
             else:
                 sigs, modules = (
                     ts_checker.collect_function_signatures_and_module_exports(

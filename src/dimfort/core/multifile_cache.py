@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -21,7 +22,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from tree_sitter import Tree
 
-    from dimfort.core.ts_checker import ModuleExports
+    from dimfort.core.symbols import FuncSig, ModuleExports
 
 
 @dataclass(frozen=True)
@@ -139,7 +140,7 @@ class ExportsKey:
     merged_units_digest: str
 
 
-def digest_merged_var_units(merged_var_units: dict[str, object]) -> str:
+def digest_merged_var_units(merged_var_units: Mapping[str, object]) -> str:
     """Stable short hash of the workset-wide flat ``var_units`` table.
 
     Computed once per ``check_files`` call and reused across every
@@ -169,7 +170,7 @@ class ModuleExportsCache:
     def __init__(self) -> None:
         """Create an empty cache."""
         self._entries: dict[
-            ExportsKey, tuple[object, ModuleExports | None]
+            ExportsKey, tuple[dict[str, FuncSig], dict[str, ModuleExports]]
         ] = {}
         self._lock = threading.Lock()
         # id(exports) → digest; populated lazily by callers. The id is
@@ -182,16 +183,16 @@ class ModuleExportsCache:
         # ``_parse_var_units_by_scope`` (different key+value shapes
         # but the same memo dict works because the input_digest fully
         # distinguishes them).
-        self.parsed_units_memo: dict[tuple[str, int], dict] = {}
+        self.parsed_units_memo: dict[tuple[str, int], object] = {}
         # File-text → parsed ``use`` clauses. ``extract_uses`` walks
         # the raw text per file every Phase D pass; memoizing by the
         # str itself (Python interns hash on first compute) skips
         # the walk when the file's text is unchanged across calls.
-        self.extract_uses_memo: dict[str, tuple] = {}
+        self.extract_uses_memo: dict[str, tuple[object, ...]] = {}
 
     def get(
         self, key: ExportsKey
-    ) -> tuple[object, ModuleExports | None] | None:
+    ) -> tuple[dict[str, FuncSig], dict[str, ModuleExports]] | None:
         """Return the cached ``(sigs, modules)`` tuple, or ``None`` on miss."""
         with self._lock:
             return self._entries.get(key)
@@ -199,7 +200,7 @@ class ModuleExportsCache:
     def put(
         self,
         key: ExportsKey,
-        value: tuple[object, ModuleExports | None],
+        value: tuple[dict[str, FuncSig], dict[str, ModuleExports]],
     ) -> None:
         """Store ``value`` (a ``(sigs, modules)`` tuple) under ``key``."""
         with self._lock:

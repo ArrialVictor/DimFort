@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from tree_sitter import Node
+from tree_sitter import Node, Tree
 
 from dimfort.core import ts_parser as _ts
 from dimfort.core.unit_patterns import (
@@ -833,7 +833,7 @@ def scan_text(
     unit_patterns: tuple[UnitPattern, ...] = DEFAULT_UNIT_PATTERNS,
     assume_patterns: tuple[StructuredPattern, ...] = DEFAULT_ASSUME_PATTERNS,
     affine_patterns: tuple[StructuredPattern, ...] = DEFAULT_AFFINE_PATTERNS,
-    tree: object | None = None,
+    tree: Tree | None = None,
 ) -> ScanResult:
     """Scan a single Fortran source string for annotations and declarations.
 
@@ -1168,7 +1168,7 @@ def _ts_routine_name(node: Node) -> str | None:
 def _scan_declarations(
     source: str,
     *,
-    tree: object | None = None,
+    tree: Tree | None = None,
 ) -> tuple[
     list[DeclarationSite],
     list[tuple[int, int, str]],
