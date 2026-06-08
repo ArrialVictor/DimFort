@@ -84,6 +84,7 @@ from dimfort.core.diagnostics import (
     set_severity_overrides,
 )
 from dimfort.core.multifile import check_files
+from dimfort.core.multifile_cache_persist import save_persistent_projection_cache
 from dimfort.core.unit_patterns import (
     compile_structured_patterns,
     compile_unit_patterns,
@@ -1999,9 +2000,9 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
     # reliably surface shutdown for us to hook, and this is the
     # moment the cache is most-populated for the workset.
     if state.cache is not None and state.projection_cache is not None:
-        from dimfort.core.multifile_cache_persist import (
-            save_persistent_projection_cache,
-        )
+        # Audit #20: import hoisted to module top so the call site
+        # doesn't pay the sys.modules lookup + locals write on every
+        # workspace check.
         cache_root = state.cache.root
         proj_cache = state.projection_cache
         threading.Thread(

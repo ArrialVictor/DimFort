@@ -203,6 +203,11 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
     # node. Recover the enclosing scopes line-based from the surviving
     # header statements so the Scope section still lists the routine's
     # declarations instead of blanking. See docs/design/shipped/panel-info.md.
+    #
+    # Audit #15: ``recover_scopes`` was ALSO being run unconditionally
+    # inside ``build_imports``. Cache the call here so both consumers
+    # share the same recovered list.
+    recovered: tuple[tuple[str, str, int, int], ...] | None = None
     if not scopes:
         recovered = recover_scopes(tree, source_bytes)
         chain = [
@@ -277,6 +282,7 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
     imports = build_imports(
         tree, source_bytes, line_1based, result, local_names_lc,
         scale_mode=state.scale_mode,
+        recovered=recovered,
     )
 
     return {
