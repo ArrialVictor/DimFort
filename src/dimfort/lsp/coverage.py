@@ -13,7 +13,6 @@ from __future__ import annotations
 import logging
 import tempfile
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
@@ -95,59 +94,45 @@ def _resolve_coverage_cache() -> tuple[CacheStore, str]:
 #
 # Module state:
 #   _ws_result_cache: last refresh's WorksetResult. Read by the stats
-#                     handler; written by ``refresh_workspace_coverage``.
+#                     handler; written by ``seed_workspace_cache``
+#                     after ``server._check_whole_workspace`` completes.
 #                     ``None`` until the first manual refresh.
 
 _ws_state_lock = threading.Lock()
 _ws_result_cache: WorksetResult | None = None
 
 
-def refresh_workspace_coverage(ls: LanguageServer) -> dict[str, Any] | None:
-    """Run a synchronous workspace-coverage refresh.
+def seed_workspace_cache(result: WorksetResult) -> None:
+    """Store ``result`` as the workspace-coverage cache.
 
-    Entry point for the ``dimfort.refreshWorkspaceCoverage``
-    ``workspace/executeCommand`` handler. Blocks for the duration of
-    ``check_files`` (tens of seconds on large worksets) — the
-    companion is expected to show a progress indicator and dim the
-    panel until this returns.
-
-    Stores the resulting :class:`WorksetResult` in
-    ``_ws_result_cache`` so subsequent ``dimfort/coverageStats``
-    requests serve the fresh data.
+    Called by ``server._check_whole_workspace`` after a successful
+    workspace check, so the next ``dimfort/coverageStats`` request
+    serves the fresh data instead of returning the prior cached
+    aggregate.
 
     Args:
-        ls: Active language server, forwarded for buffer-override
-            collection during the check.
-
-    Returns:
-        A payload with the same shape as :func:`stats`'s
-        workspace-scope response (``scope``, ``files``, ``total``),
-        or ``None`` if the underlying check failed.
+        result: The :class:`WorksetResult` returned by
+            :func:`check_files` over the full workspace.
     """
     global _ws_result_cache
-    started_at = time.monotonic()
-    result = _run_workspace_check(ls)
-    elapsed = time.monotonic() - started_at
-    if result is None:
-        return None
-
     with _ws_state_lock:
         _ws_result_cache = result
 
-    # Per-refresh diagnostics; lazy-import _notify to avoid a
-    # server↔coverage import cycle.
-    from dimfort.lsp.server import _notify
-    n_files = len(result.trees) + len(result.load_failures)
-    _notify(
-        ls,
-        f"DimFort workspace coverage refresh complete: "
-        f"{n_files} files in {elapsed:.1f} s "
-        f"[cache: {result.cache_hits} hit / "
-        f"{result.cache_misses} miss / "
-        f"{result.cache_dirty} dirty / "
-        f"{result.cache_writes} write]",
-    )
 
+def build_workspace_payload(result: WorksetResult) -> dict[str, Any]:
+    """Project + aggregate a stored :class:`WorksetResult` into wire form.
+
+    Same shape as :func:`stats`'s workspace-scope response, used by
+    the merged ``dimfort.checkWorkspace`` handler to return the
+    fresh aggregate to the companion without an extra round-trip.
+
+    Args:
+        result: The freshly-computed :class:`WorksetResult`.
+
+    Returns:
+        A dict with ``scope = "workspace"``, ``files`` (per-file
+        rows), and ``total`` (workset aggregate).
+    """
     paths = sorted(result.diagnostics.keys() | result.attachments.keys())
     workset = _project_and_aggregate(paths, result)
     return _build_workset_payload(workset, scope="workspace")

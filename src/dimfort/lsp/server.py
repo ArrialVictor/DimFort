@@ -1700,58 +1700,60 @@ def _code_action(
 
 
 @server.command("dimfort.checkWorkspace")
-def _cmd_check_workspace(ls: LanguageServer, *_args: Any) -> None:
+def _cmd_check_workspace(
+    ls: LanguageServer, *_args: Any,
+) -> dict[str, Any] | None:
     """Implements ``workspace/executeCommand dimfort.checkWorkspace``.
 
     Runs the checker over every file in the workspace index,
-    publishing diagnostics for each. Triggered from the client via
-    the palette command "DimFort: Check Whole Workspace".
+    publishing diagnostics, populating the workspace coverage cache,
+    and returning the fresh workspace coverage payload to the caller.
 
-    The work runs on a daemon thread so the LSP stays responsive.
-    The server-wide ``state.check_lock`` is held for the duration to
-    avoid racing with per-file didOpen/didSave/didChange checks.
+    This is the unified "refresh everything" command — it was split
+    into ``dimfort.checkWorkspace`` (diagnostics) and
+    ``dimfort.refreshWorkspaceCoverage`` (coverage cache) pre-0.2.5;
+    the two did near-identical underlying work, so the merge avoids
+    running ``check_files`` twice when the user wants both.
+
+    Synchronous: blocks the LSP request for the duration of the
+    workspace check. The companion shows a progress indicator + bar
+    dimming while the request is in flight. On a real-world Fortran
+    workset (2435 files) that's ~38 s cold / ~1-2 s warm.
 
     Args:
         ls: Active language server.
         *_args: Forwarded command arguments (none expected).
 
     Returns:
-        None. The actual work + notifications happen on the
-        ``dimfort-check-workspace`` daemon thread.
-
-    Note:
-        No-ops gracefully when the index hasn't been built yet
-        (see :func:`_check_whole_workspace`).
+        The workspace coverage payload (``{scope, files, total}``)
+        on success, or ``None`` when the workspace index isn't ready
+        / the check failed. Companions ignore the ``None`` case (bar
+        keeps its prior state).
     """
-    threading.Thread(
-        target=_check_whole_workspace,
-        args=(ls,),
-        daemon=True,
-        name="dimfort-check-workspace",
-    ).start()
+    return _check_whole_workspace(ls)
 
 
-def _check_whole_workspace(ls: LanguageServer) -> None:
-    """Worker for ``dimfort.checkWorkspace``: run the pipeline over every indexed file.
+def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
+    """Run the workspace check + publish diagnostics + return coverage payload.
 
     Pulls the file list from ``state.workspace_index.uses_by_file``,
-    fires a ``$/progress`` notification, runs
-    :func:`check_files` with the full configured environment, then
-    publishes per-file diagnostics. Reports a final toast summarising
-    H/U counts, total time, and (when caching is on) cache hit/miss
-    stats.
+    fires a ``$/progress`` notification, runs :func:`check_files`
+    with the full configured environment, publishes per-file
+    diagnostics, seeds the workspace coverage cache, and returns
+    the workspace payload for the companion's bar.
 
     Args:
         ls: Active language server.
 
     Returns:
-        None.
+        The workspace coverage payload, or ``None`` when the index
+        isn't ready / the check failed.
 
     Note:
         Holds ``state.check_lock`` across the whole run so per-file
         didOpen/didSave/didChange checks can't interleave. When the
         index isn't ready, surfaces a heads-up via :func:`_notify`
-        and returns without running the pipeline.
+        and returns ``None`` without running the pipeline.
     """
     with state.workspace_index_lock:
         idx = state.workspace_index
@@ -1761,12 +1763,12 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
             "DimFort: workspace index not ready yet — wait for the scan "
             "to finish, then try again.",
         )
-        return
+        return None
 
     files = sorted(idx.uses_by_file.keys())
     if not files:
         _notify(ls, "DimFort: no Fortran files in workspace")
-        return
+        return None
 
     token = f"dimfort-workspace-check-{int(time.time() * 1000)}"
     progress = ls.work_done_progress
@@ -1869,7 +1871,7 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
                     progress.end(
                         token, lsp.WorkDoneProgressEnd(message="failed")
                     )
-            return
+            return None
 
         with state.last_result_lock:
             state.last_result = result
@@ -1905,6 +1907,17 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
 
     _refresh_inlay_hints(ls)
 
+    # Seed the workspace-coverage cache so the next
+    # ``dimfort/coverageStats`` request serves these numbers.
+    coverage.seed_workspace_cache(result)
+
+    # Per-file projection (~1-2 s on a 2000-file workset). Done
+    # before the log line so the timing reflects the full
+    # user-perceived "refresh complete" event — historically the
+    # log fired before projection and the companion's bar took an
+    # extra ~1 s to update after the user saw the "complete" text.
+    payload = coverage.build_workspace_payload(result)
+
     h_count = sum(
         1 for diags in result.diagnostics.values() for d in diags
         if d.code.startswith("H")
@@ -1929,34 +1942,7 @@ def _check_whole_workspace(ls: LanguageServer) -> None:
         f"{h_count} H-diags, {u_count} U-diags{timing}{cache_note}",
         toast=True,
     )
-
-
-@server.command("dimfort.refreshWorkspaceCoverage")
-def _cmd_refresh_workspace_coverage(
-    ls: LanguageServer, *_args: Any,
-) -> dict[str, Any] | None:
-    """Implements ``workspace/executeCommand dimfort.refreshWorkspaceCoverage``.
-
-    Synchronously runs the workspace-coverage check and caches the
-    fresh result for subsequent ``dimfort/coverageStats`` requests.
-    Companions invoke this from the user's "Refresh Workspace
-    Coverage" command and show a progress indicator + dim the
-    coverage panel for the duration.
-
-    Returns the freshly-aggregated workspace payload so the
-    companion can update its bar without an extra round-trip.
-
-    Args:
-        ls: Active language server, forwarded for buffer-override
-            collection inside ``_run_workspace_check``.
-        *_args: Forwarded command arguments (none expected).
-
-    Returns:
-        The workspace payload (same shape as
-        ``dimfort/coverageStats`` workspace-scope), or ``None`` when
-        the underlying check failed.
-    """
-    return coverage.refresh_workspace_coverage(ls)
+    return payload
 
 
 def run_stdio() -> None:
