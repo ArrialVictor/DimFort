@@ -262,7 +262,7 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
     return {"uri": uri, "lines": lines}
 
 
-def _collect_open_overrides(ls: LanguageServer) -> dict[Path, str]:
+def collect_open_overrides(ls: LanguageServer) -> dict[Path, str]:
     """Snapshot the current in-memory text of every open document.
 
     Used so the workspace check sees unsaved buffer edits rather than
@@ -311,7 +311,7 @@ def _run_workspace_check(ls: LanguageServer) -> WorksetResult | None:
 
     Args:
         ls: Active language server. Used to snapshot open-document
-            text via :func:`_collect_open_overrides` so unsaved
+            text via :func:`collect_open_overrides` so unsaved
             buffer edits are reflected in the WS aggregate.
 
     Returns:
@@ -336,7 +336,7 @@ def _run_workspace_check(ls: LanguageServer) -> WorksetResult | None:
     if not files:
         return None
 
-    overrides = _collect_open_overrides(ls)
+    overrides = collect_open_overrides(ls)
 
     ws_cache, ws_cache_mode = _resolve_coverage_cache()
 

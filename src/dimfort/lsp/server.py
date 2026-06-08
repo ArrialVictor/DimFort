@@ -1848,10 +1848,17 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
                 ),
             )
 
+    # Audit #3: snapshot unsaved buffer text so the workspace check
+    # sees what the user is actually editing rather than the
+    # last-saved on-disk version. ``_run_workspace_check`` in
+    # lsp/coverage.py already does this for the stats-scope path;
+    # this command path had silently diverged.
+    overrides = coverage.collect_open_overrides(ls)
     with state.check_lock:
         try:
             result = check_files(
                 files,
+                overrides=overrides,
                 external_modules=state.external_modules,
                 cpp_defines=state.project_config.cpp_defines,
                 include_paths=state.project_config.include_paths,
