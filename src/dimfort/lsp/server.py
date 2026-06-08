@@ -1937,12 +1937,14 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
     # ``build_workspace_payload`` returns.
     if progress_started:
         with contextlib.suppress(Exception):
+            # No ``percentage`` — clients interpret 100% as
+            # "complete, hide the bar," which is the opposite of
+            # what we want here (the post-publish projection work
+            # is still running). Indeterminate progress (a spinning
+            # indicator with the message) is the correct shape.
             progress.report(
                 token,
-                lsp.WorkDoneProgressReport(
-                    message="projecting coverage…",
-                    percentage=100,
-                ),
+                lsp.WorkDoneProgressReport(message="projecting coverage…"),
             )
 
     _refresh_inlay_hints(ls)
