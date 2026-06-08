@@ -916,10 +916,9 @@ caller — active-file path, `dimfort.checkWorkspace`, and the
 new manual coverage refresh. The auto-refresh removal is
 purely UX, not undoing performance work.
 
-See [`perf-audit-0.2.5.md`](perf-audit-0.2.5.md) for the audit
-that motivated this design pivot and
-[`../shipped/multifile-cache.md`](../shipped/multifile-cache.md)
-for the cache infrastructure.
+See [`../shipped/multifile-cache.md`](../shipped/multifile-cache.md)
+for the underlying cache infrastructure that made the manual
+refresh fast enough to be the right UX.
 
 ### 13.4 0.2.6+: other planned 0.2.4 items deferred
 
