@@ -22,7 +22,10 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from tree_sitter import Tree
 
+    from dimfort.core.annotations import ScanResult
+    from dimfort.core.attach import AttachmentResult
     from dimfort.core.symbols import FuncSig, ModuleExports
+    from dimfort.core.unit_patterns import StructuredPattern, UnitPattern
 
 
 @dataclass(frozen=True)
@@ -203,6 +206,109 @@ class ModuleExportsCache:
         value: tuple[dict[str, FuncSig], dict[str, ModuleExports]],
     ) -> None:
         """Store ``value`` (a ``(sigs, modules)`` tuple) under ``key``."""
+        with self._lock:
+            self._entries[key] = value
+
+    def __len__(self) -> int:
+        """Number of cached entries."""
+        with self._lock:
+            return len(self._entries)
+
+    def clear(self) -> None:
+        """Drop every cached entry."""
+        with self._lock:
+            self._entries.clear()
+
+
+# ---------------------------------------------------------------------------
+# Projection cache (M1) — scan + attach outputs per file content
+# ---------------------------------------------------------------------------
+
+
+def patterns_fingerprint(
+    unit_patterns: tuple[UnitPattern, ...],
+    assume_patterns: tuple[StructuredPattern, ...],
+    affine_patterns: tuple[StructuredPattern, ...],
+) -> str:
+    """Stable short hash of the configured annotation patterns.
+
+    Folded into :class:`ProjectionKey` so a project-config change that
+    affects which comments scan as ``@unit{}`` invalidates cached
+    projections naturally.
+    """
+    h = hashlib.sha256()
+    for up in unit_patterns:
+        h.update(up.open.encode("utf-8"))
+        h.update(b"|")
+        h.update(up.close.encode("utf-8"))
+        h.update(b";")
+    h.update(b"||")
+    for ap in assume_patterns:
+        h.update(ap.open.encode("utf-8"))
+        h.update(b"|")
+        h.update(ap.close.encode("utf-8"))
+        h.update(b"|")
+        h.update(ap.sep.encode("utf-8"))
+        h.update(b";")
+    h.update(b"||")
+    for fp in affine_patterns:
+        h.update(fp.open.encode("utf-8"))
+        h.update(b"|")
+        h.update(fp.close.encode("utf-8"))
+        h.update(b"|")
+        h.update(fp.sep.encode("utf-8"))
+        h.update(b";")
+    return h.hexdigest()[:16]
+
+
+@dataclass(frozen=True)
+class ProjectionKey:
+    """Identifies a per-file projection cache entry.
+
+    ``content_hash`` is the same SHA-256 of source bytes ``TreeCache``
+    uses. ``patterns_fp`` captures the configured ``@unit{}`` /
+    ``@unit_assume{}`` / ``@unit_affine_conversion{}`` delimiters so
+    a project-config change that changes which comments scan as
+    annotations invalidates naturally.
+    """
+
+    content_hash: str
+    patterns_fp: str
+
+
+@dataclass(frozen=True)
+class CachedProjection:
+    """Cached output of ``scan_text + attach`` for one file.
+
+    Both fields are read-only by contract. Callers MUST NOT mutate
+    them — the same record is handed back on every cache hit.
+    """
+
+    scan: ScanResult
+    attachment: AttachmentResult
+
+
+class ProjectionCache:
+    """Thread-safe in-memory cache of per-file scan + attach outputs.
+
+    Population fills as ``_load_one`` runs. On a cache hit the bulk
+    tree-walking work of ``scan_text`` (~3 s on a 2000-file workset)
+    and the attachment-building pass (~1 s) collapse to a single dict
+    lookup.
+    """
+
+    def __init__(self) -> None:
+        """Create an empty cache."""
+        self._entries: dict[ProjectionKey, CachedProjection] = {}
+        self._lock = threading.Lock()
+
+    def get(self, key: ProjectionKey) -> CachedProjection | None:
+        """Return the cached projection, or ``None`` on miss."""
+        with self._lock:
+            return self._entries.get(key)
+
+    def put(self, key: ProjectionKey, value: CachedProjection) -> None:
+        """Store ``value`` under ``key`` (overwrites any prior entry)."""
         with self._lock:
             self._entries[key] = value
 

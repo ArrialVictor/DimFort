@@ -17,13 +17,17 @@ from dimfort.core import ts_parser as _ts
 from dimfort.core.multifile import check_files
 from dimfort.core.multifile_cache import (
     CachedParse,
+    CachedProjection,
     ExportsKey,
     ModuleExportsCache,
+    ProjectionCache,
+    ProjectionKey,
     TreeCache,
     TreeKey,
     content_hash,
     cpp_fingerprint,
     digest_merged_var_units,
+    patterns_fingerprint,
 )
 
 SAMPLE = """\
@@ -275,4 +279,102 @@ def test_tree_cache_isolation_across_two_files(tmp_path: Path):
     )
     cache = TreeCache()
     check_files([a, b], tree_cache=cache)
+    assert len(cache) == 2
+
+
+def test_patterns_fingerprint_changes_with_unit_patterns():
+    from dimfort.core.unit_patterns import (
+        DEFAULT_AFFINE_PATTERNS,
+        DEFAULT_ASSUME_PATTERNS,
+        DEFAULT_UNIT_PATTERNS,
+        UnitPattern,
+    )
+    a = patterns_fingerprint(
+        DEFAULT_UNIT_PATTERNS, DEFAULT_ASSUME_PATTERNS, DEFAULT_AFFINE_PATTERNS,
+    )
+    custom = (UnitPattern(open="<!u{", close="}>"),) + DEFAULT_UNIT_PATTERNS
+    b = patterns_fingerprint(
+        custom, DEFAULT_ASSUME_PATTERNS, DEFAULT_AFFINE_PATTERNS,
+    )
+    assert a != b
+
+
+def test_projection_cache_get_put_roundtrip():
+    cache = ProjectionCache()
+    key = ProjectionKey(content_hash="abc", patterns_fp="def")
+    assert cache.get(key) is None
+    sentinel = CachedProjection(
+        scan=object(),  # type: ignore[arg-type]
+        attachment=object(),  # type: ignore[arg-type]
+    )
+    cache.put(key, sentinel)
+    assert cache.get(key) is sentinel
+    assert len(cache) == 1
+    cache.clear()
+    assert len(cache) == 0
+
+
+def test_projection_cache_skips_scan_and_attach_on_hit(tmp_path: Path):
+    """A warm pass must not re-invoke scan_text or attach.
+
+    Cache miss on the first call populates entries; the second pass
+    with the same content + projection_cache must skip both walks.
+    """
+    from dimfort.core import annotations as _ann
+    from dimfort.core import attach as _att
+
+    src = _write(tmp_path, "p.f90", SAMPLE)
+    cache = ProjectionCache()
+
+    check_files([src], projection_cache=cache)
+    assert len(cache) == 1
+
+    with mock.patch.object(
+        _ann, "scan_text", side_effect=AssertionError("scan should be skipped"),
+    ) as scan_spy, mock.patch.object(
+        _att, "attach", side_effect=AssertionError("attach should be skipped"),
+    ) as attach_spy:
+        check_files([src], projection_cache=cache)
+    scan_spy.assert_not_called()
+    attach_spy.assert_not_called()
+
+
+def test_projection_cache_invalidates_on_content_change(tmp_path: Path):
+    src = _write(tmp_path, "p.f90", SAMPLE)
+    cache = ProjectionCache()
+    check_files([src], projection_cache=cache)
+    assert len(cache) == 1
+
+    src.write_text(SAMPLE + "\n! trailer\n")
+    check_files([src], projection_cache=cache)
+    # Both old and new content hashes now sit in the cache.
+    assert len(cache) == 2
+
+
+def test_projection_cache_invalidates_on_patterns_change(tmp_path: Path):
+    """Different ``unit_patterns`` → different ProjectionKey → cache miss."""
+    from dimfort.core.unit_patterns import (
+        DEFAULT_AFFINE_PATTERNS,
+        DEFAULT_ASSUME_PATTERNS,
+        DEFAULT_UNIT_PATTERNS,
+        UnitPattern,
+    )
+
+    src = _write(tmp_path, "p.f90", SAMPLE)
+    cache = ProjectionCache()
+    check_files([src], projection_cache=cache)
+    assert len(cache) == 1
+
+    custom_patterns = (
+        UnitPattern(open="<!u{", close="}>"),
+    ) + DEFAULT_UNIT_PATTERNS
+    check_files(
+        [src],
+        unit_patterns=custom_patterns,
+        assume_patterns=DEFAULT_ASSUME_PATTERNS,
+        affine_patterns=DEFAULT_AFFINE_PATTERNS,
+        projection_cache=cache,
+    )
+    # Same content hash + different patterns fingerprint → second
+    # entry alongside the first.
     assert len(cache) == 2

@@ -22,7 +22,11 @@ from pathlib import Path
 from dimfort.core import unit_config  # noqa: F401  (installs DEFAULT_TABLE)
 from dimfort.core.cache_store import CacheStore
 from dimfort.core.multifile import check_files
-from dimfort.core.multifile_cache import ModuleExportsCache, TreeCache
+from dimfort.core.multifile_cache import (
+    ModuleExportsCache,
+    ProjectionCache,
+    TreeCache,
+)
 
 
 def _collect(root: Path) -> list[Path]:
@@ -70,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
 
     tree_cache = TreeCache()
     exports_cache = ModuleExportsCache()
+    projection_cache = ProjectionCache()
 
     import tempfile
     cache_store: CacheStore | None = None
@@ -92,10 +97,12 @@ def main(argv: list[str] | None = None) -> int:
     # contract where the diagnostic cache is engaged.
     cold = check_files(
         files, tree_cache=tree_cache, exports_cache=exports_cache,
+        projection_cache=projection_cache,
         cache=cache_store, cache_mode=cache_mode,
     )
     warm = check_files(
         files, tree_cache=tree_cache, exports_cache=exports_cache,
+        projection_cache=projection_cache,
         cache=cache_store, cache_mode=cache_mode,
     )
 
