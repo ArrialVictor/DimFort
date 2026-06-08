@@ -1946,6 +1946,11 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
                 token,
                 lsp.WorkDoneProgressReport(message="projecting coverage…"),
             )
+    # Belt + suspenders: mirror the progress message to the output
+    # channel via ``window/logMessage`` so users whose LSP client
+    # doesn't render workDoneProgress (Neovim default, fidget-less
+    # setups) still see the post-publish step.
+    _notify(ls, "DimFort: projecting workspace coverage…")
 
     _refresh_inlay_hints(ls)
 
