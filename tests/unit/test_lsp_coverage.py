@@ -137,7 +137,7 @@ def test_stats_workspace_scope_serves_from_cache(tmp_path: Path):
     """Workspace stats reads ``_ws_result_cache`` directly — no auto-refresh.
 
     Stats handler is a pure cache read; the cache is populated by
-    explicit calls to :func:`refresh_workspace_coverage`. Tests
+    explicit calls to :func:`seed_workspace_cache`. Tests
     seed the cache directly to exercise the projection + payload
     shape without running the full check.
     """
@@ -309,51 +309,33 @@ def test_stats_cache_invalidates_on_new_result(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_refresh_workspace_coverage_seeds_cache(tmp_path: Path):
-    """``refresh_workspace_coverage`` runs check, caches result, returns payload.
-
-    Replaces the auto-debounced refresh worker that lived here pre-0.2.5.
-    The manual entry point is fully synchronous: the companion command
-    blocks for the duration of ``check_files`` and gets the fresh
-    payload directly.
-
-    Stubs ``_run_workspace_check`` to return a pre-computed
-    WorksetResult so the test doesn't depend on a workspace_index
-    or real files beyond the input fixture.
-    """
+def test_seed_workspace_cache_stores_result(tmp_path: Path):
+    """``seed_workspace_cache`` stores the result for the stats handler."""
     from dimfort.core.multifile import check_files
     from dimfort.lsp import coverage
 
     src = _clean_src(tmp_path)
-    seeded = check_files([src])
+    result = check_files([src])
 
     _reset_ws_async_state()
-    original = coverage._run_workspace_check
-    coverage._run_workspace_check = lambda ls: seeded
     try:
-        payload = coverage.refresh_workspace_coverage(None)  # type: ignore[arg-type]
-        assert payload is not None
-        assert payload["scope"] == "workspace"
-        assert coverage._ws_result_cache is seeded
+        coverage.seed_workspace_cache(result)
+        assert coverage._ws_result_cache is result
     finally:
-        coverage._run_workspace_check = original
         _reset_ws_async_state()
 
 
-def test_refresh_workspace_coverage_returns_none_on_check_failure():
-    """When the underlying check returns ``None``, the cache is left intact."""
+def test_build_workspace_payload_shape(tmp_path: Path):
+    """``build_workspace_payload`` returns the wire-format dict."""
+    from dimfort.core.multifile import check_files
     from dimfort.lsp import coverage
 
-    _reset_ws_async_state()
-    sentinel = object()
-    coverage._ws_result_cache = sentinel  # type: ignore[assignment]
-    original = coverage._run_workspace_check
-    coverage._run_workspace_check = lambda ls: None
-    try:
-        payload = coverage.refresh_workspace_coverage(None)  # type: ignore[arg-type]
-        assert payload is None
-        # Cache not blanked.
-        assert coverage._ws_result_cache is sentinel
-    finally:
-        coverage._run_workspace_check = original
-        coverage._ws_result_cache = None
+    src = _clean_src(tmp_path)
+    result = check_files([src])
+
+    payload = coverage.build_workspace_payload(result)
+    assert payload["scope"] == "workspace"
+    assert "files" in payload
+    assert "total" in payload
+    # Files list contains the input; total aggregates them.
+    assert len(payload["files"]) == 1
