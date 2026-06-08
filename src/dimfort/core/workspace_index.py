@@ -159,6 +159,11 @@ class WorkspaceIndex:
             externally-linked procedures the active file calls.
         scan_failures: Per-file read/scan error message; entries
             present here are excluded from the rest of the index.
+        file_hashes: SHA-256 hex of each scanned file's source bytes
+            at the time it was indexed. Used by
+            :func:`load_persistent_index` to validate cached entries
+            against the on-disk file before reusing them on a fresh
+            LSP session.
     """
 
     modules: dict[str, Path] = field(default_factory=dict)
@@ -166,6 +171,7 @@ class WorkspaceIndex:
     uses_by_file: dict[Path, tuple[UseRef, ...]] = field(default_factory=dict)
     calls_by_file: dict[Path, tuple[str, ...]] = field(default_factory=dict)
     scan_failures: dict[Path, str] = field(default_factory=dict)
+    file_hashes: dict[Path, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -520,12 +526,18 @@ class _FileScanResult:
     procedures: tuple[str, ...]
     uses: tuple[UseRef, ...]
     calls: tuple[str, ...]
+    # SHA-256 hex of the source bytes scanned. Used by the persistent
+    # index cache to validate whether a stored entry is still current.
+    # Empty when the read failed.
+    content_hash: str = ""
 
 
 def _scan_one_file(
     path: Path, new_text: str | None = None,
 ) -> _FileScanResult:
     """Read and scan one file. Pure: no shared state mutation."""
+    import hashlib
+
     from dimfort.core._source_io import read_text
     try:
         text = new_text if new_text is not None else read_text(path)
@@ -542,6 +554,7 @@ def _scan_one_file(
         procedures=tuple(extract_top_level_procedures(text, stripped_lines=stripped)),
         uses=extract_uses(text, stripped_lines=stripped),
         calls=extract_calls(text, stripped_lines=stripped),
+        content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
     )
 
 
@@ -559,6 +572,8 @@ def _merge_scan_result(index: WorkspaceIndex, result: _FileScanResult) -> None:
         index.procedures.setdefault(proc_name, result.path)
     index.uses_by_file[result.path] = result.uses
     index.calls_by_file[result.path] = result.calls
+    if result.content_hash:
+        index.file_hashes[result.path] = result.content_hash
 
 
 def scan_workspace(
@@ -568,6 +583,7 @@ def scan_workspace(
     exclude_patterns: tuple[str, ...] = (),
     progress_cb: Callable[[int, int, Path], None] | None = None,
     max_workers: int | None = None,
+    prior_index: WorkspaceIndex | None = None,
 ) -> WorkspaceIndex:
     """Walk every root, scan each Fortran source for module/use headers.
 
@@ -591,11 +607,22 @@ def scan_workspace(
             the count.
         max_workers: Override for the worker pool size; default is
             one less than the CPU count.
+        prior_index: Optional previously-built :class:`WorkspaceIndex`
+            (typically loaded from disk via
+            :func:`load_persistent_index`). Files whose current
+            ``content_hash`` matches the stored value skip the scan
+            entirely; their stored entries are reused. Files
+            missing from ``prior_index`` or whose hash differs run
+            a fresh scan.
 
     Returns:
         A populated :class:`WorkspaceIndex` covering every scanned
         file.
     """
+    import hashlib
+
+    from dimfort.core._source_io import read_text
+
     files = list(_iter_fortran_files(roots, include_suffixes, exclude_patterns))
     index = WorkspaceIndex()
     if not files:
@@ -606,27 +633,78 @@ def scan_workspace(
         if max_workers is not None
         else max(1, (multiprocessing.cpu_count() or 4) - 1)
     )
-    slots: list[_FileScanResult | None] = [None] * total
+
+    # Partition files: reuse_paths get their entries copied from
+    # prior_index; scan_paths run through the parallel worker pool.
+    reuse_paths: list[Path] = []
+    scan_paths: list[Path] = []
+    if prior_index is not None and prior_index.file_hashes:
+        for path in files:
+            stored_hash = prior_index.file_hashes.get(path)
+            if stored_hash is None:
+                scan_paths.append(path)
+                continue
+            try:
+                current_hash = hashlib.sha256(
+                    read_text(path).encode("utf-8"),
+                ).hexdigest()
+            except OSError:
+                # Unreadable now; let the scan path record the failure.
+                scan_paths.append(path)
+                continue
+            if current_hash == stored_hash:
+                reuse_paths.append(path)
+            else:
+                scan_paths.append(path)
+    else:
+        scan_paths = list(files)
+
+    # Reuse: copy entries from prior_index. No scan work needed.
+    for p in reuse_paths:
+        if p in prior_index.uses_by_file:  # type: ignore[union-attr]
+            index.uses_by_file[p] = prior_index.uses_by_file[p]  # type: ignore[union-attr]
+        if p in prior_index.calls_by_file:  # type: ignore[union-attr]
+            index.calls_by_file[p] = prior_index.calls_by_file[p]  # type: ignore[union-attr]
+        index.file_hashes[p] = prior_index.file_hashes[p]  # type: ignore[union-attr]
+    # Reuse module + procedure first-found-wins entries in input order,
+    # but only when the owning file is in reuse_paths (so a re-scanned
+    # file's exports don't get pre-empted by stale entries).
+    if prior_index is not None:
+        reuse_set = set(reuse_paths)
+        for path in files:
+            if path not in reuse_set:
+                continue
+            for name, owner in prior_index.modules.items():
+                if owner == path:
+                    index.modules.setdefault(name, path)
+            for name, owner in prior_index.procedures.items():
+                if owner == path:
+                    index.procedures.setdefault(name, path)
+
+    # Scan: run the worker pool over scan_paths only.
+    if not scan_paths:
+        return index
+    scan_slots: list[_FileScanResult | None] = [None] * len(scan_paths)
     progress_lock = threading.Lock()
-    progress_counter = [0]
+    progress_counter = [len(reuse_paths)]  # reused files count toward progress
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futures = {
             ex.submit(_scan_one_file, path): i
-            for i, path in enumerate(files)
+            for i, path in enumerate(scan_paths)
         }
         for fut in as_completed(futures):
             i = futures[fut]
-            slots[i] = fut.result()
+            scan_slots[i] = fut.result()
             if progress_cb is not None:
                 with progress_lock:
                     progress_counter[0] += 1
                     n = progress_counter[0]
-                progress_cb(n, total, files[i])
+                progress_cb(n, total, scan_paths[i])
 
     # Sequential merge in input order. Cheap (dict ops on already-
     # scanned data) and what makes the parallel scan deterministic.
-    for slot in slots:
+    for slot in scan_slots:
         if slot is not None:
             _merge_scan_result(index, slot)
     return index
@@ -661,8 +739,146 @@ def update_index(
     index.uses_by_file.pop(changed, None)
     index.calls_by_file.pop(changed, None)
     index.scan_failures.pop(changed, None)
+    index.file_hashes.pop(changed, None)
     _scan_into_index(index, changed, new_text=new_text)
     return index
+
+
+# ---------------------------------------------------------------------------
+# Disk persistence
+# ---------------------------------------------------------------------------
+
+# Bump when the on-disk JSON schema changes in a way that can't be
+# back-compat read. A version mismatch causes ``load_persistent_index``
+# to drop the cache silently and trigger a full rescan.
+_INDEX_SCHEMA_VERSION = 1
+
+
+def save_persistent_index(index: WorkspaceIndex, cache_root: Path) -> None:
+    """Serialise ``index`` to ``<cache_root>/workspace-index.json``.
+
+    Best-effort: any OSError (read-only FS, parent missing, etc.) is
+    swallowed so a workspace scan never aborts because the cache
+    couldn't be written.
+
+    Args:
+        index: The workspace index to persist.
+        cache_root: Directory the on-disk cache lives under
+            (typically ``.dimfort-cache``).
+    """
+    import json
+
+    payload = {
+        "schema_version": _INDEX_SCHEMA_VERSION,
+        "modules": {n: str(p) for n, p in index.modules.items()},
+        "procedures": {n: str(p) for n, p in index.procedures.items()},
+        "uses_by_file": {
+            str(p): [_dump_useref(u) for u in uses]
+            for p, uses in index.uses_by_file.items()
+        },
+        "calls_by_file": {
+            str(p): list(calls) for p, calls in index.calls_by_file.items()
+        },
+        "scan_failures": {str(p): err for p, err in index.scan_failures.items()},
+        "file_hashes": {str(p): h for p, h in index.file_hashes.items()},
+    }
+    try:
+        cache_root.mkdir(parents=True, exist_ok=True)
+        out_path = cache_root / "workspace-index.json"
+        # Write to a sibling tempfile and rename for atomicity; partial
+        # writes on crash never produce a corrupted file the next
+        # session would try to parse.
+        tmp = out_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, separators=(",", ":")))
+        tmp.replace(out_path)
+    except OSError:
+        return
+
+
+def load_persistent_index(cache_root: Path) -> WorkspaceIndex | None:
+    """Load + parse ``<cache_root>/workspace-index.json`` if present.
+
+    Returns ``None`` on any failure (missing file, version mismatch,
+    JSON parse error, OSError). Caller treats ``None`` as "no prior
+    index" and runs a full scan.
+
+    Args:
+        cache_root: Directory holding the on-disk cache.
+
+    Returns:
+        A populated :class:`WorkspaceIndex` whose entries the caller
+        can pass as ``prior_index=`` to :func:`scan_workspace` for
+        hash-validated reuse.
+    """
+    import json
+
+    in_path = cache_root / "workspace-index.json"
+    try:
+        text = in_path.read_text()
+    except OSError:
+        return None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("schema_version") != _INDEX_SCHEMA_VERSION:
+        return None
+
+    index = WorkspaceIndex()
+    try:
+        index.modules = {
+            n: Path(p) for n, p in payload.get("modules", {}).items()
+        }
+        index.procedures = {
+            n: Path(p) for n, p in payload.get("procedures", {}).items()
+        }
+        index.uses_by_file = {
+            Path(p): tuple(_load_useref(u) for u in uses)
+            for p, uses in payload.get("uses_by_file", {}).items()
+        }
+        index.calls_by_file = {
+            Path(p): tuple(calls)
+            for p, calls in payload.get("calls_by_file", {}).items()
+        }
+        index.scan_failures = {
+            Path(p): err for p, err in payload.get("scan_failures", {}).items()
+        }
+        index.file_hashes = {
+            Path(p): h for p, h in payload.get("file_hashes", {}).items()
+        }
+    except (TypeError, ValueError, KeyError):
+        return None
+    return index
+
+
+def _dump_useref(u: UseRef) -> dict[str, object]:
+    """Serialise one ``UseRef`` to a JSON-friendly dict."""
+    out: dict[str, object] = {"module": u.module}
+    if u.only is not None:
+        out["only"] = list(u.only)
+    if u.renames:
+        out["renames"] = [list(r) for r in u.renames]
+    return out
+
+
+def _load_useref(payload: dict[str, object]) -> UseRef:
+    """Reconstruct a ``UseRef`` from the on-disk dict form."""
+    module = str(payload.get("module", ""))
+    only_raw = payload.get("only")
+    only: tuple[str, ...] | None = (
+        tuple(str(s) for s in only_raw)
+        if isinstance(only_raw, list)
+        else None
+    )
+    renames_raw = payload.get("renames", [])
+    renames: tuple[tuple[str, str], ...] = (
+        tuple((str(r[0]), str(r[1])) for r in renames_raw)
+        if isinstance(renames_raw, list)
+        else ()
+    )
+    return UseRef(module=module, only=only, renames=renames)
 
 
 def _scan_into_index(

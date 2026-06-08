@@ -1015,8 +1015,22 @@ def _build_initial_index(ls: LanguageServer, roots: tuple[Path, ...]) -> None:
         except Exception:
             log.debug("workDoneProgress report failed", exc_info=True)
 
+    # Load the persistent index (if any) so unchanged files skip the
+    # scan entirely. Each prior entry is content-hash validated by
+    # ``scan_workspace`` against the current file before reuse.
+    prior_index = None
+    if state.cache is not None:
+        from dimfort.core.workspace_index import (
+            load_persistent_index,
+            save_persistent_index,
+        )
+        prior_index = load_persistent_index(state.cache.root)
+
+    scan_started_at = time.monotonic()
     try:
-        idx = scan_workspace(roots, progress_cb=on_progress)
+        idx = scan_workspace(
+            roots, progress_cb=on_progress, prior_index=prior_index,
+        )
     except Exception:
         log.exception("workspace index build failed")
         if progress_started:
@@ -1025,9 +1039,16 @@ def _build_initial_index(ls: LanguageServer, roots: tuple[Path, ...]) -> None:
             except Exception:
                 log.debug("workDoneProgress end failed", exc_info=True)
         return
+    scan_elapsed = time.monotonic() - scan_started_at
 
     with state.workspace_index_lock:
         state.workspace_index = idx
+
+    # Persist the updated index. Best-effort: write failures are swallowed
+    # so a read-only ``.dimfort-cache`` (e.g. shared CI mount) never
+    # blocks the LSP from running.
+    if state.cache is not None:
+        save_persistent_index(idx, state.cache.root)
 
     if progress_started:
         try:
@@ -1035,10 +1056,25 @@ def _build_initial_index(ls: LanguageServer, roots: tuple[Path, ...]) -> None:
         except Exception:
             log.debug("workDoneProgress end failed", exc_info=True)
 
+    # Show "from cache" when the persistent index was loaded and at least
+    # one entry was reused — distinguishes a fully cached restart from
+    # a partial / full rescan. The reuse count is files we DIDN'T
+    # rescan: prior file_hashes ∩ current file_hashes that survived
+    # without change.
+    reused = 0
+    if prior_index is not None:
+        for path, h in prior_index.file_hashes.items():
+            if idx.file_hashes.get(path) == h:
+                reused += 1
+    suffix = (
+        f" in {scan_elapsed:.1f} s ({reused} cached)"
+        if reused > 0
+        else f" in {scan_elapsed:.1f} s"
+    )
     _notify(
         ls,
         f"DimFort workspace index ready: {len(idx.modules)} modules "
-        f"across {len(idx.uses_by_file)} files",
+        f"across {len(idx.uses_by_file)} files{suffix}",
         toast=True,
     )
 

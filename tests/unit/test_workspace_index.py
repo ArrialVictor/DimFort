@@ -367,3 +367,127 @@ def test_update_index_drops_old_procedure_entries(tmp_path):
     _update(idx, f)
     assert "old_name" not in idx.procedures
     assert "new_name" in idx.procedures
+
+
+# ---------------------------------------------------------------------------
+# Disk persistence (W3)
+# ---------------------------------------------------------------------------
+
+
+def test_save_then_load_roundtrip(tmp_path):
+    """A saved index round-trips through ``load_persistent_index``."""
+    from dimfort.core.workspace_index import (
+        load_persistent_index,
+        save_persistent_index,
+        scan_workspace,
+    )
+
+    _write(tmp_path, "a.f90", "module mymod\nend module\n")
+    _write(tmp_path, "b.f90", "subroutine foo()\nend subroutine\n")
+    idx = scan_workspace([tmp_path])
+    cache_root = tmp_path / ".dimfort-cache"
+    save_persistent_index(idx, cache_root)
+
+    loaded = load_persistent_index(cache_root)
+    assert loaded is not None
+    assert loaded.modules == idx.modules
+    assert loaded.procedures == idx.procedures
+    assert loaded.uses_by_file == idx.uses_by_file
+    assert loaded.calls_by_file == idx.calls_by_file
+    assert loaded.file_hashes == idx.file_hashes
+
+
+def test_load_missing_cache_returns_none(tmp_path):
+    """No file → ``None`` (caller falls back to full scan)."""
+    from dimfort.core.workspace_index import load_persistent_index
+    assert load_persistent_index(tmp_path / "nonexistent") is None
+
+
+def test_load_corrupted_json_returns_none(tmp_path):
+    """Garbage JSON → ``None``."""
+    from dimfort.core.workspace_index import load_persistent_index
+    cache_root = tmp_path / ".dimfort-cache"
+    cache_root.mkdir()
+    (cache_root / "workspace-index.json").write_text("{not valid json")
+    assert load_persistent_index(cache_root) is None
+
+
+def test_load_schema_version_mismatch_returns_none(tmp_path):
+    """Wrong schema_version → ``None``."""
+    import json
+
+    from dimfort.core.workspace_index import load_persistent_index
+    cache_root = tmp_path / ".dimfort-cache"
+    cache_root.mkdir()
+    (cache_root / "workspace-index.json").write_text(
+        json.dumps({"schema_version": 999, "modules": {}, "procedures": {}}),
+    )
+    assert load_persistent_index(cache_root) is None
+
+
+def test_scan_workspace_reuses_unchanged_entries(tmp_path):
+    """Files whose hash matches ``prior_index`` skip the scan walk."""
+    from unittest import mock
+
+    from dimfort.core.workspace_index import scan_workspace
+
+    a = _write(tmp_path, "a.f90", "module amod\nend module\n")
+    b = _write(tmp_path, "b.f90", "module bmod\nend module\n")
+    idx1 = scan_workspace([tmp_path])
+
+    # Run again with idx1 as prior. Neither file changed → both should
+    # be reused; the scanner should not see either path.
+    with mock.patch(
+        "dimfort.core.workspace_index._scan_one_file",
+    ) as spy:
+        idx2 = scan_workspace([tmp_path], prior_index=idx1)
+        # Spy fires zero times because both files matched prior hashes.
+        spy.assert_not_called()
+
+    # Index contents must still be identical to idx1.
+    assert idx2.modules == idx1.modules
+    assert idx2.uses_by_file == idx1.uses_by_file
+    assert idx2.file_hashes == idx1.file_hashes
+    # Sanity: paths are correctly preserved on reuse.
+    assert a in idx2.file_hashes
+    assert b in idx2.file_hashes
+
+
+def test_scan_workspace_rescans_changed_files(tmp_path):
+    """A modified file invalidates its prior entry and gets re-scanned."""
+    from dimfort.core.workspace_index import scan_workspace
+
+    a = _write(tmp_path, "a.f90", "module amod\nend module\n")
+    b = _write(tmp_path, "b.f90", "module bmod\nend module\n")
+    idx1 = scan_workspace([tmp_path])
+    a_hash_before = idx1.file_hashes[a.resolve()]
+
+    # Mutate a.f90.
+    a.write_text("module renamed_a\nend module\n")
+    idx2 = scan_workspace([tmp_path], prior_index=idx1)
+
+    # a.f90 was re-scanned: its hash changed, its module name changed.
+    assert idx2.file_hashes[a.resolve()] != a_hash_before
+    assert "amod" not in idx2.modules
+    assert "renamed_a" in idx2.modules
+    # b.f90 was reused: same hash, same entry.
+    assert idx2.file_hashes[b.resolve()] == idx1.file_hashes[b.resolve()]
+    assert "bmod" in idx2.modules
+
+
+def test_save_persistent_index_swallows_oserror(tmp_path):
+    """Read-only cache dir doesn't crash the scan."""
+    from dimfort.core.workspace_index import (
+        save_persistent_index,
+        scan_workspace,
+    )
+
+    _write(tmp_path, "a.f90", "module amod\nend module\n")
+    idx = scan_workspace([tmp_path])
+
+    # Use a path inside a regular file — mkdir + write will fail.
+    fake_root = tmp_path / "blocked.txt"
+    fake_root.write_text("not a dir")
+    cache_root = fake_root / "child"
+    # Should not raise.
+    save_persistent_index(idx, cache_root)
