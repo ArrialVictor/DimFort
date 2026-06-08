@@ -210,7 +210,7 @@ server with a built-in idle debounce; calling this method
 during active editing does not block the request thread and is
 not a synchronous re-check.
 
-Spec: [design/future/coverage-visualization.md](../design/future/coverage-visualization.md).
+Spec: [design/shipped/coverage-visualization.md](../design/shipped/coverage-visualization.md).
 
 ### Inlay hints, definition, code actions, completion
 

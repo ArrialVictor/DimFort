@@ -21,25 +21,44 @@ just one file.
 
 ## Development setup
 
+The canonical workflow uses [`uv`](https://docs.astral.sh/uv/) — the
+lockfile `uv.lock` is committed.
+
 ```bash
 git clone https://github.com/ArrialVictor/DimFort.git
 cd DimFort
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev,lsp]"
+uv sync --extra dev --extra lsp
 ```
+
+That creates `.venv/` and installs DimFort editable with the dev and
+lsp extras. Activate the virtualenv (`source .venv/bin/activate`) or
+prefix every command with `uv run`.
 
 Minimum Python version is 3.11. The Fortran parser
 ([`tree-sitter-fortran`](https://pypi.org/project/tree-sitter-fortran/))
 is a runtime dependency installed automatically.
 
+If you'd rather not adopt `uv`, the plain-`pip` equivalent still
+works:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev,lsp]"
+```
+
+CI uses `uv sync` so the lockfile pins. PRs that change runtime
+dependencies must regenerate `uv.lock` (`uv lock`) and commit the
+result alongside the `pyproject.toml` change.
+
 ## Running tests
 
 ```bash
-pytest                      # full unit + integration suite
-pytest tests/unit -q        # unit only
-pytest -k <expression>      # filter by name
-ruff check .                # lint
+uv run pytest                      # full unit + integration suite
+uv run pytest tests/unit -q        # unit only
+uv run pytest -k <expression>      # filter by name
+uv run ruff check .                # lint
+uv run mypy src/                   # type-check
 ```
 
 A patch that breaks tests or trips ruff will not be merged.

@@ -1,8 +1,9 @@
-# Coverage visualization — design spec (FUTURE)
+# Coverage visualization — design spec
 
-**Status:** future feature, design exploration. Captures the design
-direction reached at the close of the 0.2.4 planning discussion. Targets
-0.2.4 as the first item in that release.
+**Status:** shipped. Server foundation landed in 0.2.4 (CLI
+`dimfort coverage`, LSP `dimfort/lineStatus` + `dimfort/coverageStats`).
+Companion-side UI completed in 0.2.5 across the three editors
+(per-line decoration in 0.2.4, the side-panel coverage bar in 0.2.5).
 
 The goal is a per-line view of "what does DimFort know about this line"
 that lets a user — typically a climate scientist onboarding DimFort onto

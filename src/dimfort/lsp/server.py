@@ -1495,7 +1495,7 @@ def _interactions(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
 # Coverage visualisation — thin delegations for the dimfort/lineStatus and
 # dimfort/coverageStats requests. The handlers forward to ``coverage.resolve``
 # / ``coverage.stats``; this file owns only the @server.feature registration.
-# See docs/design/future/coverage-visualization.md.
+# See docs/design/shipped/coverage-visualization.md.
 # ---------------------------------------------------------------------------
 
 

@@ -9,7 +9,7 @@ description = "Dimensional homogeneity checker for Fortran projects, with LSP su
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
-authors = [{ name = "DimFort contributors" }]
+authors = [{ name = "Victor Arrial" }]
 keywords = ["fortran", "static-analysis", "units", "dimensional-analysis", "lsp"]
 classifiers = [
     "Development Status :: 4 - Beta",

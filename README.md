@@ -2,7 +2,7 @@
 
 ![preview](https://raw.githubusercontent.com/ArrialVictor/DimFort/main/social_preview.png)
 
-[![release](https://github.com/ArrialVictor/DimFort/actions/workflows/release.yml/badge.svg)](https://github.com/ArrialVictor/DimFort/actions/workflows/release.yml)
+[![CI](https://github.com/ArrialVictor/DimFort/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ArrialVictor/DimFort/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/ArrialVictor/DimFort/blob/main/LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://github.com/ArrialVictor/DimFort/blob/main/pyproject.toml)
 
@@ -96,13 +96,17 @@ CLI and never the language server.
 
 ### From source (contributors)
 
+The canonical workflow uses [`uv`](https://docs.astral.sh/uv/) and
+the committed `uv.lock`:
+
 ```bash
 git clone https://github.com/ArrialVictor/DimFort.git
 cd DimFort
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev,lsp]"
+uv sync --extra dev --extra lsp
 ```
+
+The plain-`pip` equivalent also works — see `CONTRIBUTING.md` for both
+paths.
 
 ### Requirements
 
@@ -218,8 +222,12 @@ emit.
 
 Thin LSP clients that wire `dimfort lsp` into common editors. Each
 lives in its own repository, releases on its own cadence, and shares
-the same feature surface (diagnostics, hover, inlay hints,
-go-to-definition, code actions, completion).
+the same feature surface — diagnostics, hover, inlay hints,
+go-to-definition, code actions, completion, plus the **side panel**
+(cursor-following unit-algebra tree + scope / imports tables) and the
+**coverage layer** introduced in 0.2.4–0.2.5: per-line gutter / tint
+showing what DimFort knows about each line, and a footer bar with
+file + workspace coverage statistics.
 
 - **[VSCode](https://github.com/ArrialVictor/DimFort-VSCompanion)** —
   on the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=arrialvictor.dimfort-vscode)

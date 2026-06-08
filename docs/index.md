@@ -5,8 +5,7 @@ annotate declarations with the physical dimension they should
 carry — `@unit{m/s}`, `@unit{kg*m^2/s^2}`, … — and DimFort verifies
 that assignments, arithmetic, intrinsics, and procedure calls all
 line up. It ships as a CLI (`dimfort check`) and a language-server
-(`dimfort lsp`) with companions for VSCode, Neovim, Emacs, and
-Helix.
+(`dimfort lsp`) with companions for VSCode, Neovim, and Emacs.
 
 Status: **beta**. Usable on real-world Fortran today; the
 `@unit{}` format, diagnostic codes, and LSP protocol may still
@@ -62,7 +61,7 @@ end users don't need it.
 - `design/shipped/` — specs for shipped features (markers, scale,
   symbolic exponents, panel-info, content-hash cache, interaction
   points, unparsed regions, unit-comment delimiters, polymorphic
-  units).
+  units, coverage visualization, multifile cache).
 - `design/future/` — proposals not yet built: `audit` command,
   rewrite rules.
 - `design/contributor/` — internals for people editing DimFort

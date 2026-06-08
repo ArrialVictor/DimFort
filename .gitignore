@@ -1,3 +1,8 @@
+# Local bench baselines used by the perf-audit harness (snapshot of
+# a prior release's diagnostic state to diff against). Workspace-
+# dependent, can be regenerated; never committed.
+.baseline-*/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

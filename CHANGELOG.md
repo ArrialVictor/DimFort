@@ -4,32 +4,151 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
-### Performance
+### Highlight
 
-- **M4: disk-persistent per-file projection cache.** The
-  `ProjectionCache` (shipped in 0.2.5 / PR #66) caches `scan_text` +
-  `attach` outputs per `(content_hash, patterns_fingerprint)` —
-  previously in-memory only, so every fresh `dimfort lsp` process had
-  to rebuild it from scratch on the first workspace check even when
-  the on-disk `CacheStore` already covered the check phase. M4 adds a
-  JSON-on-disk layer (`.dimfort-cache/projection-cache.json`,
-  atomic-write, schema-versioned) loaded on workspace scan and
-  persisted at the end of every `dimfort.checkWorkspace`. On a
-  real-world Fortran codebase (2435 files), cold-after-server-restart
-  drops from ~27 s → ~16 s — a ~40 % improvement that matches the
-  pattern shipped for `WorkspaceIndex` in W3 (PR #65). See
-  `scripts/bench_multifile_cache.py` for the bench harness and the
-  new `post-rs` column.
-  - Implementation: new module
-    `dimfort/core/multifile_cache_persist.py` with hand-rolled JSON
-    codec for `ScanResult` + `AttachmentResult` (no pickle, no
-    external deps). Schema version constant
-    `_PROJECTION_SCHEMA_VERSION = 1`; mismatch causes silent drop
-    and warm rebuild.
-  - Remaining ~13 s of cold-after-restart cost lives in tree-sitter
-    parse (~4 s, structural — `py-tree-sitter` exposes no tree
-    serialization) and the module-exports index phase (~2.5 s,
-    candidate for an M5 follow-up).
+Perf + LSP-layer cleanup release. Three substantial threads:
+
+1. **Multifile cache rework + M4 disk persistence.** Per-file
+   `ProjectionCache` (scan + attach outputs) is now both in-memory
+   AND disk-persistent. On a real-world Fortran codebase (2435 files)
+   cold-after-server-restart drops from ~27 s → ~16 s. Combined with
+   the W3 `WorkspaceIndex` disk layer (also new this release), the
+   first `:DimFortCheckWorkspace` after `nvim` / `code` start now
+   reuses last session's work instead of rebuilding from scratch.
+
+2. **Async workspace check.** `dimfort.checkWorkspace` no longer
+   blocks the LSP request thread for the duration of the check.
+   The handler spawns a daemon worker, returns an ack immediately,
+   and fires a `dimfort/workspaceCheckCompleted` notification when
+   the work finishes. Status-bar `workDoneProgress` events fire in
+   real time; hover/definition/inlay requests served concurrently
+   during the check.
+
+3. **LSP-layer audit.** Twelve targeted findings closed across
+   the wrapping layer that turns engine output into wire payload
+   — two correctness bugs (workspace check ignoring unsaved
+   buffers; code actions on stale-on-disk text) and the rest
+   wall-clock or cursor-rate wins. `build_workspace_payload`
+   per-file projection collapsed from three tree walks to one
+   (~40 % faster).
+
+### Added
+
+- **W3: disk-persistent `WorkspaceIndex`.** Module / procedure index
+  and per-file uses / calls now persisted to
+  `.dimfort-cache/workspace-index.json` and reloaded on workspace
+  scan. Atomic-write + schema-versioned (`_INDEX_SCHEMA_VERSION = 1`).
+  Cuts the initial scan from ~4 s → ~0.6 s on warm restart.
+- **M4: disk-persistent `ProjectionCache`.** New module
+  `dimfort/core/multifile_cache_persist.py` with hand-rolled JSON
+  codec for `ScanResult` + `AttachmentResult` (no pickle, no external
+  deps). Schema version constant; mismatch causes silent drop and
+  warm rebuild. Persisted at the end of every
+  `dimfort.checkWorkspace` on a daemon thread (off the response
+  thread so the response isn't blocked by the ~14 MB write).
+- **`dimfort/workspaceCheckCompleted` notification.** Server-fired
+  notification carrying the workspace coverage payload
+  (`{scope, files, total}`). Companions subscribe to receive the
+  payload now that the executeCommand response only carries an ack.
+- **Bench: `post-rs` (post-restart) regime + `payload` row.**
+  `scripts/bench_multifile_cache.py` extended with a third column
+  modelling cold-after-server-restart (disk caches retained,
+  in-memory caches dropped), and a `payload` row alongside the
+  engine rows so the LSP-layer wall-clock tax is visible.
+  `user-wall` summary approximates what the editor user perceives
+  end-to-end. Real-world workset (2435 files): warm refresh
+  dropped from 10.0 s → 7.1 s of user-perceived wall-clock from
+  the audit fixes alone.
+
+### Changed
+
+- **`dimfort.checkWorkspace` is async.** Wire-format change: the
+  executeCommand response shape went from `{scope, files, total}`
+  payload to `{started: bool, reason?: str}` ack. The coverage
+  payload arrives via the `dimfort/workspaceCheckCompleted`
+  notification. Requires matching companion versions
+  (VSCompanion 0.2.5+, NvimCompanion 0.2.5+, EmacsCompanion 0.2.5+).
+  Old companions paired with a 0.2.5 server: their workspace bar
+  will stay on the spinner state because they never receive the
+  new notification.
+- **`dimfort.checkWorkspace` unified.** Previously the LSP exposed
+  both `dimfort.checkWorkspace` (publishes diagnostics) and
+  `dimfort.refreshWorkspaceCoverage` (refreshes the coverage cache).
+  The two paths did near-identical work and were merged. Companions
+  expose the single command as "Check Whole Workspace" / similar.
+- **Duplicate workspace-check triggers coalesced.** A second
+  trigger while one is in flight produces a heads-up notification
+  ("DimFort: workspace check already in progress") instead of
+  spawning a second worker.
+
+### Fixed
+
+- **Workspace check now sees unsaved buffer edits** (correctness
+  fix, audit #3). `_check_whole_workspace` was calling `check_files`
+  without `overrides=collect_open_overrides(ls)`, so the command
+  silently used on-disk state. The sibling `_run_workspace_check`
+  in `lsp/coverage.py` already passed overrides correctly; the two
+  paths had diverged.
+- **Code actions on unsaved buffers** now read the live document
+  text instead of disk (correctness fix, audit #18).
+  `code_action.resolve` switched from `_last_scan_declarations`
+  (disk-only) to `_scan_declarations_for_uri` (live buffer + disk
+  fallback).
+- **`state.check_lock` released across the `publishDiagnostics`
+  fan-out** (audit #10). Previously held for the full ~2435-file
+  publish loop, blocking concurrent hover/definition/inlay requests.
+  Moved the publish loop outside the lock — `result` is in
+  `state.last_result` under its own lock and the fan-out only reads.
+- **`dimfort/lineStatus` routes through the per-file cache** (audit
+  #6). Repeated requests over the same `WorksetResult` collapse to
+  O(1). Added a parallel `_cache_statuses` cache so the tree walk
+  runs at most once per file per result; shared with
+  `_get_file_coverage` so `_project_and_aggregate` no longer
+  bypasses the cache.
+- **`project_file` does one tree walk instead of three** (audit
+  #1b). The three legacy `_walk_*` walks merged into a single
+  `_walk_all_channels` pass. ~40 % reduction in
+  `build_workspace_payload` time.
+- **Panel + code-action handlers cache the per-buffer scan**
+  (audit #7). `_scan_declarations_for_uri` now caches by
+  `(uri, doc.version)` so a typing session over the same buffer
+  pays `scan_text` at most once per edit instead of once per
+  cursor move.
+- **`workDoneProgress` covers the projection phase** (audit #14).
+  The progress bar previously ended at "published 2435/2435" and
+  then went silent during the ~5 s `build_workspace_payload`
+  window. Now reports "projecting coverage…" between publish and
+  end. (Visible UX delivered by the async refactor: sync handlers
+  buffered all progress events until return.)
+- **`completion.complete` memoises sorted unit lists** (audit
+  #13). Three `sorted()` passes per keystroke inside `@unit{…}`
+  collapsed to one cache lookup.
+- **`recover_scopes` called once per `panel.resolve` instead of
+  twice** (audit #15). Plumbed `recovered` through `build_imports`
+  so the panel's no-scope fallback doesn't pay the walk twice on
+  partly-parseable files.
+- **`collect_interactions` reports cached by `(symbol, scale)`**
+  (audit #16). Repeated `dimfort/interactions` requests over the
+  same `WorksetResult` collapse to O(1). Real-world saving:
+  ~50–200 ms per repeat request.
+- **`save_persistent_projection_cache` import hoisted** (audit
+  #20). Cosmetic — saves the per-call `sys.modules` lookup.
+
+### Internal
+
+- New `multifile_cache_persist.py` ships with eight unit tests
+  covering roundtrip equality, corrupt-file handling, schema
+  drift, idempotent save.
+- Removed three dead tree-walker functions
+  (`_walk_annotation_comment_lines`,
+  `_walk_unannotated_unit_bearing_declaration_lines`,
+  `_walk_expression_lines`) — unreachable since the merged
+  walker landed.
+- Author metadata in `pyproject.toml` updated from "DimFort
+  contributors" to "Victor Arrial" so it matches the LICENSE and
+  the three companion packages.
+- Eight smaller audit findings (cursor-rate optimisations) parked
+  for 0.2.6.
 
 ## [0.2.4] — 2026-06-07
 
@@ -62,7 +181,7 @@ U005 use-site propagation).
   `lsp/coverage.py` serialises tree traversal under
   `state.ts_handler_lock`. CLI flags: `--summary`,
   `--by-module`, `--json`, `--no-color`. See
-  `docs/design/future/coverage-visualization.md` for the design
+  `docs/design/shipped/coverage-visualization.md` for the design
   spec.
 - **`dimfort/coverageStats` workspace scope + async refresh**:
   calling `dimfort/coverageStats` with no `uri` now returns an
