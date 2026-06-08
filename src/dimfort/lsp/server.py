@@ -116,13 +116,7 @@ log = logging.getLogger("dimfort.lsp")
 server = LanguageServer("dimfort", __version__)
 
 
-def _notify(
-    ls: LanguageServer | None,
-    message: str,
-    *,
-    toast: bool = False,
-    toast_kind: str = "info",
-) -> None:
+def _notify(ls: LanguageServer | None, message: str, *, toast: bool = False) -> None:
     """Surface a progress message to the Python logger and the LSP client.
 
     Mirrors a single line of operational text into two channels: the
@@ -144,10 +138,6 @@ def _notify(
         toast: When ``True``, additionally emit ``window/showMessage``
             so a status-bar popup appears for unblock signals worth
             interrupting the user (e.g. "workspace index ready").
-        toast_kind: Severity hint for the toast: ``"info"`` (default),
-            ``"warning"``, or ``"error"``. Warnings render more
-            persistently in VSCode (don't auto-dismiss as quickly)
-            so a rejected-action signal isn't easy to miss.
 
     Returns:
         None. All side effects are out-of-band notifications.
@@ -166,12 +156,8 @@ def _notify(
             lsp.LogMessageParams(type=lsp.MessageType.Info, message=message)
         )
         if toast:
-            kind = {
-                "warning": lsp.MessageType.Warning,
-                "error": lsp.MessageType.Error,
-            }.get(toast_kind, lsp.MessageType.Info)
             ls.window_show_message(
-                lsp.ShowMessageParams(type=kind, message=message)
+                lsp.ShowMessageParams(type=lsp.MessageType.Info, message=message)
             )
     except Exception:
         log.debug("window/logMessage failed", exc_info=True)
@@ -1770,7 +1756,6 @@ def _cmd_check_workspace(
                 ls,
                 "DimFort: workspace check already in progress",
                 toast=True,
-                toast_kind="warning",
             )
             return {"started": False, "reason": "in-progress"}
         state.workspace_check_in_progress = True
