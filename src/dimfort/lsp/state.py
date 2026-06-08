@@ -173,6 +173,16 @@ class _ServerState:
         self.check_lock = threading.Lock()
         # Guards `last_result`.
         self.last_result_lock = threading.Lock()
+        # Guards the workspace-check single-in-flight flag below. Held
+        # only across the flag check + set; the actual workspace check
+        # runs on a daemon thread with this lock released.
+        self.workspace_check_lock = threading.Lock()
+        # True while a daemon-thread workspace check is running. Used
+        # to coalesce duplicate ``dimfort.checkWorkspace`` triggers
+        # (typing on the command twice, panel auto-refresh racing the
+        # user's manual press, etc.). The active thread clears it
+        # in its ``finally``.
+        self.workspace_check_in_progress = False
         # Guards `workspace_index`.
         self.workspace_index_lock = threading.Lock()
         # Serialises tree-sitter traversal across feature handlers.

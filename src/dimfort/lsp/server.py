@@ -1717,32 +1717,81 @@ def _cmd_check_workspace(
 ) -> dict[str, Any] | None:
     """Implements ``workspace/executeCommand dimfort.checkWorkspace``.
 
-    Runs the checker over every file in the workspace index,
-    publishing diagnostics, populating the workspace coverage cache,
-    and returning the fresh workspace coverage payload to the caller.
+    Async since 0.2.5. The handler spawns a daemon-thread worker and
+    returns immediately so:
 
-    This is the unified "refresh everything" command — it was split
-    into ``dimfort.checkWorkspace`` (diagnostics) and
-    ``dimfort.refreshWorkspaceCoverage`` (coverage cache) pre-0.2.5;
-    the two did near-identical underlying work, so the merge avoids
-    running ``check_files`` twice when the user wants both.
+    1. ``workDoneProgress`` events fire in real time (sync handlers
+       buffer all notifications until return; the spawned thread
+       leaves the pygls event loop free to flush each progress tick
+       as it arrives).
+    2. Other LSP requests (hover, definition, inlay, panelInfo) get
+       served concurrently instead of blocking for the duration of
+       the workspace check.
 
-    Synchronous: blocks the LSP request for the duration of the
-    workspace check. The companion shows a progress indicator + bar
-    dimming while the request is in flight. On a real-world Fortran
-    workset (2435 files) that's ~38 s cold / ~1-2 s warm.
+    Wire-format change: the executeCommand response no longer carries
+    the workspace coverage payload inline (the work isn't done yet
+    when the response returns). The payload is delivered via a
+    ``dimfort/workspaceCheckCompleted`` notification once the daemon
+    worker finishes. Companions subscribe to that notification and
+    update their bar from it.
+
+    Duplicate triggers are coalesced: pressing the command while a
+    check is already running shows a heads-up toast and returns
+    without spawning a second worker.
 
     Args:
         ls: Active language server.
         *_args: Forwarded command arguments (none expected).
 
     Returns:
-        The workspace coverage payload (``{scope, files, total}``)
-        on success, or ``None`` when the workspace index isn't ready
-        / the check failed. Companions ignore the ``None`` case (bar
-        keeps its prior state).
+        ``{"started": True}`` when the daemon worker was spawned,
+        ``{"started": False, "reason": "..."}`` when the request
+        couldn't start (already in flight, index not ready). The
+        coverage payload arrives later via the completion
+        notification.
     """
-    return _check_whole_workspace(ls)
+    with state.workspace_check_lock:
+        if state.workspace_check_in_progress:
+            _notify(
+                ls,
+                "DimFort: workspace check already in progress",
+                toast=True,
+            )
+            return {"started": False, "reason": "in-progress"}
+        state.workspace_check_in_progress = True
+    threading.Thread(
+        target=_run_workspace_check_async,
+        args=(ls,),
+        daemon=True,
+        name="dimfort-workspace-check",
+    ).start()
+    return {"started": True}
+
+
+def _run_workspace_check_async(ls: LanguageServer) -> None:
+    """Daemon-thread wrapper: run the check, fire the completion notification.
+
+    Mirrors the pattern used by ``_build_initial_index``: live on a
+    background thread so notifications and other LSP requests can
+    flush through the pygls event loop concurrently. On any error
+    we still clear the in-flight flag so the next trigger isn't
+    permanently blocked.
+    """
+    try:
+        payload = _check_whole_workspace(ls)
+        with contextlib.suppress(Exception):
+            ls.protocol.notify(
+                "dimfort/workspaceCheckCompleted", payload or {"failed": True},
+            )
+    except Exception:
+        log.exception("workspace check worker crashed")
+        with contextlib.suppress(Exception):
+            ls.protocol.notify(
+                "dimfort/workspaceCheckCompleted", {"failed": True},
+            )
+    finally:
+        with state.workspace_check_lock:
+            state.workspace_check_in_progress = False
 
 
 def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
