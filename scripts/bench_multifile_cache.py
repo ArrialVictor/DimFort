@@ -17,6 +17,15 @@ M4-style disk-persistent ProjectionCache could eliminate. Comparing
 **post-restart** against **cold** shows the (already shipped) win the
 disk CacheStore delivers.
 
+After each engine pass, the bench also runs the **LSP-layer post-check
+work** — ``build_workspace_payload`` — and reports its time as a
+separate row. This is the user-perceived-wall-clock column that the
+0.2.5 perf cycle was blind to: the engine bench measured ``check_files``
+total but never the wrapping work the LSP server adds before returning
+the response to the companion. ``check_files + payload`` is the closest
+proxy to "wall-clock from ``:DimFortCheckWorkspace`` to bar update"
+that doesn't need a live ``pygls`` server.
+
 Usage::
 
     python scripts/bench_multifile_cache.py <path> [--limit N]
@@ -31,6 +40,8 @@ import argparse
 import sys
 from pathlib import Path
 
+import time
+
 from dimfort.core import unit_config  # noqa: F401  (installs DEFAULT_TABLE)
 from dimfort.core.cache_store import CacheStore
 from dimfort.core.multifile import check_files
@@ -43,6 +54,7 @@ from dimfort.core.multifile_cache_persist import (
     load_persistent_projection_cache,
     save_persistent_projection_cache,
 )
+from dimfort.lsp.coverage import build_workspace_payload
 
 
 def _collect(root: Path) -> list[Path]:
@@ -147,6 +159,19 @@ def main(argv: list[str] | None = None) -> int:
         cache=cache_store, cache_mode=cache_mode,
     )
 
+    # LSP-layer post-check work: ``build_workspace_payload`` is the
+    # single biggest chunk of "post-check, pre-return" work in
+    # ``_check_whole_workspace`` (see lsp/coverage.py:122). Time it
+    # for each engine regime so the wall-clock perceived by the
+    # editor user is visible in the bench.
+    def _time_payload(result):
+        t0 = time.monotonic()
+        build_workspace_payload(result)
+        return time.monotonic() - t0
+    cold_payload = _time_payload(cold)
+    warm_payload = _time_payload(warm)
+    pr_payload = _time_payload(post_restart)
+
     for phase in ("load", "aggregate", "index", "check"):
         c = cold.phase_timings.get(phase, 0.0)
         w = warm.phase_timings.get(phase, 0.0)
@@ -158,21 +183,47 @@ def main(argv: list[str] | None = None) -> int:
     pr_total = sum(post_restart.phase_timings.values())
     print("-" * 55)
     print(
-        f"{'total':<10} {_fmt(c_total):>10} {_fmt(w_total):>10} "
+        f"{'engine':<10} {_fmt(c_total):>10} {_fmt(w_total):>10} "
         f"{_fmt(pr_total):>10}"
+    )
+    # LSP-layer rows below the engine totals — what the user actually
+    # waits for between hitting :DimFortCheckWorkspace and seeing the
+    # bar update. payload = ``build_workspace_payload``; user-wall is
+    # the engine + payload sum (a lower-bound proxy — the real
+    # LSP layer adds per-file publishDiagnostics fan-out, inlay
+    # refresh, and the disk save, none of which are reproducible
+    # without a live pygls server).
+    print(
+        f"{'payload':<10} {_fmt(cold_payload):>10} {_fmt(warm_payload):>10} "
+        f"{_fmt(pr_payload):>10}"
+    )
+    print("-" * 55)
+    print(
+        f"{'user-wall':<10} {_fmt(c_total + cold_payload):>10} "
+        f"{_fmt(w_total + warm_payload):>10} "
+        f"{_fmt(pr_total + pr_payload):>10}"
     )
     print()
     print(f"tree_cache:    {len(tree_cache)} entries (warm)")
     print(f"exports_cache: {len(exports_cache)} entries (warm)")
     print()
-    # The headline derived numbers — what an M4-style disk-persistent
-    # ProjectionCache could potentially eliminate is bounded above by
-    # ``post-restart - warm``. ``cold - post-restart`` is what the
-    # existing disk CacheStore already buys.
+    # Engine-side ceilings (what disk-persisting in-memory caches
+    # could still buy): post-restart − warm is the gap a TreeCache /
+    # ModuleExportsCache disk layer would have to close.
     pr_minus_w = pr_total - w_total
     c_minus_pr = c_total - pr_total
-    print(f"M4 ceiling   (post-restart − warm): {_fmt(pr_minus_w)}")
-    print(f"CacheStore wins (cold − post-rs):   {_fmt(c_minus_pr)}")
+    print(f"Engine ceiling (post-restart − warm): {_fmt(pr_minus_w)}")
+    print(f"CacheStore wins (cold − post-rs):     {_fmt(c_minus_pr)}")
+    # LSP-layer ceiling: build_workspace_payload runs at a flat
+    # ~constant cost regardless of engine cache state — it's a
+    # cache-size invariant (workspace file count is what scales it).
+    # Reducing that floor needs either the cache routing fix
+    # (_project_and_aggregate → _get_file_coverage) or merging the
+    # three-walk projection into one, both audit findings.
+    print(
+        f"LSP-layer floor (max payload cost):   "
+        f"{_fmt(max(cold_payload, warm_payload, pr_payload))}"
+    )
     return 0
 
 
