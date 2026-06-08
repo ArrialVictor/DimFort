@@ -865,74 +865,61 @@ Shipped pre-feature in DimFort 0.2.4 main:
 - §8.1 formula refinement (`ok / (ok + warn + fire) × 100`).
 - Three companion paint integrations: VSCompanion, Nvim, Emacs.
 
-### 13.2 0.2.4: the stats bar (current target)
+### 13.2 0.2.4–0.2.5 stats bar: design history → manual-only
 
-Server side:
+The stats bar shipped in 0.2.4 with a `disabled | manual |
+automatic` tri-state and an async server-side refresh worker
+(daemon thread, idle debounce, `wsStale` flag). The 0.2.5
+intention was to flip the companion default to `automatic`
+once the multifile cache made the underlying check cheap
+enough.
 
-- `lsp/coverage.py` workspace-scope branch: `dimfort
-  /coverageStats` with no `uri` returns a workspace-wide aggregate
-  rather than the per-active-file workset.
-- Architecture: the workspace check runs on a daemon thread; the
-  stats handler returns the last-cached aggregate instantly + a
-  `wsStale` flag. Background refresh fires on dirty marks from
-  `server.py`'s `didChange` / `didSave` handlers, behind an idle
-  debounce so active typing doesn't trigger constant refreshes.
-- Defensive cache (dedicated `CacheStore` in tempdir, independent
-  of the user's `cache_mode`) so the cached-side cost stays low.
+**That intention was wrong and got dropped during 0.2.5
+in-editor smoke testing.** Even with the cache work landed
+(warm WS check ~18-22 s on a 2435-file real-world workset),
+auto-refresh on every edit produced a deeply unsatisfying UX:
 
-Companion side (one PR per editor, VSCode first):
+- The 20 s refresh holds `check_lock` for its full duration,
+  blocking the active-file `didChange` for the same window.
+  Yielding the lock periodically (the M5 attempt) made
+  responsiveness merely "less bad" rather than "fine."
+- For users editing constants modules (the typical DimFort
+  annotation workflow per
+  [[feedback-annotate-constants-modules-first]]), every save
+  invalidates ~all consumers via dep-digest ripple, so even
+  M2-style incremental aggregation doesn't reduce the cost
+  meaningfully.
+- The async state machine (dirty flags, debounce, in-flight
+  guards, race-vs-edit handling) added significant code with
+  little UX dividend.
 
-- Side-panel bottom-bar segment: `File: <pct>% (🟡 N 🔴 M)` is
-  the default shipped surface. The full `· WS: …` extension
-  exists but is opt-in (per §8.3.1).
-- New companion setting `dimfort.coverage.workspace_stats`:
-  `disabled | manual | automatic`. **Shipping default:
-  `disabled`** — the WS segment is omitted from the bar entirely
-  (no separator, no placeholder). Rationale: in-editor smoke
-  testing on a larger real-world Fortran codebase confirmed that
-  the background workspace check holds the LSP `check_lock` for
-  tens of seconds at a time, which freezes per-file diagnostic
-  checks (squiggles + panel updates) for the duration. The
-  async architecture moves the check off the request thread —
-  but as long as `check_files` is slow, `check_lock` contention
-  makes the editor feel unresponsive every time WS refreshes.
-  The default ships off until 0.2.5's multifile cache makes the
-  underlying check cheap enough.
-  - **`manual`** (opt-in): WS shows `?` with a click / palette
-    command to compute on demand. User accepts the freeze cost
-    in exchange for the data.
-  - **`automatic`** (opt-in): bar wires to the server's async
-    refresh cycle. Same cost characteristics; recommended only
-    on small worksets where the freeze is sub-second.
-- Coverage report buffer (per §8.3.2) — single-buffer with
-  workspace header + per-file rows, click-to-jump. Same opt-in
-  story: visible / functional only when `workspace_stats` is
-  enabled.
+**0.2.5 design — shipped:**
 
-Spec moves nothing; this section accumulates entries as pieces
-ship.
+- Server: removed the async refresh worker, dirty tracking,
+  idle debounce, `mark_workspace_dirty` hooks in didChange /
+  didSave, and the `ws_stale` / `force_refresh` wire-format
+  fields. `dimfort/coverageStats` workspace-scope is now a
+  pure cache read of `_ws_result_cache`.
+- New LSP command `dimfort.refreshWorkspaceCoverage` (registered
+  via `workspace/executeCommand`) runs the workspace check
+  synchronously and seeds the cache. Companions wire this to a
+  user-facing "Refresh Workspace Coverage" palette command and
+  surround the call with a progress indicator + dimmed panel.
+- Companion: the `dimfort.coverage.workspace_stats` setting is
+  removed. The bar is always available, always shows
+  last-cached numbers (or "click to refresh" before the first
+  refresh).
 
-When 0.2.5's multifile cache lands, the companion default flips
-from `disabled` to (probably) `automatic`. That's a one-line
-companion change — no re-architecture needed; the
-infrastructure built for 0.2.4 already supports all three
-modes.
+The cache-fueled performance work itself (multifile cache,
+Q1-Q5, W1) ships in 0.2.5 and benefits *every* `check_files`
+caller — active-file path, `dimfort.checkWorkspace`, and the
+new manual coverage refresh. The auto-refresh removal is
+purely UX, not undoing performance work.
 
-### 13.3 0.2.5: multifile cache (deep optimisation)
-
-DimFort-wide infrastructure work that benefits the active-file
-LSP loop, `dimfort.checkWorkspace`, AND the WS coverage bar
-simultaneously. Captured in its own design doc:
-[`../shipped/multifile-cache.md`](../shipped/multifile-cache.md).
-Measured (post-shipping): load 17.84 s → ~6 s warm, index 3.51 s
-→ ~0.1 s warm, check 28.63 s → ~1.4 s warm on a 2435-file
-real-world Fortran workset (4.3× total speedup). Q1-Q4 cheap
-follow-ups and remaining M1/M2/M3 architectural items captured
-at [`perf-audit-0.2.5.md`](perf-audit-0.2.5.md).
-
-On the coverage side, 0.2.5 flips the companion default from
-`manual` to `automatic` and may shorten the server-side idle
-debounce. No re-architecture; one-line default changes.
+See [`perf-audit-0.2.5.md`](perf-audit-0.2.5.md) for the audit
+that motivated this design pivot and
+[`../shipped/multifile-cache.md`](../shipped/multifile-cache.md)
+for the cache infrastructure.
 
 ### 13.4 0.2.6+: other planned 0.2.4 items deferred
 
