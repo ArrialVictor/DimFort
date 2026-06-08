@@ -1,9 +1,21 @@
 """Measure the multifile-cache effect on the load + index phases.
 
-Runs ``check_files`` twice over the same workset: the first pass
-populates the caches (cold), the second consumes them (warm). Prints
-per-phase wall-clock timings side by side so the collapse on the warm
-pass is visible.
+Runs ``check_files`` three times over the same workset:
+
+1. **cold** — every cache empty. Populates the disk CacheStore and the
+   in-memory Tree / ModuleExports / Projection caches.
+2. **warm** — same process, every cache populated. The fully-warm
+   path users see when they re-run a check inside an already-running
+   server session.
+3. **post-restart** — disk CacheStore retained, but Tree / Exports /
+   Projection caches dropped. Models a fresh server process opening
+   onto a project whose on-disk caches survived from a prior session.
+   This is the regime real users hit on every ``nvim`` start.
+
+Comparing **post-restart** against **warm** isolates the cost that an
+M4-style disk-persistent ProjectionCache could eliminate. Comparing
+**post-restart** against **cold** shows the (already shipped) win the
+disk CacheStore delivers.
 
 Usage::
 
@@ -26,6 +38,10 @@ from dimfort.core.multifile_cache import (
     ModuleExportsCache,
     ProjectionCache,
     TreeCache,
+)
+from dimfort.core.multifile_cache_persist import (
+    load_persistent_projection_cache,
+    save_persistent_projection_cache,
 )
 
 
@@ -89,8 +105,8 @@ def main(argv: list[str] | None = None) -> int:
         f"CacheStore: {'on (' + cache_mode + ')' if cache_store else 'off'}"
     )
     print()
-    print(f"{'phase':<10} {'cold':>10} {'warm':>10} {'speedup':>10}")
-    print("-" * 44)
+    print(f"{'phase':<10} {'cold':>10} {'warm':>10} {'post-rs':>10}")
+    print("-" * 55)
 
     # Cold pass populates every cache; warm pass consumes them. The
     # CacheStore default-on mirrors the LSP / `dimfort check` runtime
@@ -105,23 +121,58 @@ def main(argv: list[str] | None = None) -> int:
         projection_cache=projection_cache,
         cache=cache_store, cache_mode=cache_mode,
     )
+    # Post-restart pass: drop the in-memory caches but keep the disk
+    # CacheStore. Mirrors what happens when a fresh ``dimfort lsp``
+    # process attaches to a project whose ``.dimfort-cache/`` survived
+    # from yesterday's session.
+    #
+    # M4: after the warm pass finishes, persist the ProjectionCache
+    # to disk and reload it into the fresh post-restart cache. The
+    # cache populated by the warm pass is what the LSP would have
+    # written at the end of its prior session.
+    if cache_store is not None:
+        save_persistent_projection_cache(projection_cache, cache_store.root)
+    tree_cache_pr = TreeCache()
+    exports_cache_pr = ModuleExportsCache()
+    if cache_store is not None:
+        projection_cache_pr = (
+            load_persistent_projection_cache(cache_store.root)
+            or ProjectionCache()
+        )
+    else:
+        projection_cache_pr = ProjectionCache()
+    post_restart = check_files(
+        files, tree_cache=tree_cache_pr, exports_cache=exports_cache_pr,
+        projection_cache=projection_cache_pr,
+        cache=cache_store, cache_mode=cache_mode,
+    )
 
     for phase in ("load", "aggregate", "index", "check"):
         c = cold.phase_timings.get(phase, 0.0)
         w = warm.phase_timings.get(phase, 0.0)
-        speedup = (c / w) if w > 0 else float("inf")
-        print(f"{phase:<10} {_fmt(c):>10} {_fmt(w):>10} {speedup:>9.1f}x")
+        pr = post_restart.phase_timings.get(phase, 0.0)
+        print(f"{phase:<10} {_fmt(c):>10} {_fmt(w):>10} {_fmt(pr):>10}")
 
     c_total = sum(cold.phase_timings.values())
     w_total = sum(warm.phase_timings.values())
-    print("-" * 44)
+    pr_total = sum(post_restart.phase_timings.values())
+    print("-" * 55)
     print(
         f"{'total':<10} {_fmt(c_total):>10} {_fmt(w_total):>10} "
-        f"{(c_total / w_total if w_total > 0 else float('inf')):>9.1f}x"
+        f"{_fmt(pr_total):>10}"
     )
     print()
-    print(f"tree_cache:    {len(tree_cache)} entries")
-    print(f"exports_cache: {len(exports_cache)} entries")
+    print(f"tree_cache:    {len(tree_cache)} entries (warm)")
+    print(f"exports_cache: {len(exports_cache)} entries (warm)")
+    print()
+    # The headline derived numbers — what an M4-style disk-persistent
+    # ProjectionCache could potentially eliminate is bounded above by
+    # ``post-restart - warm``. ``cold - post-restart`` is what the
+    # existing disk CacheStore already buys.
+    pr_minus_w = pr_total - w_total
+    c_minus_pr = c_total - pr_total
+    print(f"M4 ceiling   (post-restart − warm): {_fmt(pr_minus_w)}")
+    print(f"CacheStore wins (cold − post-rs):   {_fmt(c_minus_pr)}")
     return 0
 
 
