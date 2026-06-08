@@ -62,7 +62,6 @@ from dimfort.core.multifile_cache import (
     ProjectionKey,
 )
 
-
 # Bump when any persisted dataclass changes shape (added/removed field,
 # renamed field, semantic change to an existing field). Mismatch causes
 # :func:`load_persistent_projection_cache` to silently drop the file

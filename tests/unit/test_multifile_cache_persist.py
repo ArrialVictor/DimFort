@@ -19,7 +19,6 @@ from dimfort.core.multifile_cache_persist import (
     save_persistent_projection_cache,
 )
 
-
 SAMPLE = """\
 module sample
   implicit none
