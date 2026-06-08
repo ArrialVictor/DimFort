@@ -52,10 +52,14 @@ from dimfort.core.cache_serde import (
 from dimfort.core.cache_store import CacheStore
 from dimfort.core.diagnostics import AutocastEvent, Diagnostic, Position, Severity
 from dimfort.core.multifile_cache import (
+    CachedProjection,
     ExportsKey,
     ModuleExportsCache,
+    ProjectionCache,
+    ProjectionKey,
     TreeCache,
     TreeKey,
+    patterns_fingerprint,
 )
 from dimfort.core.rewrite import suggest_rewrite as _suggest_rewrite
 from dimfort.core.symbols import (
@@ -263,6 +267,8 @@ def _load_one(
     assume_patterns: tuple[StructuredPattern, ...] = DEFAULT_ASSUME_PATTERNS,
     affine_patterns: tuple[StructuredPattern, ...] = DEFAULT_AFFINE_PATTERNS,
     tree_cache: TreeCache | None = None,
+    projection_cache: ProjectionCache | None = None,
+    patterns_fp: str = "",
 ) -> _Loaded:
     """Read source, scan + attach annotations, parse with tree-sitter.
 
@@ -291,6 +297,14 @@ def _load_one(
         tree_cache: Optional session-scoped tree cache; on a hit the
             parse step is skipped entirely and the cached
             tree-sitter outputs replay into ``_Loaded``.
+        projection_cache: Optional session-scoped scan+attach cache;
+            on a hit, both walks are skipped and the cached outputs
+            replay into ``_Loaded``.
+        patterns_fp: Pre-computed annotation-patterns fingerprint
+            (from :func:`patterns_fingerprint`). When empty and
+            ``projection_cache`` is set, ``_load_one`` recomputes the
+            fingerprint per call — the caller is expected to compute
+            it once per ``check_files`` call and thread it through.
 
     Returns:
         A ``_Loaded`` record. On any pre-parse failure (read,
@@ -344,14 +358,42 @@ def _load_one(
         except Exception as exc:
             parse_error = str(exc)
 
-    scan = scan_text(
-        text,
-        unit_patterns=unit_patterns,
-        assume_patterns=assume_patterns,
-        affine_patterns=affine_patterns,
-        tree=source_tree,
-    )
-    attachment = attach(scan)
+    # Projection cache (M1): when the file's content + patterns
+    # haven't changed, the scan + attach outputs are identical to last
+    # call. Skip both walks on hit. Patterns fingerprint is computed
+    # once per check_files call by the caller; falls back to a fresh
+    # fingerprint here when ``_load_one`` is called outside that path.
+    proj_key: ProjectionKey | None = None
+    if projection_cache is not None:
+        fp = patterns_fp or patterns_fingerprint(
+            unit_patterns, assume_patterns, affine_patterns,
+        )
+        proj_key = ProjectionKey(src_hash, fp)
+        proj_hit = projection_cache.get(proj_key)
+        if proj_hit is not None:
+            scan = proj_hit.scan
+            attachment = proj_hit.attachment
+        else:
+            scan = scan_text(
+                text,
+                unit_patterns=unit_patterns,
+                assume_patterns=assume_patterns,
+                affine_patterns=affine_patterns,
+                tree=source_tree,
+            )
+            attachment = attach(scan)
+            projection_cache.put(
+                proj_key, CachedProjection(scan=scan, attachment=attachment),
+            )
+    else:
+        scan = scan_text(
+            text,
+            unit_patterns=unit_patterns,
+            assume_patterns=assume_patterns,
+            affine_patterns=affine_patterns,
+            tree=source_tree,
+        )
+        attachment = attach(scan)
 
     if hit is not None:
         # Non-cpp: source_hash == src_hash. Cpp: source_hash is the
@@ -917,6 +959,7 @@ def check_files(
     affine_patterns: tuple[StructuredPattern, ...] = DEFAULT_AFFINE_PATTERNS,
     tree_cache: TreeCache | None = None,
     exports_cache: ModuleExportsCache | None = None,
+    projection_cache: ProjectionCache | None = None,
     outer_lock: threading.Lock | None = None,
     lock_yield_every: int = 50,
 ) -> WorksetResult:
@@ -966,6 +1009,10 @@ def check_files(
             when set, unchanged files skip the per-file
             ``collect_function_signatures_and_module_exports`` walk in
             the index phase.
+        projection_cache: Optional session-scoped
+            :class:`~dimfort.core.multifile_cache.ProjectionCache`;
+            when set, unchanged files skip the ``scan_text`` +
+            ``attach`` passes during the load phase.
         outer_lock: When the caller is holding a lock around this whole
             ``check_files`` call (typically the LSP's ``check_lock``,
             held by the workspace coverage refresh) and wants the lock
@@ -1001,6 +1048,15 @@ def check_files(
 
     result = WorksetResult()
     t_total_start = time.perf_counter()
+
+    # Compute the patterns fingerprint once per call so every file's
+    # ProjectionKey reuses the same string (cheap; the patterns rarely
+    # change between calls but we don't want per-file recomputation).
+    patterns_fp = (
+        patterns_fingerprint(unit_patterns, assume_patterns, affine_patterns)
+        if projection_cache is not None
+        else ""
+    )
 
     # Session-scoped memo (when an exports_cache is wired in) so the
     # 120k-call ``units.parse`` workload during Phase B + index +
@@ -1046,6 +1102,8 @@ def check_files(
                 assume_patterns=assume_patterns,
                 affine_patterns=affine_patterns,
                 tree_cache=tree_cache,
+                projection_cache=projection_cache,
+                patterns_fp=patterns_fp,
             ), None
         except Exception as exc:
             # Widened from ``OSError`` only — the three pre-parse

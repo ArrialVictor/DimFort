@@ -42,7 +42,11 @@ from pathlib import Path
 from dimfort.config import DimfortConfig
 from dimfort.core.cache_store import CacheStore
 from dimfort.core.multifile import WorksetResult
-from dimfort.core.multifile_cache import ModuleExportsCache, TreeCache
+from dimfort.core.multifile_cache import (
+    ModuleExportsCache,
+    ProjectionCache,
+    TreeCache,
+)
 from dimfort.core.workspace_index import WorkspaceIndex
 
 # Modules treated as known-external (Fortran intrinsics + common libs).
@@ -223,6 +227,10 @@ class _ServerState:
         # ``dimfort lsp --no-{tree,exports}-cache`` flag is set.
         self.tree_cache: TreeCache | None = TreeCache()
         self.exports_cache: ModuleExportsCache | None = ModuleExportsCache()
+        # Per-file scan + attach output cache (M1). Skips both walks on
+        # a content-hash + patterns-fingerprint hit. Lifetime = LSP
+        # session.
+        self.projection_cache: ProjectionCache | None = ProjectionCache()
 
 
 state = _ServerState()
