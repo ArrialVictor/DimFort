@@ -21,8 +21,7 @@ just one file.
 
 ## Development setup
 
-The canonical workflow uses [`uv`](https://docs.astral.sh/uv/) — the
-lockfile `uv.lock` is committed.
+The canonical workflow uses [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/ArrialVictor/DimFort.git
@@ -38,6 +37,10 @@ Minimum Python version is 3.11. The Fortran parser
 ([`tree-sitter-fortran`](https://pypi.org/project/tree-sitter-fortran/))
 is a runtime dependency installed automatically.
 
+The lockfile (`uv.lock`) is intentionally not tracked — DimFort's
+runtime dependency set is small and the project floats on the
+constraints declared in `pyproject.toml`.
+
 If you'd rather not adopt `uv`, the plain-`pip` equivalent still
 works:
 
@@ -46,10 +49,6 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev,lsp]"
 ```
-
-CI uses `uv sync` so the lockfile pins. PRs that change runtime
-dependencies must regenerate `uv.lock` (`uv lock`) and commit the
-result alongside the `pyproject.toml` change.
 
 ## Running tests
 

@@ -2,7 +2,7 @@
 
 All notable changes to DimFort are documented here. Format inspired by [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.2.5] — 2026-06-09
 
 ### Highlight
 
