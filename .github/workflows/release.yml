@@ -1,8 +1,8 @@
 name: release
 
 # A single tag push (v*.*.*) gates the full release pipeline:
-#   1. test:           pytest + ruff across Linux/macOS/Windows on
-#                      Python 3.11 (minimum supported), 3.12, 3.13.
+#   1. test:           pytest + ruff + mypy across Linux/macOS/Windows
+#                      on Python 3.11 (minimum supported), 3.12, 3.13.
 #                      Nine jobs in total; fail-fast is off so one
 #                      flaky platform doesn't mask issues elsewhere.
 #   2. build:          build sdist + wheel, check with twine.
@@ -40,6 +40,8 @@ jobs:
           pip install -e ".[dev,lsp]"
       - name: Lint
         run: ruff check .
+      - name: Type-check
+        run: mypy src/
       - name: Test
         run: pytest
 

@@ -5,7 +5,7 @@ holds the per-line projection logic; this module only translates
 between the LSP wire format and the core dataclasses, and serialises
 tree-sitter traversal under ``state.ts_handler_lock``.
 
-See ``docs/design/future/coverage-visualization.md`` for the design
+See ``docs/design/shipped/coverage-visualization.md`` for the design
 spec.
 """
 from __future__ import annotations
