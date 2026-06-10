@@ -85,6 +85,9 @@ from dimfort.core.diagnostics import (
 )
 from dimfort.core.multifile import check_files
 from dimfort.core.multifile_cache_persist import save_persistent_projection_cache
+from dimfort.core.multifile_exports_cache_persist import (
+    save_persistent_exports_cache,
+)
 from dimfort.core.unit_patterns import (
     compile_structured_patterns,
     compile_unit_patterns,
@@ -1143,6 +1146,9 @@ def _build_initial_index(ls: LanguageServer, roots: tuple[Path, ...]) -> None:
         from dimfort.core.multifile_cache_persist import (
             load_persistent_projection_cache,
         )
+        from dimfort.core.multifile_exports_cache_persist import (
+            load_persistent_exports_cache,
+        )
         from dimfort.core.workspace_index import (
             load_persistent_index,
             save_persistent_index,
@@ -1156,6 +1162,13 @@ def _build_initial_index(ls: LanguageServer, roots: tuple[Path, ...]) -> None:
         prior_proj = load_persistent_projection_cache(state.cache.root)
         if prior_proj is not None and state.projection_cache is not None:
             state.projection_cache = prior_proj
+        # M5: warm the module-exports cache from disk for the same
+        # cold-after-restart reason. Phase C re-walks every tree for
+        # ``collect_function_signatures_and_module_exports`` otherwise.
+        # Best-effort with the same silent-fallback contract.
+        prior_exports = load_persistent_exports_cache(state.cache.root)
+        if prior_exports is not None and state.exports_cache is not None:
+            state.exports_cache = prior_exports
 
     scan_started_at = time.monotonic()
     try:
@@ -2193,6 +2206,17 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
             target=save_persistent_projection_cache,
             args=(proj_cache, cache_root),
             name="dimfort-projection-cache-save",
+            daemon=True,
+        ).start()
+    # M5: same save-on-completion pattern for the module-exports
+    # cache. Independent daemon thread so the two writes can overlap.
+    if state.cache is not None and state.exports_cache is not None:
+        cache_root = state.cache.root
+        exp_cache = state.exports_cache
+        threading.Thread(
+            target=save_persistent_exports_cache,
+            args=(exp_cache, cache_root),
+            name="dimfort-exports-cache-save",
             daemon=True,
         ).start()
     return payload
