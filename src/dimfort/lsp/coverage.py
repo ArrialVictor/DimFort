@@ -7,6 +7,25 @@ tree-sitter traversal under ``state.ts_handler_lock``.
 
 See ``docs/design/shipped/coverage-visualization.md`` for the design
 spec.
+
+Module-level caches
+-------------------
+
+Three coexisting caches:
+
+* ``_ws_cache`` — session-scoped tempdir-backed :class:`CacheStore`,
+  lazily created. Independent of ``state.cache`` so a coverage refresh
+  always has read-write access. One singleton; lifetime = LSP session.
+  Not URI-keyed.
+* ``_ws_result_cache`` — single-entry latched :class:`WorksetResult`
+  from the most recent manual workspace refresh. Read by ``stats()``,
+  written by :func:`seed_workspace_cache`. Stays put on file changes
+  by design — user re-triggers explicitly.
+* ``_cache_files`` / ``_cache_statuses`` — per-file coverage projection
+  keyed by ``(WorksetResult identity, Path)``. Cleared when
+  ``state.last_result`` swaps to a new identity; grows with workset
+  size during a single result's lifetime. Not URI-keyed; didClose has
+  no effect.
 """
 from __future__ import annotations
 

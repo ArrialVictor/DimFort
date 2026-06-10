@@ -138,6 +138,21 @@ class UseRef:
 class WorkspaceIndex:
     """Module-to-file map plus per-file ``use`` lists.
 
+    **Bound:** O(workspace files). Grows on first scan; per-file
+    edits replace entries via :func:`update_index`.
+
+    **Invalidation:**
+
+    - didChange / didSave: :func:`update_index` re-scans the changed
+      file and replaces its entries.
+    - Cold start: :func:`scan_workspace` (with optional ``prior_index``
+      validated against on-disk file hashes) rebuilds the index.
+
+    **didClose:** entries persist (the index is a workspace property,
+    not an open-buffer property). External file deletions are NOT
+    pruned today — see the ``workspace/didChangeWatchedFiles``
+    follow-up task in ``0_2_6_PLAN.md``.
+
     Procedures contained inside a module are deliberately excluded from
     ``procedures`` — those are reached through the module's exports
     already. Top-level (file-scope) procedures, by contrast, mirror the

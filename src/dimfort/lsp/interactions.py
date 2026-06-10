@@ -37,6 +37,12 @@ if TYPE_CHECKING:
 # the same identifier (and the panel re-asks during e.g. a refresh
 # burst) would otherwise re-scan every cached tree in the workset
 # for that symbol on every call.
+#
+# Bound: unbounded per result, in practice O(distinct symbols
+# queried this session); cleared whenever ``state.last_result``
+# swaps to a new identity. didClose has no effect (not URI-keyed).
+# 0.2.6 plan item #16 will swap this to an LRU keyed by
+# ``(id(result), symbol_lc, scale)``.
 _report_cache_lock = threading.Lock()
 _report_cache_result: WorksetResult | None = None
 _report_cache: dict[tuple[str, bool], SymbolReport] = {}
