@@ -5,8 +5,27 @@ accesses across the editor's visible range. Each candidate node is pushed
 through the ts_checker resolver so the rendered unit matches what the
 diagnostic pipeline computes. ``server.py`` registers the LSP feature and —
 holding ``state.ts_handler_lock`` — delegates the traversal here.
+
+Per-URI table cache (audit #4)
+------------------------------
+
+Every ``textDocument/inlayHint`` request used to re-run three full tree
+walks (``collect_var_types``, ``collect_parameter_values``,
+``collect_type_field_types``) — ~30-150 ms per scroll on a 5000-line
+file under ``state.ts_handler_lock``. The tables only change when the
+buffer changes, so we memoise them by ``(uri, doc_version)``: a
+cursor-scroll burst reuses the previous build for free.
+
+Cache contract: key = ``uri``; value = ``(version, var_types,
+parameter_values, type_field_types)``. Bound: O(open buffers).
+Invalidated naturally by ``state.doc_versions`` bumping on every
+``didChange``. Evicted on ``didClose`` via :func:`forget_uri`,
+called from ``server._forget_uri`` so closed buffers don't accumulate.
 """
 from __future__ import annotations
+
+import threading
+from fractions import Fraction
 
 from lsprotocol import types as lsp
 from tree_sitter import Node
@@ -17,6 +36,28 @@ from dimfort.lsp import ts_helpers as _ts_h
 from dimfort.lsp.hover_render import _unit_pretty
 from dimfort.lsp.state import state
 from dimfort.lsp.tree_access import _build_ts_ctx, _trees_for
+
+# uri → (version, var_types, parameter_values, type_field_types)
+_tables_cache: dict[
+    str,
+    tuple[
+        int,
+        dict[str, str],
+        dict[str, Fraction | int],
+        dict[tuple[str, str], str],
+    ],
+] = {}
+_tables_cache_lock = threading.Lock()
+
+
+def forget_uri(uri: str) -> None:
+    """Evict the cached inlay tables for ``uri``.
+
+    Called from the LSP ``textDocument/didClose`` handler so closed
+    buffers don't accumulate in the per-URI cache.
+    """
+    with _tables_cache_lock:
+        _tables_cache.pop(uri, None)
 
 
 def resolve(params: lsp.InlayHintParams) -> list[lsp.InlayHint] | None:
@@ -43,7 +84,8 @@ def resolve(params: lsp.InlayHintParams) -> list[lsp.InlayHint] | None:
         around this call — the tree-sitter traversal is not safe
         across concurrent readers (the documented concurrency gotcha).
     """
-    found = _trees_for(params.text_document.uri)
+    uri = params.text_document.uri
+    found = _trees_for(uri)
     if found is None:
         return []
     resolved_path, tree, source = found
@@ -55,10 +97,30 @@ def resolve(params: lsp.InlayHintParams) -> list[lsp.InlayHint] | None:
     visible_start_line = params.range.start.line + 1   # 1-based
     visible_end_line = params.range.end.line + 1
 
+    # Audit #4: cache the three table walks by (uri, doc_version).
+    # The collectors return fresh dicts; ``ctx.var_types.update(...)``
+    # reads from the cached dict without mutating it, so handing the
+    # same reference back on a hit is safe even though the cache
+    # outlives one request.
+    with state.doc_versions_lock:
+        version = state.doc_versions.get(uri, 0)
+    with _tables_cache_lock:
+        cached = _tables_cache.get(uri)
+    if cached is not None and cached[0] == version:
+        _, var_types, parameter_values, type_field_types = cached
+    else:
+        var_types = ts_checker.collect_var_types(tree, source)
+        parameter_values = ts_checker.collect_parameter_values(tree, source)
+        type_field_types = ts_checker.collect_type_field_types(tree, source)
+        with _tables_cache_lock:
+            _tables_cache[uri] = (
+                version, var_types, parameter_values, type_field_types,
+            )
+
     ctx = _build_ts_ctx(result, source, str(resolved_path), path=resolved_path)
-    ctx.var_types.update(ts_checker.collect_var_types(tree, source))
-    ctx.parameter_values.update(ts_checker.collect_parameter_values(tree, source))
-    ctx.type_field_types.update(ts_checker.collect_type_field_types(tree, source))
+    ctx.var_types.update(var_types)
+    ctx.parameter_values.update(parameter_values)
+    ctx.type_field_types.update(type_field_types)
 
     seen: set[tuple[int, int]] = set()
     hints: list[lsp.InlayHint] = []
