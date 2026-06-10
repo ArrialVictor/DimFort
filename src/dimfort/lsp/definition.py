@@ -1,57 +1,73 @@
 """Go-to-definition resolution for the LSP server.
 
 Resolves the identifier, call-callee, or ``use`` module under the cursor to
-its declaration site, searching every loaded tree-sitter tree in the cached
-workset. F90's case-insensitive name resolution is a lower-cased compare on
-both ends. ``server.py`` registers the LSP feature and — holding
-``state.ts_handler_lock`` — delegates the traversal here.
+its declaration site(s). Reads the workset-wide name index
+(``result.symbols_by_name_lc``) built by
+:mod:`dimfort.lsp.symbols_index` after every ``check_files`` pass,
+filters candidates by the current file's ``use`` clauses + same-file
+declarations, and returns one or more :class:`lsp.Location` records.
+
+F90's case-insensitive name resolution is a lower-cased compare on both
+ends. Multiple matches return as a list; the editor picks (VSCode shows
+a picker; nvim/Emacs route to a quickfix list).
+
+``server.py`` registers the LSP feature and — holding
+``state.ts_handler_lock`` — delegates the traversal here. The handler
+only walks the live buffer's tree to identify the cursor target; the
+candidate enumeration is now O(1) dict lookup.
 """
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from lsprotocol import types as lsp
-from tree_sitter import Node
 
 from dimfort.core import ts_parser as _ts
 from dimfort.lsp import ts_helpers as _ts_h
 from dimfort.lsp.state import state
 from dimfort.lsp.tree_access import _trees_for, _uri_for_path
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from dimfort.core.multifile import SymbolEntry
+
 
 def resolve(params: lsp.DefinitionParams) -> list[lsp.Location] | None:
-    """Resolve the identifier under the cursor to its declaration site.
+    """Resolve the identifier under the cursor to its declaration site(s).
 
     Classifies the token under the cursor as a ``use`` module name, a
     call callee, or a plain identifier (in that priority order), then
-    walks every loaded tree in the cached workset for the matching
-    module definition, function/subroutine definition, or variable
-    declaration. F90's case-insensitive name resolution is honoured by
-    lower-casing both sides of the compare.
+    looks the name up in ``result.symbols_by_name_lc`` (built once per
+    workspace check). Filters candidates by kind, then by visibility:
+    same-file declarations and modules reachable via the current file's
+    ``use`` clauses (per :class:`WorkspaceIndex`) win over global noise.
 
     Args:
         params: LSP ``DefinitionParams`` carrying the document URI and
             the cursor position.
 
     Returns:
-        A single-element list of :class:`lsp.Location` pointing at the
-        declaration's name node, or ``None`` when no tree is loaded
-        for the URI, no workset result exists, no identifier sits
-        under the cursor, or no matching declaration is found across
-        the workset.
+        A list of :class:`lsp.Location` records. Single match for the
+        common case; multi-match when the name appears in more than
+        one visible scope (editor presents a picker). ``None`` when no
+        tree is loaded for the URI, no workset result exists, no
+        identifier sits under the cursor, or no matching declaration
+        survives filtering.
 
     Note:
         Caller in ``server.py`` holds ``state.ts_handler_lock`` around
-        this call — the tree-sitter traversal is not safe across
-        concurrent readers. When the cursor was on a "callable", the
-        walk falls through to variable declarations because ``a(1)``
-        is syntactically ambiguous (array index vs function call) in
+        this call. The cursor-target walk runs against the live tree;
+        candidate enumeration is an O(1) dict lookup against the
+        pre-built name index. When the cursor was on a "callable",
+        ``var`` candidates also qualify because ``a(1)`` is
+        syntactically ambiguous (array index vs function call) in
         Fortran.
     """
     found = _trees_for(params.text_document.uri)
     if found is None:
         return None
-    _, tree, source = found
+    current_path, tree, source = found
     with state.last_result_lock:
         result = state.last_result
     if result is None:
@@ -102,60 +118,70 @@ def resolve(params: lsp.DefinitionParams) -> list[lsp.Location] | None:
         return None
     target_lc = target_name.lower()
 
-    def _name_node_location(tree_path: Path, name_node: Node) -> lsp.Location:
-        """Build an :class:`lsp.Location` pointing at a declaration name node.
+    # Index lookup — O(1). Empty tuple when nothing matches.
+    candidates = result.symbols_by_name_lc.get(target_lc, ())
+    if not candidates:
+        return None
 
-        Args:
-            tree_path: Absolute filesystem path of the tree that
-                contains ``name_node``; used to look up the editor's
-                original URI (or synthesise one).
-            name_node: Tree-sitter identifier node whose start/end
-                points anchor the returned range.
+    # Filter by kind. Callable falls through to var because ``a(1)``
+    # could be either; var only matches var (the cursor walk above
+    # already ruled out a call-syntax context).
+    if target_kind == "module":
+        kind_filter = {"module"}
+    elif target_kind == "callable":
+        kind_filter = {"callable", "var"}
+    else:
+        kind_filter = {"var"}
+    candidates = tuple(c for c in candidates if c.kind in kind_filter)
+    if not candidates:
+        return None
 
-        Returns:
-            An :class:`lsp.Location` whose URI matches the editor's
-            view of ``tree_path`` and whose range tightly brackets
-            the identifier text.
-
-        Note:
-            Closes over the resolver's :func:`_uri_for_path` lookup
-            so opened-by-editor URIs win over synthetic file URIs.
-        """
-        sr, sc = name_node.start_point
-        er, ec = name_node.end_point
-        return lsp.Location(
-            uri=_uri_for_path(tree_path),
-            range=lsp.Range(
-                start=lsp.Position(line=sr, character=sc),
-                end=lsp.Position(line=er, character=ec),
-            ),
+    # Visibility filter: prefer same-file declarations and any file
+    # that declares a module the current file imports via ``use``.
+    # Falls back to all candidates when the filter would empty the set
+    # (e.g. workspace index not yet built, or no matching declaring file).
+    visible_files = _visible_files(current_path)
+    if visible_files is not None:
+        narrowed = tuple(
+            c for c in candidates
+            if c.file == current_path or c.file in visible_files
         )
+        if narrowed:
+            candidates = narrowed
 
-    # Walk every loaded tree for the matching declaration / function.
-    # When the cursor was on a "callable", we try function/subroutine
-    # definitions first but fall through to variable declarations —
-    # ``a(1)`` in Fortran could be either an array index or a function
-    # call, and tree-sitter can't distinguish them syntactically.
-    for tree_path, (other_tree, other_source) in result.trees.items():
-        if target_kind == "module":
-            for mod in _ts_h.walk_module_definitions(other_tree):
-                nm = _ts_h.module_definition_name(mod, other_source)
-                if nm is None:
-                    continue
-                name, name_node = nm
-                if name.lower() == target_lc:
-                    return [_name_node_location(tree_path, name_node)]
-            continue
-        if target_kind == "callable":
-            for func in _ts_h.walk_function_definitions(other_tree):
-                nm = _ts_h.function_definition_name(func, other_source)
-                if nm is None:
-                    continue
-                name, name_node = nm
-                if name.lower() == target_lc:
-                    return [_name_node_location(tree_path, name_node)]
-        for _decl, name_node in _ts_h.walk_decl_identifiers(other_tree):
-            if _ts.node_text(name_node, other_source).lower() != target_lc:
-                continue
-            return [_name_node_location(tree_path, name_node)]
-    return None
+    return [_entry_location(entry) for entry in candidates]
+
+
+def _visible_files(current_path: Path) -> frozenset[Path] | None:
+    """Return the set of files reachable from ``current_path`` via ``use`` clauses.
+
+    Returns ``None`` when the workspace index hasn't been built or has
+    no entry for the current file — caller treats that as "no filter".
+    Reads are guarded by ``state.workspace_index_lock`` because
+    :func:`update_index` mutates the dicts in place from the pipeline
+    worker thread.
+    """
+    with state.workspace_index_lock:
+        ws_index = state.workspace_index
+        if ws_index is None:
+            return None
+        uses = ws_index.uses_by_file.get(current_path)
+        if not uses:
+            return None
+        seen: set[Path] = set()
+        for use_ref in uses:
+            declaring = ws_index.modules.get(use_ref.module)
+            if declaring is not None:
+                seen.add(declaring)
+    return frozenset(seen) if seen else None
+
+
+def _entry_location(entry: SymbolEntry) -> lsp.Location:
+    """Build an :class:`lsp.Location` from a pre-indexed declaration site."""
+    return lsp.Location(
+        uri=_uri_for_path(entry.file),
+        range=lsp.Range(
+            start=lsp.Position(line=entry.start_row, character=entry.start_col),
+            end=lsp.Position(line=entry.end_row, character=entry.end_col),
+        ),
+    )

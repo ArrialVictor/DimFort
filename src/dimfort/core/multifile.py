@@ -95,6 +95,35 @@ class FileLoadFailure:
     stderr: str
 
 
+@dataclass(frozen=True)
+class SymbolEntry:
+    """One declaration site, indexed for workset-wide name lookup.
+
+    Used by :class:`WorksetResult.symbols_by_name_lc` so the LSP
+    goto-definition handler can resolve a name in O(log N) instead of
+    walking every cached tree per request.
+
+    Attributes:
+        file: Absolute path of the source file containing the
+            declaration.
+        kind: One of ``"module"`` | ``"callable"`` | ``"var"``.
+            ``"callable"`` collapses ``function`` + ``subroutine`` to
+            match the goto-def classification, where ``a(1)`` is
+            syntactically ambiguous between a call and an array index.
+        start_row: Zero-based row of the declaration's name node.
+        start_col: Zero-based column of the declaration's name node.
+        end_row: Zero-based end row of the declaration's name node.
+        end_col: Zero-based end column of the declaration's name node.
+    """
+
+    file: Path
+    kind: str
+    start_row: int
+    start_col: int
+    end_row: int
+    end_col: int
+
+
 @dataclass
 class WorksetResult:
     """Aggregated output of one workset pass.
@@ -194,6 +223,15 @@ class WorksetResult:
     # truth shared by the U002 diagnostic and the LSP panel's 🔴
     # "unparseable" marker, so both stay in lock-step.
     unparseable_units: dict[Path, frozenset[str]] = field(default_factory=dict)
+    # Workset-wide name → declaration sites index, lower-cased keys.
+    # Populated by the LSP layer (``dimfort.lsp.symbols_index``) after
+    # ``check_files`` returns so the goto-definition handler can avoid
+    # walking every cached tree per request. CLI callers leave this
+    # empty (it's an LSP performance feature, not a checker semantics
+    # change). See ``docs/0_2_6_PLAN.md`` audit #12 for rationale.
+    symbols_by_name_lc: dict[str, tuple[SymbolEntry, ...]] = field(
+        default_factory=dict
+    )
     # Cache hit/miss/dirty/write counters. Populated only when the
     # workspace check ran with a CacheStore. Surfaced by --timings.
     cache_hits: int = 0
