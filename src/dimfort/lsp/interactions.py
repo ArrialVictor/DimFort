@@ -16,6 +16,7 @@ hazard).
 from __future__ import annotations
 
 import threading
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
 from pygls.lsp.server import LanguageServer
@@ -31,35 +32,47 @@ if TYPE_CHECKING:
     from dimfort.core.multifile import WorksetResult
 
 
-# Audit #16: cache ``collect_interactions`` reports by
-# ``(symbol, scale)`` per WorksetResult identity. The panel fires
-# ``dimfort/interactions`` after every panelInfo; a cursor parked on
-# the same identifier (and the panel re-asks during e.g. a refresh
-# burst) would otherwise re-scan every cached tree in the workset
-# for that symbol on every call.
+# Audit #16: cache ``collect_interactions`` reports per WorksetResult.
+# The panel fires ``dimfort/interactions`` after every panelInfo; a
+# cursor parked on the same identifier (and the panel re-asks during
+# e.g. a refresh burst) would otherwise re-scan every cached tree in
+# the workset for that symbol on every call.
 #
-# Bound: unbounded per result, in practice O(distinct symbols
-# queried this session); cleared whenever ``state.last_result``
-# swaps to a new identity. didClose has no effect (not URI-keyed).
-# 0.2.6 plan item #16 will swap this to an LRU keyed by
-# ``(id(result), symbol_lc, scale)``.
+# Key: ``(symbol_lc, scale)`` — Fortran is case-insensitive so two
+# casings collapse to one entry; the cached report keeps the first
+# caller's display casing.
+#
+# Bound: ``_REPORT_CACHE_MAX`` (FIFO eviction on overflow). Entire
+# cache is flushed whenever ``state.last_result`` swaps to a new
+# identity; the ``_report_cache_result`` strong-ref prevents id reuse
+# and pins the result we cached against.
+#
+# didClose: no effect (not URI-keyed).
+_REPORT_CACHE_MAX = 64
+
 _report_cache_lock = threading.Lock()
 _report_cache_result: WorksetResult | None = None
-_report_cache: dict[tuple[str, bool], SymbolReport] = {}
+_report_cache: OrderedDict[tuple[str, bool], SymbolReport] = OrderedDict()
 
 
 def _get_cached_report(
     result: WorksetResult, symbol: str, scale: bool,
 ) -> SymbolReport:
-    """Return cached interactions report for ``(symbol, scale)``, computing on miss."""
+    """Return cached interactions report for ``(symbol_lc, scale)``, computing on miss.
+
+    On a hit the entry is moved to the most-recent end so the LRU
+    evicts the genuinely-coldest entries first. The cache is flushed
+    whenever ``state.last_result`` swaps to a new identity.
+    """
     global _report_cache_result, _report_cache
-    key = (symbol, scale)
+    key = (symbol.lower(), scale)
     with _report_cache_lock:
         if _report_cache_result is not result:
             _report_cache_result = result
-            _report_cache = {}
+            _report_cache = OrderedDict()
         cached = _report_cache.get(key)
         if cached is not None:
+            _report_cache.move_to_end(key)
             return cached
 
     report = collect_interactions(result, symbol, scale=scale)
@@ -67,7 +80,11 @@ def _get_cached_report(
     with _report_cache_lock:
         # Only store if no concurrent caller swapped the result key.
         if _report_cache_result is result:
+            is_insertion = key not in _report_cache
             _report_cache[key] = report
+            _report_cache.move_to_end(key)
+            if is_insertion and len(_report_cache) > _REPORT_CACHE_MAX:
+                _report_cache.popitem(last=False)
     return report
 
 
