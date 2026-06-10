@@ -16,11 +16,15 @@ from dimfort.core import unit_config  # noqa: F401
 from dimfort.core.multifile import check_files
 from dimfort.lsp import hover
 from dimfort.lsp import server as _server
+from dimfort.lsp.symbols_index import build_symbols_index
 
 
 def _drive(files: list[Path]):
     """Run check_files + stash the result in the LSP module globals."""
     result = check_files(files)
+    # Mirror what the server does post-check: build the goto-def name
+    # index so definition.resolve has something to look up.
+    result.symbols_by_name_lc = build_symbols_index(result.trees)
     with _server.state.last_result_lock:
         _server.state.last_result = result
     return result

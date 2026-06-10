@@ -104,6 +104,7 @@ from dimfort.lsp import (
     inlay,
     interactions,
     panel,
+    symbols_index,
 )
 from dimfort.lsp.state import DEFAULT_EXTERNAL_MODULES, state
 from dimfort.lsp.tree_access import (
@@ -614,6 +615,11 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
     except Exception:
         log.exception("dimfort pipeline crashed on %s", active)
         return
+
+    # Audit #12: populate the workset-wide goto-def index before the
+    # result becomes visible to read-side handlers, so a definition
+    # request that lands mid-publish always sees a complete index.
+    result.symbols_by_name_lc = symbols_index.build_symbols_index(result.trees)
 
     with state.last_result_lock:
         state.last_result = result
@@ -2013,6 +2019,12 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
                         token, lsp.WorkDoneProgressEnd(message="failed")
                     )
             return None
+
+        # Audit #12: build the goto-def name index before publishing
+        # the result. See the matching call in ``_run_pipeline_for_uri``.
+        result.symbols_by_name_lc = symbols_index.build_symbols_index(
+            result.trees,
+        )
 
         with state.last_result_lock:
             state.last_result = result
