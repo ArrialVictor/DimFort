@@ -339,6 +339,7 @@ def _forget_uri(uri: str) -> None:
         None.
     """
     decl_scan.forget_uri(uri)
+    inlay.forget_uri(uri)
 
     p = _uri_to_path(uri)
     if p is None:
