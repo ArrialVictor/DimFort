@@ -98,6 +98,7 @@ from dimfort.lsp import (
     code_action,
     completion,
     coverage,
+    decl_scan,
     definition,
     hover,
     inlay,
@@ -319,11 +320,17 @@ def _remember_uri(uri: str) -> None:
 
 
 def _forget_uri(uri: str) -> None:
-    """Remove ``uri`` from the opened-URI map.
+    """Remove ``uri`` from the opened-URI map and per-URI caches.
 
     The inverse of :func:`_remember_uri`. Called from the
     ``textDocument/didClose`` handler. Silently no-ops when the URI
     isn't a real path or when ``Path.resolve`` raises.
+
+    Also evicts ``uri`` from every per-URI cache layer that doesn't
+    auto-expire: the source-side declaration scan cache today, plus
+    any cursor-rate caches added in 0.2.6 (inlay var_types, panel
+    scan/tree, etc.) once they land. Keep this list canonical — it's
+    the only path that drops per-URI entries.
 
     Args:
         uri: The ``textDocument.uri`` from a didClose notification.
@@ -331,6 +338,8 @@ def _forget_uri(uri: str) -> None:
     Returns:
         None.
     """
+    decl_scan.forget_uri(uri)
+
     p = _uri_to_path(uri)
     if p is None:
         return

@@ -22,13 +22,30 @@ from pygls.lsp.server import LanguageServer
 if TYPE_CHECKING:
     from dimfort.core.annotations import DeclarationSite
 
-# Per-URI scan cache. Single-entry-per-URI: the cached version is
-# whichever buffer revision we last scanned, and a stale entry on
-# version bump is simply replaced. Bounded memory (one entry per
-# open Fortran buffer). Thread-safe via the module-level lock —
-# panelInfo + codeAction can both invoke this handler concurrently.
+# Per-URI scan cache.
+#
+# Key: ``uri``. Value: ``(version, declarations)``. Single entry per
+# URI — the cached version is whichever buffer revision we last
+# scanned; a stale entry on version bump is replaced in place.
+#
+# Bound: O(open buffers). The didClose handler (``server._forget_uri``)
+# evicts via :func:`forget_uri` below; without that call the entry
+# would persist for the LSP session.
+#
+# Thread-safe via the module-level lock — panelInfo + codeAction can
+# both invoke this handler concurrently.
 _uri_scan_cache: dict[str, tuple[int, tuple[DeclarationSite, ...]]] = {}
 _uri_scan_cache_lock = threading.Lock()
+
+
+def forget_uri(uri: str) -> None:
+    """Evict any cached scan for ``uri``.
+
+    Called from the LSP ``textDocument/didClose`` handler so closed
+    buffers don't accumulate in the per-URI cache.
+    """
+    with _uri_scan_cache_lock:
+        _uri_scan_cache.pop(uri, None)
 
 
 def _try_cached_uri(

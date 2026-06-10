@@ -1,19 +1,42 @@
 """In-memory caches for the load + index phases of ``check_files``.
 
 The per-file diagnostic cache in :mod:`dimfort.core.cache_store` covers
-the check phase (D); these two caches cover load (A) and index (C),
-which together are the floor any repeated ``check_files`` caller pays.
+the check phase (D); the three caches in this module cover load (A),
+index (C), and the projection step (M1), which together are the floor
+any repeated ``check_files`` caller pays.
 
-Both caches are session-scoped: held by the LSP state for the lifetime
-of the running server, never persisted to disk. Default for CLI callers
-is to pass ``None``, leaving behaviour byte-identical to the
-un-cached path.
+Session-scoped: held by the LSP state for the lifetime of the running
+server. ``ProjectionCache`` is mirrored to disk by
+:mod:`dimfort.core.multifile_cache_persist`; ``TreeCache`` and
+``ModuleExportsCache`` are in-memory only. Default for CLI callers is
+to pass ``None``, leaving behaviour byte-identical to the un-cached
+path.
+
+Bounds & eviction
+-----------------
+
+Each cache accepts an optional ``max_entries`` keyword. Default
+``None`` = unbounded — the current LSP behaviour. When set, the cache
+evicts in **FIFO** order on overflow (oldest inserted entry first; hits
+do not move-to-end). FIFO over LRU here because content-hash keys mean
+a "hit on an old entry" already implies the entry's source bytes are
+still live somewhere; LRU bumping would buy little and require an
+extra dict op per get.
+
+Sizing: the bound MUST be at least the active workset size, otherwise
+entries get evicted *during* a single ``check_files`` call and the
+cache no-ops. A real-world ``check_files`` over a large Fortran
+codebase touches ~2000-3000 files, so any cap below ~3000 silently
+defeats the cache. The workset-adaptive default + ``.dimfort.toml``
+``[cache] max_entries`` override that wire this knob through the LSP
+land as a follow-up (see ``docs/0_2_6_PLAN.md``).
 """
 
 from __future__ import annotations
 
 import hashlib
 import threading
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,16 +116,33 @@ def content_hash(source: bytes) -> str:
 class TreeCache:
     """Thread-safe in-memory cache of tree-sitter parse results.
 
-    Concurrency: the LSP runs a background workspace-stats refresh on
-    a daemon thread alongside per-request handlers. Both can hit the
-    same cache; the lock is held only for the dict op, never across
-    a parse.
+    **Key:** ``TreeKey(content_hash, parse_mode)`` — entries dedup by
+    source bytes + CPP config fingerprint.
+
+    **Bound:** ``max_entries`` (default ``None`` = unbounded). When
+    set, FIFO eviction on overflow. Header-file edits are NOT detected
+    (the CPP ``parse_mode`` fingerprint hashes config, not included-file
+    contents) — opt out with ``--no-tree-cache`` if that bites.
+
+    **didClose:** N/A — content-keyed, not URI-keyed.
+
+    **Concurrency:** the LSP runs a background workspace-stats refresh
+    on a daemon thread alongside per-request handlers. Both can hit the
+    same cache; the lock is held only for the dict op, never across a
+    parse.
     """
 
-    def __init__(self) -> None:
-        """Create an empty cache."""
-        self._entries: dict[TreeKey, CachedParse] = {}
+    def __init__(self, max_entries: int | None = None) -> None:
+        """Create an empty cache.
+
+        Args:
+            max_entries: Optional FIFO cap. ``None`` (default) means
+                unbounded. See module docstring "Bounds & eviction"
+                for sizing constraints.
+        """
+        self._entries: OrderedDict[TreeKey, CachedParse] = OrderedDict()
         self._lock = threading.Lock()
+        self._max_entries = max_entries
 
     def get(self, key: TreeKey) -> CachedParse | None:
         """Return the cached parse for ``key``, or ``None`` on miss."""
@@ -110,9 +150,22 @@ class TreeCache:
             return self._entries.get(key)
 
     def put(self, key: TreeKey, value: CachedParse) -> None:
-        """Store ``value`` under ``key`` (overwrites any existing entry)."""
+        """Store ``value`` under ``key`` (overwrites any existing entry).
+
+        Evicts the oldest entry (FIFO) when adding would exceed
+        ``max_entries``. Overwriting an existing key does NOT count as
+        a new insertion.
+        """
         with self._lock:
+            if key in self._entries:
+                self._entries[key] = value
+                return
             self._entries[key] = value
+            if (
+                self._max_entries is not None
+                and len(self._entries) > self._max_entries
+            ):
+                self._entries.popitem(last=False)
 
     def __len__(self) -> int:
         """Number of cached entries."""
@@ -163,6 +216,18 @@ def digest_merged_var_units(merged_var_units: Mapping[str, object]) -> str:
 class ModuleExportsCache:
     """Thread-safe cache of ``collect_function_signatures_and_module_exports``.
 
+    **Key:** ``ExportsKey(content_hash, merged_units_digest)`` — file
+    content + workset-wide ``var_units`` fallback context.
+
+    **Bound:** ``max_entries`` (default ``None`` = unbounded). When
+    set, FIFO eviction on overflow. The three sub-memos below
+    (``digest_memo``, ``parsed_units_memo``, ``extract_uses_memo``)
+    are NOT capped: they grow with the number of distinct
+    ``ModuleExports`` / unit-table / file-text objects observed in the
+    session — small per entry, bounded in practice by ``_entries``.
+
+    **didClose:** N/A — content-keyed, not URI-keyed.
+
     Also holds a session-lifetime ``digest_memo`` keyed by
     ``id(ModuleExports)`` — the per-file diagnostic cache asks for a
     digest of every consumed module on every check, and once
@@ -170,12 +235,19 @@ class ModuleExportsCache:
     cache provides) the digest is also stable.
     """
 
-    def __init__(self) -> None:
-        """Create an empty cache."""
-        self._entries: dict[
+    def __init__(self, max_entries: int | None = None) -> None:
+        """Create an empty cache.
+
+        Args:
+            max_entries: Optional FIFO cap on ``_entries`` only. Sub-memos
+                (``digest_memo`` etc.) are uncapped. ``None`` (default)
+                means fully unbounded.
+        """
+        self._entries: OrderedDict[
             ExportsKey, tuple[dict[str, FuncSig], dict[str, ModuleExports]]
-        ] = {}
+        ] = OrderedDict()
         self._lock = threading.Lock()
+        self._max_entries = max_entries
         # id(exports) → digest; populated lazily by callers. The id is
         # only stable while the underlying object stays alive, which
         # is the entire LSP session because ``_entries`` (above) holds
@@ -205,9 +277,22 @@ class ModuleExportsCache:
         key: ExportsKey,
         value: tuple[dict[str, FuncSig], dict[str, ModuleExports]],
     ) -> None:
-        """Store ``value`` (a ``(sigs, modules)`` tuple) under ``key``."""
+        """Store ``value`` (a ``(sigs, modules)`` tuple) under ``key``.
+
+        FIFO-evicts the oldest entry when adding would exceed
+        ``max_entries``. Overwriting an existing key is not a new
+        insertion.
+        """
         with self._lock:
+            if key in self._entries:
+                self._entries[key] = value
+                return
             self._entries[key] = value
+            if (
+                self._max_entries is not None
+                and len(self._entries) > self._max_entries
+            ):
+                self._entries.popitem(last=False)
 
     def __len__(self) -> int:
         """Number of cached entries."""
@@ -291,16 +376,37 @@ class CachedProjection:
 class ProjectionCache:
     """Thread-safe in-memory cache of per-file scan + attach outputs.
 
+    **Key:** ``ProjectionKey(content_hash, patterns_fp)`` — file content
+    + configured ``@unit{}`` / ``@unit_assume{}`` /
+    ``@unit_affine_conversion{}`` pattern fingerprint.
+
+    **Bound:** ``max_entries`` (default ``None`` = unbounded). When
+    set, FIFO eviction on overflow. Mirrored to disk by
+    :mod:`dimfort.core.multifile_cache_persist`; the on-disk file is
+    pre-loaded on LSP startup so cold-after-restart benefits too.
+
+    **didClose:** N/A — content-keyed, not URI-keyed. Workspace file
+    deletions are NOT auto-pruned from the on-disk cache (matches
+    :class:`WorkspaceIndex` behaviour; see ``0_2_6_PLAN.md`` for the
+    file-watcher follow-up).
+
     Population fills as ``_load_one`` runs. On a cache hit the bulk
     tree-walking work of ``scan_text`` (~3 s on a 2000-file workset)
     and the attachment-building pass (~1 s) collapse to a single dict
     lookup.
     """
 
-    def __init__(self) -> None:
-        """Create an empty cache."""
-        self._entries: dict[ProjectionKey, CachedProjection] = {}
+    def __init__(self, max_entries: int | None = None) -> None:
+        """Create an empty cache.
+
+        Args:
+            max_entries: Optional FIFO cap. ``None`` (default) means
+                unbounded. See module docstring "Bounds & eviction"
+                for sizing constraints.
+        """
+        self._entries: OrderedDict[ProjectionKey, CachedProjection] = OrderedDict()
         self._lock = threading.Lock()
+        self._max_entries = max_entries
 
     def get(self, key: ProjectionKey) -> CachedProjection | None:
         """Return the cached projection, or ``None`` on miss."""
@@ -308,9 +414,22 @@ class ProjectionCache:
             return self._entries.get(key)
 
     def put(self, key: ProjectionKey, value: CachedProjection) -> None:
-        """Store ``value`` under ``key`` (overwrites any prior entry)."""
+        """Store ``value`` under ``key`` (overwrites any prior entry).
+
+        FIFO-evicts the oldest entry when adding would exceed
+        ``max_entries``. Overwriting an existing key is not a new
+        insertion.
+        """
         with self._lock:
+            if key in self._entries:
+                self._entries[key] = value
+                return
             self._entries[key] = value
+            if (
+                self._max_entries is not None
+                and len(self._entries) > self._max_entries
+            ):
+                self._entries.popitem(last=False)
 
     def __len__(self) -> int:
         """Number of cached entries."""
