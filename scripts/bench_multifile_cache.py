@@ -53,6 +53,10 @@ from dimfort.core.multifile_cache_persist import (
     load_persistent_projection_cache,
     save_persistent_projection_cache,
 )
+from dimfort.core.multifile_exports_cache_persist import (
+    load_persistent_exports_cache,
+    save_persistent_exports_cache,
+)
 from dimfort.lsp.coverage import build_workspace_payload
 
 
@@ -88,6 +92,15 @@ def main(argv: list[str] | None = None) -> int:
             "Skip the per-file diagnostic CacheStore (shipped in 0.2.4). "
             "Default-on so the bench mirrors what users see in LSP use; "
             "disable to isolate the load + index gains."
+        ),
+    )
+    parser.add_argument(
+        "--no-m5",
+        action="store_true",
+        help=(
+            "Skip the M5 disk-persistent ModuleExportsCache layer. "
+            "Use to isolate the M5 contribution to the post-restart "
+            "index-phase + engine numbers."
         ),
     )
     args = parser.parse_args(argv)
@@ -143,8 +156,22 @@ def main(argv: list[str] | None = None) -> int:
     # written at the end of its prior session.
     if cache_store is not None:
         save_persistent_projection_cache(projection_cache, cache_store.root)
+        # M5: persist the module-exports cache too. Both surfaces
+        # warm together at startup so the cold-after-restart numbers
+        # reflect the combined save/restore. ``--no-m5`` skips this
+        # save so the post-restart pass starts with an empty
+        # exports cache — the baseline against which M5's contribution
+        # is measured.
+        if not args.no_m5:
+            save_persistent_exports_cache(exports_cache, cache_store.root)
     tree_cache_pr = TreeCache()
-    exports_cache_pr = ModuleExportsCache()
+    if cache_store is not None and not args.no_m5:
+        exports_cache_pr = (
+            load_persistent_exports_cache(cache_store.root)
+            or ModuleExportsCache()
+        )
+    else:
+        exports_cache_pr = ModuleExportsCache()
     if cache_store is not None:
         projection_cache_pr = (
             load_persistent_projection_cache(cache_store.root)
