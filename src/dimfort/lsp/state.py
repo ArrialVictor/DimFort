@@ -242,5 +242,12 @@ class _ServerState:
         # session.
         self.projection_cache: ProjectionCache | None = ProjectionCache()
 
+        # Highest ``len(result.trees)`` observed since server start.
+        # Drives the adaptive cache cap (``max(observed × 4, 4096)``);
+        # see ``server._apply_cache_max_entries``. Sticky high-water
+        # mark — never shrinks — so opening a single-file scratch after
+        # a 2435-file workspace doesn't trigger eviction inside one check.
+        self.observed_max_workset_size = 0
+
 
 state = _ServerState()

@@ -621,6 +621,12 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
     # request that lands mid-publish always sees a complete index.
     result.symbols_by_name_lc = symbols_index.build_symbols_index(result.trees)
 
+    # Workset-adaptive cache cap (0.2.6 follow-up to the cache audit
+    # in PR #74). Recompute against the new workset size so the cap
+    # never sits below the active workset; sticky-grow on the high
+    # watermark so a follow-up single-file scan keeps the headroom.
+    _apply_cache_max_entries(len(result.trees))
+
     with state.last_result_lock:
         state.last_result = result
 
@@ -639,6 +645,39 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
             )
         )
     _refresh_inlay_hints(ls)
+
+
+_ADAPTIVE_CACHE_MIN = 4096
+_ADAPTIVE_CACHE_MULTIPLIER = 4
+
+
+def _apply_cache_max_entries(workset_size: int) -> None:
+    """Recompute the FIFO cap on the three in-memory caches.
+
+    Called after every successful ``check_files`` completion. The
+    desired cap is ``max(observed_workset_size × 4, 4096)`` when the
+    user hasn't pinned a value via ``.dimfort.toml`` ``[cache]
+    max_entries``. The observed size is a session high-watermark so
+    a small follow-up workset doesn't shrink the cap and trigger
+    eviction inside the larger workset's lifetime.
+
+    Args:
+        workset_size: ``len(result.trees)`` from the check that just
+            completed.
+    """
+    if workset_size > state.observed_max_workset_size:
+        state.observed_max_workset_size = workset_size
+    pinned = state.project_config.cache_max_entries
+    if pinned is not None:
+        target: int | None = pinned
+    else:
+        target = max(
+            state.observed_max_workset_size * _ADAPTIVE_CACHE_MULTIPLIER,
+            _ADAPTIVE_CACHE_MIN,
+        )
+    for cache in (state.tree_cache, state.exports_cache, state.projection_cache):
+        if cache is not None:
+            cache.set_max_entries(target)
 
 
 # Audit #11: throttle ``workspace/inlayHint/refresh`` so a burst of
@@ -2025,6 +2064,10 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
         result.symbols_by_name_lc = symbols_index.build_symbols_index(
             result.trees,
         )
+
+        # 0.2.6 follow-up: workset-adaptive cache cap (see same call
+        # in ``_run_pipeline_for_uri``).
+        _apply_cache_max_entries(len(result.trees))
 
         with state.last_result_lock:
             state.last_result = result

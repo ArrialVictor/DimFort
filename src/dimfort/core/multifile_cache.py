@@ -167,6 +167,21 @@ class TreeCache:
             ):
                 self._entries.popitem(last=False)
 
+    def set_max_entries(self, n: int | None) -> None:
+        """Update the FIFO cap and immediately trim entries above it.
+
+        Wired by the LSP layer to the adaptive default
+        ``max(observed_workset_size × 4, 4096)`` so the cap grows with
+        the largest workset seen this session and never evicts inside
+        a single ``check_files`` pass. ``None`` removes the cap.
+        """
+        with self._lock:
+            self._max_entries = n
+            if n is None:
+                return
+            while len(self._entries) > n:
+                self._entries.popitem(last=False)
+
     def __len__(self) -> int:
         """Number of cached entries."""
         with self._lock:
@@ -292,6 +307,20 @@ class ModuleExportsCache:
                 self._max_entries is not None
                 and len(self._entries) > self._max_entries
             ):
+                self._entries.popitem(last=False)
+
+    def set_max_entries(self, n: int | None) -> None:
+        """Update the FIFO cap on ``_entries`` and trim above it.
+
+        Wired by the LSP layer to the adaptive default
+        ``max(observed_workset_size × 4, 4096)``. ``None`` removes
+        the cap (sub-memos are unaffected — see class docstring).
+        """
+        with self._lock:
+            self._max_entries = n
+            if n is None:
+                return
+            while len(self._entries) > n:
                 self._entries.popitem(last=False)
 
     def __len__(self) -> int:
@@ -429,6 +458,21 @@ class ProjectionCache:
                 self._max_entries is not None
                 and len(self._entries) > self._max_entries
             ):
+                self._entries.popitem(last=False)
+
+    def set_max_entries(self, n: int | None) -> None:
+        """Update the FIFO cap and trim above it.
+
+        Wired by the LSP layer to the adaptive default
+        ``max(observed_workset_size × 4, 4096)``. ``None`` removes
+        the cap. The on-disk projection cache is unaffected — it's
+        persisted in full and re-loaded at next session start.
+        """
+        with self._lock:
+            self._max_entries = n
+            if n is None:
+                return
+            while len(self._entries) > n:
                 self._entries.popitem(last=False)
 
     def __len__(self) -> int:
