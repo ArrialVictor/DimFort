@@ -635,6 +635,25 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
     _refresh_inlay_hints(ls)
 
 
+# Audit #11: throttle ``workspace/inlayHint/refresh`` so a burst of
+# pipeline runs (tab-restore on session start, batch save, didChange
+# bursts that escape the 400 ms debounce) coalesces into ~one refresh
+# per ``_REFRESH_INLAY_INTERVAL`` seconds rather than one per call.
+# Per-call cost dropped to ~1 ms once #4 cached the inlay tables, but
+# the refresh storm still produces N×open-buffers inlayHint round-trips
+# that we'd rather not pay.
+#
+# Pattern: leading-edge fire (first call after a quiet period fires
+# immediately so the user sees fresh hints right away) plus a trailing
+# timer (additional calls during the interval coalesce into one fire
+# at the interval's end, so the client always ends a burst with
+# accurate hints).
+_REFRESH_INLAY_INTERVAL = 0.25  # seconds
+_refresh_inlay_lock = threading.Lock()
+_refresh_inlay_last_fired_at = 0.0
+_refresh_inlay_pending_timer: threading.Timer | None = None
+
+
 def _refresh_inlay_hints(ls: LanguageServer) -> None:
     """Ask the client to re-query inlay hints for every open buffer.
 
@@ -648,6 +667,11 @@ def _refresh_inlay_hints(ls: LanguageServer) -> None:
     unconditionally and let the framework drop it when the client
     didn't advertise support.
 
+    Throttled at ``_REFRESH_INLAY_INTERVAL`` seconds (leading-edge fire
+    + trailing-edge timer). A burst of calls during one interval
+    collapses to one leading fire + one trailing fire at the interval's
+    end.
+
     Args:
         ls: Active language server instance.
 
@@ -660,8 +684,47 @@ def _refresh_inlay_hints(ls: LanguageServer) -> None:
         client supports the request, and a refusal must not
         propagate.
     """
+    global _refresh_inlay_last_fired_at, _refresh_inlay_pending_timer
+
+    now = time.monotonic()
+    fire_now = False
+    with _refresh_inlay_lock:
+        elapsed = now - _refresh_inlay_last_fired_at
+        if elapsed >= _REFRESH_INLAY_INTERVAL:
+            # Leading edge — fire now. Any pending trailing timer is
+            # redundant since we're about to send the refresh ourselves.
+            if _refresh_inlay_pending_timer is not None:
+                _refresh_inlay_pending_timer.cancel()
+                _refresh_inlay_pending_timer = None
+            _refresh_inlay_last_fired_at = now
+            fire_now = True
+        elif _refresh_inlay_pending_timer is None:
+            # Inside the interval and no trailing fire scheduled yet —
+            # schedule one for the interval's end so the client always
+            # finishes a burst with fresh hints.
+            delay = _REFRESH_INLAY_INTERVAL - elapsed
+            _refresh_inlay_pending_timer = threading.Timer(
+                delay, _fire_inlay_refresh, args=(ls,),
+            )
+            _refresh_inlay_pending_timer.daemon = True
+            _refresh_inlay_pending_timer.start()
+        # else: timer already armed — this call is fully coalesced.
+
+    if fire_now:
+        # Send the refresh outside the lock so a slow LSP transport
+        # doesn't serialise concurrent callers behind us.
+        with contextlib.suppress(Exception):
+            ls.workspace_inlay_hint_refresh(None)
+
+
+def _fire_inlay_refresh(ls: LanguageServer) -> None:
+    """Trailing-edge timer callback for :func:`_refresh_inlay_hints`."""
+    global _refresh_inlay_last_fired_at, _refresh_inlay_pending_timer
     with contextlib.suppress(Exception):
         ls.workspace_inlay_hint_refresh(None)
+    with _refresh_inlay_lock:
+        _refresh_inlay_last_fired_at = time.monotonic()
+        _refresh_inlay_pending_timer = None
 
 
 def _bump_version(uri: str) -> int:
