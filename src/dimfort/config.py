@@ -147,6 +147,17 @@ class DimfortConfig:
         default_factory=lambda: DEFAULT_UNIT_AFFINE_COMMENT_DELIMITERS
     )
 
+    # [cache] max_entries — FIFO cap on the in-memory tree / module-exports
+    # / projection caches. ``None`` (default, or ``"auto"`` in TOML) means
+    # the LSP picks an adaptive value: ``max(observed_workset_size × 4,
+    # 4096)`` recomputed after each ``check_files`` so the cap grows with
+    # the largest workset seen this session and never evicts inside a
+    # single check pass. An explicit positive integer pins the cap.
+    # Sub-1000 values are accepted but warned about — on a real-world
+    # Fortran codebase (~2000+ files) anything under workset-size
+    # silently defeats the cache by evicting during the check itself.
+    cache_max_entries: int | None = None
+
 
 def find_config(start: Path) -> Path | None:
     """Walk upward from ``start`` looking for a ``.dimfort.toml``.
@@ -279,6 +290,38 @@ def _from_raw(raw: dict[str, Any], path: Path) -> DimfortConfig:
     scale_section = raw.get("scale", {}) or {}
     scale_mode = bool(scale_section.get("enabled", False))
 
+    cache_section = raw.get("cache", {}) or {}
+    cache_max_entries_raw = cache_section.get("max_entries")
+    cache_max_entries: int | None
+    if cache_max_entries_raw is None or cache_max_entries_raw == "auto":
+        cache_max_entries = None
+    elif isinstance(cache_max_entries_raw, bool):
+        # ``bool`` is an ``int`` subclass — guard so ``true`` / ``false``
+        # isn't silently accepted as 1 / 0.
+        log.warning(
+            "%s: [cache].max_entries must be 'auto' or a positive int — "
+            "got %r, falling back to 'auto'",
+            path, cache_max_entries_raw,
+        )
+        cache_max_entries = None
+    elif isinstance(cache_max_entries_raw, int) and cache_max_entries_raw > 0:
+        cache_max_entries = cache_max_entries_raw
+        if cache_max_entries < 1000:
+            log.warning(
+                "%s: [cache].max_entries=%d is below the recommended "
+                "floor (1000). On a workset larger than this, entries "
+                "will be evicted inside a single check pass, defeating "
+                "the cache.",
+                path, cache_max_entries,
+            )
+    else:
+        log.warning(
+            "%s: [cache].max_entries must be 'auto' or a positive int — "
+            "got %r, falling back to 'auto'",
+            path, cache_max_entries_raw,
+        )
+        cache_max_entries = None
+
     unit_comment_delimiters = _parse_unit_pattern_list(
         parser_section, "unit_comment_delimiters", path,
         default=DEFAULT_UNIT_COMMENT_DELIMITERS,
@@ -305,6 +348,7 @@ def _from_raw(raw: dict[str, Any], path: Path) -> DimfortConfig:
         unit_comment_delimiters=unit_comment_delimiters,
         unit_assume_comment_delimiters=unit_assume_comment_delimiters,
         unit_affine_comment_delimiters=unit_affine_comment_delimiters,
+        cache_max_entries=cache_max_entries,
     )
 
 
