@@ -1986,10 +1986,16 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
     # which phase we're in plus per-file detail so the spinner doesn't
     # look stuck during the post-load passes (which take comparable
     # time on a 2400-file workspace).
+    # Five-step `[N/5]` indicator on every workspace-check report so
+    # users with a plain-text status bar (no visible percentage bar)
+    # can read the overall position at a glance instead of inferring
+    # it from message-text resets. Phases 4 (publishing) and 5
+    # (projecting) are emitted from the publish loop / post-publish
+    # block below, not via this callback.
     _phase_labels = {
-        "load": "loading",
-        "index": "indexing modules",
-        "check": "checking",
+        "load": "[1/5] loading",
+        "index": "[2/5] indexing modules",
+        "check": "[3/5] checking",
     }
 
     def on_load_progress(phase: str, scanned: int, total: int, path: Path) -> None:
@@ -2111,11 +2117,18 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
         # Throttle progress reports the same way the scan does.
         if progress_started and (published % 100 == 0 or published == len(files)):
             with contextlib.suppress(Exception):
+                # Cap at 99 — projection still runs after this loop.
+                # Reaching 100% here, paired with the percentage-less
+                # report below, was enough for some progress widgets
+                # (VS Code's plain-text status bar) to dismiss the
+                # widget and miss the "projecting coverage…" update.
+                # See the explicit ``percentage=99`` on the next
+                # report for the other half of the fix.
                 progress.report(
                     token,
                     lsp.WorkDoneProgressReport(
-                        message=f"published {published}/{len(files)}",
-                        percentage=int(published * 100 / len(files)),
+                        message=f"[4/5] published {published}/{len(files)}",
+                        percentage=min(99, int(published * 100 / len(files))),
                     ),
                 )
 
@@ -2127,14 +2140,19 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
     # ``build_workspace_payload`` returns.
     if progress_started:
         with contextlib.suppress(Exception):
-            # No ``percentage`` — clients interpret 100% as
-            # "complete, hide the bar," which is the opposite of
-            # what we want here (the post-publish projection work
-            # is still running). Indeterminate progress (a spinning
-            # indicator with the message) is the correct shape.
+            # Explicit ``percentage=99`` is load-bearing: omitting
+            # percentage on a report after a percentage-bearing one
+            # causes some clients (VS Code's plain-text progress
+            # status bar) to dismiss the widget, hiding the
+            # "projecting coverage…" update entirely. Pair with the
+            # cap-at-99 on the publish loop so the bar never reaches
+            # 100% until ``progress.end`` actually closes it.
             progress.report(
                 token,
-                lsp.WorkDoneProgressReport(message="projecting coverage…"),
+                lsp.WorkDoneProgressReport(
+                    message="[5/5] projecting coverage…",
+                    percentage=99,
+                ),
             )
     # Belt + suspenders: mirror the progress message to the output
     # channel via ``window/logMessage`` so users whose LSP client
