@@ -52,6 +52,10 @@ shift between `0.x` releases.
 - [LSP protocol](editor-integration/lsp-protocol.md) — wire
   contract for editor integrators: `initializationOptions`,
   custom requests, debouncing, workspace commands.
+- [Editor commands](editor-integration/commands.md) — cross-companion
+  reference table mapping every user-facing command across the three
+  companions. Anti-drift artifact: per-companion renames visibly
+  desync a row here.
 
 ## Design
 
