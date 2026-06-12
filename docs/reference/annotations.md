@@ -43,14 +43,14 @@ Parenthesise.
 The `@unit{...}` form is the canonical syntax, but DimFort can also
 read your project's existing inline-comment unit conventions —
 `! [m/s]`, `! desc [m^2: empirical]`, and so on — once you tell it
-about the delimiters in `.dimfort.toml`. This is the path of least
+about the delimiters in `dimfort.toml`. This is the path of least
 disruption when adopting DimFort on a codebase that already
 documents units in author prose: you don't rewrite the
 declarations.
 
 See [Bringing DimFort to an existing codebase](../quickstart/bringing-to-existing-codebase.md)
 for the recipe, and
-[`.dimfort.toml` reference](dimfort-toml.md#parser) for the three
+[`dimfort.toml` reference](dimfort-toml.md#parser) for the three
 delimiter-list keys (`unit_comment_delimiters`,
 `unit_assume_comment_delimiters`,
 `unit_affine_comment_delimiters`).
@@ -267,7 +267,7 @@ accepted synonym). DimFort checks the assignment actually performs the
   justification. Use `@unit_assume` only when DimFort fundamentally can't
   represent the unit; use `@unit_affine_conversion` for °C↔K conversions.
 - **Opt-in.** Like the rest of the scale family it only fires under
-  `scale_mode` (`.dimfort.toml [scale] enabled = true` or `--scale`).
+  `scale_mode` (`dimfort.toml [scale] enabled = true` or `--scale`).
 
 The cleanest idiom is a small conversion **function** whose one body line
 carries the directive — callers then get a clean typed `degC → K` signature.
@@ -284,7 +284,7 @@ malformed, `U006` orphan, `U-conflict` two annotations disagreeing,
 The full table — every code, severity, and trigger — lives at
 [reference/diagnostic-codes.md](diagnostic-codes.md). Per-code
 severity can be remapped per project under `[diagnostics]` in
-`.dimfort.toml`.
+`dimfort.toml`.
 
 Fortran intrinsics whose unit semantics DimFort knows are listed at
 [reference/intrinsics.md](intrinsics.md).

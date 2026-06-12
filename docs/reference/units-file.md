@@ -4,14 +4,14 @@ DimFort ships with a default catalog of SI units, prefixes, and
 common derived units. A project that needs additional units — domain
 conventions like `hPa`, `bar`, `g/kg`, `day`, `percent`, or a custom
 named ratio — extends the catalog with a project-local TOML file
-referenced from `.dimfort.toml`:
+referenced from `dimfort.toml`:
 
 ```toml
 [units]
 file = "etc/project-units.toml"
 ```
 
-The path is resolved relative to `.dimfort.toml`. User entries are
+The path is resolved relative to `dimfort.toml`. User entries are
 **merged on top** of the shipped defaults — a collision-detection
 pass runs at load time and rejects duplicate names.
 
@@ -109,7 +109,7 @@ alone.
 
 ## Merge semantics
 
-When DimFort loads `.dimfort.toml` and finds `[units] file = ...`:
+When DimFort loads `dimfort.toml` and finds `[units] file = ...`:
 
 1. The shipped `default_units.toml` loads first.
 2. Your project file loads on top.
@@ -128,12 +128,12 @@ The units file is plain TOML with no DimFort version coupling. A
 team that maintains several Fortran projects in the same physical
 domain (climate modelling, plasma physics, …) can keep one units
 file under version control and reference it from every project's
-`.dimfort.toml` via a relative path.
+`dimfort.toml` via a relative path.
 
 ## Validation
 
 To check that your units file parses cleanly without running a
 full check, run `dimfort check` on any source in a directory where
-the `.dimfort.toml` references it — `dimfort` logs a config-load
+the `dimfort.toml` references it — `dimfort` logs a config-load
 warning at `WARNING` level for any malformed entry. A clean run
 means the file loaded without complaint.

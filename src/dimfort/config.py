@@ -1,6 +1,6 @@
 """Project configuration loader.
 
-Loads ``.dimfort.toml`` from the workspace root (walking upward from a
+Loads ``dimfort.toml`` from the workspace root (walking upward from a
 start path until either a file is found or a filesystem root is hit).
 The returned :class:`DimfortConfig` is a frozen snapshot; callers
 overlay it with CLI flags / LSP ``initializationOptions`` as needed.
@@ -8,7 +8,7 @@ overlay it with CLI flags / LSP ``initializationOptions`` as needed.
 Precedence (lowest → highest):
 
 1. Built-in defaults.
-2. ``.dimfort.toml`` (this loader).
+2. ``dimfort.toml`` (this loader).
 3. LSP ``initializationOptions`` / ``settings.json``.
 4. Explicit CLI flags.
 
@@ -25,7 +25,7 @@ from typing import Any
 
 log = logging.getLogger("dimfort.config")
 
-CONFIG_FILENAME = ".dimfort.toml"
+CONFIG_FILENAME = "dimfort.toml"
 
 
 @dataclass(frozen=True)
@@ -76,14 +76,14 @@ class DimfortConfig:
     A ``None`` on an optional field means "not set, fall through to the
     next layer" (per the precedence chain documented at module level).
     Empty tuples mean "explicitly empty" — for instance, an explicit
-    empty ``cpp_defines`` list in ``.dimfort.toml``.
+    empty ``cpp_defines`` list in ``dimfort.toml``.
 
     Per-field semantics are documented inline beside each field.
     """
 
     config_path: Path | None = None
 
-    # ``True`` when ``load_config`` saw a ``.dimfort.toml`` but
+    # ``True`` when ``load_config`` saw a ``dimfort.toml`` but
     # couldn't parse it (malformed TOML, IO error). The CLI checks
     # this to honour the documented "exit 2 on invalid config"
     # contract; the LSP keeps the soft path and ignores the flag.
@@ -118,7 +118,7 @@ class DimfortConfig:
     # Rule markers take precedence over generic codes when both are
     # configured. Empty dict ⇒ ship defaults apply.
     #
-    # Example .dimfort.toml:
+    # Example dimfort.toml:
     #   [diagnostics]
     #   "D1.7" = "error"      # promote exponent-must-be-dim'less to hard error
     #   "D1.6" = "off"        # silence implicit wrapper untag warnings
@@ -160,7 +160,7 @@ class DimfortConfig:
 
 
 def find_config(start: Path) -> Path | None:
-    """Walk upward from ``start`` looking for a ``.dimfort.toml``.
+    """Walk upward from ``start`` looking for a ``dimfort.toml``.
 
     Args:
         start: Path to begin the search from. May point at either a file
@@ -168,7 +168,7 @@ def find_config(start: Path) -> Path | None:
             the starting point.
 
     Returns:
-        Absolute path to the first ``.dimfort.toml`` encountered, or
+        Absolute path to the first ``dimfort.toml`` encountered, or
         ``None`` if the walk reaches a filesystem root without finding
         one.
     """
@@ -185,7 +185,7 @@ def find_config(start: Path) -> Path | None:
 
 
 def load_config(start: Path) -> DimfortConfig:
-    """Locate and parse the nearest ``.dimfort.toml``.
+    """Locate and parse the nearest ``dimfort.toml``.
 
     Args:
         start: Path to begin the upward search from (see

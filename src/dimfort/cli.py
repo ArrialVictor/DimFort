@@ -11,7 +11,7 @@ Exit codes (uniform across subcommands):
 * ``1`` — at least one error-severity diagnostic (or an X001 conflict
   for ``interactions``).
 * ``2`` — usage error: missing subcommand, missing path, no Fortran
-  sources discovered, or invalid ``.dimfort.toml``.
+  sources discovered, or invalid ``dimfort.toml``.
 """
 from __future__ import annotations
 
@@ -136,7 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
             "but different magnitude (e.g. hPa vs Pa, g/kg vs kg/kg) as "
             "S001 (multiplicative), and offset-differing operands (e.g. "
             "K vs degC) as S002 (affine). Dimension-only is the default. "
-            "Can also be enabled via [scale] enabled=true in .dimfort.toml."
+            "Can also be enabled via [scale] enabled=true in dimfort.toml."
         ),
     )
 
@@ -303,7 +303,7 @@ def _run_check(args: argparse.Namespace) -> int:
             return
         print(_format_diag(file, line, severity, code, message, color=color))
 
-    # Pick up CPP defines + include paths from .dimfort.toml, anchored
+    # Pick up CPP defines + include paths from dimfort.toml, anchored
     # on the first path passed on the command line (file or directory).
     config = load_config(roots[0])
     if config.load_error is not None:

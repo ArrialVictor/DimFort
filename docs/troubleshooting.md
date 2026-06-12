@@ -59,8 +59,8 @@ buffer in Emacs). Common causes:
 - The workspace folder is unset. The server runs the workspace
   index on `initialize` from `workspace_folders`; if none are
   passed, only the open file is checked.
-- The `.dimfort.toml` is malformed. The server logs a warning and
-  continues with defaults — confirm it parses with `python3 -c 'import tomllib; tomllib.load(open(".dimfort.toml", "rb"))'`.
+- The `dimfort.toml` is malformed. The server logs a warning and
+  continues with defaults — confirm it parses with `python3 -c 'import tomllib; tomllib.load(open("dimfort.toml", "rb"))'`.
 
 ## Diagnostics
 
@@ -130,7 +130,7 @@ The captured text isn't a valid unit expression. Common causes:
   capture.
 - A unit name the catalog doesn't know. Define it in an extension
   units file and point `[units] file` at it — see
-  [`.dimfort.toml` reference](reference/dimfort-toml.md#units).
+  [`dimfort.toml` reference](reference/dimfort-toml.md#units).
 
 ## Performance
 
@@ -206,5 +206,5 @@ build finishes.
 
 Open an issue at <https://github.com/ArrialVictor/DimFort/issues>
 with: the DimFort version (`dimfort --version`), a minimal source
-file that reproduces the problem, your `.dimfort.toml` if any,
+file that reproduces the problem, your `dimfort.toml` if any,
 and the exact command + output.

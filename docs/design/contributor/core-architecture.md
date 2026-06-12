@@ -64,7 +64,7 @@ A content-hash cache can short-circuit Phase D for unchanged files — see
 | Module | Owns |
 | --- | --- |
 | `units.py` | The `Unit` value type — a 7-slot SI dimension vector (M, L, T, Θ, I, N, J) with a `Fraction` prefactor — its parser and algebra (`*`, `/`, `^`, `compare`, `equal_dim`, `format_unit`), plus the symbolic-exponent / log-wrap types (`Exponent`, `ExpWrap`, `LogWrap`). See [`symbolic-exponents.md`](../shipped/symbolic-exponents.md) and [`symbolic-logwrap.md`](../shipped/symbolic-logwrap.md). |
-| `unit_config.py` | Loads the unit table (`DEFAULT_TABLE` + `.dimfort.toml` overrides) that maps unit names to `Unit`s. |
+| `unit_config.py` | Loads the unit table (`DEFAULT_TABLE` + `dimfort.toml` overrides) that maps unit names to `Unit`s. |
 
 ### Checker
 | Module | Owns |
@@ -75,7 +75,7 @@ A content-hash cache can short-circuit Phase D for unchanged files — see
 ### Diagnostics and provenance
 | Module | Owns |
 | --- | --- |
-| `diagnostics.py` | The `Diagnostic` / `Severity` / `Position` types shared by CLI + LSP, `AutocastEvent`, and severity-override finalisation (`.dimfort.toml`). |
+| `diagnostics.py` | The `Diagnostic` / `Severity` / `Position` types shared by CLI + LSP, `AutocastEvent`, and severity-override finalisation (`dimfort.toml`). |
 | `trace.py` | Optional provenance tracing: which unit-algebra rule fired at each step (`with_trace`, `format_trace`). Drives the CLI `--trace` and the LSP detailed-hover tree. |
 
 ### Orchestration and discovery

@@ -119,7 +119,7 @@ class _ServerState:
             codebases) and updated incrementally on ``didChange`` /
             ``didSave``. ``None`` until the initial scan completes;
             callers fall back to a whole-workspace check while ``None``.
-        project_config: Resolved ``.dimfort.toml`` configuration.
+        project_config: Resolved ``dimfort.toml`` configuration.
             Loaded once at ``initialize`` time; an LSP restart is
             required to re-read.
         external_modules: Lower-cased set of modules the workspace
@@ -214,7 +214,7 @@ class _ServerState:
         # scan completes; callers fall back to whole-workspace check while
         # ``None``.
         self.workspace_index: WorkspaceIndex | None = None
-        # Resolved project config (``.dimfort.toml``). Loaded once at
+        # Resolved project config (``dimfort.toml``). Loaded once at
         # ``initialize`` time; an LSP restart is required to re-read.
         self.project_config: DimfortConfig = DimfortConfig()
         self.external_modules: frozenset[str] = DEFAULT_EXTERNAL_MODULES

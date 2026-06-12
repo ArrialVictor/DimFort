@@ -27,7 +27,7 @@ Sizing: the bound MUST be at least the active workset size, otherwise
 entries get evicted *during* a single ``check_files`` call and the
 cache no-ops. A real-world ``check_files`` over a large Fortran
 codebase touches ~2000-3000 files, so any cap below ~3000 silently
-defeats the cache. The workset-adaptive default + ``.dimfort.toml``
+defeats the cache. The workset-adaptive default + ``dimfort.toml``
 ``[cache] max_entries`` override that wire this knob through the LSP
 land as a follow-up (see ``docs/0_2_6_PLAN.md``).
 """

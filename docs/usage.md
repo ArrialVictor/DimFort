@@ -50,7 +50,7 @@ today; anything not listed should be treated as unimplemented.
 - **`P001` parser-skipped regions.** DimFort makes no unit
   guarantee on lines it couldn't parse and says so. On by
   default; silence on a known-F77 corpus with
-  `[diagnostics] P001 = "off"` in `.dimfort.toml`. See
+  `[diagnostics] P001 = "off"` in `dimfort.toml`. See
   [design/shipped/unparsed-regions.md](design/shipped/unparsed-regions.md).
 
 ## Content-hash cache
@@ -84,7 +84,7 @@ A file's cache entry is invalidated when:
 - its source bytes change;
 - any header pulled in via `#include` changes (the `cpp` closure
   is hashed alongside the source);
-- the relevant `.dimfort.toml` keys change (`external_modules`,
+- the relevant `dimfort.toml` keys change (`external_modules`,
   `extra_defines`, `extra_include_paths`, the three comment-pattern
   lists);
 - the DimFort version changes;

@@ -54,7 +54,7 @@ Inside `ts_checker.check`, alongside the H/S/U diagnostics, by walking
 ## Suppressing it
 
 `P001` is **on by default** (the honesty is the point). To silence it project-
-wide, use the existing severity-override mechanism in `.dimfort.toml`:
+wide, use the existing severity-override mechanism in `dimfort.toml`:
 
 ```toml
 [diagnostics]

@@ -927,7 +927,7 @@ always indicates a typo rather than an intentional entry into
 exp-tagged space.
 
 Default severity: **warning**. Promote to error or silence entirely
-via `.dimfort.toml`'s `[diagnostics]` section (see §15).
+via `dimfort.toml`'s `[diagnostics]` section (see §15).
 
 **Example:**
 ```
@@ -1314,7 +1314,7 @@ into exp-tagged space.
 
 D1.7 captures this with a warning at the power site. Projects with
 heavier log-coordinate usage can demote it (`"D1.7" = "off"` in
-`.dimfort.toml`), and projects that want hard errors can promote
+`dimfort.toml`), and projects that want hard errors can promote
 it (`"D1.7" = "error"`). See §15 for the override mechanism.
 
 #### Derivation commentary
@@ -1392,7 +1392,7 @@ wrapper-of-dim'less as a distinct type.
 
 The diagnostic severities listed in §8 are spec **defaults**. Each
 project can override them per-rule via the `[diagnostics]` section
-of its `.dimfort.toml`:
+of its `dimfort.toml`:
 
 ```toml
 [diagnostics]

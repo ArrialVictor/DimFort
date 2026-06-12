@@ -21,7 +21,7 @@ This module adds a JSON-on-disk layer:
 Schema invariants:
 
 * Every persisted entry includes the patterns fingerprint, so a project
-  whose ``.dimfort.toml`` flips ``[parser]`` patterns between sessions
+  whose ``dimfort.toml`` flips ``[parser]`` patterns between sessions
   invalidates naturally on the next ``check_files`` call.
 * ``_PROJECTION_SCHEMA_VERSION`` is bumped whenever any of the serialised
   dataclasses changes shape. Mismatch → silent drop + warm rebuild.

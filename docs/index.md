@@ -38,7 +38,7 @@ shift between `0.x` releases.
   (`R1.1`–`R7.1`) and D-class diagnostic mapping.
 - [Intrinsics](reference/intrinsics.md) — Fortran intrinsics whose
   unit semantics DimFort knows.
-- [`.dimfort.toml`](reference/dimfort-toml.md) — every config key.
+- [`dimfort.toml`](reference/dimfort-toml.md) — every config key.
 - [Project units file](reference/units-file.md) — extend the
   shipped SI catalog with domain-specific units (`hPa`, `bar`,
   `percent`, …).

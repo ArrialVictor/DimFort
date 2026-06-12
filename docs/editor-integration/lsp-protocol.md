@@ -237,7 +237,7 @@ dirty stats when the cache is active.
 ## `initializationOptions` reference
 
 Every key is optional. Unset keys fall back to the default below or to
-the matching `.dimfort.toml` setting where one exists.
+the matching `dimfort.toml` setting where one exists.
 
 | Key | Type | Default | Effect |
 |---|---|---|---|
@@ -246,9 +246,9 @@ the matching `.dimfort.toml` setting where one exists.
 | `completionEnabled` | boolean | `true` | Toggle unit-name completion inside `@unit{…}`. |
 | `codeActionsEnabled` | boolean | `true` | Toggle code actions. |
 | `gotoDefinitionEnabled` | boolean | `true` | Toggle go-to-definition. |
-| `scaleMode` | boolean | from `.dimfort.toml` (`false` if unset) | Opt in to multiplicative-scale checking (S001 / S002 / S003) and the scale-aware unit display. |
+| `scaleMode` | boolean | from `dimfort.toml` (`false` if unset) | Opt in to multiplicative-scale checking (S001 / S002 / S003) and the scale-aware unit display. |
 | `maxWorksetSize` | integer | `40` | Cap the per-check workset; on large workspaces, files are pinned to the active file's direct dependencies and topo-last entries are dropped to keep the LSP responsive. |
-| `externalModules` | string[] | (merges with config) | Extend the known-external module list (intrinsics + common libraries) beyond `.dimfort.toml`. Lowercased. |
+| `externalModules` | string[] | (merges with config) | Extend the known-external module list (intrinsics + common libraries) beyond `dimfort.toml`. Lowercased. |
 | `cacheMode` | `"off"` \| `"read-only"` \| `"read-write"` | `"off"` | Content-hash cache mode. See [usage.md § Content-hash cache](../usage.md#content-hash-cache). |
 | `cacheDir` | string (absolute path) | `.dimfort-cache/` under the first workspace folder | Override the cache directory when `cacheMode` is not `"off"`. |
 | `traceHoverEnabled` | boolean | — | **Legacy.** `true` → `hover = "detailed"`. Ignored if `hover` is set. |

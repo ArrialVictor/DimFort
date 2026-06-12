@@ -1,4 +1,4 @@
-"""Workset-adaptive cache cap + .dimfort.toml [cache] override.
+"""Workset-adaptive cache cap + dimfort.toml [cache] override.
 
 Covers the machinery added on top of the LRU support from PR #74:
 ``set_max_entries`` trims live entries when shrunk, the config parser
@@ -70,12 +70,12 @@ def test_projection_cache_shrinks_to_new_cap() -> None:
 
 
 # ---------------------------------------------------------------------------
-# .dimfort.toml [cache] max_entries parsing
+# dimfort.toml [cache] max_entries parsing
 # ---------------------------------------------------------------------------
 
 
 def _parse(raw: dict, tmp_path: Path):
-    return _from_raw(raw, tmp_path / ".dimfort.toml")
+    return _from_raw(raw, tmp_path / "dimfort.toml")
 
 
 def test_config_max_entries_auto(tmp_path: Path) -> None:

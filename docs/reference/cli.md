@@ -41,7 +41,7 @@ fail-the-build signal — see [Exit codes](#exit-codes).
 | `--summary`      | After the diagnostic stream, print a per-file H/U count breakdown and total. |
 | `--timings`      | Print wall-clock seconds per pipeline phase. With a cache active (`--cache read-only` or `--cache read-write`), also prints hit / miss / dirty / write counts. `--cache` alone (without `--timings`) is silent. |
 | `--trace`        | Attach a unit-algebra rule-chain trace to each diagnostic, rendered below the message. Useful for wrapper-arithmetic diagnostics (D1.2 / D1.3 / D1.6). |
-| `--scale`        | Opt in to multiplicative-scale checking — flag operands of the same dimension but different magnitude (e.g. `hPa` vs `Pa`, `g/kg` vs `kg/kg`) as `S001`. Equivalent to `[scale] enabled = true` in `.dimfort.toml`. |
+| `--scale`        | Opt in to multiplicative-scale checking — flag operands of the same dimension but different magnitude (e.g. `hPa` vs `Pa`, `g/kg` vs `kg/kg`) as `S001`. Equivalent to `[scale] enabled = true` in `dimfort.toml`. |
 | `--cache MODE`   | Content-hash cache mode: `off` (default), `read-only`, or `read-write`. See [Content-hash cache](../usage.md#content-hash-cache). |
 | `--cache-dir D`  | Override the cache directory (default: `.dimfort-cache/` under the first path argument). |
 | `--clear-cache`  | Wipe the cache directory before running. Combine with `--cache read-write` to repopulate. |
@@ -113,5 +113,5 @@ requests, debouncing, workspace command — is documented in
 
 Warnings and `info`-severity diagnostics print but do not affect
 the exit code. To make a warning fail the build, remap it to
-`"error"` under `[diagnostics]` in `.dimfort.toml` — see
-[`.dimfort.toml` reference](dimfort-toml.md#diagnostics).
+`"error"` under `[diagnostics]` in `dimfort.toml` — see
+[`dimfort.toml` reference](dimfort-toml.md#diagnostics).

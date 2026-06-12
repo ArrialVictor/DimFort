@@ -1,6 +1,6 @@
 """Tests for the [diagnostics] severity-override mechanism.
 
-A project's ``.dimfort.toml`` can promote a warning to an error, demote
+A project's ``dimfort.toml`` can promote a warning to an error, demote
 an error to a warning, or silence either entirely. Overrides are keyed
 by diagnostic code (``H001``, ``H010``) or rule marker (``D1.4``,
 ``D1.7``); markers take precedence.
@@ -126,7 +126,7 @@ def test_config_parser_accepts_info():
     from dimfort.config import load_config
 
     with tempfile.TemporaryDirectory() as td:
-        p = Path(td) / ".dimfort.toml"
+        p = Path(td) / "dimfort.toml"
         p.write_text('[diagnostics]\nU021 = "info"\n')
         cfg = load_config(Path(td))
         assert cfg.diagnostic_severities.get("U021") == "info"

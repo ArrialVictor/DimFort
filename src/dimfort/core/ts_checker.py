@@ -2915,7 +2915,7 @@ def _emit_d17(
     virtually always bugs in scientific Fortran code (``2.0 ** speed``
     style typos). Default severity is WARNING so the rare intentional
     case isn't blocking; projects can promote to ERROR or suppress
-    entirely via the ``[diagnostics]`` section of ``.dimfort.toml``.
+    entirely via the ``[diagnostics]`` section of ``dimfort.toml``.
 
     Args:
         loc: AST node spanning the offending ``**`` expression.
@@ -4830,7 +4830,7 @@ def check(
                     )
             _attach_traces_since(before_len, stmt_trace)
 
-    # Apply per-rule severity overrides from .dimfort.toml.
+    # Apply per-rule severity overrides from dimfort.toml.
     from dimfort.core.diagnostics import finalize_diagnostics
     return finalize_diagnostics(out)
 
