@@ -142,7 +142,7 @@ def build_workspace_payload(result: WorksetResult) -> dict[str, Any]:
     """Project + aggregate a stored :class:`WorksetResult` into wire form.
 
     Same shape as :func:`stats`'s workspace-scope response, used by
-    the merged ``dimfort.checkWorkspace`` handler to return the
+    the merged ``dimfort/checkWorkspace`` handler to return the
     fresh aggregate to the companion without an extra round-trip.
 
     Args:

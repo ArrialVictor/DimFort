@@ -24,7 +24,7 @@ registration, plus the parts that are inherently central:
   `publishDiagnostics`.
 - **Feature toggles**: `_FeatureToggles` / `_features` (set from
   `initializationOptions`).
-- **Misc**: `_notify`, the `dimfort.checkWorkspace` command, `run_stdio`.
+- **Misc**: `_notify`, the `dimfort/checkWorkspace` command, `run_stdio`.
 
 Each `@server.feature` handler in `server.py` is a **thin wrapper**: it does the
 feature-flag check, calls `_ensure_uri_loaded` if needed, acquires the
@@ -111,5 +111,5 @@ handlers, `state`) are imported from it.
 ## Status
 
 The split is complete (branch `refactor-lsp-split`). `server.py` is the spine —
-lifecycle, diagnostic publish, feature registration, and the `dimfort.checkWorkspace`
+lifecycle, diagnostic publish, feature registration, and the `dimfort/checkWorkspace`
 command — and every feature's logic lives in its own module.

@@ -28,7 +28,7 @@ Provides:
   extract literal to PARAMETER, U002 replace-with-suggestion).
 - ``dimfort/panelInfo`` — side-panel rendering data.
 - ``dimfort/interactions`` — read/write/contributor sites for a symbol.
-- ``dimfort.checkWorkspace`` — re-run the pipeline over the workset.
+- ``dimfort/checkWorkspace`` — re-run the pipeline over the workset.
 
 This module is the *spine* of the LSP package: it owns the pygls
 ``LanguageServer`` instance and every ``@server.feature`` registration, the
@@ -1842,11 +1842,11 @@ def _code_action(
     return code_action.resolve(ls, params)
 
 
-@server.command("dimfort.checkWorkspace")
+@server.command("dimfort/checkWorkspace")
 def _cmd_check_workspace(
     ls: LanguageServer, *_args: Any,
 ) -> dict[str, Any] | None:
-    """Implements ``workspace/executeCommand dimfort.checkWorkspace``.
+    """Implements ``workspace/executeCommand dimfort/checkWorkspace``.
 
     Async since 0.2.5. The handler spawns a daemon-thread worker and
     returns immediately so:

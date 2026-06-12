@@ -178,7 +178,7 @@ class _ServerState:
         # runs on a daemon thread with this lock released.
         self.workspace_check_lock = threading.Lock()
         # True while a daemon-thread workspace check is running. Used
-        # to coalesce duplicate ``dimfort.checkWorkspace`` triggers
+        # to coalesce duplicate ``dimfort/checkWorkspace`` triggers
         # (typing on the command twice, panel auto-refresh racing the
         # user's manual press, etc.). The active thread clears it
         # in its ``finally``.

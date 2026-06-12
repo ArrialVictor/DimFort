@@ -8,7 +8,7 @@ The goal is to make `check_files` cheap on repeated invocations
 across a session by caching the load + index phases in addition to
 the per-file diagnostic output (which the existing
 `CacheStore` already handles). DimFort-wide infrastructure work
-that benefits the active-file LSP loop, the `dimfort.checkWorkspace`
+that benefits the active-file LSP loop, the `dimfort/checkWorkspace`
 command, and the workspace coverage stats bar simultaneously.
 
 ## 1. Problem this solves
@@ -19,7 +19,7 @@ workflow that touches more than one file:
 - Per-keystroke `didChange` runs the checker over the active file's
   use-closure. On a closure of 100 files this is in the seconds
   range every time.
-- `dimfort.checkWorkspace` re-walks every workspace file on every
+- `dimfort/checkWorkspace` re-walks every workspace file on every
   invocation.
 - The coverage stats bar's workspace-scope check (0.2.4) re-walks
   every workspace file on every refresh.
@@ -143,7 +143,7 @@ The LSP layer instantiates one of each at server start and threads
 them through every `check_files` call:
 
 - Active-file `didChange` path uses them.
-- `dimfort.checkWorkspace` uses them.
+- `dimfort/checkWorkspace` uses them.
 - The coverage stats bar's workspace check (`lsp/coverage.py`) uses
   them.
 

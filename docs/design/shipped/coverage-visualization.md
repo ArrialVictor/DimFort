@@ -913,7 +913,7 @@ auto-refresh on every edit produced a deeply unsatisfying UX:
 
 The cache-fueled performance work itself (multifile cache,
 Q1-Q5, W1) ships in 0.2.5 and benefits *every* `check_files`
-caller — active-file path, `dimfort.checkWorkspace`, and the
+caller — active-file path, `dimfort/checkWorkspace`, and the
 new manual coverage refresh. The auto-refresh removal is
 purely UX, not undoing performance work.
 
