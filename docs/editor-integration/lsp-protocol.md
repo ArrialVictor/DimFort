@@ -228,7 +228,7 @@ Spec: [design/shipped/coverage-visualization.md](../design/shipped/coverage-visu
 
 ### Workspace command
 
-`workspace/executeCommand` with command `dimfort.checkWorkspace`
+`workspace/executeCommand` with command `dimfort/checkWorkspace`
 re-runs the full workspace check on demand (per-file checks are
 otherwise event-driven). On completion the server emits a toast with
 the file count, H/U totals, wall-clock time, and cache hit / miss /
