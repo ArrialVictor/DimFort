@@ -25,9 +25,14 @@ A cell of `*(native UI)*` means the concept is reached via the platform's standa
 
 | Concept | VSCompanion | NvimCompanion | EmacsCompanion |
 |---|---|---|---|
-| Open or create `.dimfort.toml` / project units file | `DimFort: Open Config…` (`dimfort.openConfig`) | `:DimFortOpenConfig` | `M-x dimfort-open-config` |
+| Open or create `dimfort.toml` / project units file | `DimFort: Open Config…` (`dimfort.openConfig`) | `:DimFortOpenConfig` | `M-x dimfort-open-config` |
 
-Each companion's command is a quick-pick that opens the chosen file if it exists, or creates a commented stub if not. When creating the project units file, a sub-pick offers `Empty template` vs `Defaults as reference (all commented out)`; the defaults flavour shells out to `dimfort show-defaults units` to seed the stub with the bundled content (each line commented). Auto-wires `[units].file = "units.toml"` into `.dimfort.toml` so the server picks up the new units file immediately.
+Each companion's command is a two-step picker. First: `Project configuration file (dimfort.toml)` vs `Project units file (units.toml)`. Each opens if it exists, or creates a commented stub via a sub-pick:
+
+- For `dimfort.toml`: `Empty template` vs `All sections (all commented out)`.
+- For `units.toml`: `Empty template` vs `Defaults as reference (all commented out)` (shells out to `dimfort show-defaults units` to seed with the bundled content).
+
+Auto-wires `[units].file = "units.toml"` into `dimfort.toml` so the server picks up the new units file immediately.
 
 ## Feature toggles + cycles
 
