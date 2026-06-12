@@ -29,8 +29,8 @@ A cell of `*(native UI)*` means the concept is reached via the platform's standa
 
 Each companion's command is a two-step picker. First: `Project configuration file (dimfort.toml)` vs `Project units file (units.toml)`. Each opens if it exists, or creates a commented stub via a sub-pick:
 
-- For `dimfort.toml`: `Empty template` vs `All sections (all commented out)`.
-- For `units.toml`: `Empty template` vs `Defaults as reference (all commented out)` (shells out to `dimfort show-defaults units` to seed with the bundled content).
+- For `dimfort.toml`: `Empty file` vs `Reference template (all sections commented out)`.
+- For `units.toml`: `Empty file` vs `Reference template (bundled defaults, all commented out)` (shells out to `dimfort show-defaults units` to seed with the bundled content).
 
 Auto-wires `[units].file = "units.toml"` into `dimfort.toml` so the server picks up the new units file immediately.
 
