@@ -8,7 +8,7 @@ from dimfort.config import (
 
 
 def test_no_config_returns_empty(tmp_path):
-    """No ``.dimfort.toml`` anywhere → an empty :class:`DimfortConfig`."""
+    """No ``dimfort.toml`` anywhere → an empty :class:`DimfortConfig`."""
     cfg = load_config(tmp_path)
     assert cfg == DimfortConfig()
 
@@ -69,7 +69,7 @@ include_paths = [".dimfort/stubs", "vendor/headers"]
 def test_legacy_lfortran_section_still_provides_cpp_keys(tmp_path):
     """Old ``[lfortran]`` cpp_defines / include_paths keys keep working.
 
-    Projects whose ``.dimfort.toml`` predates the rename should not
+    Projects whose ``dimfort.toml`` predates the rename should not
     need to be updated to keep CPP preprocessing.
     """
     (tmp_path / CONFIG_FILENAME).write_text("""
@@ -83,7 +83,7 @@ cpp_defines = ["ISO"]
 
 
 def test_units_file_resolved_relative_to_config(tmp_path):
-    """``[units] file`` is resolved relative to the .dimfort.toml directory.
+    """``[units] file`` is resolved relative to the dimfort.toml directory.
 
     Mirrors how src_paths / include_paths are handled — a relative
     path like ``user_units.toml`` should not depend on the current
@@ -350,19 +350,19 @@ unit_assume_comment_delimiters = [
 
 
 def test_malformed_toml_sets_load_error(tmp_path):
-    """Audit fix: a malformed .dimfort.toml must set ``load_error``
+    """Audit fix: a malformed dimfort.toml must set ``load_error``
     so the CLI can return exit 2 per the documented contract.
     The previous behaviour silently logged + returned empty config —
     breaking the cli.md promise that invalid config exits with 2."""
-    (tmp_path / ".dimfort.toml").write_text("this is = not valid [ toml\n")
+    (tmp_path / "dimfort.toml").write_text("this is = not valid [ toml\n")
     cfg = load_config(tmp_path)
     assert cfg.load_error is not None
-    assert cfg.config_path == tmp_path / ".dimfort.toml"
+    assert cfg.config_path == tmp_path / "dimfort.toml"
 
 
 def test_well_formed_toml_load_error_is_none(tmp_path):
-    """Sanity: a parseable .dimfort.toml must leave load_error as None
+    """Sanity: a parseable dimfort.toml must leave load_error as None
     so the CLI keeps its exit 0 / 1 paths intact."""
-    (tmp_path / ".dimfort.toml").write_text("[project]\nsrc_paths = []\n")
+    (tmp_path / "dimfort.toml").write_text("[project]\nsrc_paths = []\n")
     cfg = load_config(tmp_path)
     assert cfg.load_error is None

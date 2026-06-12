@@ -55,7 +55,7 @@ D-class identifies the algebra rule violated.
 
 The scale family fires only when `scale_mode` is on: pass
 `--scale` on the CLI, or set `[scale] enabled = true` in
-`.dimfort.toml`, or `scaleMode: true` in LSP
+`dimfort.toml`, or `scaleMode: true` in LSP
 `initializationOptions`.
 
 | Code  | Severity | When it fires |
@@ -78,7 +78,7 @@ Produced only by `dimfort interactions` (CLI) and the
 
 | Code  | Severity | When it fires |
 |-------|----------|---------------|
-| P001  | info     | A region the parser could not read. DimFort makes no unit claims about the region and skips it. Common on F77 idioms or `.F90` files with active preprocessor conditionals. Silence per-file by setting `[diagnostics] P001 = "off"` in `.dimfort.toml`. See [design/unparsed-regions.md](../design/shipped/unparsed-regions.md). |
+| P001  | info     | A region the parser could not read. DimFort makes no unit claims about the region and skips it. Common on F77 idioms or `.F90` files with active preprocessor conditionals. Silence per-file by setting `[diagnostics] P001 = "off"` in `dimfort.toml`. See [design/unparsed-regions.md](../design/shipped/unparsed-regions.md). |
 
 ## Tuning severity per project
 

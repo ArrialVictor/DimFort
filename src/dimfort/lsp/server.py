@@ -659,7 +659,7 @@ def _apply_cache_max_entries(workset_size: int) -> None:
 
     Called after every successful ``check_files`` completion. The
     desired cap is ``max(observed_workset_size × 4, 4096)`` when the
-    user hasn't pinned a value via ``.dimfort.toml`` ``[cache]
+    user hasn't pinned a value via ``dimfort.toml`` ``[cache]
     max_entries``. The observed size is a session high-watermark so
     a small follow-up workset doesn't shrink the cap and trigger
     eviction inside the larger workset's lifetime.
@@ -884,7 +884,7 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
     """Implements ``initialize``: capture workspace + apply client settings.
 
     Reads the workspace folders (or legacy ``root_uri``) into
-    ``state.workspace_folders``, loads ``.dimfort.toml`` from the
+    ``state.workspace_folders``, loads ``dimfort.toml`` from the
     first folder, then layers ``initializationOptions`` on top per
     the documented precedence (config < init-options < CLI).
     Installs project-specific unit tables, the process-wide
@@ -918,7 +918,7 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
             folders.append(p)
     state.workspace_folders = folders
 
-    # Load .dimfort.toml from the first workspace folder, if any.
+    # Load dimfort.toml from the first workspace folder, if any.
     if folders:
         state.project_config = load_config(folders[0])
     config = state.project_config
@@ -1020,7 +1020,7 @@ def _initialized(ls: LanguageServer, params: lsp.InitializedParams) -> None:
     against the client's readiness and produces
     ``JsonRpcMethodNotFound`` responses.
 
-    Picks scan roots from ``.dimfort.toml``'s ``[project].src_paths``
+    Picks scan roots from ``dimfort.toml``'s ``[project].src_paths``
     when configured (useful on large monorepos where only a few
     subtrees concern DimFort); otherwise falls back to every
     workspace folder.
@@ -1039,7 +1039,7 @@ def _initialized(ls: LanguageServer, params: lsp.InitializedParams) -> None:
     folders = state.workspace_folders
     if not folders:
         return
-    # If ``.dimfort.toml`` narrows the source tree via [project].src_paths,
+    # If ``dimfort.toml`` narrows the source tree via [project].src_paths,
     # scan only those subdirectories. Otherwise scan every workspace
     # folder. Useful on large monorepos where DimFort cares about a
     # handful of subtrees.

@@ -6,7 +6,7 @@ already (`! [m/s]`, `! [m^2: empirical]`, …). DimFort can be
 configured to read those existing conventions so they become
 first-class annotations without rewriting every declaration.
 
-The mechanism is three independent pattern lists in `.dimfort.toml`,
+The mechanism is three independent pattern lists in `dimfort.toml`,
 one per directive family:
 
 | `[parser]` key | Directive | Default |

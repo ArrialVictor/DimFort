@@ -129,7 +129,7 @@ def test_initialize_applies_diagnostic_severity_overrides(tmp_path):
     # the editor silently ignores every [diagnostics] override (only the
     # CLI used to set it). _initialize touches `ls` only via _notify,
     # which tolerates ls=None.
-    (tmp_path / ".dimfort.toml").write_text(
+    (tmp_path / "dimfort.toml").write_text(
         '[diagnostics]\nS001 = "error"\nH001 = "off"\n'
     )
     set_severity_overrides({})  # start clean

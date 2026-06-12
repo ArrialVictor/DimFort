@@ -312,7 +312,7 @@ def install_default(user_path: Path | None = None) -> UnitTable:
     Subsequent ``units.parse(expr)`` calls (without an explicit table)
     and every downstream component that reads ``_units_mod.DEFAULT_TABLE``
     pick up the new table. The CLI and LSP call this after resolving
-    ``.dimfort.toml`` so project-specific units (``degree`` / ``hPa`` /
+    ``dimfort.toml`` so project-specific units (``degree`` / ``hPa`` /
     ``day``, etc.) are honoured.
 
     Args:

@@ -32,7 +32,7 @@ class Severity(StrEnum):
 # Per-rule severity overrides (Phase B follow-up)
 # ---------------------------------------------------------------------------
 #
-# A project's ``.dimfort.toml`` may carry a ``[diagnostics]`` section
+# A project's ``dimfort.toml`` may carry a ``[diagnostics]`` section
 # mapping a diagnostic *code* (``H001``, ``H010``) or a *rule marker*
 # (``D1.4``, ``D1.7``) to one of ``"error"``, ``"warning"``, or
 # ``"off"``. Rule markers take precedence so a user can promote D1.7

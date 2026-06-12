@@ -312,7 +312,7 @@ def _load_one(
 
     For ``.F90`` files the system ``cpp`` is pre-run using the
     project's ``cpp_defines`` / ``include_paths`` (from
-    ``.dimfort.toml``). Without this, modules whose ``module NAME``
+    ``dimfort.toml``). Without this, modules whose ``module NAME``
     statement sits inside an ``#ifdef X`` block surface as an ERROR
     span and downstream consumers fire U007 even though the module
     exists. The cost is ~10 ms per ``.F90`` file (system cpp); on a

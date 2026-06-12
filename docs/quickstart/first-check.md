@@ -97,5 +97,5 @@ to read your existing convention. See
 ## Next steps
 
 - [Bringing DimFort to an existing codebase](bringing-to-existing-codebase.md)
-- [`.dimfort.toml` reference](../reference/dimfort-toml.md)
+- [`dimfort.toml` reference](../reference/dimfort-toml.md)
 - [Editor integration](../editor-integration/)

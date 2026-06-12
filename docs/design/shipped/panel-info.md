@@ -356,7 +356,7 @@ the panel), cache on.
 | `code_actions_enabled`    | boolean | `true`         | Add-`@unit{}` and extract-to-`PARAMETER` quick fixes    |
 | `goto_definition_enabled` | boolean | `true`         | LSP go-to-definition                                    |
 | `hover`                   | string  | `"short"`      | `"disabled"` / `"short"` / `"detailed"`                 |
-| `scale_mode`              | string  | `"auto"`       | `"auto"` defers to `.dimfort.toml`; `"on"`/`"off"` override |
+| `scale_mode`              | string  | `"auto"`       | `"auto"` defers to `dimfort.toml`; `"on"`/`"off"` override |
 | `cache_mode`              | string  | `"read-write"` | `"off"` / `"read-only"` / `"read-write"`                |
 
 ### Hover
@@ -371,7 +371,7 @@ the panel), cache on.
 |--------------------|----------|----------------------------|-------------------------------------------------------------|
 | `external_modules` | string[] | `[]`                       | Extra module-export descriptors (e.g. for vendored deps)    |
 | `filetypes`        | string[] | `["fortran"]`              | Buffers DimFort attaches to                                 |
-| `root_markers`     | string[] | `[".dimfort.toml", ".git"]` | Files marking the workspace root                            |
+| `root_markers`     | string[] | `["dimfort.toml", ".git"]` | Files marking the workspace root                            |
 | `auto_attach`      | boolean  | `true`                     | Attach automatically via FileType / BufEnter                |
 
 ## Commands

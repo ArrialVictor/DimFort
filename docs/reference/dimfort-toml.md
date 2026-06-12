@@ -1,6 +1,6 @@
-# `.dimfort.toml` reference
+# `dimfort.toml` reference
 
-A `.dimfort.toml` file at any ancestor directory of the file being
+A `dimfort.toml` file at any ancestor directory of the file being
 checked configures DimFort for that project. DimFort walks upward
 from the **first** path passed on the command line until it finds
 one (multi-root invocations against scattered codebases share that

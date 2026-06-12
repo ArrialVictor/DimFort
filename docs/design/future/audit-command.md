@@ -11,7 +11,7 @@ cover everything).
 
 A team adopting DimFort on an existing Fortran codebase has to
 decide which comment conventions in their code are intended as
-unit annotations, and configure `.dimfort.toml`'s
+unit annotations, and configure `dimfort.toml`'s
 `unit_comment_delimiters` accordingly. Doing this by hand on a
 500k-line model is hard — the team has to grep their own
 source for the patterns they use, sample-validate, and decide
@@ -19,7 +19,7 @@ what's load-bearing vs. prose.
 
 DimFort can do this for them, as a **one-shot inspection command,
 not a per-edit diagnostic**. The output is a structured report
-suggesting concrete additions to `.dimfort.toml`, not a wave of
+suggesting concrete additions to `dimfort.toml`, not a wave of
 in-editor squiggles.
 
 ## 2. Why this is NOT a diagnostic
@@ -60,7 +60,7 @@ Scanned 312 files. Comment shapes found (confidence ≥ 0.7):
       src/physics/large_scale_clouds.f90:128 ! [kg/kg]
       src/dynamics/timestep_diag.f90:53  ! [day]
     Suggestion:
-      Add to .dimfort.toml:
+      Add to dimfort.toml:
         [parser]
         unit_comment_delimiters = [
           { open = "@unit{", close = "}" },
@@ -79,7 +79,7 @@ Scanned 312 files. Comment shapes found (confidence ≥ 0.7):
       No automatic config change suggested.
 
 Recommended next step: run with --apply to write the suggested
-config block to .dimfort.toml (will not overwrite existing keys
+config block to dimfort.toml (will not overwrite existing keys
 unless --force).
 
 Aggregate summary: 1,855 candidate annotations found across

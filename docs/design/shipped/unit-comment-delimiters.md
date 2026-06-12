@@ -181,7 +181,7 @@ A unit annotation on a multi-variable declaration applies to **all**
 names on the declaration, regardless of which pattern (canonical
 `@unit{...}` or a user-configured `[...]`) matched. Treatment is
 unified across pattern types — once a project has opted into a
-pattern via `.dimfort.toml`, the project-level configuration is
+pattern via `dimfort.toml`, the project-level configuration is
 itself the explicit gesture, no weaker than typing `@unit{...}`.
 
 If the author wants different units per name, they write multiple
@@ -308,7 +308,7 @@ only distinguishes statement *kind*, not statement *shape*.
 ### Configurability
 
 All three codes obey the existing `[diagnostics]` severity overrides
-in `.dimfort.toml`. Projects that find U022 noisy on first run can
+in `dimfort.toml`. Projects that find U022 noisy on first run can
 demote it to `"info"` or `"off"`.
 
 ## 10. Backward compatibility
@@ -540,7 +540,7 @@ unit_affine_comment_delimiters = [
 
 ## 15. Migration and adoption guidance
 
-1. **Existing users** (`.dimfort.toml` does not set
+1. **Existing users** (`dimfort.toml` does not set
    `unit_comment_delimiters`): nothing to do. Behavior is preserved
    except that bare `! @unit{...}` is now accepted in addition to
    `!< @unit{...}` (etc.). Hover, panel, diagnostics — all unchanged.

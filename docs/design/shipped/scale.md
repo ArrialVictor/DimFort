@@ -65,7 +65,7 @@ quantity meeting a `K` slot), and the affine path turns the
 - NOT replacing or weakening dimension checking.
 - NOT auto-converting values or rewriting source.
 - NOT a units-database expansion effort — scale rides on the existing
-  `factor` / `offset` and `.dimfort.toml` unit definitions.
+  `factor` / `offset` and `dimfort.toml` unit definitions.
 - NOT soft-units (name-hints, families). Future, out of scope here.
 
 ### 2.1 Expected yield (be honest)
@@ -150,7 +150,7 @@ student to ask "absolute or change?", the exact °C/K bug). Migration
 under 2b.
 
 Non-unit factors/offsets come from the unit table: base SI units
-(factor 1, offset 0) plus `.dimfort.toml` definitions (`hPa`, `g`,
+(factor 1, offset 0) plus `dimfort.toml` definitions (`hPa`, `g`,
 `degC`, …) carrying their factor/offset relative to the base. The
 derived-unit schema today carries `factor` *and* `offset`;
 [default_units.toml](../../../src/dimfort/core/default_units.toml) ships
@@ -627,7 +627,7 @@ assume branch is checked first in the assignment-statement handler).
 
 Scale mode is opt-in, threaded from three sources into `_Ctx.scale_mode`:
 
-- **`.dimfort.toml`** — `[scale] enabled = true`
+- **`dimfort.toml`** — `[scale] enabled = true`
   ([config.py](../../../src/dimfort/config.py)). Persistent per-workspace
   setting.
 - **CLI `--scale`** — `dimfort check --scale`, `dimfort interactions
@@ -638,7 +638,7 @@ Scale mode is opt-in, threaded from three sources into `_Ctx.scale_mode`:
   ([lsp/server.py](../../../src/dimfort/lsp/server.py)). Boolean.
 
 Companion editors expose a tri-state `"auto" | "on" | "off"`: `"auto"`
-defers to `.dimfort.toml`, `"on"`/`"off"` force the LSP init option.
+defers to `dimfort.toml`, `"on"`/`"off"` force the LSP init option.
 The cycle is bound to `:DimFortCycleScale` (and the Emacs / VSCode
 equivalents) — see panel-info.md §Commands.
 
