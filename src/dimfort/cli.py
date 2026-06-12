@@ -176,6 +176,26 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    show = sub.add_parser(
+        "show-defaults",
+        help="Print the bundled default unit table to stdout.",
+        description=(
+            "Print the contents of the bundled default unit-table "
+            "TOML file to stdout. Useful as a starting point for "
+            "a project-local units file (used by the companions' "
+            "`Open Config` command); also handy for reference / "
+            "documentation snippets."
+        ),
+    )
+    show.add_argument(
+        "kind",
+        choices=["units"],
+        help=(
+            "What to print. Currently only ``units`` is supported "
+            "(prints ``dimfort/core/default_units.toml``)."
+        ),
+    )
+
     lsp = sub.add_parser("lsp", help="Start the DimFort language server (stdio).")
     # Some LSP clients (vscode-languageclient with TransportKind.stdio) tack
     # this argument on automatically. We only speak stdio, so it's a no-op
@@ -735,6 +755,45 @@ def _emit_coverage_json(workset: WorksetCoverage) -> None:
     print(_json.dumps(payload, indent=2))
 
 
+def _run_show_defaults(args: argparse.Namespace) -> int:
+    """Print the contents of a bundled default table file to stdout.
+
+    Used by the companions' ``Open Config…`` command flow when the
+    user wants to seed a fresh project units file with the bundled
+    defaults (all entries commented out, ready to uncomment +
+    customise). Shell-out from the companion keeps the defaults
+    fresh — no need to vendor a copy in each companion repo.
+
+    Args:
+        args: Parsed argparse namespace; ``args.kind`` selects which
+            default file to print (currently only ``"units"``).
+
+    Returns:
+        ``0`` on success, ``1`` if the bundled file can't be located
+        (would indicate a broken install).
+    """
+    from importlib import resources
+
+    if args.kind == "units":
+        try:
+            content = (
+                resources.files("dimfort.core")
+                .joinpath("default_units.toml")
+                .read_text(encoding="utf-8")
+            )
+        except (FileNotFoundError, ModuleNotFoundError, OSError) as exc:
+            print(
+                f"dimfort: cannot read bundled default_units.toml: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        sys.stdout.write(content)
+        return 0
+    # argparse's ``choices=`` should prevent this path, but be defensive.
+    print(f"dimfort: unknown defaults kind {args.kind!r}", file=sys.stderr)
+    return 2
+
+
 # ---------------------------------------------------------------------------
 # Top-level dispatch
 # ---------------------------------------------------------------------------
@@ -763,6 +822,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_interactions(args)
     if args.command == "coverage":
         return _run_coverage(args)
+    if args.command == "show-defaults":
+        return _run_show_defaults(args)
     if args.command == "lsp":
         from dimfort.lsp.server import run_stdio
         from dimfort.lsp.state import state
