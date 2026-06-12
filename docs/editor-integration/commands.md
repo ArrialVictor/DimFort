@@ -10,11 +10,9 @@ A cell of `*(native UI)*` means the concept is reached via the platform's standa
 
 | Concept | VSCompanion | NvimCompanion | EmacsCompanion |
 |---|---|---|---|
-| Run workspace check | `DimFort: Check Workspace` (`dimfort.refreshWorkspace` †) | `:DimFortCheckWorkspace` | `M-x dimfort-check-workspace` |
+| Run workspace check | `DimFort: Check Workspace` (`dimfort.checkWorkspace`) | `:DimFortCheckWorkspace` | `M-x dimfort-check-workspace` |
 | Restart server | `DimFort: Restart Language Server` (`dimfort.restartLanguageServer`) | `:DimFortRestart` | `M-x dimfort-restart` |
 | Print status | `DimFort: Status` (`dimfort.status`) | `:DimFortStatus` | `M-x dimfort-status` |
-
-† VSCompanion's user-facing command id is `dimfort.refreshWorkspace`, not `dimfort.checkWorkspace`. The DimFort server advertises `dimfort.checkWorkspace` via `workspace/executeCommand`, and `vscode-languageclient` auto-registers every server-advertised command into VS Code's command registry. The companion's wrapper (which drives the status-bar Coverage widget's in-flight spinner) must use a different id to avoid a duplicate-registration error that aborts activation. Nvim's and Emacs's LSP clients don't auto-register server commands, so their user-facing ids can match the server's directly. The user-facing palette label is consistent across all three.
 
 ## Cache
 
