@@ -12,7 +12,7 @@ A cell of `*(native UI)*` means the concept is reached via the platform's standa
 |---|---|---|---|
 | Run workspace check | `DimFort: Check Whole Workspace` (`dimfort.checkWorkspace`) | `:DimFortCheckWorkspace` | `M-x dimfort-check-workspace` |
 | Restart server | `DimFort: Restart Language Server` (`dimfort.restartLanguageServer`) | `:DimFortRestart` | `M-x dimfort-restart` |
-| Print status | *(native UI: status bar)* | `:DimFortStatus` | `M-x dimfort-status` |
+| Print status | `DimFort: Status` (`dimfort.status`) | `:DimFortStatus` | `M-x dimfort-status` |
 
 ## Cache
 
