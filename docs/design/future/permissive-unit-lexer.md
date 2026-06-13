@@ -264,7 +264,8 @@ properly **not lexer concerns**:
   config.**
 - **`unitless;0-1`, `0-1, unitless`, `true/false`, `T/F`, `-`** —
   prose/range/qualifier markers that aren't units. Belong in
-  [relax-mode](relax-mode.md) — extract-a-unit-from-a-comment
+  **relax-mode** (planned sibling design; see IDEAS_REGISTRY entry
+  in the Homogeneity work-notes) — extract-a-unit-from-a-comment
   heuristics, not unit-string lexer.
 - **Year-only `(2002)`** (Corpus A 260 / Corpus B 175 / Corpus C 690) —
   citation false positives. Belong in
@@ -425,8 +426,8 @@ question for implementation.
 - **The rewriter target.** Always canonical, regardless of flags.
   See [rewrite-rules.md](rewrite-rules.md).
 - **Comment-extraction rules** (which substring of an inline
-  comment is the unit). That's
-  [relax-mode](relax-mode.md), not the lexer.
+  comment is the unit). That's **relax-mode** (planned sibling
+  design), not the lexer.
 - **Vocabulary expansion** (`unitless`/`days`/`hPa`). Project
   `[units] file`, not lexer.
 
