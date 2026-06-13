@@ -93,6 +93,35 @@ The same projection is available over LSP via the
 workspace-wide) and `dimfort/lineStatus` (per-line tiers for the
 editor companions to render). See [editor-integration/lsp-protocol.md](../editor-integration/lsp-protocol.md#coverage-stats-dimfortcoveragestats).
 
+## `dimfort show-defaults`
+
+```
+dimfort show-defaults <what>
+```
+
+Print the contents of a bundled DimFort default file to stdout.
+Useful as a starting point for a project-local override: pipe to a
+file, then edit. Also used by the companions' `Open Config`
+command when the user picks the **Reference template** sub-pick
+(VSCode `DimFort: Open Config…`, Nvim `:DimFortOpenConfig`, Emacs
+`M-x dimfort-open-config`).
+
+Currently supports one bundled file:
+
+| `<what>` | Prints | When you'd use it |
+|---|---|---|
+| `units` | `dimfort/core/default_units.toml` — the standard unit table (base SI units, derived units, common scaled forms). | Bootstrap a project-local units file for a corpus that needs symbols beyond the standard table (e.g. `hPa`, `day`, `degree`). User entries override / extend these; collision detection runs at load time. |
+
+```bash
+dimfort show-defaults units              # to stdout
+dimfort show-defaults units > my-units.toml   # bootstrap project units file
+```
+
+The output is intended to be human-readable and grep-able, not a
+wire format. Future `<what>` values may add other bundled
+templates as the catalog grows; the current set is intentionally
+small.
+
 ## `dimfort lsp`
 
 Start the language server over stdio. Accepts no arguments beyond
