@@ -1008,6 +1008,24 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         f"{config_note}",
     )
 
+    # Surface workspace-less state as a toast: without folders, the
+    # background scan never runs (the ``initialized`` handler early-
+    # returns), so workspace-scope features — ``dimfort/checkWorkspace``,
+    # goto-def across files, cross-file U007 surfacing — silently
+    # disable.  This typically happens when the editor was launched
+    # against a single file instead of a folder (e.g. ``code foo.f90``
+    # without ``-n <folder>``, or VSCode attaching a new instance to a
+    # pre-existing workspace-less window).  Before this toast, the only
+    # signal was a footer "Project: –" with no explanation.
+    if not folders:
+        _notify(
+            ls,
+            "DimFort: no workspace folder open — workspace-scope features "
+            "(project coverage, cross-file analysis) are disabled. Open a "
+            "folder to enable them.",
+            toast=True,
+        )
+
 
 @server.feature(lsp.INITIALIZED)
 def _initialized(ls: LanguageServer, params: lsp.InitializedParams) -> None:
@@ -1950,16 +1968,33 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
     with state.workspace_index_lock:
         idx = state.workspace_index
     if idx is None:
+        # Toast (not log-only): the user explicitly invoked
+        # ``dimfort/checkWorkspace`` and is waiting on the footer to
+        # populate. A silent "index not ready" in the output channel
+        # leaves the footer reverting to "Project: –" with no
+        # explanation. Two causes funnel here: workspace_folders was
+        # empty at initialize (see the workspaceless toast there), or
+        # the background scan hasn't finished yet (worth retrying in a
+        # few seconds).
         _notify(
             ls,
-            "DimFort: workspace index not ready yet — wait for the scan "
-            "to finish, then try again.",
+            "DimFort: workspace index not ready yet — either no workspace "
+            "folder is open, or the background scan is still running. "
+            "Wait a few seconds and try again.",
+            toast=True,
         )
         return None
 
     files = sorted(idx.uses_by_file.keys())
     if not files:
-        _notify(ls, "DimFort: no Fortran files in workspace")
+        # Toast: same rationale as above — user-invoked command, the
+        # footer is going to revert to "–", and the user deserves a
+        # visible reason rather than a silent log entry.
+        _notify(
+            ls,
+            "DimFort: no Fortran files found in workspace",
+            toast=True,
+        )
         return None
 
     token = f"dimfort-workspace-check-{int(time.time() * 1000)}"
