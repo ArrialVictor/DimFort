@@ -85,13 +85,21 @@ the panel — see each companion's CHANGELOG).
   "Project: –" with no signal. See PR #87 for the half-day debug
   session that surfaced this.
 
-- **`docs/contributor/perf-validation.md`** — checklist for
-  perf-PR authors: bench harness invocation, sample-size convention,
-  cold/warm protocol, payload-vs-wall metrics, the noise floor we
-  treat as significant, and the manual-QA restart-drift check that
-  catches per-file state leaks across `:DimFortRestart` boundaries.
-  Lives next to (not in) [`docs/contributor/`](docs/contributor/);
-  link in `CONTRIBUTING.md`.
+- **`docs/design/contributor/perf-pr-validation.md`** — checklist
+  for perf-PR authors: bench harness invocation, sample-size
+  convention, cold/warm protocol, payload-vs-wall metrics, the
+  noise floor we treat as significant, and the manual-QA restart-
+  drift check that catches per-file state leaks across
+  `:DimFortRestart` boundaries.
+
+- **`docs/contributor/cache-audit-0-2-6.md`** — written deliverable
+  from the global cache audit run at release-prep time (per
+  `docs/0_2_6_PLAN.md` line 92). 13 caches enumerated with per-cache
+  invalidation and bound verdicts. Includes the output of
+  `scripts/cache_memory_churn.py` (also new this release) — caches
+  bound as designed under 100 iterations on synthetic files. Five
+  caches need documentation polish in 0.2.7; CI integration of the
+  memory-churn script is also deferred.
 
 - **`docs/design/future/permissive-unit-lexer.md`** and
   **`docs/design/future/unit-comment-skip-delimiters.md`** — design
