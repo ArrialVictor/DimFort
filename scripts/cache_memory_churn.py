@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import argparse
 import gc
-import os
 import resource
 import shutil
 import sys
