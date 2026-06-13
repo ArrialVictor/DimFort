@@ -46,7 +46,7 @@ comments — `! [m/s]`, `! horizontal wind speed [m/s]`,
 project's own convention, so you don't rewrite every declaration
 just to opt in.
 
-Add a few lines to `.dimfort.toml`:
+Add a few lines to `dimfort.toml`:
 
 ```toml
 [parser]
@@ -74,6 +74,20 @@ dimfort check --scale demos/tour.f90
 
 [`demos/README.md`](https://github.com/ArrialVictor/DimFort/blob/main/demos/README.md)
 walks through the output line by line.
+
+In an editor, the same analysis renders in an always-visible side
+panel that follows the cursor — every position shows the unit-algebra
+tree for the current expression, alongside the diagnostics on that
+line, the variables in scope, and the modules in scope:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ArrialVictor/DimFort/main/docs/img/panel-vscode-hero_dark.png">
+  <img width="640" src="https://raw.githubusercontent.com/ArrialVictor/DimFort/main/docs/img/panel-vscode-hero_light.png" alt="DimFort side panel in VSCode — unit-algebra tree for the cursor's expression with stacked scope and imports below, plus per-file and project-wide coverage in the footer">
+</picture>
+
+The footer bar carries per-file and project-wide coverage tiers
+(verified / unverified / violation / unparsed), updated live as you
+edit. See [Editor integrations](#editor-integrations) below.
 
 ## Install
 
@@ -116,7 +130,7 @@ is a runtime dependency installed automatically — no external
 compiler or subprocess needed for parsing. For `.F90` files using
 CPP `#`-directives DimFort shells out to the system `cpp` if
 `[parser] cpp_defines` or `[parser] include_paths` are set in
-`.dimfort.toml`.
+`dimfort.toml`.
 
 ## Usage
 
@@ -197,8 +211,8 @@ one-line summary, `Detailed` for the full unit-algebra tree with
 per-row 🟢/🟡/🔴 markers).
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ArrialVictor/DimFort/main/docs/img/hover-expression-detailed-violation_dark.png">
-  <img width="640" src="https://raw.githubusercontent.com/ArrialVictor/DimFort/main/docs/img/hover-expression-detailed-violation_light.png" alt="Detailed expression hover showing a homogeneity violation propagating up the unit-algebra tree">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ArrialVictor/DimFort/main/docs/img/tour-hover-h001-line42_dark.png">
+  <img width="640" src="https://raw.githubusercontent.com/ArrialVictor/DimFort/main/docs/img/tour-hover-h001-line42_light.png" alt="Detailed expression hover on tour.f90 line 42 — H001 assignment mismatch m·s⁻¹ ≠ m²·s⁻² with the rule trace surfaced under each row">
 </picture>
 
 See [docs/editor-integration/hover-ui.md](https://github.com/ArrialVictor/DimFort/blob/main/docs/editor-integration/hover-ui.md)
