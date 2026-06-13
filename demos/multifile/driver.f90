@@ -1,7 +1,7 @@
 ! Top-level driver that pulls in every other file in this demo via
 ! use clauses. Opening driver.f90 in the editor gives DimFort the
 ! biggest workset of the four — all three modules plus the driver
-! itself — so the side-panel "WS:" coverage segment differs visibly
+! itself — so the side-panel "Project:" coverage segment differs visibly
 ! from the per-file "File:" segment.
 program driver
   use constants_mod,   only: t_ref, p_ref

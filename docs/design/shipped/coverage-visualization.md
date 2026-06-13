@@ -476,22 +476,27 @@ file is active. Always on; no opt-in needed.
 **Full form** (opt-in via `dimfort.coverage.workspace_stats =
 manual | automatic` — see §13.2 for the rationale):
 
-    File: 78% (🟡 18 🔴 2)  ·  WS: 73% (🟡 412 🔴 38)
+    File: 78% (🟡 18 🔴 2)  ·  Project: 73% (🟡 412 🔴 38)
 
-The `WS:` segment aggregates over **every Fortran file in the
+The `Project:` segment aggregates over **every Fortran file in the
 workspace**, not just the active file's transitive `use`-closure.
-This is a deliberate choice: a user expecting "workspace
+This is a deliberate choice: a user expecting "project-wide
 coverage" expects a stable project-level number, not one that
 shifts as they switch tabs. The server runs a dedicated
 `check_files` over all indexed files for this scope; the `File:`
 segment continues to serve from the per-active-file cache
 produced by the normal diagnostic flow.
 
-When the WS segment is opted in and has no data yet (cold start,
-or pre-`?` placeholder in `manual` mode), the renderer shows
-either `WS: ?` (manual, clickable) or `WS: …` (automatic /
-manual mid-compute), never `WS: 0%` — distinguishable from a
-real 0% workspace, which carries at least one warn or fire.
+When the `Project:` segment is opted in and has no data yet (cold
+start, or pre-`?` placeholder in `manual` mode), the renderer
+shows either `Project: ?` (manual, clickable) or `Project: …`
+(automatic / manual mid-compute), never `Project: 0%` —
+distinguishable from a real 0% workspace, which carries at least
+one warn or fire.
+
+Note: the label was `WS:` in 0.2.4 (first shipped) and renamed to
+`Project:` in 0.2.5 for readability — the segment semantics are
+unchanged.
 
 **No diagnostic-event counts in the bar.** Editor chrome already
 shows workspace W/E totals (VSCode status bar by default; Nvim
@@ -582,9 +587,9 @@ in steady state:
    across re-checks (likely, given the existing content-hash
    cache infrastructure).
 2. **`workspace_stats` user-facing tri-state**:
-   `disabled | manual | automatic`. `manual` shows `WS: ?` with
-   a click / command to compute on demand; `disabled` shows
-   `WS: —` always. File-scope is always live regardless. Gives
+   `disabled | manual | automatic`. `manual` shows `Project: ?`
+   with a click / command to compute on demand; `disabled` shows
+   `Project: —` always. File-scope is always live regardless. Gives
    users on enormous codebases an explicit escape hatch even if
    the per-file cache is in place.
 
