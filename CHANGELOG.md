@@ -2,6 +2,204 @@
 
 All notable changes to DimFort are documented here. Format inspired by [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.6] — 2026-06-13
+
+### Highlight
+
+Polish + perf + cross-companion symmetry release. Four threads:
+
+1. **Cross-companion command audit.** Established a canonical
+   command-name table for the three editor companions
+   (`docs/editor-integration/commands.md`) and aligned every
+   user-facing command across VSCode / Nvim / Emacs around a single
+   row-per-concept layout. Two server-side renames fell out of the
+   audit: the workspace-check wire-protocol command standardised to
+   `dimfort/checkWorkspace` (slash, was a mix), and the project
+   config file renamed `.dimfort.toml` → `dimfort.toml` (dropping
+   the dot — it's project metadata, not a per-user dotfile). Sets
+   the contract every companion follows for 0.3.0+ symmetry work.
+
+2. **Perf — seven targeted cursor-rate / cold-start wins.** Inlay
+   hints now cache `var_types` / `parameters` / `type_fields` per
+   `(uri, version)`; `dimfort interactions` caches reports under an
+   LRU cap; `workspace/inlayHint/refresh` is throttled; goto-def
+   carries a workset-wide name index instead of re-walking every
+   file; the per-workset content-hash cache adapts its cap to
+   workset size (with override) — and the M5 disk-persistent
+   `ModuleExportsCache` cuts cold-after-restart Phase C from a full
+   re-walk to a hash-validated reload. Continuation of the M4 +
+   per-file projection work shipped in 0.2.5.
+
+3. **Workspace-less UX safety net.** Three silent-failure paths on
+   the workspace-check side now toast (`window/showMessage`) instead
+   of dropping a log line: initialize with no workspace folder
+   (single-file mode), `dimfort/checkWorkspace` before the
+   background scan completes, and `dimfort/checkWorkspace` against
+   an empty workset. The footer used to revert to "Project: –" with
+   no explanation; the user now sees the actual cause. All three
+   companions render the toast natively (no client-side changes
+   needed).
+
+4. **Other polish.** New `dimfort show-defaults units` CLI subcommand
+   surfaces the built-in unit table for `dimfort.toml` overrides;
+   workspace-check progress indicator no longer collapses to the
+   status bar mid-check (now carries a `[N/5]` phase counter);
+   refreshed `tour.f90` screenshots across documentation; README
+   leads with the side-panel hero (the always-on surface), not the
+   hover (the discovery affordance).
+
+### Recommended companion versions
+
+Pair this server with VSCompanion **0.2.6+**, NvimCompanion
+**0.2.6+**, EmacsCompanion **0.2.6+**. All three ship the same
+release cycle and follow the canonical commands table; mixing this
+server with older companions works but loses cross-companion command
+symmetry (`Open Config…`, `Status`, the sort + unit-display modes on
+the panel — see each companion's CHANGELOG).
+
+### Added
+
+- **`dimfort show-defaults units`** — new CLI subcommand. Prints the
+  built-in unit table (every unit name DimFort knows out of the box,
+  with its canonical dim factor) in a stable text format, so a
+  project setting up `[units] file` overrides has a concrete starting
+  point. The output is intended to be readable and `grep`-able, not
+  a wire format. Sister to `dimfort check` and `dimfort interactions`.
+
+- **Cross-companion editor-commands reference** —
+  [`docs/editor-integration/commands.md`](docs/editor-integration/commands.md).
+  Single canonical table mapping every user-facing concept to its
+  VSCompanion command palette entry, Nvim `:DimFort…` user command,
+  and Emacs `M-x dimfort-…` interactive function. Becomes the
+  authoritative checklist for cross-companion parity audits; matches
+  the three companion's actual surface as of 0.2.6.
+
+- **Workspaceless / not-ready toast on `dimfort/checkWorkspace`.**
+  Three previously-silent failure paths now emit
+  `window/showMessage`: (a) at initialize when no workspace folder is
+  open, (b) on `dimfort/checkWorkspace` when the background scan
+  hasn't built `state.workspace_index` yet, (c) on
+  `dimfort/checkWorkspace` against a workset with no Fortran files.
+  Companions render the toast natively. Reasoning: the workspace
+  check is user-invoked; silent failure leaves the user staring at
+  "Project: –" with no signal. See PR #87 for the half-day debug
+  session that surfaced this.
+
+- **`docs/contributor/perf-validation.md`** — checklist for
+  perf-PR authors: bench harness invocation, sample-size convention,
+  cold/warm protocol, payload-vs-wall metrics, the noise floor we
+  treat as significant, and the manual-QA restart-drift check that
+  catches per-file state leaks across `:DimFortRestart` boundaries.
+  Lives next to (not in) [`docs/contributor/`](docs/contributor/);
+  link in `CONTRIBUTING.md`.
+
+- **`docs/design/future/permissive-unit-lexer.md`** and
+  **`docs/design/future/unit-comment-skip-delimiters.md`** — design
+  notes for two 0.2.7+ candidate features. Permissive lexer accepts
+  udunits2-style syntax (whitespace = multiply, integer-suffix
+  exponents) inside `@unit{…}`; skip-delimiters complements the
+  configurable comment-delimiters feature by giving authors an
+  escape from false positives in surveyed corpora. Neither is built
+  yet.
+
+### Changed
+
+- **Wire-protocol command `dimfort.checkWorkspace` → `dimfort/checkWorkspace`.**
+  Companion authors should update any `workspace/executeCommand`
+  call site that uses the old dotted form. Server still accepts
+  either form for one release as a soft-migration; the dotted form
+  will be removed in 0.2.7. (The companion-side palette command id
+  in the VSCode extension stays `dimfort.checkWorkspace` — that's
+  the companion's namespace, not the LSP wire format.)
+
+- **`.dimfort.toml` → `dimfort.toml`.** Project config file renamed
+  to drop the leading dot. Reasoning: it's project metadata that
+  belongs alongside `pyproject.toml` / `Cargo.toml` / similar, not
+  a per-user dotfile. The old name is no longer recognised — a
+  workspace with a `.dimfort.toml` will surface as if no config
+  were present (the new no-config toast will fire). One-shot
+  migration: `git mv .dimfort.toml dimfort.toml`. Updates the
+  `find_config` upward-walk plus every doc / template reference.
+
+- **Workspace-check progress UI carries a `[N/5]` phase counter.**
+  The status-bar `workDoneProgress` indicator used to collapse mid-
+  check; it now stays visible across the full pipeline (parse →
+  attach → check → project → emit) and labels each phase explicitly.
+  Users can see *which* phase is slow on big worksets.
+
+- **README leads with the panel, not the hover.** New hero panel
+  screenshot in the Quick Tour section makes the always-on side
+  surface — the primary user interaction — visible above the fold.
+  The hover example moved down to the Trace Mode section, where it
+  belongs in context. Companion READMEs already led with panel
+  shots; the main DimFort README was the outlier.
+
+### Fixed
+
+- **Cache audit: cross-cache invariants documented + decl-scan cache
+  pruned on `didClose`.** Found by the cache hygiene pass: the
+  decl-scan cache wasn't pruning buffer entries on file close,
+  leaking ~one entry per file opened in long sessions. Plus a
+  documentation pass on the (uri, version) invariant every cache
+  must obey to be safe under live edits.
+
+- **`dimfort interactions` report cache: LRU cap + case-insensitive
+  key.** Previously unbounded; reports built up over a long session
+  could exhaust resident memory. New cap is workset-relative
+  (defaults to 256 reports) with an override in `dimfort.toml`.
+  Key normalisation makes `f` and `F` hit the same entry, matching
+  Fortran's case-insensitive identifier rules.
+
+- **Two stale-cache windows on inlay hints.** `var_types`,
+  `parameters`, and `type_fields` are now cached by `(uri, version)`
+  rather than being recomputed every render. Saves the per-render
+  parse on the cursor-rate path.
+
+### Performance
+
+Numbers below are walltime on a real-world Fortran codebase (2435
+files, warm-server / cold-cache unless noted). Cumulative wins
+since 0.2.5:
+
+- **M5 disk-persistent `ModuleExportsCache`.** Phase C
+  (`collect_function_signatures_and_module_exports`) on
+  cold-after-restart: full re-walk of every tree → hash-validated
+  reload of the previous session's cache. Cuts ~2.5 s off the cold
+  startup path. Pairs with M4 (per-file projection cache, shipped
+  in 0.2.5).
+
+- **Workset-adaptive cache cap.** Default cache cap now scales with
+  workset size (defaults to `2 × workset_size`, min 1000) instead
+  of a fixed 5000. Avoids both under-sizing on big worksets (which
+  silently evicts and defeats the cache mid-check) and over-sizing
+  on small ones (memory waste). Override via
+  `[cache] max_entries` in `dimfort.toml`.
+
+- **Workset-wide name index for goto-definition.** A single
+  `symbols_by_name_lc` index built once per workspace check
+  replaces the prior per-request walk over every file's symbol
+  table. Goto-def latency on the cursor-rate path drops from
+  ~50–80 ms to single-digit ms on large worksets.
+
+- **`workspace/inlayHint/refresh` throttled.** Burst-fires during
+  rapid edits were collapsing into multiple refresh round-trips;
+  now coalesced to ≤1/s. Eliminates the visible inlay flicker
+  during typing on long files.
+
+### Docs
+
+- **Pre-release docs audit** caught: `.dimfort.toml` → `dimfort.toml`
+  stragglers in `.gitignore`, `tour.f90`, multifile demo README +
+  source, and the design doc for coverage visualization (5 spec
+  references + 1 example footer line, plus a historical note about
+  the rename); plus two broken `relax-mode.md` links in the
+  permissive-unit-lexer design note.
+- **Refreshed tour-hover screenshots** (4 scenes × dark+light) and
+  companion-panel screenshots (3 editors × hero+mismatch × dark+
+  light) — 20 PNGs at 2880×1600 (native M1 retina). The H004 hover
+  capture moved from `line76` to `line75` to track the renamed
+  function (`dyn_p`) in the current `tour.f90`.
+
 ## [0.2.5] — 2026-06-09
 
 ### Highlight
