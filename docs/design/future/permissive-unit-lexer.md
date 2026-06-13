@@ -1,8 +1,8 @@
 # Permissive unit lexer — flag-toggled reading modes (FUTURE)
 
 **Status:** future feature, post-0.2.2. Drafted 2026-06-13 after the
-ORCHIDEE cycle-0 measurement (separate session log at
-`annotation/orchidee/CYCLE_NOTES.md` §5) surfaced that the canonical
+Corpus B cycle-0 measurement (separate session log at
+`annotation/corpus-b/CYCLE_NOTES.md` §5) surfaced that the canonical
 `@unit{}` lexer rejects a sizeable fraction of the unit-shape comments
 already present in real climate codebases.
 
@@ -15,14 +15,15 @@ Three Fortran climate codes surveyed 2026-06-13 illustrate the spread:
 
 | corpus | trailing-paren comment slots | dominant lexical features |
 |---|---|---|
-| Corpus A (anonymized) | 18,161 | `/` division, whitespace mult, udunits integer-suffix exponents (`W m-2`), Fortran-style `**` |
-| ORCHIDEE (`sources/orchidee`) | 8,076 | LaTeX `^{-1}` braces, `.` multiplication (`J.kg^{-1}`), `unitless` keyword, Fortran `**` |
-| NEMO (`sources/nemo`) | 9,450 | `/`, whitespace mult, `kg m-3`-style suffix, bare-digit exponents (`m2`) |
+| Corpus A | 18,161 | `/` division, whitespace mult, udunits integer-suffix exponents (`W m-2`), Fortran-style `**` |
+| Corpus B | 8,076 | LaTeX `^{-1}` braces, `.` multiplication (`J.kg^{-1}`), `unitless` keyword, Fortran `**` |
+| Corpus C | 9,450 | `/`, whitespace mult, `kg m-3`-style suffix, bare-digit exponents (`m2`) |
 
 Each codebase is internally consistent in style — the Corpus A team writes
-`W m-2` uniformly, the ORCHIDEE team writes `W m^{-2}` uniformly — but
-the conventions differ across communities. (Corpus A names a private
-survey corpus and is referenced anonymously throughout this note.) The strict default lexer
+`W m-2` uniformly, the Corpus B team writes `W m^{-2}` uniformly — but
+the conventions differ across communities. (The three corpora are
+private survey codebases and are referenced anonymously throughout
+this note.) The strict default lexer
 can read none of them losslessly today.
 
 The other half of the adoption story —
@@ -38,13 +39,13 @@ extract at all** (citation / qualifier / year-only patterns).
 
 Three commitments shape the rest of the note. They emerged from a
 2026-06-13 discussion (transcript captured in
-`annotation/orchidee/CYCLE_NOTES.md` discussion log).
+`annotation/corpus-b/CYCLE_NOTES.md` discussion log).
 
 ### 2.1 Independent flags, not modes
 
 Modes (`unit_lexer = "strict" | "latex" | "udunits2" | "all"`) feel
 ergonomic but bundle features that are actually orthogonal — the
-ORCHIDEE LaTeX brace `^{-1}` and the NEMO udunits integer-suffix
+Corpus B LaTeX brace `^{-1}` and the Corpus C udunits integer-suffix
 `m-3` share zero lexer machinery. A project that wants the first
 should not be forced to enable the second.
 
@@ -94,10 +95,10 @@ some hits are false-positive parens like `(France, 2002)`).
 Accept LaTeX-style braced exponents: `m^{-1}`, `kg^{2}`, `W m^{-2}`.
 
 - **Corpus A:** 0 hits — not used.
-- **ORCHIDEE:** **312** hits — dominant form for exponents.
-- **NEMO:** 0 hits — not used.
+- **Corpus B:** **312** hits — dominant form for exponents.
+- **Corpus C:** 0 hits — not used.
 
-ORCHIDEE-specific. Single highest-leverage flag for ORCHIDEE
+Corpus B-specific. Single highest-leverage flag for Corpus B
 adoption.
 
 **Lexer scope:** treat `^{...}` as a synonym for `^...` when the
@@ -112,8 +113,8 @@ Accept `.` between alphabetic identifiers as multiplication:
 `J.kg^{-1}`, `kgC.m^{-2}.s^{-1}`, `m^2.m^{-2}`.
 
 - **Corpus A:** 364 hits (mostly genuine — `K.s-1`, `Pa.s-1`).
-- **ORCHIDEE:** 219 hits.
-- **NEMO:** 296 hits.
+- **Corpus B:** 219 hits.
+- **Corpus C:** 296 hits.
 
 Common in French-tradition climate code; rare in udunits2
 canonical.
@@ -132,8 +133,8 @@ Accept whitespace between identifiers as multiplication:
 `kg m`, `m s`, `W m`, `J kg`.
 
 - **Corpus A:** 2,618 hits (very common — `W m-2`, `kg m-3`, etc.).
-- **ORCHIDEE:** 1,409 hits.
-- **NEMO:** 3,049 hits.
+- **Corpus B:** 1,409 hits.
+- **Corpus C:** 3,049 hits.
 
 The single highest-volume convention across all three corpora.
 udunits2 canonical.
@@ -155,8 +156,8 @@ Accept a trailing signed integer on an identifier as exponent:
 `m s-1`, `kg m-3`, `J mol-1`, `W m-2`.
 
 - **Corpus A:** 221 hits.
-- **ORCHIDEE:** 273 hits.
-- **NEMO:** 162 hits.
+- **Corpus B:** 273 hits.
+- **Corpus C:** 162 hits.
 
 udunits2 canonical syntax.
 
@@ -178,8 +179,8 @@ identifier as exponent: `m2`, `m3`, `W/m2`.
 
 - **Corpus A:** 1,604 hits — but with high noise (variable names like
   `i2`, `t2m`, `q1` shape the same way).
-- **ORCHIDEE:** 360 hits.
-- **NEMO:** 460 hits.
+- **Corpus B:** 360 hits.
+- **Corpus C:** 460 hits.
 
 Common in casual annotation. **Highest false-positive risk** of all
 the flags — a CESM/climate codebase has many identifier-like tokens
@@ -205,8 +206,8 @@ Accept Fortran-style `**` as the exponentiation operator in the
 unit string: `m**2`, `kg**2/m**3`, `s**(-1)`.
 
 - **Corpus A:** 76 hits.
-- **ORCHIDEE:** 222 hits.
-- **NEMO:** 11 hits.
+- **Corpus B:** 222 hits.
+- **Corpus C:** 11 hits.
 
 Programmer-natural carry-over from Fortran expression syntax.
 Always orthogonal to other flags.
@@ -223,8 +224,8 @@ Accept Unicode superscript characters (`⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺`) as e
 `m·s⁻¹`, `kg m⁻³`.
 
 - **Corpus A:** 0 hits.
-- **ORCHIDEE:** 2 hits.
-- **NEMO:** 0 hits.
+- **Corpus B:** 2 hits.
+- **Corpus C:** 0 hits.
 
 Almost absent in Fortran climate code. **Cheap to implement, low
 real-world payoff.** Include for completeness so user-typed strings
@@ -242,8 +243,8 @@ Accept `·` (U+00B7 middle dot) as multiplication: `m·s⁻¹`,
 `kg·m⁻³`.
 
 - **Corpus A:** 0 hits.
-- **ORCHIDEE:** 0 hits.
-- **NEMO:** 0 hits.
+- **Corpus B:** 0 hits.
+- **Corpus C:** 0 hits.
 
 **Not observed in any surveyed corpus.** Listed here for
 completeness (it's the SI typographical convention; users writing
@@ -255,7 +256,7 @@ deferrable.
 The following also surfaced in the empirical survey but are
 properly **not lexer concerns**:
 
-- **`unitless` keyword** (740 hits in ORCHIDEE) — alias mapping to
+- **`unitless` keyword** (740 hits in Corpus B) — alias mapping to
   `1`. Belongs in `default_units.toml` or a project `[units] file`
   extension. **Available today via config.**
 - **`days`, `hPa`, `mb`, `ubar`, `MJ`** — vocabulary extensions.
@@ -265,11 +266,11 @@ properly **not lexer concerns**:
   prose/range/qualifier markers that aren't units. Belong in
   [relax-mode](relax-mode.md) — extract-a-unit-from-a-comment
   heuristics, not unit-string lexer.
-- **Year-only `(2002)`** (Corpus A 260 / ORCHIDEE 175 / NEMO 690) —
+- **Year-only `(2002)`** (Corpus A 260 / Corpus B 175 / Corpus C 690) —
   citation false positives. Belong in
   [skip delimiters](unit-comment-skip-delimiters.md) — author-declared
   non-unit parens, not unit-string lexer.
-- **`(see Schmidt et al., 2002)`** (Corpus A 52 / ORCHIDEE 43 / NEMO 596) —
+- **`(see Schmidt et al., 2002)`** (Corpus A 52 / Corpus B 43 / Corpus C 596) —
   prefix-marked citations. Same — [skip delimiters](unit-comment-skip-delimiters.md).
 - **`(STATIC,OMP_CHUNK)`-style uppercase OMP/threading tags** —
   Corpus A 365 sites. Content-regex skip delimiter.
@@ -367,8 +368,8 @@ with `allow_implicit_product=false`).
 | `udunits2` | `allow_implicit_product`, `allow_integer_suffix_exp`, `allow_unicode_superscripts`, `allow_middot_multiplication` |
 | `all` | every flag |
 
-Per the corpora: ORCHIDEE wants approximately `latex`; Corpus A and
-NEMO want approximately `udunits2`; an "ORCHIDEE-but-with-fortran-
+Per the corpora: Corpus B wants approximately `latex`; Corpus A and
+Corpus C want approximately `udunits2`; an "Corpus B-but-with-fortran-
 exponent" project (which exists) wants the union, hence the
 preferred ergonomics is to **state the preset and add the missing
 flag**, rather than mode-bundles that lock the choice.
@@ -433,10 +434,10 @@ question for implementation.
 
 Per-corpus pattern counts measured 2026-06-13 (script:
 `grep -hE '!!?.*\([^()]*\)[[:space:]]*$' <files> | sed -E 's|.*\(([^()]*)\)[[:space:]]*$|\1|'`
-piped into pattern-specific `grep -c`). Corpus A excludes `obsolete/`
-and `phylmdiso/` (symlinked to `phylmd/`).
+piped into pattern-specific `grep -c`). Corpus A excludes archive
+directories and symlink-duplicated subtrees from the count.
 
-| pattern \ corpus | Corpus A | ORCHIDEE | NEMO |
+| pattern \ corpus | Corpus A | Corpus B | Corpus C |
 |---|---|---|---|
 | total trailing-paren slots | 18,161 | 8,076 | 9,450 |
 | LaTeX `^{...}` braces | 0 | 312 | 0 |

@@ -39,9 +39,9 @@ explicitly opts into.
 
 Counts of trailing-paren content matching each candidate skip pattern,
 out of 35,687 total trailing-paren content lines across Corpus A (18,161)
-+ ORCHIDEE (8,076) + NEMO (9,450).
++ Corpus B (8,076) + Corpus C (9,450).
 
-| skip pattern | Corpus A | ORCHIDEE | NEMO | total |
+| skip pattern | Corpus A | Corpus B | Corpus C | total |
 |---|---:|---:|---:|---:|
 | starts `(see …)` | 52 | 43 | **596** | **691** |
 | starts `(cf …)` / `(cf. …)` | 9 | 0 | 43 | 52 |
@@ -55,8 +55,8 @@ out of 35,687 total trailing-paren content lines across Corpus A (18,161)
 
 **Observations:**
 
-- **NEMO is `(see ...)`-dominated** — 596 sites, more than 10× the
-  citation noise of either other corpus. NEMO authors cross-reference
+- **Corpus C is `(see ...)`-dominated** — 596 sites, more than 10× the
+  citation noise of either other corpus. Corpus C authors cross-reference
   heavily inside source comments.
 - **Year-only parens are universal** — 1,125 sites across the three
   corpora — and shape-defined (`^[12][0-9]{3}$`), so they call for
@@ -64,7 +64,7 @@ out of 35,687 total trailing-paren content lines across Corpus A (18,161)
 - **Corpus A has a distinct non-unit class** — 365 uppercase OpenMP /
   threading tags (`(STATIC,OMP_CHUNK)`, etc.). Shape-defined
   (all-caps + commas).
-- ORCHIDEE has the *least* citation noise but the most LaTeX /
+- Corpus B has the *least* citation noise but the most LaTeX /
   unit-content lexical issues. The two surveys cover non-overlapping
   pain.
 
@@ -182,7 +182,7 @@ somewhere:
 ```toml
 [parser]
 # unit_comment_skip_delimiters = [
-#   { open = "(see ",   close = ")" },                              # ~691 across Corpus A+ORC+NEMO
+#   { open = "(see ",   close = ")" },                              # ~691 across Corpus A+ORC+Corpus C
 #   { open = "(cf ",    close = ")" },                              # ~52
 #   { open = "(cf. ",   close = ")" },
 #   { open = "(after ", close = ")" },                              # ~17
@@ -201,7 +201,7 @@ informed starting point.
 
 The uppercase-tags entry (`{open="(", close=")", content="^[A-Z_,]+$"}`)
 is **not** in the default — it's Corpus A-specific (365 hits there, 0 in
-ORCHIDEE, 24 in NEMO).
+Corpus B, 24 in Corpus C).
 
 ## 6. Open questions
 
@@ -259,6 +259,6 @@ File lists (`/tmp/files_<corpus>.txt`) built with:
 ```bash
 find sources/<corpus-a>/  -name '*.f90' -o -name '*.F90' \
    -not -path '*obsolete*' > /tmp/files_corpus-a.txt
-find sources/orchidee/ -name '*.f90' -not -path '*.svn*' > /tmp/files_orchidee.txt
-find sources/nemo/  -name '*.F90' > /tmp/files_nemo.txt
+find sources/corpus-b/ -name '*.f90' -not -path '*.svn*' > /tmp/files_corpus-b.txt
+find sources/corpus-c/  -name '*.F90' > /tmp/files_corpus-c.txt
 ```
