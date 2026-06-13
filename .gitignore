@@ -229,7 +229,10 @@ __marimo__/
 .dimfort-cache/
 
 # Optional per-project DimFort config — kept local in development checkouts
-# (a real consumer's `.dimfort.toml` belongs in their workspace, not in this repo).
+# (a real consumer's `dimfort.toml` belongs in their workspace, not in this repo).
+# Legacy `.dimfort.toml` (pre-rename) is still listed for the benefit of
+# developer machines that haven't renamed their local copies.
+dimfort.toml
 .dimfort.toml
 
 # OS files

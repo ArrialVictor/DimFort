@@ -35,7 +35,7 @@ program tour
   rho = p / (R_d * T)
 
   ! ---- S001 — same dimension (pressure), different magnitude factor. ----
-  ! Fires only under --scale (or [scale] enabled = true in .dimfort.toml).
+  ! Fires only under --scale (or [scale] enabled = true in dimfort.toml).
   p_hpa = p
 
   ! ---- H001 — classic homogeneity error: m/s := Pa / (kg/m^3) gives m^2/s^2. ----

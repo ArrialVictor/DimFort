@@ -29,7 +29,7 @@ exercises worksets of different sizes:
 | `driver.f90` | `{driver, pressure_clean, pressure_broken, constants_mod}` | 4 files |
 
 In the editor side panel's coverage stats bar, that translates to a
-visibly different `WS:` segment as you switch between tabs — most
+visibly different `Project:` segment as you switch between tabs — most
 sharply when moving between `constants_mod` (1-file workset, so
 `File == WS`) and `driver` (4-file workset, so `WS` aggregates over
 all the cross-file errors `pressure_broken` introduces).
