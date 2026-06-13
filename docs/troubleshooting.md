@@ -58,7 +58,14 @@ buffer in Emacs). Common causes:
   detection.
 - The workspace folder is unset. The server runs the workspace
   index on `initialize` from `workspace_folders`; if none are
-  passed, only the open file is checked.
+  passed, only the open file is checked. **Since 0.2.6 the server
+  toasts** ("DimFort: no workspace folder open — workspace-scope
+  features … are disabled. Open a folder to enable them.") to make
+  this state visible; if your editor doesn't seem to be opening
+  the workspace correctly (common on VSCode when launched via
+  `code <file>` instead of `code <folder>`), this toast is the
+  signal. Open the parent folder, not just the file, to enable
+  workspace-scope features.
 - The `dimfort.toml` is malformed. The server logs a warning and
   continues with defaults — confirm it parses with `python3 -c 'import tomllib; tomllib.load(open("dimfort.toml", "rb"))'`.
 
