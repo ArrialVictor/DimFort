@@ -20,17 +20,27 @@ Six Fortran climate codes surveyed 2026-06-13 illustrate the spread:
 | Corpus C | 9,450 trailing-paren | `/`, whitespace mult, `kg m-3`-style suffix, bare-digit exponents (`m2`) |
 | Corpus D | 7,196 trailing-paren | `/` division, bare-digit exponents, `(-)` dimensionless marker |
 | Corpus E | 15,580 trailing-paren | `/` division, bare-digit exponents, heavy dimension-hint / INTENT noise in trailing parens |
-| Corpus F | 5,762 trailing-**bracket** | `[unit]` brackets (not parens), `/`, bare-digit, biogeochem tracer-tagging (`mol(C)/m^2`) |
+| Corpus F | 5,762 trailing-**bracket** | `[unit]` brackets (dominant), `/`, bare-digit, biogeochem tracer-tagging (`mol(C)/m^2`) |
 
-Each codebase is internally consistent in style — the Corpus A team writes
-`W m-2` uniformly, the Corpus B team writes `W m^{-2}` uniformly — but
-the conventions differ across communities. (The six corpora are
-private survey codebases and are referenced anonymously throughout
-this note. Corpora A–C were the original 3-corpus measurement that
-produced the 0.2.7 priority-four flag set; D–F extended the survey
-on 2026-06-13 to validate generalization across distinct convention
-lineages and reprioritized one flag — see §3.5.) The strict default
-lexer can read none of them losslessly today.
+Each codebase has a **dominant** convention — the Corpus A team
+writes `W m-2`, the Corpus B team writes `W m^{-2}`, the Corpus F
+team puts the unit in `[brackets]` — but the conventions differ
+across communities. **(A late 2026-06-13 follow-up survey found
+that every corpus also carries a substantial secondary form: every
+parens-dominant corpus uses brackets for a non-trivial fraction of
+units too, ranging from ~770 sites in Corpus D up to 5,125 sites
+in Corpus E. The "dominant" framing is therefore a simplification;
+a complete `dimfort.toml` template includes BOTH `{open=" (",
+close=")"}` AND `{open=" [", close="]"}` rules for any corpus.
+The lexer-flag conclusions in this note are unchanged — see §10
+appendix for trailing-bracket counts where they affect the
+flag-coverage story.)** (The six corpora are private survey
+codebases and are referenced anonymously throughout this note.
+Corpora A–C were the original 3-corpus measurement that produced
+the 0.2.7 priority-four flag set; D–F extended the survey on
+2026-06-13 to validate generalization across distinct convention
+lineages and reprioritized one flag — see §3.5.) The strict
+default lexer can read none of them losslessly today.
 
 The other half of the adoption story —
 [`unit_comment_delimiters`](../shipped/unit-comment-delimiters.md)
@@ -132,7 +142,7 @@ Accept `.` between alphabetic identifiers as multiplication:
 - **Corpus F:** **0** hits — not used.
 - **Union: 1,151 hits across 6 corpora.**
 
-Common in French/MesoNH-lineage climate code; rare in udunits2
+Common in one major European convention lineage; rare in udunits2
 canonical and absent from the modern Corpus F lineage.
 
 **Lexer scope:** between identifier characters, treat `.` as the
@@ -365,8 +375,9 @@ properly **not lexer concerns**:
   D 27 / E 75) — prefix-marked citations. Same —
   [skip delimiters](unit-comment-skip-delimiters.md).
 - **`(STATIC,OMP_CHUNK)`-style uppercase OMP/threading tags** —
-  Corpus A 365 + Corpus D 53 (DrHook `ZHOOK_HANDLE_OMP`-style).
-  Content-regex skip delimiter on uppercase-comma patterns.
+  Corpus A 365 + Corpus D 53 (profiling-framework threading
+  handles). Content-regex skip delimiter on uppercase-comma
+  patterns.
 - **`(ncol,nlay)`, `(i,j,k)` dimension hints** — Corpus E ~3,696
   sites; the dominant non-unit-paren class in this convention lineage.
   Content-regex skip delimiter on lowercase-comma patterns.
@@ -554,7 +565,10 @@ ocean code) and reprioritized §3.5
 
 | pattern \ corpus | A | B | C | D | E | F | **union** |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| total unit slots | 18,161 | 8,076 | 9,450 | 7,196 | 15,580 | 5,762 | **64,225** |
+| **trailing-paren slots** | 18,161 | 8,076 | 9,450 | 7,196 | 15,580 | 33,330¹ | **91,807** |
+| **trailing-bracket slots** | 1,474 | 810 | 1,914 | 773 | **5,125** | **5,762** | **15,858** |
+| **leading-paren slots** | 1,871 | 608 | 753 | 796 | 1,435 | 2,686¹ | **8,149** |
+| **leading-bracket slots** | 294 | 40 | 57 | 265 | 541 | 472 | **1,669** |
 | LaTeX `^{...}` braces | 0 | 312 | 0 | 3 | 0 | 132 | **447** |
 | dot-mult `X.Y` | 364 | 219 | 296 | 86 | 186 | 0 | **1,151** |
 | udunits integer-suffix | 221 | 273 | 162 | 303 | 152 | 680 | **1,791** |
@@ -574,4 +588,25 @@ ocean code) and reprioritized §3.5
 
 (Bare-digit counts include false-positive identifier tokens; treat
 as upper bound. Year-only counts include legitimate citations the
-relax-mode filter would catch.)
+relax-mode filter would catch. Lexer-flag hit-counts in §3.x and the
+"by-pattern" rows above are extracted from trailing-paren content
+only.)
+
+¹ Corpus F's trailing-paren and leading-paren counts include
+substantial source-code noise (the codebase carries heavy OpenACC
+GPU-port markers like `lzacc`/`lacc`/`PRESENT`/`:,:` as parenthesised
+identifiers inside inline comments). The bracket counts are
+correspondingly the meaningful unit-slot count for Corpus F.
+
+**Mixed-convention observation (2026-06-13 follow-up).** Every
+corpus uses BOTH paren and bracket delimiter forms for unit
+annotations. The "dominant form" simplification in §1 understates
+this — trailing-bracket counts range from ~770 (Corpus D) to 5,125
+(Corpus E) for the parens-dominant corpora, and the bracket-dominant
+Corpus F has 5,762 trailing-bracket sites. The lexer-flag analysis
+in §3 is unchanged (flags apply identically to either delimiter's
+content), but a project `dimfort.toml` template should configure
+**both** `{open=" (", close=")"}` and `{open=" [", close="]"}`
+delimiter rules to capture each corpus's full annotation surface.
+Implementation of the 8 flags in 0.2.7 should explicitly exercise
+both delimiter forms in the test corpus.
