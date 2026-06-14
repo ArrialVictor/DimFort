@@ -11,20 +11,26 @@ already present in real climate codebases.
 A team adopting DimFort on an existing codebase typically writes unit
 information in inline comments using the conventions their community
 already taught them — almost never DimFort's strict canonical form.
-Three Fortran climate codes surveyed 2026-06-13 illustrate the spread:
+Six Fortran climate codes surveyed 2026-06-13 illustrate the spread:
 
-| corpus | trailing-paren comment slots | dominant lexical features |
+| corpus | unit-slot population | dominant lexical features |
 |---|---|---|
-| Corpus A | 18,161 | `/` division, whitespace mult, udunits integer-suffix exponents (`W m-2`), Fortran-style `**` |
-| Corpus B | 8,076 | LaTeX `^{-1}` braces, `.` multiplication (`J.kg^{-1}`), `unitless` keyword, Fortran `**` |
-| Corpus C | 9,450 | `/`, whitespace mult, `kg m-3`-style suffix, bare-digit exponents (`m2`) |
+| Corpus A | 18,161 trailing-paren | `/` division, whitespace mult, udunits integer-suffix exponents (`W m-2`), Fortran-style `**` |
+| Corpus B | 8,076 trailing-paren | LaTeX `^{-1}` braces, `.` multiplication (`J.kg^{-1}`), `unitless` keyword, Fortran `**` |
+| Corpus C | 9,450 trailing-paren | `/`, whitespace mult, `kg m-3`-style suffix, bare-digit exponents (`m2`) |
+| Corpus D | 7,196 trailing-paren | `/` division, bare-digit exponents, `(-)` dimensionless marker |
+| Corpus E | 15,580 trailing-paren | `/` division, bare-digit exponents, heavy dimension-hint / INTENT noise in trailing parens |
+| Corpus F | 5,762 trailing-**bracket** | `[unit]` brackets (not parens), `/`, bare-digit, biogeochem tracer-tagging (`mol(C)/m^2`) |
 
 Each codebase is internally consistent in style — the Corpus A team writes
 `W m-2` uniformly, the Corpus B team writes `W m^{-2}` uniformly — but
-the conventions differ across communities. (The three corpora are
+the conventions differ across communities. (The six corpora are
 private survey codebases and are referenced anonymously throughout
-this note.) The strict default lexer
-can read none of them losslessly today.
+this note. Corpora A–C were the original 3-corpus measurement that
+produced the 0.2.7 priority-four flag set; D–F extended the survey
+on 2026-06-13 to validate generalization across distinct convention
+lineages and reprioritized one flag — see §3.5.) The strict default
+lexer can read none of them losslessly today.
 
 The other half of the adoption story —
 [`unit_comment_delimiters`](../shipped/unit-comment-delimiters.md)
@@ -85,10 +91,11 @@ the canonical-rewriter target.)
 
 ## 3. Candidate flags (the empirically-grounded list)
 
-Each flag below has been validated against the three-corpus survey.
-Counts are trailing-paren-content occurrences across each corpus;
-they bound the absolute upside (subject to relax-mode interaction —
-some hits are false-positive parens like `(France, 2002)`).
+Each flag below has been validated against the six-corpus survey.
+Counts are trailing-paren-content occurrences across each corpus
+(Corpus F counts are trailing-bracket); they bound the absolute
+upside (subject to relax-mode interaction — some hits are
+false-positive parens like `(France, 2002)`).
 
 ### 3.1 `allow_latex_braces`
 
@@ -97,9 +104,14 @@ Accept LaTeX-style braced exponents: `m^{-1}`, `kg^{2}`, `W m^{-2}`.
 - **Corpus A:** 0 hits — not used.
 - **Corpus B:** **312** hits — dominant form for exponents.
 - **Corpus C:** 0 hits — not used.
+- **Corpus D:** 3 hits — essentially absent.
+- **Corpus E:** 0 hits — not used.
+- **Corpus F:** 132 hits — non-trivial; LaTeX braces appear in
+  formula-heavy declarations.
+- **Union: 447 hits across 6 corpora.**
 
-Corpus B-specific. Single highest-leverage flag for Corpus B
-adoption.
+Corpus B-dominant; Corpus F adds a second user. Single highest-
+leverage flag for Corpus B adoption.
 
 **Lexer scope:** treat `^{...}` as a synonym for `^...` when the
 braced content is a valid exponent (integer, signed integer,
@@ -115,9 +127,13 @@ Accept `.` between alphabetic identifiers as multiplication:
 - **Corpus A:** 364 hits (mostly genuine — `K.s-1`, `Pa.s-1`).
 - **Corpus B:** 219 hits.
 - **Corpus C:** 296 hits.
+- **Corpus D:** 86 hits — moderate.
+- **Corpus E:** 186 hits.
+- **Corpus F:** **0** hits — not used.
+- **Union: 1,151 hits across 6 corpora.**
 
-Common in French-tradition climate code; rare in udunits2
-canonical.
+Common in French/MesoNH-lineage climate code; rare in udunits2
+canonical and absent from the modern Corpus F lineage.
 
 **Lexer scope:** between identifier characters, treat `.` as the
 multiplication operator. Critically: **digit-dot-digit stays a
@@ -135,8 +151,12 @@ Accept whitespace between identifiers as multiplication:
 - **Corpus A:** 2,618 hits (very common — `W m-2`, `kg m-3`, etc.).
 - **Corpus B:** 1,409 hits.
 - **Corpus C:** 3,049 hits.
+- **Corpus D:** 1,680 hits.
+- **Corpus E:** 2,432 hits.
+- **Corpus F:** 860 hits.
+- **Union: 12,048 hits across 6 corpora — highest-volume of any flag.**
 
-The single highest-volume convention across all three corpora.
+The single highest-volume convention across all six corpora.
 udunits2 canonical.
 
 **Lexer scope:** between two adjacent identifier tokens, treat
@@ -158,6 +178,10 @@ Accept a trailing signed integer on an identifier as exponent:
 - **Corpus A:** 221 hits.
 - **Corpus B:** 273 hits.
 - **Corpus C:** 162 hits.
+- **Corpus D:** 303 hits.
+- **Corpus E:** 152 hits.
+- **Corpus F:** 680 hits.
+- **Union: 1,791 hits across 6 corpora.**
 
 udunits2 canonical syntax.
 
@@ -181,9 +205,22 @@ identifier as exponent: `m2`, `m3`, `W/m2`.
   `i2`, `t2m`, `q1` shape the same way).
 - **Corpus B:** 360 hits.
 - **Corpus C:** 460 hits.
+- **Corpus D:** **1,396** hits.
+- **Corpus E:** **1,240** hits.
+- **Corpus F:** **1,356** hits.
+- **Union: 6,416 hits across 6 corpora — second-highest of any flag,**
+  trailing only `allow_implicit_product`.
+
+**Priority status (2026-06-13 update).** The original three-corpus
+survey (A–C) had this flag at moderate volume; the three-corpus
+extension (D–F) showed it appearing heavily in every additional
+corpus measured. The union-evidence makes it as essential as the
+top-four flags for the 0.2.7 ship. This flag was previously in
+the deferred 5-8 set; **the empirical evidence has reprioritized
+it into the priority set**.
 
 Common in casual annotation. **Highest false-positive risk** of all
-the flags — a CESM/climate codebase has many identifier-like tokens
+the flags — many climate codebases have identifier-like tokens
 with trailing digits.
 
 **Lexer scope:** after an identifier whose name is a known unit
@@ -208,6 +245,10 @@ unit string: `m**2`, `kg**2/m**3`, `s**(-1)`.
 - **Corpus A:** 76 hits.
 - **Corpus B:** 222 hits.
 - **Corpus C:** 11 hits.
+- **Corpus D:** 17 hits.
+- **Corpus E:** 73 hits.
+- **Corpus F:** 79 hits.
+- **Union: 478 hits across 6 corpora.**
 
 Programmer-natural carry-over from Fortran expression syntax.
 Always orthogonal to other flags.
@@ -226,10 +267,16 @@ Accept Unicode superscript characters (`⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺`) as e
 - **Corpus A:** 0 hits.
 - **Corpus B:** 2 hits.
 - **Corpus C:** 0 hits.
+- **Corpus D:** 0 hits.
+- **Corpus E:** 0 hits.
+- **Corpus F:** 0 hits.
+- **Union: 2 hits across 6 corpora — empirically marginal.**
 
-Almost absent in Fortran climate code. **Cheap to implement, low
-real-world payoff.** Include for completeness so user-typed strings
-that paste from Unicode-using papers don't fail.
+Almost absent in Fortran climate code (6 corpora measured, 2 union
+hits). **Cheap to implement, low real-world payoff.** Include for
+completeness so user-typed strings that paste from Unicode-using
+papers don't fail; recommend off-by-default given the thin
+evidence.
 
 **Lexer scope:** map the superscript codepoints to their ASCII
 equivalents during tokenization.
@@ -245,36 +292,92 @@ Accept `·` (U+00B7 middle dot) as multiplication: `m·s⁻¹`,
 - **Corpus A:** 0 hits.
 - **Corpus B:** 0 hits.
 - **Corpus C:** 0 hits.
+- **Corpus D:** 0 hits.
+- **Corpus E:** 0 hits.
+- **Corpus F:** 0 hits.
+- **Union: 0 hits across 6 corpora.**
 
-**Not observed in any surveyed corpus.** Listed here for
-completeness (it's the SI typographical convention; users writing
-new annotations from a CF/SI background may use it). Optional;
+**Not observed in any surveyed corpus** (now 6 corpora). Listed
+here for completeness (it's the SI typographical convention; users
+writing new annotations from a CF/SI background may use it).
+Recommend off-by-default; the implementation cost is trivial (single
+token alias `·` → `*`) so it's available if surfaced demand
+emerges, but the empirical evidence does not warrant it being on
+by default. Optional;
 deferrable.
 
-### 3.9 Non-lexer fellow travellers (NOT in this note)
+### 3.9 `strip_inner_parens` — tracer-tag pre-processor (sibling option)
+
+Pre-process unit strings by stripping `\([a-zA-Z]+\)` patterns
+before parsing. Converts `mol(C)/m^2(canopy)` → `mol/m^2`,
+discarding tracer-species and spatial-domain metadata.
+
+- **Corpus A–E:** 0 hits.
+- **Corpus F:** **~240 hits** — biogeochem tracer-tagging convention.
+- **Union: ~240 hits across 6 corpora — Corpus F-specific.**
+
+**Different category from §3.1-§3.8.** Those flags add *token
+recognition rules* to the lexer; this is a *pre-processing step*
+that runs before tokenization. Treated here for empirical
+completeness — Corpus F adoption depends on it.
+
+**Lexer scope:** before tokenization, apply a regex pass
+substituting `\([a-zA-Z]+\)` → empty within the unit string.
+Lossy by design (the metadata is discarded) but safe.
+
+**Implementation cost:** trivial — single regex pre-pass. ~6
+test cases.
+
+**Open question:** should the strip be configurable to preserve
+specific patterns? E.g., a project that uses `mol(C)` consistently
+and wants DimFort's polymorphic-units machinery (`mol('a)`) to
+treat `(C)` as a species parameter could opt in. Recommend
+deferring this question until polymorphic units are routinely used
+on this kind of tagged corpus.
+
+**Composes with:** everything else; orthogonal to all lexer flags.
+
+### 3.10 Non-lexer fellow travellers (NOT in this note)
 
 The following also surfaced in the empirical survey but are
 properly **not lexer concerns**:
 
-- **`unitless` keyword** (740 hits in Corpus B) — alias mapping to
-  `1`. Belongs in `default_units.toml` or a project `[units] file`
-  extension. **Available today via config.**
-- **`days`, `hPa`, `mb`, `ubar`, `MJ`** — vocabulary extensions.
-  Belong in a project `[units] file`. **Available today via
-  config.**
+- **`unitless` keyword** (1,109 hits in Corpus B + 140 in Corpus F)
+  — alias mapping to `1`. Belongs in `default_units.toml` or a
+  project `[units] file` extension. **Available today via config.**
+- **`(-)` dimensionless marker** (Corpus D 453 + Corpus F 188) —
+  the dash-alone variant of "unitless". Alias to `1` in a project
+  `[units] file`, OR skip-delimiter on content-regex
+  `^-$`. **Available today via config.**
+- **`days`, `hPa`, `mb`, `ubar`, `MJ`, `microns`, `radians`,
+  `degrees`** — vocabulary extensions. Belong in a project
+  `[units] file`. **Available today via config.**
 - **`unitless;0-1`, `0-1, unitless`, `true/false`, `T/F`, `-`** —
   prose/range/qualifier markers that aren't units. Belong in
   **relax-mode** (planned sibling design; see IDEAS_REGISTRY entry
   in the Homogeneity work-notes) — extract-a-unit-from-a-comment
   heuristics, not unit-string lexer.
-- **Year-only `(2002)`** (Corpus A 260 / Corpus B 175 / Corpus C 690) —
-  citation false positives. Belong in
+- **Year-only `(2002)`** (Corpus A 260 / B 175 / C 690 / D 140 /
+  E 110 / F absent) — citation false positives. Belong in
   [skip delimiters](unit-comment-skip-delimiters.md) — author-declared
   non-unit parens, not unit-string lexer.
-- **`(see Schmidt et al., 2002)`** (Corpus A 52 / Corpus B 43 / Corpus C 596) —
-  prefix-marked citations. Same — [skip delimiters](unit-comment-skip-delimiters.md).
+- **`(see Schmidt et al., 2002)`** (Corpus A 52 / B 43 / C 596 /
+  D 27 / E 75) — prefix-marked citations. Same —
+  [skip delimiters](unit-comment-skip-delimiters.md).
 - **`(STATIC,OMP_CHUNK)`-style uppercase OMP/threading tags** —
-  Corpus A 365 sites. Content-regex skip delimiter.
+  Corpus A 365 + Corpus D 53 (DrHook `ZHOOK_HANDLE_OMP`-style).
+  Content-regex skip delimiter on uppercase-comma patterns.
+- **`(ncol,nlay)`, `(i,j,k)` dimension hints** — Corpus E ~3,696
+  sites; the dominant non-unit-paren class in this convention lineage.
+  Content-regex skip delimiter on lowercase-comma patterns.
+- **`(in)`, `(out)`, `(inout)` Fortran INTENT declarations** —
+  Corpus E 1,063 sites. Content-regex skip delimiter on
+  `^(in|out|inout)$`.
+- **`[unit]` square-bracket delimiter convention** — Corpus F
+  uses brackets instead of parens. Already solved by the existing
+  0.2.2 `unit_comment_delimiters` config — no lexer or extraction
+  change needed; the bracket form just needs to be exercised in
+  the 0.2.7 test corpus.
 
 These are listed so a reader skimming the empirical numbers
 doesn't conclude the lexer must address them.
@@ -435,25 +538,39 @@ question for implementation.
 
 Per-corpus pattern counts measured 2026-06-13 (script:
 `grep -hE '!!?.*\([^()]*\)[[:space:]]*$' <files> | sed -E 's|.*\(([^()]*)\)[[:space:]]*$|\1|'`
-piped into pattern-specific `grep -c`). Corpus A excludes archive
-directories and symlink-duplicated subtrees from the count.
+piped into pattern-specific `grep -c`). For Corpus F the same
+pipeline is used but with `\[[^]]+\]` in place of `\([^()]*\)`
+because Corpus F uses brackets, not parens, as the unit-slot
+delimiter. Corpus A excludes archive directories and
+symlink-duplicated subtrees from the count.
 
-| pattern \ corpus | Corpus A | Corpus B | Corpus C |
-|---|---|---|---|
-| total trailing-paren slots | 18,161 | 8,076 | 9,450 |
-| LaTeX `^{...}` braces | 0 | 312 | 0 |
-| dot-mult `X.Y` | 364 | 219 | 296 |
-| udunits integer-suffix | 221 | 273 | 162 |
-| bare-digit exponent | 1,604 | 360 | 460 |
-| Fortran `**` exponent | 76 | 222 | 11 |
-| Unicode superscript | 0 | 2 | 0 |
-| middle dot `·` | 0 | 0 | 0 |
-| `unitless` keyword | 1 | 1,109 | 0 |
-| year-only `(2002)` | 260 | 175 | 690 |
-| `true/false` etc. | 4 | 168 | 33 |
-| `/` division | 1,144 | 1,088 | 1,146 |
-| whitespace-mult leading | 2,618 | 1,409 | 3,049 |
-| comma list | 5,198 | 992 | 1,292 |
+**Survey base.** Corpora A–C are the original 2026-06-13 3-corpus
+survey that produced the priority-four flag set. Corpora D–F are
+the 2026-06-13 extension that broadened the empirical base across
+distinct convention lineages (an additional land-surface code, a
+distinct-tradition atmospheric code, a modern coupled atmosphere +
+ocean code) and reprioritized §3.5
+(`allow_bare_digit_exp`) from deferred to priority.
+
+| pattern \ corpus | A | B | C | D | E | F | **union** |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| total unit slots | 18,161 | 8,076 | 9,450 | 7,196 | 15,580 | 5,762 | **64,225** |
+| LaTeX `^{...}` braces | 0 | 312 | 0 | 3 | 0 | 132 | **447** |
+| dot-mult `X.Y` | 364 | 219 | 296 | 86 | 186 | 0 | **1,151** |
+| udunits integer-suffix | 221 | 273 | 162 | 303 | 152 | 680 | **1,791** |
+| **bare-digit exponent** | **1,604** | 360 | 460 | **1,396** | **1,240** | **1,356** | **6,416** |
+| Fortran `**` exponent | 76 | 222 | 11 | 17 | 73 | 79 | **478** |
+| Unicode superscript | 0 | 2 | 0 | 0 | 0 | 0 | **2** |
+| middle dot `·` | 0 | 0 | 0 | 0 | 0 | 0 | **0** |
+| `unitless` keyword | 1 | 1,109 | 0 | 0 | 1 | 140 | 1,251 |
+| `(-)` dimensionless | 10 | n/a | 4 | 453 | n/a | 188 | ~655 |
+| year-only `(2002)` | 260 | 175 | 690 | 140 | 110 | n/a | ~1,375 |
+| `/` division | 1,144 | 1,088 | 1,146 | 1,776 | 2,501 | 2,404 | 10,059 |
+| whitespace-mult leading | 2,618 | 1,409 | 3,049 | 1,680 | 2,432 | 860 | 12,048 |
+| tracer-tag `mol(C)` | 0 | 0 | 0 | 0 | 0 | **240** | 240 |
+| dimension hints (`ncol,nlay`) | n/a | n/a | n/a | 150 | **~3,696** | n/a | ~3,846 |
+| INTENT `(in)`/`(out)` | n/a | n/a | n/a | n/a | **1,063** | n/a | 1,063 |
+| OpenMP/threading tags | **365** | 0 | 24 | **53** | n/a | n/a | ~442 |
 
 (Bare-digit counts include false-positive identifier tokens; treat
 as upper bound. Year-only counts include legitimate citations the
