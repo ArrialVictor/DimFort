@@ -111,7 +111,7 @@ same line).
 | Single-line multi-name (`REAL :: x, y  !! [m]`) | attach `x`, `y` | attach `x`, `y` (unchanged) |
 | Continuation, last line only (`!! [m]` on final line) | attach all `names` | attach names whose end falls on the last line — for a typical decl that's the trailing tail |
 | Continuation, per-line annotations (the finding case) | reject (U006/U010) | per-line: each `!! [X]` attaches to names ending on its line |
-| Continuation, annotation on non-last intermediate line, others unannotated | reject (U006/U010) | attach to names ending on that line; the unannotated names land as U005 and surface a permanent migration-detection diagnostic (§4) |
+| Continuation, annotation on non-last intermediate line, others unannotated | reject (U006/U010) | attach to names ending on that line; the unannotated names land as U005 and surface a permanent migration-detection diagnostic (§6) |
 
 ### 2.2 Why per-name end-line and not start-line
 
@@ -146,15 +146,15 @@ all names of the decl). This is a breaking change.
 - The cost of a heuristic ("DimFort sometimes interprets this
   differently based on neighbours") would be permanent — every
   future user has to learn the rule plus its exceptions.
-- The cost of a hard switch is bounded — internal annotation
-  files under the workspace get a sweep, CHANGELOG carries a
-  migration note, and a permanent migration-detection diagnostic
-  (§4) catches the pattern at any future moment.
+- The cost of a hard switch is bounded — the project's internal
+  annotation files get a sweep, CHANGELOG carries a migration
+  note, and a permanent migration-detection diagnostic (§6)
+  catches the pattern at any future moment.
 
 **Migration aids shipped alongside:**
 - `docs/troubleshooting/continuation-attach-migration.md` — before/
   after examples drawn from the empirical corpora (anonymized).
-- Permanent migration-detection diagnostic (§4) — runs forever, so
+- Permanent migration-detection diagnostic (§6) — runs forever, so
   any project that finds DimFort after 0.2.7 gets the same
   hand-holding the 0.2.7 migrators get.
 - CHANGELOG entry under "Breaking changes" with a one-line
@@ -250,10 +250,10 @@ single-line regex assumption. The implementation should land as a
 new helper `_split_decl_names` in `annotations.py`, called from
 `_ts_decl_names` (currently at `annotations.py:1080`).
 
-## 5. PRE on multi-line declarations — refuse
+## 5. PRE on multi-line declarations — conditional refuse
 
 PRE annotations (`!>`, `!!`) sitting above a multi-line declaration
-present an ambiguity the new rule alone cannot resolve:
+present a theoretical ambiguity the new rule alone cannot resolve:
 
 ```fortran
 !! [m/s]
@@ -266,14 +266,54 @@ and `bar` (names ending on the decl's first line) — but the
 author almost certainly intended all three. Under the old rule, the
 annotation would have attached to all three.
 
-Resolving silently in either direction risks hiding intent. The
-chosen disposition:
+### 5.1 Empirical finding (2026-06-15 survey)
+
+A focused survey across the six measured corpora counted
+PRE-comment-blocks-above-multi-line-declarations and classified a
+representative sample for author intent:
+
+| measurement | result |
+|---|---|
+| Total PRE-on-multi-line-decl sites (6 corpora union) | 224 |
+| Sample classified for author intent | ~80 sites |
+| Of which were actual unit annotations | **0** |
+
+The 80 sampled PRE blocks decomposed entirely into non-unit
+content: section markers (`!!! 1D`, `!! ---`), doc headers
+(`!! History :`), developer change-log notes (`!! Arsene
+18-02-2014 ...`), routine descriptions, commented-out code.
+
+The theoretical ambiguity the disposition was originally designed
+to flag does not materialize empirically. Authors writing unit
+annotations on multi-variable continuation declarations
+**universally use POST per-line** (the pattern driving the 1,407
+Corpus F U006/U010 sites in §1.2). PRE blocks above multi-line
+decls are uniformly non-unit content across the surveyed corpora.
+
+### 5.2 Disposition — refuse only when PRE block is a unit annotation
+
 - **Single-line multi-name decl + PRE**: unchanged from today (PRE
   attaches to all of `names`). The decl is unambiguous on one
   line; the PRE intent is clear.
-- **Multi-line decl + PRE**: **refuse with a clear diagnostic**.
+- **Multi-line decl + PRE comment block containing NO unit
+  annotation**: ignored (today's behavior; non-unit comments are
+  not DimFort's concern). This covers the entire empirical surface
+  (224 sites across 6 corpora, all non-unit content).
+- **Multi-line decl + PRE comment block containing a unit
+  annotation**: **refuse with a clear diagnostic** (U024).
 
-Diagnostic body (proposed text):
+The third case empirically never fires (0 of ~80 sampled sites)
+but the diagnostic stays as a **safety net**: if a future author
+does write a PRE unit annotation above a multi-line decl, U024
+catches the ambiguity instead of letting the new rule silently
+resolve to first-line names only.
+
+Implementation note: `attach.py` already detects whether a PRE
+comment block contains a unit annotation (that's what extracts
+`@unit{}` content from PRE blocks today). The U024 gate reuses
+that existing detection — no new pipeline stage required.
+
+### 5.3 Diagnostic body
 
 > *"PRE annotation on a multi-line declaration is ambiguous under
 > the per-line attach rule. Move to inline POST annotations on each
@@ -286,11 +326,22 @@ Diagnostic body (proposed text):
 
 The message **shows the code shape** that resolves it. Concrete
 examples in diagnostic text consistently outperform abstract
-explanations in user research [project-backward-h004-idea]
-similarly motivates inline examples.
+explanations.
 
 The diagnostic gets a new code. Suggested `U024` (next free in the
 U-series; final number assigned at implementation time).
+
+### 5.4 Why not refuse unconditionally
+
+The simpler disposition "refuse U024 on every PRE block above a
+multi-line decl regardless of content" would emit 224 spurious
+diagnostics across the surveyed corpora — falling on doc headers,
+section markers, and change logs that users don't expect to be
+unit-relevant. Low migration cost in aggregate, but noisy. The
+conditional-refuse disposition stays precise (0 empirical fires)
+while keeping the same safety-net guarantee against future
+ambiguity. Reuses existing PRE-content detection, so the
+implementation cost differential is small.
 
 ## 6. Permanent migration-detection diagnostic
 
@@ -378,9 +429,10 @@ against a fixture that exercises the paren-aware tokenizer.
 | 9 | Type spec with explicit bounds (`REAL, DIMENSION(:,:) :: ...`) | per-line per name | — |
 | 10 | Per-name array bounds with continuation (`REAL :: foo(:,:), bar(:)`) split across lines | per-name end-line drives attach | — |
 | 11 | PRE on single-line multi-name decl | all `names` (preserved) | — |
-| 12 | PRE on multi-line decl | rejected | U024 |
-| 13 | Mixed PRE-and-POST on one continuation (degenerate) | per-line POST wins per name; PRE refuses with U024 | — |
-| 14 | Empty continuation line (`&` alone) | no-op | — |
+| 12 | PRE unit annotation on multi-line decl (synthetic — empirically nonexistent) | rejected | U024 |
+| 13 | PRE comment block above multi-line decl with NO unit annotation (doc header, section marker, change log) | ignored — comment is not DimFort's concern | — |
+| 14 | Mixed PRE-and-POST on one continuation (degenerate, only when PRE is unit content) | per-line POST wins per name; PRE refuses with U024 | — |
+| 15 | Empty continuation line (`&` alone) | no-op | — |
 
 Each existing U006/U010 fixture maps to an **inverted-success
 counterpart** under the new rule (the cases that were rejected
@@ -450,24 +502,37 @@ validation workspace; if observed, investigate.
    similar continuation shapes but are scanned through a different
    tree-sitter path. Out of 0.2.7 scope; track if real demand
    surfaces.
-3. **PRE-only multi-line refusal vs auto-promotion.** U024 refuses;
-   an alternative is to auto-promote the PRE to attach to all
-   names of the decl (matching today's PRE-on-single-line
-   semantics). Rejected at design time as silent — the per-line
-   rule's whole value is making intent visible — but worth
-   revisiting if U024 generates noise during 0.2.7 migration.
+3. **PRE-only multi-line refusal vs auto-promotion.** U024 refuses
+   when the PRE block IS a unit annotation; an alternative would
+   be auto-promote to attach-to-all-names (matching today's
+   PRE-on-single-line semantics). Rejected at design time as
+   silent — the per-line rule's whole value is making intent
+   visible — but worth revisiting if U024 generates noise during
+   0.2.7 migration. Per the 2026-06-15 survey, U024 fires on
+   exactly 0 sites in the surveyed corpora; this question is
+   effectively dormant unless the empirical surface changes.
 
 ## 13. Decisions log
 
 - **2026-06-14** — finding surfaced via method-triangulation across
-  6 corpora (`_0_2_7_CONTINUATION_FINDING.md`). Empirical payoff
-  identified; design pass scheduled before any implementation.
-- **2026-06-15** — design pass: hard-switch, richer data model
-  (per-name spans, not just end-line), bound-aware tokenization
-  required, PRE on multi-line refused with U024, permanent
-  migration-detection diagnostic (U025), U006 + U010 retired.
+  the 6 surveyed corpora. Empirical payoff identified; design pass
+  scheduled before any implementation.
+- **2026-06-15** — design pass: per-line attach rule adopted
+  (annotation on physical line N attaches to variables whose
+  declaration tokens end on line N), hard switch (no opt-out
+  flag), richer data model (per-name spans, not just end-line),
+  bound-aware tokenization required, permanent migration-detection
+  diagnostic (U025), U006 + U010 retired.
 - **2026-06-15** — implementation cost re-estimated at 3-4 days
   (up from ~1-2 days for the rule alone) due to richer data model,
   bound-aware tokenization, migration diagnostic, and test
   migration; payoff (~1,700 attachable annotations across 6
   corpora) justifies the depth.
+- **2026-06-15** — PRE-on-multi-line disposition refined per a
+  follow-up survey (224 union sites; ~80 sampled, 0 are unit
+  annotations). U024 fires only when the PRE block actually
+  contains a unit annotation, not unconditionally. The empirical
+  fire rate is 0 across the surveyed corpora; the diagnostic
+  remains as a safety net against future authors who do write the
+  ambiguous shape. Reuses existing PRE-content detection in
+  `attach.py`; no new pipeline stage.
