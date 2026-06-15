@@ -28,7 +28,7 @@ Unit({"kg": 1, "m": -1, "s": -2})  # Pa
 Power evaluation `base ** exponent` works only when `exponent` is a
 literal rational (e.g. `p**2`, `p**(1/2)`). When the exponent is a
 named variable, even one that's *statically constant* in the code
-(e.g. `kappa = R/Cp` set once in `suphel.F`), the algebra has no way
+(e.g. `kappa = R/Cp` set once in `phys_constants.F90`), the algebra has no way
 to compute the resulting exponent and fires **D1.4** ("power exponent
 is not a literal rational").
 

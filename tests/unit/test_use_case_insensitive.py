@@ -1,14 +1,14 @@
 """Cross-file ``use`` imports must resolve case-insensitively.
 
 Fortran identifiers are case-insensitive. A module may declare a constant
-in one case (ECMWF constants are conventionally UPPERCASE) while a consumer
-references it in another (lowercase). The imported ``@unit{}`` must still
-apply, so a genuine mismatch fires.
+in one case (climate constants are conventionally UPPERCASE) while a
+consumer references it in another (lowercase). The imported ``@unit{}``
+must still apply, so a genuine mismatch fires.
 
-Regression for the bug where ``suphel.f90``'s ``rhoh2o = ratm/100.``
-(lowercase) silently lost the units of module ``RHOH2O`` (kg/m^3) and
-``RATM`` (Pa) — keyed in declaration case — so the kg/m³ ≠ Pa mismatch
-(a real-world finding) never fired.
+Regression for the bug where a physical-constants module's
+``rhoh2o = ratm/100.`` (lowercase) silently lost the units of
+``RHOH2O`` (kg/m^3) and ``RATM`` (Pa) — keyed in declaration case —
+so the kg/m³ ≠ Pa mismatch (a real-world finding) never fired.
 """
 from __future__ import annotations
 
