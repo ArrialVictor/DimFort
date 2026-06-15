@@ -7,8 +7,8 @@ whether memory plateaus (caches bounded as designed) or grows linearly
 (leak somewhere).
 
 Not a unit test; not part of the test suite. One-off release-prep
-script for the 0.2.6 cache audit (per ``docs/0_2_6_PLAN.md`` line 92
-"Global cache audit / memory-churn test").
+script for the 0.2.6 cache audit (per the 0.2.6 release-prep
+checklist's "global cache audit / memory-churn test" requirement).
 
 Usage::
 

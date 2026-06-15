@@ -235,7 +235,7 @@ Corpus B, 24 in Corpus C).
 
 ## 8. Empirical appendix
 
-Reproducer commands (run from `Homogeneity/`):
+Reproducer commands (run from the root of each corpus):
 
 ```bash
 # Extract every trailing-paren content per corpus
@@ -254,11 +254,8 @@ grep -acE 'et al'                  /tmp/parens_<corpus>.txt
 grep -acE 'STATIC,OMP|OMP_|MPI'    /tmp/parens_<corpus>.txt
 ```
 
-File lists (`/tmp/files_<corpus>.txt`) built with:
-
-```bash
-find sources/<corpus-a>/  -name '*.f90' -o -name '*.F90' \
-   -not -path '*obsolete*' > /tmp/files_corpus-a.txt
-find sources/corpus-b/ -name '*.f90' -not -path '*.svn*' > /tmp/files_corpus-b.txt
-find sources/corpus-c/  -name '*.F90' > /tmp/files_corpus-c.txt
-```
+File lists (`/tmp/files_<corpus>.txt`) built with corpus-shape-
+specific `find` invocations — adjust `-name` and `-not -path`
+clauses per the codebase's source extensions (`.f90` / `.F90`) and
+archive conventions (e.g. `-not -path '*obsolete*'`,
+`-not -path '*.svn*'`).

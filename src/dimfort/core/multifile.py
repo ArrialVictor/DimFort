@@ -228,7 +228,7 @@ class WorksetResult:
     # ``check_files`` returns so the goto-definition handler can avoid
     # walking every cached tree per request. CLI callers leave this
     # empty (it's an LSP performance feature, not a checker semantics
-    # change). See ``docs/0_2_6_PLAN.md`` audit #12 for rationale.
+    # change). See the 0.2.6 cache-audit rationale for audit item #12.
     symbols_by_name_lc: dict[str, tuple[SymbolEntry, ...]] = field(
         default_factory=dict
     )

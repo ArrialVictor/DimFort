@@ -12,8 +12,8 @@ file takes ~100 ms and a 700 KB file far longer. Tree-sitter parses
 the same corpus in seconds, recovers from syntax errors with localised
 ``ERROR`` nodes instead of fatal failures, gives byte-exact positions
 on every node including comments, and matches DimFort's
-linter-not-compiler philosophy. See ``Homogeneity/scratch/tree-
-sitter-eval/RESULTS.md`` for the benchmark numbers behind that claim.
+linter-not-compiler philosophy. Internal benchmark notes carry the
+numbers behind that claim.
 
 Position convention: tree-sitter exposes 0-based ``(row, column)`` on
 every node via ``start_point`` / ``end_point``. DimFort uses 1-based

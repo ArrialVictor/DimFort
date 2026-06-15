@@ -93,8 +93,8 @@ the panel — see each companion's CHANGELOG).
   `:DimFortRestart` boundaries.
 
 - **`docs/contributor/cache-audit-0-2-6.md`** — written deliverable
-  from the global cache audit run at release-prep time (per
-  `docs/0_2_6_PLAN.md` line 92). 13 caches enumerated with per-cache
+  from the global cache audit run at release-prep time (per the
+  0.2.6 release-prep checklist). 13 caches enumerated with per-cache
   invalidation and bound verdicts. Includes the output of
   `scripts/cache_memory_churn.py` (also new this release) — caches
   bound as designed under 100 iterations on synthetic files. Five

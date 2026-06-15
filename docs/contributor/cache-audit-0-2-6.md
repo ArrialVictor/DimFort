@@ -3,8 +3,8 @@
 **Date:** 2026-06-13.
 **Scope:** every named cache in `src/dimfort/` as of the 0.2.6 release cut.
 **Methodology:** static walk of every cache-bearing file (15 sites,
-13 named caches) checking the three criteria from
-`docs/0_2_6_PLAN.md` line 92:
+13 named caches) checking the three criteria from the 0.2.6
+release-prep checklist:
 
 1. Invalidation contract documented in the module / class docstring.
 2. Bound stated (max entries, max bytes, or "O(open buffers) +
@@ -114,17 +114,16 @@ integration is deferred to 0.2.7 (see "Deferred" below).
   asserts per-iteration growth < 50 KB at N ≥ 200, gating future
   perf-PR merges. Catches regressions automatically.
 
-Both deferrals filed in `Homogeneity/docs/0_2_7_PLAN.md` (Definite
-section) and `Homogeneity/docs/IDEAS_REGISTRY.md` (§I. Internal
-maintenance).
+Both deferrals tracked in internal release planning for the
+0.2.7 cycle.
 
 ## See also
 
 - `docs/design/contributor/perf-pr-validation.md` — the checklist
   perf-PR authors run before submitting. Cross-links here when a
   perf-PR touches cache code.
-- `docs/0_2_6_PLAN.md` line 92 — the release-prep checklist this
-  audit fulfils.
+- The 0.2.6 release-prep checklist (internal) — the requirement
+  this audit fulfils.
 - The cache-hygiene rules established mid-cycle:
   every new cache must declare (1) what triggers invalidation,
   (2) what bounds it, (3) what happens on `didClose` for
