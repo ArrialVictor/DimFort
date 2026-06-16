@@ -413,13 +413,17 @@ def patterns_fingerprint(
         h.update(b";")
     h.update(b"||L|")
     if unit_lexer is not None:
-        # Boolean flags fold in deterministically — alphabetic order
-        # of attribute name fixes the hash regardless of dataclass
-        # field declaration order.
+        # Boolean flags fold in deterministically — fixed order so
+        # the hash is stable regardless of dataclass field
+        # declaration order.
         h.update(f"sup={int(unit_lexer.allow_unicode_superscripts)};".encode())
         h.update(f"mdot={int(unit_lexer.allow_middot_multiplication)};".encode())
         h.update(f"ss={int(unit_lexer.allow_fortran_star_star)};".encode())
         h.update(f"ltx={int(unit_lexer.allow_latex_braces)};".encode())
+        h.update(f"dot={int(unit_lexer.allow_dot_multiplication)};".encode())
+        h.update(f"imp={int(unit_lexer.allow_implicit_product)};".encode())
+        h.update(f"isx={int(unit_lexer.allow_integer_suffix_exp)};".encode())
+        h.update(f"bdx={int(unit_lexer.allow_bare_digit_exp)};".encode())
     return h.hexdigest()[:16]
 
 

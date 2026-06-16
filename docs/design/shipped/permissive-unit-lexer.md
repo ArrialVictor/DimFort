@@ -1,6 +1,6 @@
 # Permissive unit lexer — flag-toggled reading modes
 
-**Status:** **0.2.7 design pass complete; implementation pending.**
+**Status:** **Shipped in 0.2.7** (Tracks B.1 + B.2a + B.2b).
 Drafted 2026-06-13 after the Corpus B cycle-0 measurement
 surfaced that the canonical `@unit{}` lexer rejects a sizeable
 fraction of the unit-shape comments already present in real
@@ -10,8 +10,14 @@ Updated 2026-06-15 with empirical Q1/Q2 resolutions (digits-≥10
 strict-lock, `**` four-shape accept), per-flag false-positive
 characterization, preset-bundle deferral to 0.2.8, and a baseline
 grammar widening that symmetrizes strict `^` with the §3.6 `**`
-shape coverage. File remains in `future/` until the implementation
-lands and the note is promoted to `shipped/`.
+shape coverage. Promoted to `shipped/` 2026-06-16 alongside the
+final Track B.2b merge — §3.0 baseline integer widening (B.1),
+4 rewrite-subsystem flags (B.2a), and 4 recognition-subsystem
+flags (B.2b) all landed. Implementation deviates from the design
+on one point: §3.6 `allow_fortran_star_star` was pre-0.2.7
+unconditionally accepted; 0.2.7 moves it behind the flag with
+default OFF for uniformity with the other 7 flags — see the §3.6
+"pre-0.2.7 history" footnote.
 
 ## 1. Problem this solves
 
@@ -52,11 +58,11 @@ per the "going back inside a lexer is a nightmare" principle.)
 The strict default lexer can read none of them losslessly today.
 
 The other half of the adoption story —
-[`unit_comment_delimiters`](../shipped/unit-comment-delimiters.md)
+[`unit_comment_delimiters`](unit-comment-delimiters.md)
 (0.2.2) — already lets a team tell DimFort *which substring* in a
 comment is the unit. This note covers one orthogonal half: **how
 DimFort parses the substring once extracted**. A sibling note
-[unit-comment-markers](../shipped/unit-comment-markers.md)
+[unit-comment-markers](unit-comment-markers.md)
 covers the other half — **how DimFort decides which parens not to
 extract at all** (citation / qualifier / year-only patterns).
 
@@ -188,7 +194,7 @@ tests cover the four-shape parity.
 bare integers). The *identifier*-exponent half (`m^kappa`,
 `m^(2*kappa - 1/3)`, etc.) ships in lockstep as a separate
 widening — see
-[../shipped/symbolic-exponent-annotations.md](../shipped/symbolic-exponent-annotations.md).
+[symbolic-exponent-annotations.md](symbolic-exponent-annotations.md).
 The post-0.2.7 strict exponent grammar is the union of the two
 widenings; this note's grammar block above is complete for the
 integer surface, and the sibling note's grammar block is complete
@@ -222,14 +228,14 @@ Concrete rewrite mappings:
 | `^{-N}` (negative int)             | `^-N`    | `signed_int` (signed) |
 | `^{N/M}` (rational)                | `^(N/M)` | `(int/int)` — parens required for the slash |
 | `^{1/N}` (LaTeX-natural reciprocal)| `^(1/N)` | `(int/int)` |
-| `^{kappa}` (symbolic exponent)     | `^kappa` | symbolic identifier — per [../shipped/symbolic-exponent-annotations.md](../shipped/symbolic-exponent-annotations.md) |
+| `^{kappa}` (symbolic exponent)     | `^kappa` | symbolic identifier — per [symbolic-exponent-annotations.md](symbolic-exponent-annotations.md) |
 | `^{2*kappa-1/3}` (linear form)     | `^(2*kappa-1/3)` | linear form, parens required |
 
 Braces do NOT introduce a new exponent form — they're a syntactic
 shorthand for whatever shape the post-0.2.7 strict grammar
 accepts: §3.0's integer-shape widening AND the symbolic-exponent
 widening shipped alongside (see
-[../shipped/symbolic-exponent-annotations.md](../shipped/symbolic-exponent-annotations.md)).
+[symbolic-exponent-annotations.md](symbolic-exponent-annotations.md)).
 The `^{N/M}` and `^{linear-form}` cases require parens in the
 rewrite target because bare `^N/M` would be parsed as `^N`
 followed by division.
@@ -242,7 +248,7 @@ followed by division.
   `<exponent>` is any shape the post-0.2.7 strict exponent grammar
   accepts — `[+-]?\d+`, `[+-]?\d+/[+-]?\d+`, a symbolic identifier
   like `kappa`, or a linear form like `2*kappa - 1/3` (see
-  [../shipped/symbolic-exponent-annotations.md](../shipped/symbolic-exponent-annotations.md)
+  [symbolic-exponent-annotations.md](symbolic-exponent-annotations.md)
   §3 for the full surface).
 - **Mitigation in the lexer rule.** The opening `^{` is the
   unambiguous trigger. Braces alone are insufficient — the rule
@@ -787,11 +793,11 @@ properly **not lexer concerns**:
   extract-a-unit-from-a-comment heuristics, not unit-string lexer.
 - **Year-only `(2002)`** (Corpus A 260 / B 175 / C 690 / D 140 /
   E 110 / F absent) — citation false positives. Belong in
-  [skip delimiters](../shipped/unit-comment-markers.md) — author-declared
+  [skip delimiters](unit-comment-markers.md) — author-declared
   non-unit parens, not unit-string lexer.
 - **`(see Schmidt et al., 2002)`** (Corpus A 52 / B 43 / C 596 /
   D 27 / E 75) — prefix-marked citations. Same —
-  [skip delimiters](../shipped/unit-comment-markers.md).
+  [skip delimiters](unit-comment-markers.md).
 - **`(STATIC,OMP_CHUNK)`-style uppercase OMP/threading tags** —
   Corpus A 365 + Corpus D 53 (profiling-framework threading
   handles). Content-regex skip delimiter on uppercase-comma

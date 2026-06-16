@@ -1335,6 +1335,34 @@ def _apply_unicode_superscript_rewrite(expr: str) -> str:
     )
 
 
+# 14-symbol known-unit prefix list for ``allow_bare_digit_exp``
+# (design §3.5 strict rule). Case-sensitive; digits 2-9 only.
+# ``hPa`` is included for the standard atmospheric-pressure
+# convention. Longer names first so the regex matches greedily
+# (``mol`` before ``m``, ``hPa`` before ``Pa``).
+_BARE_DIGIT_EXP_GUARD_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(hPa|mol|kg|cm|mm|km|rad|Pa|m|s|K|J|W|N)([2-9])"
+    r"(?![0-9])"
+)
+
+# Signed integer immediately after a letter (no whitespace) — the
+# ``allow_integer_suffix_exp`` trigger. Lookbehind on letter
+# ensures we don't double-rewrite a canonical ``m^-3`` (the char
+# before ``-3`` there is ``^``, not a letter).
+_INTEGER_SUFFIX_EXP_RE = re.compile(r"(?<=[A-Za-z])([+-]\d+)")
+
+# ``.`` between two letters — the ``allow_dot_multiplication``
+# trigger. Decimal literals (``0.5``, ``1.380658E-23``) have a
+# digit on at least one side so this regex never touches them.
+_DOT_MULT_RE = re.compile(r"(?<=[A-Za-z])\.(?=[A-Za-z])")
+
+# Whitespace between an identifier-or-close-paren-or-digit and an
+# identifier — the ``allow_implicit_product`` trigger. The leading
+# class includes digits so ``1 kg`` rewrites to ``1*kg`` (numeric
+# factor convention).
+_IMPLICIT_PRODUCT_RE = re.compile(r"(?<=[A-Za-z0-9)])\s+(?=[A-Za-z'])")
+
+
 def _apply_latex_brace_rewrite(expr: str) -> str:
     """Rewrite ``^{<content>}`` to ``^(<content>)`` at the string level.
 
@@ -1422,15 +1450,20 @@ def _tokenize(
     if lexer is None:
         lexer = UnitLexerConfig()
 
-    # Step 1: codepoint-level rewrites (pre-regex). Pipeline order
-    # per design §4.3: unicode superscripts → middot → operator-
-    # token alias (``**`` → ``^``) → brace rewrite. The ``**``
-    # normalisation MUST run before the brace rewrite so the brace
-    # rewriter sees ``m**{2}`` as ``m^{2}`` and converts cleanly to
-    # ``m^(2)``. With ``allow_fortran_star_star`` ON we substitute
-    # at the string level here so the tokenizer's POW branch
-    # never fires; with the flag OFF, ``**`` reaches the tokenizer
-    # untouched and the POW branch raises a helpful error.
+    # Pre-tokenization rewrites. Pipeline order per design §4.3:
+    #   1. codepoint pass: unicode superscripts → middot
+    #   2. operator-token alias: ``**`` → ``^``
+    #   3. post-token brace rewrite: ``^{...}`` → ``^(...)``
+    #   4. recognition-subsystem widenings (dot-mult / integer-
+    #      suffix / bare-digit / implicit-product)
+    # The ``**`` normalisation runs before the brace rewrite so the
+    # brace rewriter sees ``m**{2}`` as ``m^{2}`` and converts
+    # cleanly to ``m^(2)``. Recognition-subsystem rules apply last
+    # so prior canonicalisation has happened — ``J.kg**-1`` reaches
+    # the dot-mult / integer-suffix rules as ``J.kg^-1`` once ``**``
+    # is normalised, then becomes ``J*kg^-1``. The recognition
+    # rules within step 4 commute on disjoint inputs (each rule's
+    # match shape is unique to its flag).
     if lexer.allow_unicode_superscripts:
         expr = _apply_unicode_superscript_rewrite(expr)
     if lexer.allow_middot_multiplication:
@@ -1439,6 +1472,14 @@ def _tokenize(
         expr = expr.replace("**", "^")
     if lexer.allow_latex_braces:
         expr = _apply_latex_brace_rewrite(expr)
+    if lexer.allow_integer_suffix_exp:
+        expr = _INTEGER_SUFFIX_EXP_RE.sub(r"^\1", expr)
+    if lexer.allow_bare_digit_exp:
+        expr = _BARE_DIGIT_EXP_GUARD_RE.sub(r"\1^\2", expr)
+    if lexer.allow_dot_multiplication:
+        expr = _DOT_MULT_RE.sub("*", expr)
+    if lexer.allow_implicit_product:
+        expr = _IMPLICIT_PRODUCT_RE.sub("*", expr)
 
     tokens: list[tuple[str, str]] = []
     for m in _TOKEN_RE.finditer(expr):

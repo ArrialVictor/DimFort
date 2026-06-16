@@ -58,11 +58,40 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
   (`**` → `^`), then post-token brace rewrite. The four rewrite-
   subsystem flags compose deterministically; sample compositions
   covered in `tests/unit/test_unit_lexer_flags.py`.
-- **Recognition-subsystem flags** (`allow_implicit_product`,
-  `allow_integer_suffix_exp`, `allow_bare_digit_exp`,
-  `allow_dot_multiplication`) — designed in
-  `docs/design/future/permissive-unit-lexer.md` §3.2-§3.5; ship in
-  the Track B.2b follow-up alongside the 28-pair composition audit.
+- **`[parser.unit_lexer]` — recognition-subsystem flags (the
+  remaining 4 of 8).** Track B.2b completes the permissive-lexer
+  flag set with grammar-extension flags, all default OFF:
+    - **`allow_dot_multiplication`** (§3.2) — `.` between
+      identifiers as multiplication (`J.kg^{-1}`,
+      `kgC.m^{-2}.s^{-1}`). Decimal literals (`0.5`,
+      `1.380658E-23`) stay unaffected — only `.` between two
+      letters rewrites. 1,151 union hits across 6 corpora.
+    - **`allow_implicit_product`** (§3.3) — whitespace between
+      identifiers as multiplication (`kg m`, `W m`, `J kg`). The
+      single highest-volume convention across surveyed corpora
+      (12,048 union hits). `ms` (no whitespace) stays
+      millisecond regardless.
+    - **`allow_integer_suffix_exp`** (§3.4) — trailing signed
+      integers on identifiers as exponents (`m s-1`, `kg m-3`,
+      `W m-2 K-1`). The udunits2 canonical syntax. Typically
+      paired with `allow_implicit_product` for udunits2 shapes.
+    - **`allow_bare_digit_exp`** (§3.5) — bare unsigned digit
+      suffixes (2-9) on a 14-symbol guard list of known unit
+      identifiers (`m2`, `m3`, `kg m2`, `W/m2`). Digits >= 10
+      rejected per the design's strict rule. HIGH FP risk on
+      bracket-extraction projects — review §3.5 before enabling.
+- **28-pair composition audit** (design §4.4) — parametrized over
+  every pair of the 8 flags in
+  `tests/unit/test_unit_lexer_flags.py`, confirming every pair
+  composes deterministically and produces the same parse result as
+  the canonical strict-baseline form.
+- **Adoption template extended to all 8 flags** —
+  `docs/adoption/permissive-lexer-template.dimfort.toml`.
+- **Design note promoted to `shipped/`** —
+  `docs/design/shipped/permissive-unit-lexer.md` (was
+  `docs/design/future/...`). The pre-0.2.7 unconditional-`**`
+  history footnote and the §3.6 default-OFF deviation are
+  preserved.
 
 ### Breaking changes
 

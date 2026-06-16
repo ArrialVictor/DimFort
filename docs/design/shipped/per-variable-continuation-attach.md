@@ -8,7 +8,7 @@ namespace migration. Promoted to `shipped/` on the day the
 implementation merged.
 
 Sibling notes:
-- [`../future/permissive-unit-lexer.md`](../future/permissive-unit-lexer.md) — the
+- [`permissive-unit-lexer.md`](permissive-unit-lexer.md) — the
   lexer flags ship in the same release; without this attach-rule
   change, one corpus's adoption caps at ~60 % regardless of lexer
   perfection.

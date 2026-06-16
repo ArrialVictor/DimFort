@@ -131,17 +131,16 @@ class UnitLexerConfig:
     Independent boolean flags toggling permissive lexer rules on
     top of the strict default grammar. Every flag defaults to
     ``False`` — strict, conservative, no out-of-box silent
-    misparses. See ``docs/design/future/permissive-unit-lexer.md``
+    misparses. See ``docs/design/shipped/permissive-unit-lexer.md``
     §3.1-§3.8 for per-flag empirical case + false-positive
     characterization.
 
     The flag set is structurally split (§4.2) into the rewrite
     subsystem (codepoint subs / token aliases / post-token
-    rewrites — landed here in Track B.2a) and the recognition
-    subsystem (grammar extensions — landing in Track B.2b).
-    Additional flag fields will join this dataclass when B.2b
-    ships; users get only the flags whose behaviour is actually
-    wired today.
+    rewrites — Track B.2a) and the recognition subsystem (grammar
+    extensions — Track B.2b). All 8 flags landed in 0.2.7. The
+    pairwise composition contract (28-pair audit) is tested in
+    ``tests/unit/test_unit_lexer_flags.py``.
 
     Attributes:
         allow_unicode_superscripts: Accept ``⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺`` as
@@ -154,12 +153,33 @@ class UnitLexerConfig:
         allow_latex_braces: Accept ``^{...}`` as a grouping form
             (``m^{-1}``, ``Pa^{kappa-1/3}``); rewritten to the
             strict-grammar paren'd shape.
+        allow_dot_multiplication: Accept ``.`` between identifiers
+            as a multiplication operator alias (``J.kg^-1``,
+            ``kgC.m^-2.s^-1``). Decimal literals (``0.5``,
+            ``1.380658E-23``) stay unaffected — only ``.`` between
+            two letters rewrites to ``*``.
+        allow_implicit_product: Accept whitespace between
+            identifiers as multiplication (``kg m``, ``W m``).
+            Note: ``ms`` (no whitespace) stays millisecond
+            regardless of this flag.
+        allow_integer_suffix_exp: Accept trailing **signed**
+            integers on identifiers as exponents (``m s-1``,
+            ``kg m-3``, ``J mol-1``).
+        allow_bare_digit_exp: Accept bare **unsigned** digit
+            suffixes (2-9) on a guarded set of known-unit
+            identifiers as exponents (``m2``, ``m3``, ``W/m2``,
+            ``kg m2``). Guard list per design §3.5; digits ≥10
+            rejected. HIGH FP RISK — see §3.5 for the rationale.
     """
 
     allow_unicode_superscripts: bool = False
     allow_middot_multiplication: bool = False
     allow_fortran_star_star: bool = False
     allow_latex_braces: bool = False
+    allow_dot_multiplication: bool = False
+    allow_implicit_product: bool = False
+    allow_integer_suffix_exp: bool = False
+    allow_bare_digit_exp: bool = False
 
 
 @dataclass(frozen=True)
@@ -277,7 +297,7 @@ class DimfortConfig:
 
     # [parser.unit_lexer] — independent boolean flags toggling
     # permissive lexer rules. All default OFF; see
-    # ``docs/design/future/permissive-unit-lexer.md`` for the
+    # ``docs/design/shipped/permissive-unit-lexer.md`` for the
     # per-flag empirical case + false-positive characterization.
     unit_lexer: UnitLexerConfig = field(default_factory=UnitLexerConfig)
 
@@ -508,13 +528,17 @@ def _parse_unit_lexer_section(
         "allow_middot_multiplication",
         "allow_fortran_star_star",
         "allow_latex_braces",
+        "allow_dot_multiplication",
+        "allow_implicit_product",
+        "allow_integer_suffix_exp",
+        "allow_bare_digit_exp",
     }
     kwargs: dict[str, bool] = {}
     for key, value in section.items():
         if key not in known:
             log.warning(
                 "%s: [parser.unit_lexer].%s is not a known flag — "
-                "ignored. See docs/design/future/permissive-unit-lexer.md "
+                "ignored. See docs/design/shipped/permissive-unit-lexer.md "
                 "for the supported set.",
                 path, key,
             )
