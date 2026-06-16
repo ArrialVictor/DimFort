@@ -340,6 +340,13 @@ def _load_one(
         assume_patterns: Configured ``@unit_assume{...}`` delimiters.
         affine_patterns: Configured ``@unit_affine_conversion{...}``
             delimiters.
+        nonunit_patterns: Drop-filter patterns paired with
+            ``unit_patterns``; captures silently dropped when their
+            span overlaps a match.
+        nonunit_assume_patterns: Drop-filter patterns paired with
+            ``assume_patterns``.
+        nonunit_affine_patterns: Drop-filter patterns paired with
+            ``affine_patterns``.
         tree_cache: Optional session-scoped tree cache; on a hit the
             parse step is skipped entirely and the cached
             tree-sitter outputs replay into ``_Loaded``.
@@ -1070,6 +1077,13 @@ def check_files(
         assume_patterns: Configured ``@unit_assume{...}`` delimiters.
         affine_patterns: Configured ``@unit_affine_conversion{...}``
             delimiters.
+        nonunit_patterns: Drop-filter patterns paired with
+            ``unit_patterns``; captures silently dropped when their
+            span overlaps a match.
+        nonunit_assume_patterns: Drop-filter patterns paired with
+            ``assume_patterns``.
+        nonunit_affine_patterns: Drop-filter patterns paired with
+            ``affine_patterns``.
         tree_cache: Optional session-scoped
             :class:`~dimfort.core.multifile_cache.TreeCache`; when set,
             unchanged files skip tree-sitter parsing entirely. ``None``

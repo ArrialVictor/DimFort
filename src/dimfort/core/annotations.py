@@ -398,6 +398,10 @@ def _select_unit(
         kind: PRE or POST classification of the comment.
         patterns: Configured ``@unit{}``-family patterns to try, in
             precedence order.
+        dead: Half-open ``[start, end)`` ranges of ``body`` covered by
+            any ``nonunit`` drop-zone match. Any pattern hit whose span
+            overlaps a dead range is filtered out silently before
+            winner selection.
 
     Returns:
         A ``(annotations, errors, conflicts, winner_idx)`` tuple. The
@@ -487,6 +491,9 @@ def _select_assume(
             the original source line.
         patterns: Configured ``@unit_assume{}``-family patterns to try,
             in precedence order.
+        dead: Half-open ``[start, end)`` ranges of ``body`` covered by
+            any ``nonunit_assume`` drop-zone match. Captures whose
+            spans overlap a dead range are filtered out silently.
 
     Returns:
         A ``(assumes, errors, conflicts)`` tuple. ``errors`` may carry
@@ -592,6 +599,9 @@ def _select_affine(
             the original source line.
         patterns: Configured ``@unit_affine_conversion{}``-family
             patterns to try, in precedence order.
+        dead: Half-open ``[start, end)`` ranges of ``body`` covered by
+            any ``nonunit_affine`` drop-zone match. Captures whose
+            spans overlap a dead range are filtered out silently.
 
     Returns:
         A ``(affines, errors, conflicts)`` tuple. ``,`` is accepted as
@@ -854,7 +864,7 @@ def scan_text(
     nonunit_affine_patterns: tuple[NonStructuredPattern, ...] = DEFAULT_NONUNIT_AFFINE_PATTERNS,
     tree: Tree | None = None,
 ) -> ScanResult:
-    """Scan a single Fortran source string for annotations and declarations.
+    r"""Scan a single Fortran source string for annotations and declarations.
 
     Args:
         source: Full text of one Fortran source file.
@@ -865,6 +875,15 @@ def scan_text(
         affine_patterns: Configured ``@unit_affine_conversion{}``-family
             patterns, in precedence order. Defaults to the canonical
             pattern.
+        nonunit_patterns: Drop-filter patterns paired with
+            ``unit_patterns``; captures whose spans overlap a match
+            are silently dropped. Defaults to three shipped patterns
+            (``@nonunit{}`` per-site marker, ``(see ...)`` citation
+            prefix, ``(\\d{4})`` year-only).
+        nonunit_assume_patterns: Drop-filter patterns paired with
+            ``assume_patterns``. Defaults to empty.
+        nonunit_affine_patterns: Drop-filter patterns paired with
+            ``affine_patterns``. Defaults to empty.
         tree: Optional pre-parsed tree-sitter ``Tree`` over the same
             ``source`` bytes. When supplied, the scanner reuses it
             instead of re-running ``_ts.parse_text(source)``. Lets

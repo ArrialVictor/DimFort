@@ -13,17 +13,12 @@ from __future__ import annotations
 
 from dimfort.core.annotations import scan_text
 from dimfort.core.unit_patterns import (
-    DEFAULT_AFFINE_PATTERNS,
     DEFAULT_ASSUME_PATTERNS,
-    DEFAULT_NONUNIT_AFFINE_PATTERNS,
-    DEFAULT_NONUNIT_ASSUME_PATTERNS,
     DEFAULT_NONUNIT_PATTERNS,
     DEFAULT_UNIT_PATTERNS,
     NonStructuredPattern,
     NonUnitPattern,
-    StructuredPattern,
     UnitPattern,
-    compile_nonunit_patterns,
 )
 
 

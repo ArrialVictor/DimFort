@@ -207,8 +207,8 @@ max_size = "lots"
 def test_unit_comments_default_when_unset(tmp_path):
     """No section → defaults preserve canonical forms + ship nonunit filters."""
     from dimfort.config import (
-        DEFAULT_NONUNIT_ASSUME_PATTERNS,
         DEFAULT_NONUNIT_AFFINE_PATTERNS,
+        DEFAULT_NONUNIT_ASSUME_PATTERNS,
         DEFAULT_NONUNIT_PATTERNS,
         DEFAULT_UNIT_AFFINE_PATTERNS,
         DEFAULT_UNIT_ASSUME_PATTERNS,

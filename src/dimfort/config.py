@@ -80,7 +80,7 @@ class NonUnitPatternEntry:
 
 @dataclass(frozen=True)
 class NonStructuredPatternEntry:
-    """One configured ``nonunit_assume`` / ``nonunit_affine`` drop entry.
+    r"""One configured ``nonunit_assume`` / ``nonunit_affine`` drop entry.
 
     Mirrors :class:`StructuredPatternEntry`'s identifying fields so the
     set-subtraction ``STRUCT \\ nonSTRUCT`` is well-defined. Both
@@ -126,7 +126,7 @@ DEFAULT_NONUNIT_AFFINE_PATTERNS: tuple[NonStructuredPatternEntry, ...] = ()
 
 @dataclass(frozen=True)
 class UnitCommentsConfig:
-    """Resolved ``[parser.unit_comments]`` section.
+    r"""Resolved ``[parser.unit_comments]`` section.
 
     Six keys forming three STRUCT / nonSTRUCT pairs. Each pair encodes
     set subtraction: what DimFort actually extracts is

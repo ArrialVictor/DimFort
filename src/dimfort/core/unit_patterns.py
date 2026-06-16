@@ -12,15 +12,27 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from dimfort.config import (
     DEFAULT_NONUNIT_AFFINE_PATTERNS as _DEFAULT_NONUNIT_AFFINE_ENTRIES,
+)
+from dimfort.config import (
     DEFAULT_NONUNIT_ASSUME_PATTERNS as _DEFAULT_NONUNIT_ASSUME_ENTRIES,
+)
+from dimfort.config import (
     DEFAULT_NONUNIT_PATTERNS as _DEFAULT_NONUNIT_ENTRIES,
+)
+from dimfort.config import (
     DEFAULT_UNIT_AFFINE_PATTERNS as _DEFAULT_UNIT_AFFINE_ENTRIES,
+)
+from dimfort.config import (
     DEFAULT_UNIT_ASSUME_PATTERNS as _DEFAULT_UNIT_ASSUME_ENTRIES,
+)
+from dimfort.config import (
     DEFAULT_UNIT_PATTERNS as _DEFAULT_UNIT_ENTRIES,
+)
+from dimfort.config import (
     NonStructuredPatternEntry,
     NonUnitPatternEntry,
     StructuredPatternEntry,
@@ -345,10 +357,7 @@ def dead_ranges(
 
 def overlaps_any(start: int, end: int, ranges: tuple[tuple[int, int], ...]) -> bool:
     """Return ``True`` when ``[start, end)`` overlaps any range in ``ranges``."""
-    for s, e in ranges:
-        if start < e and s < end:
-            return True
-    return False
+    return any(start < e and s < end for s, e in ranges)
 
 
 def compile_unit_patterns(

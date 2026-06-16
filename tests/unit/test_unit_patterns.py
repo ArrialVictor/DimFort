@@ -304,7 +304,6 @@ def test_compile_nonunit_patterns_preserves_order_and_regex():
 
 
 def test_compile_nonstructured_patterns_handles_optional_sep_and_regex():
-    import re
 
     from dimfort.config import NonStructuredPatternEntry
     from dimfort.core.unit_patterns import compile_nonstructured_patterns
