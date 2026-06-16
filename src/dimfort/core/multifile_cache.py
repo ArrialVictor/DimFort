@@ -48,7 +48,12 @@ if TYPE_CHECKING:
     from dimfort.core.annotations import ScanResult
     from dimfort.core.attach import AttachmentResult
     from dimfort.core.symbols import FuncSig, ModuleExports
-    from dimfort.core.unit_patterns import StructuredPattern, UnitPattern
+    from dimfort.core.unit_patterns import (
+        NonStructuredPattern,
+        NonUnitPattern,
+        StructuredPattern,
+        UnitPattern,
+    )
 
 
 @dataclass(frozen=True)
@@ -343,9 +348,9 @@ def patterns_fingerprint(
     unit_patterns: tuple[UnitPattern, ...],
     assume_patterns: tuple[StructuredPattern, ...],
     affine_patterns: tuple[StructuredPattern, ...],
-    nonunit_patterns: tuple = (),
-    nonunit_assume_patterns: tuple = (),
-    nonunit_affine_patterns: tuple = (),
+    nonunit_patterns: tuple[NonUnitPattern, ...] = (),
+    nonunit_assume_patterns: tuple[NonStructuredPattern, ...] = (),
+    nonunit_affine_patterns: tuple[NonStructuredPattern, ...] = (),
 ) -> str:
     """Stable short hash of the configured annotation patterns.
 
