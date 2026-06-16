@@ -188,7 +188,7 @@ tests cover the four-shape parity.
 bare integers). The *identifier*-exponent half (`m^kappa`,
 `m^(2*kappa - 1/3)`, etc.) ships in lockstep as a separate
 widening — see
-[symbolic-exponent-annotations.md](symbolic-exponent-annotations.md).
+[../shipped/symbolic-exponent-annotations.md](../shipped/symbolic-exponent-annotations.md).
 The post-0.2.7 strict exponent grammar is the union of the two
 widenings; this note's grammar block above is complete for the
 integer surface, and the sibling note's grammar block is complete
@@ -222,14 +222,14 @@ Concrete rewrite mappings:
 | `^{-N}` (negative int)             | `^-N`    | `signed_int` (signed) |
 | `^{N/M}` (rational)                | `^(N/M)` | `(int/int)` — parens required for the slash |
 | `^{1/N}` (LaTeX-natural reciprocal)| `^(1/N)` | `(int/int)` |
-| `^{kappa}` (symbolic exponent)     | `^kappa` | symbolic identifier — per [symbolic-exponent-annotations.md](symbolic-exponent-annotations.md) |
+| `^{kappa}` (symbolic exponent)     | `^kappa` | symbolic identifier — per [../shipped/symbolic-exponent-annotations.md](../shipped/symbolic-exponent-annotations.md) |
 | `^{2*kappa-1/3}` (linear form)     | `^(2*kappa-1/3)` | linear form, parens required |
 
 Braces do NOT introduce a new exponent form — they're a syntactic
 shorthand for whatever shape the post-0.2.7 strict grammar
 accepts: §3.0's integer-shape widening AND the symbolic-exponent
 widening shipped alongside (see
-[symbolic-exponent-annotations.md](symbolic-exponent-annotations.md)).
+[../shipped/symbolic-exponent-annotations.md](../shipped/symbolic-exponent-annotations.md)).
 The `^{N/M}` and `^{linear-form}` cases require parens in the
 rewrite target because bare `^N/M` would be parsed as `^N`
 followed by division.
@@ -242,7 +242,7 @@ followed by division.
   `<exponent>` is any shape the post-0.2.7 strict exponent grammar
   accepts — `[+-]?\d+`, `[+-]?\d+/[+-]?\d+`, a symbolic identifier
   like `kappa`, or a linear form like `2*kappa - 1/3` (see
-  [symbolic-exponent-annotations.md](symbolic-exponent-annotations.md)
+  [../shipped/symbolic-exponent-annotations.md](../shipped/symbolic-exponent-annotations.md)
   §3 for the full surface).
 - **Mitigation in the lexer rule.** The opening `^{` is the
   unambiguous trigger. Braces alone are insufficient — the rule

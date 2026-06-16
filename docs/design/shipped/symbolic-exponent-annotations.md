@@ -1,22 +1,22 @@
 # Symbolic-exponent annotations — surface widening for the `Exponent` algebra
 
-**Status:** **0.2.7 design pass complete; implementation pending.**
-Drafted 2026-06-15 to close the long-known parked annotation-surface
-gap left by the 2026-05-22 symbolic-exponents work. File stays in
-`future/` until the implementation lands and is promoted to
-`shipped/`.
+**Status:** **Shipped in 0.2.7.** Drafted 2026-06-15 to close the
+long-known parked annotation-surface gap left by the 2026-05-22
+symbolic-exponents work; landed 2026-06-16 alongside the §3.0
+baseline integer-exponent widening from the permissive-unit-lexer
+note. Both halves share ``parse_exp`` as their convergence point —
+the implementation covers integer and symbolic shapes in one rewrite.
 
 Sibling notes:
-- [`../shipped/symbolic-exponents.md`](../shipped/symbolic-exponents.md)
-  — the algebra side (shipped 2026-05-22). This note widens the
-  surface annotation parser to expose what that algebra already
-  represents.
-- [`permissive-unit-lexer.md`](permissive-unit-lexer.md) —
+- [`symbolic-exponents.md`](symbolic-exponents.md) — the algebra
+  side (shipped 2026-05-22). This note widens the surface
+  annotation parser to expose what that algebra already represents.
+- [`../future/permissive-unit-lexer.md`](../future/permissive-unit-lexer.md) —
   composition story for the lexer flags
   (`allow_fortran_star_star`, `allow_latex_braces`, etc.) and the
   §3.0 baseline grammar widening.
-- [`../shipped/polymorphic-units.md`](../shipped/polymorphic-units.md)
-  — interaction with parametric polymorphism (`'a`).
+- [`polymorphic-units.md`](polymorphic-units.md) — interaction with
+  parametric polymorphism (`'a`).
 
 ## 1. Problem — the algebra is wider than the surface
 
