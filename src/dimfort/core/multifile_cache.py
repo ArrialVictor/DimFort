@@ -29,7 +29,7 @@ cache no-ops. A real-world ``check_files`` over a large Fortran
 codebase touches ~2000-3000 files, so any cap below ~3000 silently
 defeats the cache. The workset-adaptive default + ``dimfort.toml``
 ``[cache] max_entries`` override that wire this knob through the LSP
-land as a follow-up (see ``docs/0_2_6_PLAN.md``).
+land as a follow-up tracked in internal release planning.
 """
 
 from __future__ import annotations
@@ -416,8 +416,8 @@ class ProjectionCache:
 
     **didClose:** N/A — content-keyed, not URI-keyed. Workspace file
     deletions are NOT auto-pruned from the on-disk cache (matches
-    :class:`WorkspaceIndex` behaviour; see ``0_2_6_PLAN.md`` for the
-    file-watcher follow-up).
+    :class:`WorkspaceIndex` behaviour; file-watcher follow-up tracked
+    in internal release planning).
 
     Population fills as ``_load_one`` runs. On a cache hit the bulk
     tree-walking work of ``scan_text`` (~3 s on a 2000-file workset)

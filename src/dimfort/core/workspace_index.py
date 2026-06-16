@@ -150,8 +150,8 @@ class WorkspaceIndex:
 
     **didClose:** entries persist (the index is a workspace property,
     not an open-buffer property). External file deletions are NOT
-    pruned today — see the ``workspace/didChangeWatchedFiles``
-    follow-up task in ``0_2_6_PLAN.md``.
+    pruned today — the ``workspace/didChangeWatchedFiles`` follow-up
+    is tracked in internal release planning.
 
     Procedures contained inside a module are deliberately excluded from
     ``procedures`` — those are reached through the module's exports
