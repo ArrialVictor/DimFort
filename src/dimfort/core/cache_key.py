@@ -137,7 +137,13 @@ from dimfort import __version__ as _dimfort_version
 #      view but the version bump invalidates pre-v13 entries
 #      wholesale so the first check under any flag set rebuilds
 #      cleanly.
-CHECKER_OUTPUT_VERSION = 13
+# v14: 0.2.7 added U026 (HINT) — symbolic exponent variable name
+#      shadows a known unit. The new diagnostic fires on unchanged
+#      source bytes once the project's unit table contains the
+#      shadowing entry, so pre-v14 cache entries would replay
+#      diagnostic sets that are missing the new HINT. Bump
+#      invalidates so the next check rebuilds with U026 emitted.
+CHECKER_OUTPUT_VERSION = 14
 
 
 # Keys from a workspace config that affect a *file's* output and

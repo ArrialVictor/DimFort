@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import re
 import warnings
+from collections.abc import Iterator
 from dataclasses import dataclass
 from fractions import Fraction
 
@@ -699,6 +700,37 @@ class ExpWrap:
 
 
 UnitExpr = Unit | LogWrap | ExpWrap
+
+
+def iter_symbolic_exponent_names(u: UnitExpr) -> Iterator[str]:
+    """Yield every symbolic-generator name from a parsed unit expression.
+
+    Walks ``Exponent.terms`` keys across the unit's seven SI
+    dimension slots and any tyvar exponents, recursing through
+    :class:`LogWrap` / :class:`ExpWrap`. Used by the U026
+    name-shadow diagnostic to detect a symbolic exponent variable
+    that collides with a known unit symbol (e.g., a ``@unit{Pa^m}``
+    annotation where ``m`` is intended as an exponent variable but
+    also names the meter unit).
+
+    Args:
+        u: The parsed unit expression.
+
+    Yields:
+        Identifier names that appear as ``Exponent`` generators in
+        the structure, in walk order. May yield the same name more
+        than once if it appears in multiple slots; callers dedup if
+        they care.
+    """
+    if isinstance(u, Unit):
+        for exp in u.dimension:
+            for name, _coeff in exp.terms:
+                yield name
+        for _tyvar_name, tyvar_exp in u.tyvars:
+            for name, _coeff in tyvar_exp.terms:
+                yield name
+    elif isinstance(u, (LogWrap, ExpWrap)):
+        yield from iter_symbolic_exponent_names(u.inner)
 
 
 def is_dimensionless(u: UnitExpr) -> bool:

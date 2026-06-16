@@ -82,7 +82,12 @@ from dimfort.core.unit_patterns import (
     StructuredPattern,
     UnitPattern,
 )
-from dimfort.core.units import UnitError, UnitExpr, UnitTable
+from dimfort.core.units import (
+    UnitError,
+    UnitExpr,
+    UnitTable,
+    iter_symbolic_exponent_names,
+)
 
 # ---------------------------------------------------------------------------
 # Public result types
@@ -701,6 +706,72 @@ def _attachment_diags(
                 message=mig.reason,
             )
         )
+    return out
+
+
+def _unit_name_shadow_diags(
+    file: str,
+    attachment: AttachmentResult,
+    file_var_units: dict[str, UnitExpr],
+    table: UnitTable,
+) -> list[Diagnostic]:
+    """Emit U026 for symbolic exponent variables that shadow a known unit.
+
+    Fires when a ``@unit{...}`` annotation builds a symbolic
+    :class:`Exponent` whose generator name matches an entry in the
+    project's unit table (e.g., ``Pa^m`` where ``m`` is intended as
+    an exponent variable but also names the meter). Severity is
+    HINT — the code may be correct as written (a project may
+    legitimately have a PARAMETER named ``m`` that's distinct from
+    the unit), but the asymmetry is worth surfacing because the
+    natural reading is "m the unit raised to a power" which doesn't
+    make dimensional sense.
+
+    Args:
+        file: Stringified path of the file owning ``attachment``.
+        attachment: Attachment result; ``var_units_span`` provides
+            the per-name source position for the squiggle.
+        file_var_units: Parsed unit expressions keyed by variable
+            name (file-local, before workset merge).
+        table: Active :class:`UnitTable` — entries in ``base`` or
+            ``derived`` are the "known unit" set for the shadow
+            check.
+
+    Returns:
+        One :class:`Diagnostic` per shadowed name per annotation.
+        Multiple shadowed names in one annotation emit multiple
+        diagnostics, all pointing at the same source span.
+    """
+    out: list[Diagnostic] = []
+    known_units = set(table.base) | set(table.derived)
+    for name, unit_expr in file_var_units.items():
+        span = attachment.var_units_span.get(name)
+        if span is None:
+            continue
+        line, start_col, end_col = span
+        # Dedup per-annotation; an Exponent that uses the same
+        # generator twice (``Pa^(m+m)``) only emits one U026.
+        seen: set[str] = set()
+        for sym in iter_symbolic_exponent_names(unit_expr):
+            if sym in seen or sym not in known_units:
+                continue
+            seen.add(sym)
+            out.append(
+                Diagnostic(
+                    file=file,
+                    start=Position(line, start_col),
+                    end=Position(line, end_col),
+                    severity=Severity.HINT,
+                    code="U026",
+                    message=(
+                        f"Symbolic exponent variable {sym!r} also names "
+                        f"the unit {sym!r}. The name shadows the unit's "
+                        "canonical meaning; consider renaming the "
+                        "exponent variable (``kappa``, ``lambda``, ``n`` "
+                        "are the physicist convention)."
+                    ),
+                )
+            )
     return out
 
 
@@ -1580,6 +1651,12 @@ def check_files(
         file_var_units = _parse_var_units(
             entry.attachment.var_units, active_table, memo=parsed_units_memo,
         )
+        diags.extend(_unit_name_shadow_diags(
+            str(entry.path),
+            entry.attachment,
+            file_var_units,
+            active_table,
+        ))
         per_file_var_units, per_file_sigs, unresolved = apply_use_clauses(
             uses, module_exports, file_var_units, global_signatures,
             external_modules=external_modules,
