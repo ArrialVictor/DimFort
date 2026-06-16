@@ -5,8 +5,12 @@ dataclass and `Unit`-carrying-`Exponent` layers (Steps 1-3 of the
 implementation plan below) are live in `src/dimfort/core/units.py`.
 Step 4 (resolver wiring for symbolic-name PARAMETERs across modules)
 is partially live — the cross-module symbolic-PARAMETER case closes
-the Exner-kappa family of D1.4s but a Tetens-multiplier annotation
-gap was surfaced and parked as a separate follow-up.
+the Exner-kappa family of D1.4s. The Tetens-multiplier annotation
+gap surfaced at the same time was closed in 0.2.7 by widening the
+annotation-surface parser to expose every shape the algebra already
+represents — see
+[`symbolic-exponent-annotations.md`](symbolic-exponent-annotations.md)
+for the shipped widening.
 
 This doc remains the authoritative spec for the data model, the
 algebraic rules, and the failure-mode tables — those parts are

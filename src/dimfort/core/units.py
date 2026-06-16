@@ -1279,7 +1279,7 @@ _TOKEN_RE = re.compile(
     (?P<ID>[A-Za-z][A-Za-z0-9]*)     |
     (?P<INT>\d+)                     |
     (?P<POW>\*\*)                    |  # Fortran-style power, normalised to ^
-    (?P<OP>[*/^()\-])                |
+    (?P<OP>[*/^()+\-])               |  # +/- needed inside paren'd exp linear forms
     (?P<BAD>.)
     """,
     re.VERBOSE,
@@ -1329,13 +1329,45 @@ def _tokenize(expr: str) -> list[tuple[str, str]]:
     return tokens
 
 
+def _negate_exp(e: Number | Exponent) -> Number | Exponent:
+    """Negate a parsed exponent value.
+
+    Used by the unary-minus branch of :meth:`_Parser.parse_exp`.
+    Number values negate via ``-`` directly; :class:`Exponent` is
+    rebuilt with every coefficient and the constant flipped.
+    """
+    if isinstance(e, Exponent):
+        return Exponent.build(
+            {n: -c for n, c in e.terms},
+            -e.constant,
+        )
+    return -e
+
+
 class _Parser:
     """Recursive-descent parser for ``@unit{}`` expressions.
 
-    Grammar: ``unit = term ((*|/) term)*``;
-    ``term = factor (^ exp)?``;
-    ``factor = ident | (unit) | 1``;
-    ``exp = int | (int/int) | -exp``.
+    Grammar (post-0.2.7 §3.0 + symbolic-exponent widening — both ship
+    unconditionally, no flags)::
+
+        unit       = term (('*' | '/') term)*
+        term       = factor ('^' exp)?
+        factor     = ident | tyvar | '(' unit ')' | INT (=1)
+        exp        = signed_atom | '(' linear_form ')' | '-' exp
+        signed_atom = ('+' | '-')? atom
+        atom       = INT | IDENT
+        linear_form = lin_term (('+' | '-') lin_term)*
+        lin_term   = (INT ('/' INT)?) ('*' IDENT)? | IDENT
+
+    The exponent surface accepts every shape the :class:`Exponent`
+    algebra represents: integers (``m^2``, ``m^-1``), paren'd
+    integers (``m^(2)``, ``m^(-1)``), paren'd rationals
+    (``m^(2/3)``), bare identifiers (``m^kappa``), paren'd
+    identifiers and linear forms over Q with identifier generators
+    (``m^(2*kappa - 1/3)``, ``m^(kappa - lambda)``). Identifier
+    resolution is deferred to the checker, which uses the same
+    symbol-table path that handles variable-as-exponent in source
+    expressions.
 
     ``/`` is left-associative, same precedence as ``*``. When a ``/``
     is followed at the same paren depth by another ``*`` or ``/``,
@@ -1495,29 +1527,125 @@ class _Parser:
             )
         raise UnitError(f"expected unit factor, got {tok}")
 
-    def parse_exp(self) -> Number:
-        """Parse an exponent: ``int``, ``(int/int)``, or unary minus.
+    def parse_exp(self) -> Number | Exponent:
+        """Parse an exponent.
+
+        Accepts every shape the :class:`Exponent` algebra represents:
+        signed integers (``2``, ``-1``), paren'd signed integers and
+        rationals (``(2)``, ``(-1)``, ``(2/3)``), bare identifiers
+        (``kappa``, ``-kappa``), paren'd identifiers and linear forms
+        with rational coefficients (``(2*kappa - 1/3)``,
+        ``(kappa - lambda)``).
 
         Returns:
-            The parsed exponent as an ``int`` or :class:`Fraction`.
+            ``int`` / :class:`Fraction` when the parsed exponent
+            reduces to a constant; :class:`Exponent` when it carries
+            identifier generators (resolved at check time against the
+            file's PARAMETER table via the existing source-side path).
 
         Raises:
-            UnitError: On any other token shape.
+            UnitError: On non-linear shapes (cross-product of
+                identifiers, identifier as denominator), float
+                coefficients, or any other ill-formed token sequence.
         """
         tok = self.peek()
         if tok == ("OP", "-"):
             self.consume()
-            return -self.parse_exp()
+            inner = self.parse_exp()
+            return _negate_exp(inner)
+        if tok == ("OP", "+"):
+            self.consume()
+            return self.parse_exp()
         if tok == ("OP", "("):
             self.consume()
-            num = int(self.expect("INT")[1])
-            self.expect("OP", "/")
-            den = int(self.expect("INT")[1])
+            result = self._parse_paren_exp_body()
             self.expect("OP", ")")
-            return Fraction(num, den)
+            return result
         if tok[0] == "INT":
             return int(self.consume()[1])
+        if tok[0] == "ID":
+            name = self.consume()[1]
+            return Exponent.build({name: Fraction(1)}, Fraction(0))
         raise UnitError(f"expected exponent, got {tok}")
+
+    def _parse_paren_exp_body(self) -> Number | Exponent:
+        """Parse the inside of ``( … )`` in an exponent position.
+
+        Builds a linear form over Q with identifier generators.
+        Returns an ``int`` or :class:`Fraction` when no identifier
+        generators appear (a pure-constant exponent), otherwise an
+        :class:`Exponent`.
+        """
+        terms: dict[str, Fraction] = {}
+        constant = Fraction(0)
+        # Optional leading sign on the first term.
+        sign = Fraction(1)
+        if self.peek() == ("OP", "-"):
+            self.consume()
+            sign = Fraction(-1)
+        elif self.peek() == ("OP", "+"):
+            self.consume()
+        while True:
+            term_const, term_terms = self._parse_lin_term()
+            constant += sign * term_const
+            for name, coeff in term_terms.items():
+                terms[name] = terms.get(name, Fraction(0)) + sign * coeff
+            nxt = self.peek()
+            if nxt == ("OP", "+"):
+                self.consume()
+                sign = Fraction(1)
+                continue
+            if nxt == ("OP", "-"):
+                self.consume()
+                sign = Fraction(-1)
+                continue
+            break
+        # Drop zero-coefficient terms so an expression like
+        # ``kappa - kappa`` collapses to a pure constant cleanly.
+        terms = {n: c for n, c in terms.items() if c != 0}
+        if not terms:
+            if constant.denominator == 1:
+                return int(constant)
+            return constant
+        # ``Exponent.build`` declares ``dict[str, int | Fraction]``; our
+        # local dict is the invariant ``dict[str, Fraction]`` — pass via
+        # tuple to side-step mypy's dict-invariance complaint without
+        # changing the dict literal's type at every assignment site.
+        return Exponent.build(tuple(terms.items()), constant)
+
+    def _parse_lin_term(self) -> tuple[Fraction, dict[str, Fraction]]:
+        """Parse one term of a linear form.
+
+        Accepts ``INT`` (constant), ``INT '/' INT`` (rational),
+        ``INT '*' IDENT`` / ``INT '/' INT '*' IDENT`` (coefficient
+        times identifier), or bare ``IDENT``. Leading signs are
+        consumed by :meth:`_parse_paren_exp_body`; this helper sees
+        only the magnitude part.
+
+        Returns:
+            ``(constant_contribution, terms_dict)`` — the term's
+            contribution split into its constant offset and its
+            symbol coefficients.
+        """
+        tok = self.peek()
+        if tok[0] == "INT":
+            num = int(self.consume()[1])
+            coef = Fraction(num)
+            if self.peek() == ("OP", "/"):
+                self.consume()
+                den_tok = self.expect("INT")
+                coef = Fraction(num, int(den_tok[1]))
+            if self.peek() == ("OP", "*"):
+                self.consume()
+                ident_tok = self.expect("ID")
+                return Fraction(0), {ident_tok[1]: coef}
+            return coef, {}
+        if tok[0] == "ID":
+            ident = self.consume()[1]
+            return Fraction(0), {ident: Fraction(1)}
+        raise UnitError(
+            f"expected term in exponent linear form, got {tok}"
+        )
 
 
 def base_symbols(table: UnitTable | None = None) -> tuple[str, ...]:

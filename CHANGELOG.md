@@ -33,6 +33,31 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ### Added
 
+- **`parse_exp` widening — integer and symbolic exponents.** The
+  annotation-surface exponent parser now accepts every shape the
+  shipped `Exponent` algebra represents:
+    - **Baseline integer-exponent widening** (§3.0 of the lexer
+      design note; ships unconditionally — no flag): strict `^`
+      accepts paren'd signed integers (`m^(2)`, `m^(-1)`) in
+      addition to the bare forms (`m^2`, `m^-1`) and paren'd
+      rationals (`m^(2/3)`) it already accepted. The textbook
+      `m^(-1)` form no longer needs to drop its parens.
+    - **Symbolic exponents**: bare identifiers (`m^kappa`,
+      `m^-kappa`), paren'd identifiers (`m^(kappa)`, `m^(-kappa)`),
+      and paren'd linear forms over Q with identifier generators
+      (`m^(2*kappa)`, `m^(2*kappa - 1/3)`, `m^(kappa - lambda)`,
+      `m^(1/3*kappa)`). Identifier resolution stays deferred to the
+      checker, which uses the same source-side path that handles
+      variable-as-exponent in Fortran expressions today. Vocabulary
+      is open — any identifier passes the parser; D1.4 / D1.7 fire
+      at check time against the file's PARAMETER table.
+    - **Composes with polymorphism** — tyvars carry their own
+      `Exponent` (`'a^kappa`, `'a^(2*kappa)`).
+    - **Non-linear shapes still rejected**: cross-product of
+      identifiers (`m^(kappa*lambda)`), identifier as denominator
+      (`m^(1/kappa)`), float coefficients (`m^(1.5*kappa)`), chained
+      exponentiation (`m^kappa^2`) — same algebra constraints as the
+      shipped `Exponent` layer.
 - **`nonunit` / `nonunit_assume` / `nonunit_affine` drop filters.** New
   config keys under `[parser.unit_comments]` declare extraction
   exclusions. Three default `nonunit` patterns ship: the per-site
