@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from tree_sitter import Tree
 
+    from dimfort.config import UnitLexerConfig
     from dimfort.core.annotations import ScanResult
     from dimfort.core.attach import AttachmentResult
     from dimfort.core.symbols import FuncSig, ModuleExports
@@ -351,6 +352,7 @@ def patterns_fingerprint(
     nonunit_patterns: tuple[NonUnitPattern, ...] = (),
     nonunit_assume_patterns: tuple[NonStructuredPattern, ...] = (),
     nonunit_affine_patterns: tuple[NonStructuredPattern, ...] = (),
+    unit_lexer: UnitLexerConfig | None = None,
 ) -> str:
     """Stable short hash of the configured annotation patterns.
 
@@ -409,6 +411,15 @@ def patterns_fingerprint(
         h.update(b"|")
         h.update((nfp.regex.pattern if nfp.regex else "").encode("utf-8"))
         h.update(b";")
+    h.update(b"||L|")
+    if unit_lexer is not None:
+        # Boolean flags fold in deterministically — alphabetic order
+        # of attribute name fixes the hash regardless of dataclass
+        # field declaration order.
+        h.update(f"sup={int(unit_lexer.allow_unicode_superscripts)};".encode())
+        h.update(f"mdot={int(unit_lexer.allow_middot_multiplication)};".encode())
+        h.update(f"ss={int(unit_lexer.allow_fortran_star_star)};".encode())
+        h.update(f"ltx={int(unit_lexer.allow_latex_braces)};".encode())
     return h.hexdigest()[:16]
 
 

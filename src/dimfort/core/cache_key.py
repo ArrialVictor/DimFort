@@ -118,7 +118,17 @@ from dimfort import __version__ as _dimfort_version
 #      source bytes — producing diagnostic sets that the new code
 #      wouldn't emit. Bump invalidates so the next check rebuilds
 #      under the per-line rule.
-CHECKER_OUTPUT_VERSION = 11
+# v12: 0.2.7 permissive-unit-lexer rewrite-subsystem flags
+#      (Track B.2a): ``allow_unicode_superscripts``,
+#      ``allow_middot_multiplication``, ``allow_fortran_star_star``,
+#      ``allow_latex_braces``. Toggling any flag changes which
+#      ``@unit{...}`` strings parse for the same source bytes —
+#      ``allow_fortran_star_star`` in particular now defaults OFF
+#      where pre-0.2.7 the tokenizer accepted ``**`` unconditionally,
+#      so cached entries from a pre-v12 lexer would replay
+#      pre-existing ``**`` parses that the post-v12 strict default
+#      would reject. Bump invalidates all such entries.
+CHECKER_OUTPUT_VERSION = 12
 
 
 # Keys from a workspace config that affect a *file's* output and
@@ -161,6 +171,7 @@ PER_FILE_CONFIG_KEYS: tuple[str, ...] = (
     "unit_comments.nonunit",
     "unit_comments.nonunit_assume",
     "unit_comments.nonunit_affine",
+    "unit_lexer.flags",
 )
 
 
@@ -201,6 +212,7 @@ def _config_bytes(config: dict[str, object]) -> bytes:
         "unit_comments.unit_affine",
         "unit_comments.nonunit", "unit_comments.nonunit_assume",
         "unit_comments.nonunit_affine",
+        "unit_lexer.flags",
     }
     dict_keys = {"diagnostic_severities"}
     str_keys = {"units_file_hash"}

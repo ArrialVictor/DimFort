@@ -1,0 +1,42 @@
+# Permissive-unit-lexer adoption template — 0.2.7
+#
+# Drop into the `[parser.unit_lexer]` table of your project's
+# `dimfort.toml` to opt into permissive lexer shapes on top of
+# the strict baseline. Every flag defaults OFF — no flag is
+# required for the canonical `@unit{...}` form to work.
+#
+# This template ships the four rewrite-subsystem flags landed in
+# Track B.2a (`docs/design/future/permissive-unit-lexer.md`
+# §3.1, §3.6, §3.7, §3.8). The four recognition-subsystem flags
+# (§3.2, §3.3, §3.4, §3.5) land in Track B.2b — this file will
+# grow to cover all 8 then.
+#
+# See `docs/design/future/permissive-unit-lexer.md` for the
+# per-flag empirical case + false-positive characterization.
+
+[parser.unit_lexer]
+
+# Accept LaTeX-style brace grouping: `m^{-1}`, `kg^{2}`.
+# Pre-tokenization rewrite to `^(<content>)`. Low FP risk —
+# braces have no other use in unit strings.
+allow_latex_braces = false
+
+# Accept Fortran-style `**` as an alias for `^`: `m**2`,
+# `kg**2/m**3`. Pre-0.2.7 was accepted unconditionally; 0.2.7
+# moves it behind this flag for uniformity with the rest of the
+# flag set. If your project's existing `@unit{...}` annotations
+# use `**`, set this to `true`.
+allow_fortran_star_star = false
+
+# Accept Unicode superscripts as exponents: `m·s⁻¹`, `kg m⁻³`.
+# Codepoint substitution at tokenization (`²` → `^2`, etc.).
+# Use when annotations are pasted from typeset papers or
+# Unicode-aware editors. Empirically rare in surveyed Fortran
+# corpora (2 union hits across 6 corpora), but free to enable.
+allow_unicode_superscripts = false
+
+# Accept `·` (U+00B7 middle dot) as a multiplication operator
+# alias: `m·s`, `kg·m⁻³`. SI typographical convention. No
+# empirical hits across the surveyed Fortran corpora, but
+# included for completeness — no FP risk.
+allow_middot_multiplication = false

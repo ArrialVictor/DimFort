@@ -622,6 +622,7 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
             nonunit_affine_patterns=compile_nonstructured_patterns(
                 state.project_config.unit_comments.nonunit_affine
             ),
+            unit_lexer=state.project_config.unit_lexer,
             tree_cache=state.tree_cache,
             exports_cache=state.exports_cache,
             projection_cache=state.projection_cache,
@@ -2119,6 +2120,7 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
                 nonunit_affine_patterns=compile_nonstructured_patterns(
                     state.project_config.unit_comments.nonunit_affine
                 ),
+                unit_lexer=state.project_config.unit_lexer,
                 tree_cache=state.tree_cache,
                 exports_cache=state.exports_cache,
                 projection_cache=state.projection_cache,

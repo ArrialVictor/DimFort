@@ -32,6 +32,8 @@ import warnings
 from dataclasses import dataclass
 from fractions import Fraction
 
+from dimfort.config import UnitLexerConfig
+
 Number = int | Fraction
 # ``Dim`` historically meant ``tuple[Number, Number, ...]`` (7 plain
 # scalar exponents). Post symbolic-exponents Step 2, each slot is an
@@ -1241,6 +1243,15 @@ class UnitTable:
 # do ``parse(expr)`` without threading a table through.
 DEFAULT_TABLE: UnitTable | None = None
 
+# Session-active :class:`UnitLexerConfig` for the 0.2.7 permissive-
+# lexer flags. ``None`` means "strict default" (every flag OFF) and
+# is the import-time state. CLI / LSP entry points set this before
+# invoking ``check_files`` so every downstream ``parse()`` call
+# sees the project's configured flag set without threading a
+# parameter through every call site. Same convention as
+# :data:`DEFAULT_TABLE`.
+DEFAULT_LEXER: UnitLexerConfig | None = None
+
 
 def _resolve_identifier(name: str, table: UnitTable) -> Unit:
     """Resolve a unit identifier against a :class:`UnitTable`.
@@ -1278,7 +1289,9 @@ _TOKEN_RE = re.compile(
     (?P<TYVAR>'[A-Za-z][A-Za-z0-9]*) |  # OCaml-style type variable
     (?P<ID>[A-Za-z][A-Za-z0-9]*)     |
     (?P<INT>\d+)                     |
-    (?P<POW>\*\*)                    |  # Fortran-style power, normalised to ^
+    (?P<POW>\*\*)                    |  # Fortran ** alias — gated by
+                                        #   allow_fortran_star_star
+                                        #   (default OFF in 0.2.7)
     (?P<OP>[*/^()+\-])               |  # +/- needed inside paren'd exp linear forms
     (?P<BAD>.)
     """,
@@ -1286,24 +1299,147 @@ _TOKEN_RE = re.compile(
 )
 
 
-def _tokenize(expr: str) -> list[tuple[str, str]]:
+# Unicode superscript codepoints to ASCII (digits + sign). ``¹²³`` are
+# in Latin-1 Supplement (U+00B1..B3) while ``⁰⁴⁵⁶⁷⁸⁹⁻⁺`` are in the
+# Superscripts/Subscripts block (U+2070..207F) — both runs need to be
+# covered. Gated by ``allow_unicode_superscripts``.
+_SUPERSCRIPT_TRANSLATE = str.maketrans({
+    "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4",
+    "⁵": "5", "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9",
+    "⁻": "-", "⁺": "+",
+})
+_SUPERSCRIPT_RUN_RE = re.compile(r"[⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺]+")
+
+
+def _apply_unicode_superscript_rewrite(expr: str) -> str:
+    """Rewrite runs of Unicode-superscript characters to ``^`` + ASCII.
+
+    ``m·s⁻¹`` becomes ``m·s^-1`` (then ``allow_middot_multiplication``
+    may further rewrite the middot to ``*``). A bare ``m²`` becomes
+    ``m^2`` — the ``^`` operator the run is attached to is implied by
+    convention: a superscript run after an identifier or close paren
+    is always an exponent.
+
+    Args:
+        expr: Source expression text after upstream preprocessing
+            (whitespace preserved; no other lexer-flag rewrites
+            applied yet).
+
+    Returns:
+        The string with every contiguous superscript run replaced by
+        ``^`` + the ASCII-translated digits/signs.
+    """
+    return _SUPERSCRIPT_RUN_RE.sub(
+        lambda m: "^" + m.group(0).translate(_SUPERSCRIPT_TRANSLATE),
+        expr,
+    )
+
+
+def _apply_latex_brace_rewrite(expr: str) -> str:
+    """Rewrite ``^{<content>}`` to ``^(<content>)`` at the string level.
+
+    The strict-grammar post-§3.0 widening accepts ``^(N)``, ``^(N/M)``,
+    ``^(-N)``, ``^(<linear form>)`` uniformly, so wrapping any brace
+    body in parens always produces a well-formed exponent for the
+    parser. Pre-tokenization rewrite keeps the tokenizer's regex
+    unchanged (``{`` / ``}`` remain unrecognized characters when the
+    flag is OFF).
+
+    Args:
+        expr: Source expression text (no other lexer-flag rewrites
+            applied yet).
+
+    Returns:
+        The string with every matched ``^{…}`` rewritten to
+        ``^(…)``. Unmatched ``^{`` (no closing brace) is left
+        untouched so the tokenizer raises ``UnitError`` on the
+        stray ``{``.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(expr)
+    while i < n:
+        if i + 1 < n and expr[i] == "^" and expr[i + 1] == "{":
+            depth = 1
+            j = i + 2
+            while j < n and depth > 0:
+                if expr[j] == "{":
+                    depth += 1
+                elif expr[j] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            if depth == 0:
+                out.append("^(")
+                out.append(expr[i + 2:j])
+                out.append(")")
+                i = j + 1
+                continue
+        out.append(expr[i])
+        i += 1
+    return "".join(out)
+
+
+def _tokenize(
+    expr: str,
+    *,
+    lexer: UnitLexerConfig | None = None,
+) -> list[tuple[str, str]]:
     """Tokenize a unit expression.
 
     The lexer recognises type-variables (``'a``), identifiers, integer
-    literals, the Fortran-style ``**`` power operator (normalised to
-    ``^``), and the single-character operators ``*/^()-``. Whitespace
-    is skipped. The token stream is terminated by an ``("END", "")``
-    sentinel.
+    literals, the canonical exponent operator ``^``, and the
+    single-character operators ``*/()+-``. Whitespace is skipped. The
+    token stream is terminated by an ``("END", "")`` sentinel.
+
+    Permissive-lexer flags from ``[parser.unit_lexer]`` widen what
+    the tokenizer accepts (each flag default OFF — strict baseline):
+
+    - ``allow_unicode_superscripts`` rewrites runs of
+      ``⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺`` to ``^`` + ASCII at the character-stream level.
+    - ``allow_middot_multiplication`` rewrites ``·`` (U+00B7) to
+      ``*`` before tokenization.
+    - ``allow_fortran_star_star`` accepts ``**`` as an alias for
+      ``^`` via the ``POW`` regex group.
+    - ``allow_latex_braces`` rewrites ``^{<content>}`` to
+      ``^(<content>)`` before tokenization.
 
     Args:
         expr: Source expression text.
+        lexer: Optional :class:`UnitLexerConfig` selecting which
+            permissive rules apply. ``None`` means strict default
+            (all flags OFF).
 
     Returns:
         List of ``(kind, lexeme)`` pairs.
 
     Raises:
-        UnitError: On any character outside the recognised classes.
+        UnitError: On any character outside the recognised classes
+            (under the strict default this includes ``·``, ``**``,
+            and ``{`` / ``}`` — opt in via the matching flag).
     """
+    if lexer is None:
+        lexer = UnitLexerConfig()
+
+    # Step 1: codepoint-level rewrites (pre-regex). Pipeline order
+    # per design §4.3: unicode superscripts → middot → operator-
+    # token alias (``**`` → ``^``) → brace rewrite. The ``**``
+    # normalisation MUST run before the brace rewrite so the brace
+    # rewriter sees ``m**{2}`` as ``m^{2}`` and converts cleanly to
+    # ``m^(2)``. With ``allow_fortran_star_star`` ON we substitute
+    # at the string level here so the tokenizer's POW branch
+    # never fires; with the flag OFF, ``**`` reaches the tokenizer
+    # untouched and the POW branch raises a helpful error.
+    if lexer.allow_unicode_superscripts:
+        expr = _apply_unicode_superscript_rewrite(expr)
+    if lexer.allow_middot_multiplication:
+        expr = expr.replace("·", "*")
+    if lexer.allow_fortran_star_star:
+        expr = expr.replace("**", "^")
+    if lexer.allow_latex_braces:
+        expr = _apply_latex_brace_rewrite(expr)
+
     tokens: list[tuple[str, str]] = []
     for m in _TOKEN_RE.finditer(expr):
         if m.group("TYVAR") is not None:
@@ -1316,10 +1452,15 @@ def _tokenize(expr: str) -> list[tuple[str, str]]:
         elif m.group("INT") is not None:
             tokens.append(("INT", m.group("INT")))
         elif m.group("POW") is not None:
-            # ``**`` is Fortran's power operator. Normalise to ``^`` so
-            # the parser's single power path (parse_term) handles both
-            # ``m**2`` and ``m^2`` identically — including under ``/``
-            # (``kg/m**3`` now parses as ``kg/(m**3)``).
+            if not lexer.allow_fortran_star_star:
+                raise UnitError(
+                    f"'**' is not accepted by the default lexer; "
+                    f"set [parser.unit_lexer].allow_fortran_star_star "
+                    f"= true or rewrite as '^' (in {expr!r})"
+                )
+            # ``**`` normalises to ``^`` so the parser's single power
+            # path handles both shapes identically (including under
+            # ``/``: ``kg/m**3`` parses as ``kg/(m**3)``).
             tokens.append(("OP", "^"))
         elif m.group("OP") is not None:
             tokens.append(("OP", m.group("OP")))
@@ -1867,7 +2008,12 @@ def format_unit_source(u: UnitExpr, *, table: UnitTable | None = None) -> str:
     return body
 
 
-def parse(expr: str, table: UnitTable | None = None) -> UnitExpr:
+def parse(
+    expr: str,
+    table: UnitTable | None = None,
+    *,
+    lexer: UnitLexerConfig | None = None,
+) -> UnitExpr:
     """Parse a unit-expression string against a :class:`UnitTable`.
 
     Args:
@@ -1875,6 +2021,10 @@ def parse(expr: str, table: UnitTable | None = None) -> UnitExpr:
             annotation, or an equivalent inline string).
         table: Active :class:`UnitTable`. ``None`` (the default) uses
             :data:`DEFAULT_TABLE`.
+        lexer: Optional :class:`UnitLexerConfig` toggling permissive
+            lexer rules. ``None`` (the default) means strict
+            baseline — every flag OFF. The flag set is documented
+            on :class:`UnitLexerConfig`.
 
     Returns:
         The parsed :class:`UnitExpr`.
@@ -1889,7 +2039,11 @@ def parse(expr: str, table: UnitTable | None = None) -> UnitExpr:
         if DEFAULT_TABLE is None:
             raise RuntimeError("DEFAULT_TABLE not initialised — import dimfort.core.unit_config")
         table = DEFAULT_TABLE
-    tokens = _tokenize(expr)
+    if lexer is None:
+        # Fall back to the session-active default set by CLI / LSP
+        # entry points. None means strict baseline.
+        lexer = DEFAULT_LEXER
+    tokens = _tokenize(expr, lexer=lexer)
     p = _Parser(tokens, table)
     u = p.parse_unit()
     if p.peek()[0] != "END":
