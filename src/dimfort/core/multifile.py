@@ -913,8 +913,12 @@ def _build_cache_config_view(
                 int(unit_lexer.allow_middot_multiplication),
                 int(unit_lexer.allow_fortran_star_star),
                 int(unit_lexer.allow_latex_braces),
+                int(unit_lexer.allow_dot_multiplication),
+                int(unit_lexer.allow_implicit_product),
+                int(unit_lexer.allow_integer_suffix_exp),
+                int(unit_lexer.allow_bare_digit_exp),
             ]
-            if unit_lexer is not None else [0, 0, 0, 0]
+            if unit_lexer is not None else [0, 0, 0, 0, 0, 0, 0, 0]
         ),
     }
 

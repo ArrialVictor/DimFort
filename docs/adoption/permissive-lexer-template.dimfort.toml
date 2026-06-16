@@ -5,34 +5,35 @@
 # the strict baseline. Every flag defaults OFF — no flag is
 # required for the canonical `@unit{...}` form to work.
 #
-# This template ships the four rewrite-subsystem flags landed in
-# Track B.2a (`docs/design/future/permissive-unit-lexer.md`
-# §3.1, §3.6, §3.7, §3.8). The four recognition-subsystem flags
-# (§3.2, §3.3, §3.4, §3.5) land in Track B.2b — this file will
-# grow to cover all 8 then.
-#
-# See `docs/design/future/permissive-unit-lexer.md` for the
-# per-flag empirical case + false-positive characterization.
+# All 8 flags landed in 0.2.7 (Tracks B.2a + B.2b). See
+# `docs/design/shipped/permissive-unit-lexer.md` §3.1-§3.8 for
+# per-flag empirical case + false-positive characterization, and
+# §4 for the composition contract (28-pair pairwise audit).
 
 [parser.unit_lexer]
 
-# Accept LaTeX-style brace grouping: `m^{-1}`, `kg^{2}`.
-# Pre-tokenization rewrite to `^(<content>)`. Low FP risk —
-# braces have no other use in unit strings.
+# ---------------------------------------------------------------
+# Rewrite subsystem — codepoint subs / token aliases / post-token
+# rewrites. Low to zero FP risk.
+# ---------------------------------------------------------------
+
+# Accept LaTeX-style brace grouping: `m^{-1}`, `kg^{2}`,
+# `Pa^{kappa-1/3}`. Pre-tokenization rewrite to `^(<content>)`.
+# Empirically strong in one corpus (312 sites); zero or sparse
+# elsewhere.
 allow_latex_braces = false
 
 # Accept Fortran-style `**` as an alias for `^`: `m**2`,
-# `kg**2/m**3`. Pre-0.2.7 was accepted unconditionally; 0.2.7
-# moves it behind this flag for uniformity with the rest of the
-# flag set. If your project's existing `@unit{...}` annotations
-# use `**`, set this to `true`.
+# `kg**2/m**3`. Pre-0.2.7 the tokenizer accepted `**`
+# unconditionally; 0.2.7 moves it behind this flag for uniformity
+# (all 8 flags default OFF). If your project's existing
+# `@unit{...}` annotations use `**`, set this to `true`.
 allow_fortran_star_star = false
 
 # Accept Unicode superscripts as exponents: `m·s⁻¹`, `kg m⁻³`.
 # Codepoint substitution at tokenization (`²` → `^2`, etc.).
-# Use when annotations are pasted from typeset papers or
-# Unicode-aware editors. Empirically rare in surveyed Fortran
-# corpora (2 union hits across 6 corpora), but free to enable.
+# Empirically rare in surveyed Fortran corpora (2 union hits
+# across 6 corpora), but free to enable.
 allow_unicode_superscripts = false
 
 # Accept `·` (U+00B7 middle dot) as a multiplication operator
@@ -40,3 +41,41 @@ allow_unicode_superscripts = false
 # empirical hits across the surveyed Fortran corpora, but
 # included for completeness — no FP risk.
 allow_middot_multiplication = false
+
+# ---------------------------------------------------------------
+# Recognition subsystem — grammar extensions over what the strict
+# baseline accepts. Higher empirical value; the bottom flag below
+# carries real FP risk.
+# ---------------------------------------------------------------
+
+# Accept `.` between identifiers as multiplication:
+# `J.kg^{-1}`, `kgC.m^{-2}.s^{-1}`. Decimal literals (`0.5`,
+# `1.380658E-23`) stay unaffected — only `.` between two letters
+# rewrites. Empirically strong in one European convention
+# (1,151 union hits across 6 corpora).
+allow_dot_multiplication = false
+
+# Accept whitespace between identifiers as multiplication:
+# `kg m`, `W m`, `J kg`. The single highest-volume convention
+# across surveyed corpora (12,048 union hits). Note: `ms` (no
+# whitespace) stays millisecond regardless of this flag — the
+# rule fires on whitespace only, not on identifier adjacency.
+allow_implicit_product = false
+
+# Accept trailing SIGNED integers on identifiers as exponents:
+# `m s-1`, `kg m-3`, `W m-2 K-1`. The udunits2 canonical syntax.
+# Usually enabled together with `allow_implicit_product` since
+# udunits2 shapes combine the two (`kg m-3` needs both flags).
+allow_integer_suffix_exp = false
+
+# Accept BARE UNSIGNED digit suffixes (2-9) on a guarded set of
+# known-unit identifiers as exponents: `m2`, `m3`, `kg m2`,
+# `W/m2`. Guard list: m s kg K Pa J W N mol rad cm mm km hPa.
+# Digits >= 10 are NOT eligible (variable names like `Vcmax25`
+# and equation labels like `(s11)` would otherwise falsely
+# rewrite). HIGH FP RISK on projects using bracket extraction
+# (`[m2]` could mean either `m²` or a variable name); review
+# `docs/design/shipped/permissive-unit-lexer.md` §3.5 before
+# enabling. Second-highest empirical volume (5,261 strict-guard
+# union hits across 6 corpora) but the most contentious flag.
+allow_bare_digit_exp = false

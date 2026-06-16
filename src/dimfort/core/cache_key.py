@@ -128,7 +128,16 @@ from dimfort import __version__ as _dimfort_version
 #      so cached entries from a pre-v12 lexer would replay
 #      pre-existing ``**`` parses that the post-v12 strict default
 #      would reject. Bump invalidates all such entries.
-CHECKER_OUTPUT_VERSION = 12
+# v13: 0.2.7 permissive-unit-lexer recognition-subsystem flags
+#      (Track B.2b): ``allow_dot_multiplication``,
+#      ``allow_implicit_product``, ``allow_integer_suffix_exp``,
+#      ``allow_bare_digit_exp``. Toggling any flag changes which
+#      ``@unit{...}`` strings parse for the same source bytes.
+#      Folded into ``patterns_fingerprint`` + the per-file cache
+#      view but the version bump invalidates pre-v13 entries
+#      wholesale so the first check under any flag set rebuilds
+#      cleanly.
+CHECKER_OUTPUT_VERSION = 13
 
 
 # Keys from a workspace config that affect a *file's* output and

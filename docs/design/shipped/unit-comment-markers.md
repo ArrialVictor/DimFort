@@ -8,7 +8,7 @@ shipped; the precursor `future/unit-comment-skip-delimiters.md` is
 retired.
 
 Sibling design notes:
-- [`permissive-unit-lexer.md`](../future/permissive-unit-lexer.md) —
+- [`permissive-unit-lexer.md`](permissive-unit-lexer.md) —
   how DimFort *parses* the substring once extracted.
 - [`unit-comment-delimiters.md`](unit-comment-delimiters.md) — the
   pre-0.2.7 delimiter machinery (0.2.2). The configurable

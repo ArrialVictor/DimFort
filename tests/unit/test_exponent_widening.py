@@ -2,7 +2,7 @@
 
 Two design sources land in one parser change:
 
-- ``docs/design/future/permissive-unit-lexer.md`` §3.0 — strict ``^``
+- ``docs/design/shipped/permissive-unit-lexer.md`` §3.0 — strict ``^``
   accepts all four integer-exponent shapes (``^N``, ``^-N``,
   ``^(N)``, ``^(-N)``); ships unconditionally, no flag required.
 - ``docs/design/shipped/symbolic-exponent-annotations.md`` — closes

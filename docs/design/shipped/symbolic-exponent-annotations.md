@@ -11,7 +11,7 @@ Sibling notes:
 - [`symbolic-exponents.md`](symbolic-exponents.md) — the algebra
   side (shipped 2026-05-22). This note widens the surface
   annotation parser to expose what that algebra already represents.
-- [`../future/permissive-unit-lexer.md`](../future/permissive-unit-lexer.md) —
+- [`permissive-unit-lexer.md`](permissive-unit-lexer.md) —
   composition story for the lexer flags
   (`allow_fortran_star_star`, `allow_latex_braces`, etc.) and the
   §3.0 baseline grammar widening.
