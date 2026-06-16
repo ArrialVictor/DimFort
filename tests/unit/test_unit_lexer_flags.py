@@ -330,6 +330,41 @@ def test_integer_suffix_exp_rewrites_to_caret(expr, canonical):
     assert parse(expr, lexer=lex).dimension == parse(canonical).dimension
 
 
+def test_integer_suffix_exp_does_not_misfire_on_symbolic_linear_forms():
+    """Regression: with ``allow_latex_braces`` + ``allow_integer_suffix_exp``
+    both ON, the linear-form expression inside ``Pa^{2*kappa-1/3}``
+    must NOT have its ``kappa-1`` substring mis-rewritten to
+    ``kappa^-1``. The 14-symbol guard list (per design §3.4 — the
+    identifier must be in the known-unit set) keeps the rule from
+    firing on arbitrary letters inside symbolic-exponent contexts."""
+    lex = UnitLexerConfig(
+        allow_latex_braces=True, allow_integer_suffix_exp=True,
+    )
+    # Without the fix, this raised UnitError because the rewrite
+    # produced ``Pa^(2*kappa^-1/3)`` which the linear-form grammar
+    # rejects.
+    assert (
+        parse("Pa^{2*kappa-1/3}", lexer=lex).dimension
+        == parse("Pa^(2*kappa-1/3)").dimension
+    )
+    assert (
+        parse("Pa^{kappa-1}", lexer=lex).dimension
+        == parse("Pa^(kappa-1)").dimension
+    )
+
+
+def test_integer_suffix_exp_unguarded_identifier_does_not_rewrite():
+    """``kappa-1`` outside any exponent context still must NOT
+    rewrite (``kappa`` isn't in the 14-symbol guard list). The
+    parse fails because ``kappa`` isn't a known unit either, but
+    the failure mode is ``unknown unit identifier``, not a
+    silently-incorrect rewrite."""
+    lex = UnitLexerConfig(allow_integer_suffix_exp=True)
+    from dimfort.core.units import UnknownUnitError
+    with pytest.raises((UnitError, UnknownUnitError)):
+        parse("kappa-1", lexer=lex)
+
+
 def test_integer_suffix_exp_with_implicit_product_handles_udunits_shape():
     """The udunits2-canonical shape: ``kg m-3``, ``W m-2 K-1``."""
     lex = UnitLexerConfig(

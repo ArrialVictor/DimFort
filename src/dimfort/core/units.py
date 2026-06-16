@@ -1345,11 +1345,19 @@ _BARE_DIGIT_EXP_GUARD_RE = re.compile(
     r"(?![0-9])"
 )
 
-# Signed integer immediately after a letter (no whitespace) — the
-# ``allow_integer_suffix_exp`` trigger. Lookbehind on letter
-# ensures we don't double-rewrite a canonical ``m^-3`` (the char
-# before ``-3`` there is ``^``, not a letter).
-_INTEGER_SUFFIX_EXP_RE = re.compile(r"(?<=[A-Za-z])([+-]\d+)")
+# Signed integer immediately after a known-unit identifier (no
+# whitespace) — the ``allow_integer_suffix_exp`` trigger. Reuses
+# the same 14-symbol guard list as ``allow_bare_digit_exp`` so the
+# rule only fires on identifiers that are plausibly units. Without
+# the guard, the broader pattern ``(?<=[A-Za-z])([+-]\d+)`` matches
+# the arithmetic ``kappa-1`` inside symbolic-exponent linear forms
+# (``Pa^{2*kappa-1/3}``) — the rule would silently rewrite
+# ``kappa-1`` to ``kappa^-1`` and break the surrounding
+# linear-form parse. Per design §3.4 the identifier must be in the
+# known-unit set; this regex enforces that.
+_INTEGER_SUFFIX_EXP_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(hPa|mol|kg|cm|mm|km|rad|Pa|m|s|K|J|W|N)([+-]\d+)"
+)
 
 # ``.`` between two letters — the ``allow_dot_multiplication``
 # trigger. Decimal literals (``0.5``, ``1.380658E-23``) have a
@@ -1473,7 +1481,7 @@ def _tokenize(
     if lexer.allow_latex_braces:
         expr = _apply_latex_brace_rewrite(expr)
     if lexer.allow_integer_suffix_exp:
-        expr = _INTEGER_SUFFIX_EXP_RE.sub(r"^\1", expr)
+        expr = _INTEGER_SUFFIX_EXP_RE.sub(r"\1^\2", expr)
     if lexer.allow_bare_digit_exp:
         expr = _BARE_DIGIT_EXP_GUARD_RE.sub(r"\1^\2", expr)
     if lexer.allow_dot_multiplication:
