@@ -2,6 +2,43 @@
 
 All notable changes to DimFort are documented here. Format inspired by [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Breaking changes
+
+- **Unit-comment delimiter config moved into a nested namespace.** The
+  three flat keys `[parser].unit_comment_delimiters`,
+  `[parser].unit_assume_comment_delimiters`, and
+  `[parser].unit_affine_comment_delimiters` are replaced by the nested
+  table `[parser.unit_comments]` with six keys: `unit` / `nonunit`,
+  `unit_assume` / `nonunit_assume`, `unit_affine` / `nonunit_affine`.
+  Old flat keys are still detected — they warn and are ignored, no
+  silent migration — so projects upgrading to 0.2.7 see a clear pointer
+  at `docs/troubleshooting/unit-comments-migration.md`. The migration
+  is a one-line rewrite per project; the design rationale and old →
+  new examples live in the migration doc.
+
+### Added
+
+- **`nonunit` / `nonunit_assume` / `nonunit_affine` drop filters.** New
+  config keys under `[parser.unit_comments]` declare extraction
+  exclusions. Three default `nonunit` patterns ship: the per-site
+  marker `@nonunit{...}` (canonical opt-out), `(see ...)` citation
+  prefix, and `(\d{4})` year-only via regex predicate. The
+  set-subtraction semantics (`STRUCT \ nonSTRUCT`) is per-family —
+  `nonunit` only filters `unit` candidates, etc. Empty list (`nonunit
+  = []`) opts out of the shipped filters entirely.
+- **Optional regex predicate on nonSTRUCT entries** — `regex = "^\d{4}$"`
+  on a `nonunit` entry filters only the matching inner content; the
+  predicate is matched against the full delimited content
+  (whitespace-stripped for plain `nonunit`).
+
+### Internal
+
+- `CHECKER_OUTPUT_VERSION` bumped 9 → 10. Pre-0.2.7 cache entries are
+  invalidated naturally; the new shipped `nonunit` defaults would
+  otherwise replay stale captures that the new pipeline now drops.
+
 ## [0.2.6] — 2026-06-13
 
 ### Highlight

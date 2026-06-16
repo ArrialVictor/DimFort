@@ -58,15 +58,108 @@ class StructuredPatternEntry:
     sep: str
 
 
-DEFAULT_UNIT_COMMENT_DELIMITERS: tuple[UnitPatternEntry, ...] = (
+@dataclass(frozen=True)
+class NonUnitPatternEntry:
+    """One configured ``nonunit`` (drop) delimiter pair.
+
+    Captured matches whose inner text passes the optional ``regex``
+    predicate are dropped silently before reaching the unit lexer.
+    See ``[parser.unit_comments].nonunit`` in dimfort.toml.
+
+    Attributes:
+        open: Opening delimiter text (e.g. ``"@nonunit{"``).
+        close: Closing delimiter text (e.g. ``"}"``).
+        regex: Optional Python regex matched against the inner text
+            (whitespace-stripped). When omitted, every match drops.
+    """
+
+    open: str
+    close: str
+    regex: str | None = None
+
+
+@dataclass(frozen=True)
+class NonStructuredPatternEntry:
+    """One configured ``nonunit_assume`` / ``nonunit_affine`` drop entry.
+
+    Mirrors :class:`StructuredPatternEntry`'s identifying fields so the
+    set-subtraction ``STRUCT \\ nonSTRUCT`` is well-defined. Both
+    ``sep`` and ``regex`` are optional; ``sep`` omitted means "filter
+    all matching ``{open, close}`` regardless of separator".
+
+    Attributes:
+        open: Opening delimiter text.
+        close: Closing delimiter text.
+        sep: Optional separator; targets a specific
+            ``{open, close, sep}`` triple when present.
+        regex: Optional predicate matched against the FULL content
+            between open and close (separator literal encoded in the
+            regex if part-specific filtering is needed).
+    """
+
+    open: str
+    close: str
+    sep: str | None = None
+    regex: str | None = None
+
+
+DEFAULT_UNIT_PATTERNS: tuple[UnitPatternEntry, ...] = (
     UnitPatternEntry(open="@unit{", close="}"),
 )
-DEFAULT_UNIT_ASSUME_COMMENT_DELIMITERS: tuple[StructuredPatternEntry, ...] = (
+DEFAULT_NONUNIT_PATTERNS: tuple[NonUnitPatternEntry, ...] = (
+    # Per-site author marker (canonical).
+    NonUnitPatternEntry(open="@nonunit{", close="}"),
+    # Citation prefix — ~793 union hits across 6 surveyed corpora.
+    NonUnitPatternEntry(open="(see ", close=")"),
+    # Year-only — ~1,375 union hits across 6 surveyed corpora.
+    NonUnitPatternEntry(open="(", close=")", regex=r"^\d{4}$"),
+)
+DEFAULT_UNIT_ASSUME_PATTERNS: tuple[StructuredPatternEntry, ...] = (
     StructuredPatternEntry(open="@unit_assume{", close="}", sep=":"),
 )
-DEFAULT_UNIT_AFFINE_COMMENT_DELIMITERS: tuple[StructuredPatternEntry, ...] = (
+DEFAULT_NONUNIT_ASSUME_PATTERNS: tuple[NonStructuredPatternEntry, ...] = ()
+DEFAULT_UNIT_AFFINE_PATTERNS: tuple[StructuredPatternEntry, ...] = (
     StructuredPatternEntry(open="@unit_affine_conversion{", close="}", sep="->"),
 )
+DEFAULT_NONUNIT_AFFINE_PATTERNS: tuple[NonStructuredPatternEntry, ...] = ()
+
+
+@dataclass(frozen=True)
+class UnitCommentsConfig:
+    """Resolved ``[parser.unit_comments]`` section.
+
+    Six keys forming three STRUCT / nonSTRUCT pairs. Each pair encodes
+    set subtraction: what DimFort actually extracts is
+    ``STRUCT \\ nonSTRUCT``. ``nonSTRUCT`` wins silently when a
+    candidate matches both. See docs/design/unit-comment-markers.md.
+
+    Attributes:
+        unit: ``@unit{}``-family delimiter pairs.
+        nonunit: Drop entries filtering ``unit`` candidates.
+        unit_assume: ``@unit_assume{}``-family delimiter triples.
+        nonunit_assume: Drop entries filtering ``unit_assume`` candidates.
+        unit_affine: ``@unit_affine_conversion{}``-family delimiter triples.
+        nonunit_affine: Drop entries filtering ``unit_affine`` candidates.
+    """
+
+    unit: tuple[UnitPatternEntry, ...] = field(
+        default_factory=lambda: DEFAULT_UNIT_PATTERNS
+    )
+    nonunit: tuple[NonUnitPatternEntry, ...] = field(
+        default_factory=lambda: DEFAULT_NONUNIT_PATTERNS
+    )
+    unit_assume: tuple[StructuredPatternEntry, ...] = field(
+        default_factory=lambda: DEFAULT_UNIT_ASSUME_PATTERNS
+    )
+    nonunit_assume: tuple[NonStructuredPatternEntry, ...] = field(
+        default_factory=lambda: DEFAULT_NONUNIT_ASSUME_PATTERNS
+    )
+    unit_affine: tuple[StructuredPatternEntry, ...] = field(
+        default_factory=lambda: DEFAULT_UNIT_AFFINE_PATTERNS
+    )
+    nonunit_affine: tuple[NonStructuredPatternEntry, ...] = field(
+        default_factory=lambda: DEFAULT_NONUNIT_AFFINE_PATTERNS
+    )
 
 
 @dataclass(frozen=True)
@@ -133,18 +226,15 @@ class DimfortConfig:
     #   enabled = true
     scale_mode: bool = False
 
-    # [parser] — configurable comment delimiters for the three unit
-    # directive families. See docs/design/unit-comment-delimiters.md.
-    # Defaults preserve the canonical ``@unit{...}`` etc. forms; users
-    # opt in to additional patterns (e.g. ``[m/s]``) per directive.
-    unit_comment_delimiters: tuple[UnitPatternEntry, ...] = field(
-        default_factory=lambda: DEFAULT_UNIT_COMMENT_DELIMITERS
-    )
-    unit_assume_comment_delimiters: tuple[StructuredPatternEntry, ...] = field(
-        default_factory=lambda: DEFAULT_UNIT_ASSUME_COMMENT_DELIMITERS
-    )
-    unit_affine_comment_delimiters: tuple[StructuredPatternEntry, ...] = field(
-        default_factory=lambda: DEFAULT_UNIT_AFFINE_COMMENT_DELIMITERS
+    # [parser.unit_comments] — configurable comment delimiters for the
+    # three unit-directive families plus their nonSTRUCT drop filters.
+    # See docs/design/unit-comment-markers.md. Defaults preserve the
+    # canonical ``@unit{...}`` / ``@unit_assume{...}`` /
+    # ``@unit_affine_conversion{...}`` forms; the shipped ``nonunit``
+    # list drops ``@nonunit{...}`` markers plus citation / year-only
+    # parens. Users opt in to additional patterns per family.
+    unit_comments: UnitCommentsConfig = field(
+        default_factory=UnitCommentsConfig
     )
 
     # [cache] max_entries — FIFO cap on the in-memory tree / module-exports
@@ -322,18 +412,7 @@ def _from_raw(raw: dict[str, Any], path: Path) -> DimfortConfig:
         )
         cache_max_entries = None
 
-    unit_comment_delimiters = _parse_unit_pattern_list(
-        parser_section, "unit_comment_delimiters", path,
-        default=DEFAULT_UNIT_COMMENT_DELIMITERS,
-    )
-    unit_assume_comment_delimiters = _parse_structured_pattern_list(
-        parser_section, "unit_assume_comment_delimiters", path,
-        default=DEFAULT_UNIT_ASSUME_COMMENT_DELIMITERS,
-    )
-    unit_affine_comment_delimiters = _parse_structured_pattern_list(
-        parser_section, "unit_affine_comment_delimiters", path,
-        default=DEFAULT_UNIT_AFFINE_COMMENT_DELIMITERS,
-    )
+    unit_comments = _parse_unit_comments_section(parser_section, path)
 
     return DimfortConfig(
         config_path=path,
@@ -345,10 +424,74 @@ def _from_raw(raw: dict[str, Any], path: Path) -> DimfortConfig:
         units_file=units_file,
         diagnostic_severities=diagnostic_severities,
         scale_mode=scale_mode,
-        unit_comment_delimiters=unit_comment_delimiters,
-        unit_assume_comment_delimiters=unit_assume_comment_delimiters,
-        unit_affine_comment_delimiters=unit_affine_comment_delimiters,
+        unit_comments=unit_comments,
         cache_max_entries=cache_max_entries,
+    )
+
+
+# Pre-0.2.7 flat keys lived directly under ``[parser]``. They were
+# renamed into the nested ``[parser.unit_comments]`` table in 0.2.7
+# as part of the unified STRUCT / nonSTRUCT design. The legacy names
+# are now warn-and-ignore: parsing them silently would mask user
+# intent; raising would block upgrades. A diagnostic pointing at the
+# migration page is the middle ground.
+_LEGACY_FLAT_KEYS = (
+    ("unit_comment_delimiters", "unit_comments.unit"),
+    ("unit_assume_comment_delimiters", "unit_comments.unit_assume"),
+    ("unit_affine_comment_delimiters", "unit_comments.unit_affine"),
+)
+
+
+def _parse_unit_comments_section(
+    parser_section: dict[str, Any], path: Path
+) -> UnitCommentsConfig:
+    for old, new in _LEGACY_FLAT_KEYS:
+        if old in parser_section:
+            log.warning(
+                "%s: [parser].%s was renamed to [parser.%s] in 0.2.7 — "
+                "see docs/troubleshooting/unit-comments-migration.md "
+                "(ignored).",
+                path, old, new,
+            )
+
+    section = parser_section.get("unit_comments")
+    if section is None:
+        return UnitCommentsConfig()
+    if not isinstance(section, dict):
+        log.error(
+            "%s: [parser.unit_comments] must be a table — falling back "
+            "to default", path,
+        )
+        return UnitCommentsConfig()
+
+    return UnitCommentsConfig(
+        unit=_parse_unit_pattern_list(
+            section, "unit", path,
+            default=DEFAULT_UNIT_PATTERNS,
+            section_label="parser.unit_comments",
+        ),
+        nonunit=_parse_nonunit_pattern_list(
+            section, "nonunit", path,
+            default=DEFAULT_NONUNIT_PATTERNS,
+        ),
+        unit_assume=_parse_structured_pattern_list(
+            section, "unit_assume", path,
+            default=DEFAULT_UNIT_ASSUME_PATTERNS,
+            section_label="parser.unit_comments",
+        ),
+        nonunit_assume=_parse_nonstructured_pattern_list(
+            section, "nonunit_assume", path,
+            default=DEFAULT_NONUNIT_ASSUME_PATTERNS,
+        ),
+        unit_affine=_parse_structured_pattern_list(
+            section, "unit_affine", path,
+            default=DEFAULT_UNIT_AFFINE_PATTERNS,
+            section_label="parser.unit_comments",
+        ),
+        nonunit_affine=_parse_nonstructured_pattern_list(
+            section, "nonunit_affine", path,
+            default=DEFAULT_NONUNIT_AFFINE_PATTERNS,
+        ),
     )
 
 
@@ -376,28 +519,29 @@ def _parse_unit_pattern_list(
     path: Path,
     *,
     default: tuple[UnitPatternEntry, ...],
+    section_label: str = "parser",
 ) -> tuple[UnitPatternEntry, ...]:
     if key not in parser_section:
         return default
     raw_list = parser_section.get(key)
     if not isinstance(raw_list, list):
         log.error(
-            "%s: [parser].%s must be an array of tables — falling back "
-            "to default", path, key,
+            "%s: [%s].%s must be an array of tables — falling back "
+            "to default", path, section_label, key,
         )
         return default
     if not raw_list:
         log.error(
-            "%s: [parser].%s is explicitly empty — clearing the unit "
+            "%s: [%s].%s is explicitly empty — clearing the unit "
             "pattern list would disable all unit recognition; falling "
-            "back to default", path, key,
+            "back to default", path, section_label, key,
         )
         return default
     allowed = {"open", "close"}
     entries: list[UnitPatternEntry] = []
     seen: set[tuple[str, str]] = set()
     for i, raw in enumerate(raw_list):
-        where = f"[parser].{key}[{i}]"
+        where = f"[{section_label}].{key}[{i}]"
         if not isinstance(raw, dict):
             log.error("%s: %s: entry must be a table — ignored", path, where)
             continue
@@ -423,8 +567,8 @@ def _parse_unit_pattern_list(
         entries.append(UnitPatternEntry(open=op, close=cl))
     if not entries:
         log.error(
-            "%s: [parser].%s yielded no valid entries — falling back "
-            "to default", path, key,
+            "%s: [%s].%s yielded no valid entries — falling back "
+            "to default", path, section_label, key,
         )
         return default
     return tuple(entries)
@@ -436,28 +580,29 @@ def _parse_structured_pattern_list(
     path: Path,
     *,
     default: tuple[StructuredPatternEntry, ...],
+    section_label: str = "parser",
 ) -> tuple[StructuredPatternEntry, ...]:
     if key not in parser_section:
         return default
     raw_list = parser_section.get(key)
     if not isinstance(raw_list, list):
         log.error(
-            "%s: [parser].%s must be an array of tables — falling back "
-            "to default", path, key,
+            "%s: [%s].%s must be an array of tables — falling back "
+            "to default", path, section_label, key,
         )
         return default
     if not raw_list:
         log.error(
-            "%s: [parser].%s is explicitly empty — clearing the list "
+            "%s: [%s].%s is explicitly empty — clearing the list "
             "would disable directive recognition; falling back to "
-            "default", path, key,
+            "default", path, section_label, key,
         )
         return default
     allowed = {"open", "close", "sep"}
     entries: list[StructuredPatternEntry] = []
     seen: set[tuple[str, str, str]] = set()
     for i, raw in enumerate(raw_list):
-        where = f"[parser].{key}[{i}]"
+        where = f"[{section_label}].{key}[{i}]"
         if not isinstance(raw, dict):
             log.error("%s: %s: entry must be a table — ignored", path, where)
             continue
@@ -490,8 +635,148 @@ def _parse_structured_pattern_list(
         entries.append(StructuredPatternEntry(open=op, close=cl, sep=sep))
     if not entries:
         log.error(
-            "%s: [parser].%s yielded no valid entries — falling back "
-            "to default", path, key,
+            "%s: [%s].%s yielded no valid entries — falling back "
+            "to default", path, section_label, key,
         )
         return default
+    return tuple(entries)
+
+
+def _validate_regex(
+    raw: dict[str, Any], *, where: str, path: Path
+) -> str | None:
+    import re as _re
+    value = raw.get("regex")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        log.error(
+            "%s: %s: regex must be a non-empty string — entry ignored",
+            path, where,
+        )
+        return ""
+    try:
+        _re.compile(value)
+    except _re.error as exc:
+        log.error(
+            "%s: %s: regex %r is invalid (%s) — entry ignored",
+            path, where, value, exc,
+        )
+        return ""
+    return value
+
+
+def _parse_nonunit_pattern_list(
+    section: dict[str, Any],
+    key: str,
+    path: Path,
+    *,
+    default: tuple[NonUnitPatternEntry, ...],
+) -> tuple[NonUnitPatternEntry, ...]:
+    section_label = "parser.unit_comments"
+    if key not in section:
+        return default
+    raw_list = section.get(key)
+    if not isinstance(raw_list, list):
+        log.error(
+            "%s: [%s].%s must be an array of tables — falling back "
+            "to default", path, section_label, key,
+        )
+        return default
+    # Empty list is a valid override here — user opts out of the
+    # default citation/year filters. No "fall back to default" branch.
+    allowed = {"open", "close", "regex"}
+    entries: list[NonUnitPatternEntry] = []
+    seen: set[tuple[str, str, str | None]] = set()
+    for i, raw in enumerate(raw_list):
+        where = f"[{section_label}].{key}[{i}]"
+        if not isinstance(raw, dict):
+            log.error("%s: %s: entry must be a table — ignored", path, where)
+            continue
+        unknown = set(raw) - allowed
+        if unknown:
+            log.error(
+                "%s: %s: unknown key(s) %s — entry ignored",
+                path, where, sorted(unknown),
+            )
+            continue
+        op = _validate_required_string(raw, "open", where=where, path=path)
+        cl = _validate_required_string(raw, "close", where=where, path=path)
+        if op is None or cl is None:
+            continue
+        regex = _validate_regex(raw, where=where, path=path)
+        if regex == "":  # validation error sentinel
+            continue
+        key_triple = (op, cl, regex)
+        if key_triple in seen:
+            log.error(
+                "%s: %s: duplicate entry — ignored", path, where,
+            )
+            continue
+        seen.add(key_triple)
+        entries.append(NonUnitPatternEntry(open=op, close=cl, regex=regex))
+    return tuple(entries)
+
+
+def _parse_nonstructured_pattern_list(
+    section: dict[str, Any],
+    key: str,
+    path: Path,
+    *,
+    default: tuple[NonStructuredPatternEntry, ...],
+) -> tuple[NonStructuredPatternEntry, ...]:
+    section_label = "parser.unit_comments"
+    if key not in section:
+        return default
+    raw_list = section.get(key)
+    if not isinstance(raw_list, list):
+        log.error(
+            "%s: [%s].%s must be an array of tables — falling back "
+            "to default", path, section_label, key,
+        )
+        return default
+    # Empty list is a valid override (the default is already empty).
+    allowed = {"open", "close", "sep", "regex"}
+    entries: list[NonStructuredPatternEntry] = []
+    seen: set[tuple[str, str, str | None, str | None]] = set()
+    for i, raw in enumerate(raw_list):
+        where = f"[{section_label}].{key}[{i}]"
+        if not isinstance(raw, dict):
+            log.error("%s: %s: entry must be a table — ignored", path, where)
+            continue
+        unknown = set(raw) - allowed
+        if unknown:
+            log.error(
+                "%s: %s: unknown key(s) %s — entry ignored",
+                path, where, sorted(unknown),
+            )
+            continue
+        op = _validate_required_string(raw, "open", where=where, path=path)
+        cl = _validate_required_string(raw, "close", where=where, path=path)
+        if op is None or cl is None:
+            continue
+        sep_raw = raw.get("sep")
+        if sep_raw is None:
+            sep: str | None = None
+        elif isinstance(sep_raw, str) and sep_raw:
+            sep = sep_raw
+        else:
+            log.error(
+                "%s: %s: sep must be a non-empty string when present — "
+                "entry ignored", path, where,
+            )
+            continue
+        regex = _validate_regex(raw, where=where, path=path)
+        if regex == "":
+            continue
+        key_quad = (op, cl, sep, regex)
+        if key_quad in seen:
+            log.error(
+                "%s: %s: duplicate entry — ignored", path, where,
+            )
+            continue
+        seen.add(key_quad)
+        entries.append(NonStructuredPatternEntry(
+            open=op, close=cl, sep=sep, regex=regex,
+        ))
     return tuple(entries)

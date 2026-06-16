@@ -41,10 +41,17 @@ from dimfort.core import ts_parser as _ts
 from dimfort.core.unit_patterns import (
     DEFAULT_AFFINE_PATTERNS,
     DEFAULT_ASSUME_PATTERNS,
+    DEFAULT_NONUNIT_AFFINE_PATTERNS,
+    DEFAULT_NONUNIT_ASSUME_PATTERNS,
+    DEFAULT_NONUNIT_PATTERNS,
     DEFAULT_UNIT_PATTERNS,
+    NonStructuredPattern,
+    NonUnitPattern,
     PatternMatch,
     StructuredPattern,
     UnitPattern,
+    dead_ranges,
+    overlaps_any,
 )
 
 
@@ -373,6 +380,7 @@ def _find_unsupported_open(
 def _select_unit(
     body: str, line_no: int, body_col_offset: int, kind: AnnotationKind,
     patterns: tuple[UnitPattern, ...],
+    dead: tuple[tuple[int, int], ...] = (),
 ) -> tuple[
     list[RawAnnotation], list[MalformedAnnotation], list[PatternConflict],
     int | None,
@@ -403,6 +411,8 @@ def _select_unit(
     hits_per_pattern: list[tuple[int, UnitPattern, list[PatternMatch]]] = []
     for idx, pat in enumerate(patterns):
         ms = pat.find(body)
+        if dead:
+            ms = [m for m in ms if not overlaps_any(m.start, m.end, dead)]
         if ms:
             hits_per_pattern.append((idx, pat, ms))
     if not hits_per_pattern:
@@ -463,6 +473,7 @@ def _select_unit(
 def _select_assume(
     body: str, line_no: int, body_col_offset: int,
     patterns: tuple[StructuredPattern, ...],
+    dead: tuple[tuple[int, int], ...] = (),
 ) -> tuple[
     list[RawAssume], list[MalformedAnnotation], list[PatternConflict]
 ]:
@@ -488,6 +499,8 @@ def _select_assume(
     hits_per_pattern: list[tuple[int, StructuredPattern, list[PatternMatch]]] = []
     for idx, pat in enumerate(patterns):
         ms = pat.find(body)
+        if dead:
+            ms = [m for m in ms if not overlaps_any(m.start, m.end, dead)]
         if ms:
             hits_per_pattern.append((idx, pat, ms))
     if not hits_per_pattern:
@@ -565,6 +578,7 @@ def _select_assume(
 def _select_affine(
     body: str, line_no: int, body_col_offset: int,
     patterns: tuple[StructuredPattern, ...],
+    dead: tuple[tuple[int, int], ...] = (),
 ) -> tuple[
     list[RawAffineConv], list[MalformedAnnotation], list[PatternConflict]
 ]:
@@ -591,6 +605,8 @@ def _select_affine(
     hits_per_pattern: list[tuple[int, StructuredPattern, list[PatternMatch]]] = []
     for idx, pat in enumerate(patterns):
         ms = pat.find(body)
+        if dead:
+            ms = [m for m in ms if not overlaps_any(m.start, m.end, dead)]
         if ms:
             hits_per_pattern.append((idx, pat, ms))
 
@@ -833,6 +849,9 @@ def scan_text(
     unit_patterns: tuple[UnitPattern, ...] = DEFAULT_UNIT_PATTERNS,
     assume_patterns: tuple[StructuredPattern, ...] = DEFAULT_ASSUME_PATTERNS,
     affine_patterns: tuple[StructuredPattern, ...] = DEFAULT_AFFINE_PATTERNS,
+    nonunit_patterns: tuple[NonUnitPattern, ...] = DEFAULT_NONUNIT_PATTERNS,
+    nonunit_assume_patterns: tuple[NonStructuredPattern, ...] = DEFAULT_NONUNIT_ASSUME_PATTERNS,
+    nonunit_affine_patterns: tuple[NonStructuredPattern, ...] = DEFAULT_NONUNIT_AFFINE_PATTERNS,
     tree: Tree | None = None,
 ) -> ScanResult:
     """Scan a single Fortran source string for annotations and declarations.
@@ -925,8 +944,23 @@ def scan_text(
             body = comment
             body_col_offset = col + 2
 
+        # 0.2.7: nonunit / nonunit_assume / nonunit_affine define
+        # drop-zones in the comment body before extraction runs. The
+        # set-subtraction (STRUCT \ nonSTRUCT) is per-family — `nonunit`
+        # only filters `unit` candidates, etc.
+        u_dead = dead_ranges(body, nonunit_patterns) if nonunit_patterns else ()
+        a_dead = (
+            dead_ranges(body, nonunit_assume_patterns)
+            if nonunit_assume_patterns else ()
+        )
+        f_dead = (
+            dead_ranges(body, nonunit_affine_patterns)
+            if nonunit_affine_patterns else ()
+        )
+
         u_anns, u_errs, u_confs, _u_winner_idx = _select_unit(
             body, line_no, body_col_offset, kind, unit_patterns,
+            dead=u_dead,
         )
         # Spec §6 (post-Q1): every configured pattern attaches to all
         # names on a multi-variable declaration, same as canonical
@@ -940,6 +974,7 @@ def scan_text(
 
         a_anns, a_errs, a_confs = _select_assume(
             body, line_no, body_col_offset, assume_patterns,
+            dead=a_dead,
         )
         # Spec §8.3: @unit_assume on a declaration is the wrong
         # statement kind (declarations don't host an RHS to
@@ -963,6 +998,7 @@ def scan_text(
 
         f_anns, f_errs, f_confs = _select_affine(
             body, line_no, body_col_offset, affine_patterns,
+            dead=f_dead,
         )
         # Same §8.3 check for @unit_affine_conversion.
         if f_anns and _line_in_decl(target_line):

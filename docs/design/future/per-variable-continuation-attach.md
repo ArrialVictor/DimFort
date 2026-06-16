@@ -11,7 +11,7 @@ Sibling notes:
   lexer flags ship in the same release; without this attach-rule
   change, one corpus's adoption caps at ~60 % regardless of lexer
   perfection.
-- [`unit-comment-skip-delimiters.md`](unit-comment-skip-delimiters.md)
+- [`../shipped/unit-comment-markers.md`](../shipped/unit-comment-markers.md)
   — the orthogonal extraction-side companion.
 
 ## 1. Problem

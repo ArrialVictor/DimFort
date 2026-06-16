@@ -94,7 +94,20 @@ from dimfort import __version__ as _dimfort_version
 #     failure; H001 must NOT double-fire). Pre-v9 cache entries for
 #     any file containing a polymorphic-function call carry the wrong
 #     H001 set — bump invalidates so warm checks redo the resolution.
-CHECKER_OUTPUT_VERSION = 9
+# v10: 0.2.7 renamed the flat ``unit_comment_delimiters`` /
+#      ``unit_assume_comment_delimiters`` /
+#      ``unit_affine_comment_delimiters`` config keys into the nested
+#      ``[parser.unit_comments]`` table with keys ``unit`` /
+#      ``unit_assume`` / ``unit_affine``, and added the matching
+#      ``nonunit`` / ``nonunit_assume`` / ``nonunit_affine`` drop
+#      filters. The on-disk cache-key shape changes (six PER_FILE
+#      entries instead of three), and the default filter set ships
+#      three ``nonunit`` patterns (``@nonunit{}``, ``(see ...)``,
+#      year-only) that drop captures pre-0.2.7 would have surfaced.
+#      Pre-v10 entries replayed under the new default would serve
+#      diagnostics for content the new pipeline silently drops; bump
+#      invalidates so the next check rebuilds with the filter applied.
+CHECKER_OUTPUT_VERSION = 10
 
 
 # Keys from a workspace config that affect a *file's* output and
@@ -114,12 +127,16 @@ CHECKER_OUTPUT_VERSION = 9
 #   a file produces for the same bytes. Toggling it (CLI ``--scale`` /
 #   ``[scale] enabled`` / LSP ``scaleMode``) must invalidate, else a
 #   scale-on run's S001s are replayed after scale is turned off.
-# - ``unit_comment_delimiters`` /
-#   ``unit_assume_comment_delimiters`` /
-#   ``unit_affine_comment_delimiters``: 0.2.2 directive pattern lists.
-#   Changing a list changes which comments produce annotations for the
-#   same source bytes — e.g. removing the canonical ``@unit_assume{``
-#   entry should stop generating assume records on the next check.
+# - ``unit_comments.unit`` / ``unit_comments.unit_assume`` /
+#   ``unit_comments.unit_affine``: directive pattern lists (renamed in
+#   0.2.7 from the flat ``unit_comment_delimiters`` family). Changing a
+#   list changes which comments produce annotations for the same source
+#   bytes — e.g. removing the canonical ``@unit_assume{`` entry should
+#   stop generating assume records on the next check.
+# - ``unit_comments.nonunit`` / ``unit_comments.nonunit_assume`` /
+#   ``unit_comments.nonunit_affine``: drop filters (0.2.7). A change to
+#   any list changes which captures survive the extraction pipeline
+#   before reaching the unit lexer; toggling a filter must invalidate.
 PER_FILE_CONFIG_KEYS: tuple[str, ...] = (
     "external_modules",
     "extra_defines",
@@ -127,9 +144,12 @@ PER_FILE_CONFIG_KEYS: tuple[str, ...] = (
     "units_file_hash",
     "diagnostic_severities",
     "scale_mode",
-    "unit_comment_delimiters",
-    "unit_assume_comment_delimiters",
-    "unit_affine_comment_delimiters",
+    "unit_comments.unit",
+    "unit_comments.unit_assume",
+    "unit_comments.unit_affine",
+    "unit_comments.nonunit",
+    "unit_comments.nonunit_assume",
+    "unit_comments.nonunit_affine",
 )
 
 
@@ -166,8 +186,10 @@ def _config_bytes(config: dict[str, object]) -> bytes:
     """
     list_keys = {
         "external_modules", "extra_defines", "extra_include_paths",
-        "unit_comment_delimiters", "unit_assume_comment_delimiters",
-        "unit_affine_comment_delimiters",
+        "unit_comments.unit", "unit_comments.unit_assume",
+        "unit_comments.unit_affine",
+        "unit_comments.nonunit", "unit_comments.nonunit_assume",
+        "unit_comments.nonunit_affine",
     }
     dict_keys = {"diagnostic_severities"}
     str_keys = {"units_file_hash"}

@@ -343,12 +343,16 @@ def patterns_fingerprint(
     unit_patterns: tuple[UnitPattern, ...],
     assume_patterns: tuple[StructuredPattern, ...],
     affine_patterns: tuple[StructuredPattern, ...],
+    nonunit_patterns: tuple = (),
+    nonunit_assume_patterns: tuple = (),
+    nonunit_affine_patterns: tuple = (),
 ) -> str:
     """Stable short hash of the configured annotation patterns.
 
     Folded into :class:`ProjectionKey` so a project-config change that
-    affects which comments scan as ``@unit{}`` invalidates cached
-    projections naturally.
+    affects which comments scan as ``@unit{}`` (or which would-be
+    captures are silently dropped by the matching ``nonunit*`` filter)
+    invalidates cached projections naturally.
     """
     h = hashlib.sha256()
     for up in unit_patterns:
@@ -371,6 +375,34 @@ def patterns_fingerprint(
         h.update(fp.close.encode("utf-8"))
         h.update(b"|")
         h.update(fp.sep.encode("utf-8"))
+        h.update(b";")
+    h.update(b"||N|")
+    for np in nonunit_patterns:
+        h.update(np.open.encode("utf-8"))
+        h.update(b"|")
+        h.update(np.close.encode("utf-8"))
+        h.update(b"|")
+        h.update((np.regex.pattern if np.regex else "").encode("utf-8"))
+        h.update(b";")
+    h.update(b"||NA|")
+    for nap in nonunit_assume_patterns:
+        h.update(nap.open.encode("utf-8"))
+        h.update(b"|")
+        h.update(nap.close.encode("utf-8"))
+        h.update(b"|")
+        h.update((nap.sep or "").encode("utf-8"))
+        h.update(b"|")
+        h.update((nap.regex.pattern if nap.regex else "").encode("utf-8"))
+        h.update(b";")
+    h.update(b"||NF|")
+    for nfp in nonunit_affine_patterns:
+        h.update(nfp.open.encode("utf-8"))
+        h.update(b"|")
+        h.update(nfp.close.encode("utf-8"))
+        h.update(b"|")
+        h.update((nfp.sep or "").encode("utf-8"))
+        h.update(b"|")
+        h.update((nfp.regex.pattern if nfp.regex else "").encode("utf-8"))
         h.update(b";")
     return h.hexdigest()[:16]
 
