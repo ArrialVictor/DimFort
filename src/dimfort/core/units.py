@@ -33,7 +33,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from fractions import Fraction
 
-from dimfort.config import UnitLexerConfig
+from dimfort.config import UnitLexerConfig, UnitPreprocessConfig
 
 Number = int | Fraction
 # ``Dim`` historically meant ``tuple[Number, Number, ...]`` (7 plain
@@ -1284,6 +1284,11 @@ DEFAULT_TABLE: UnitTable | None = None
 # :data:`DEFAULT_TABLE`.
 DEFAULT_LEXER: UnitLexerConfig | None = None
 
+# Session-active :class:`UnitPreprocessConfig` for the 0.2.7
+# pre-tokenization transforms (biogeochem-tag strip). Same
+# convention as :data:`DEFAULT_LEXER`.
+DEFAULT_PREPROCESS: UnitPreprocessConfig | None = None
+
 
 def _resolve_identifier(name: str, table: UnitTable) -> Unit:
     """Resolve a unit identifier against a :class:`UnitTable`.
@@ -1365,6 +1370,77 @@ def _apply_unicode_superscript_rewrite(expr: str) -> str:
         lambda m: "^" + m.group(0).translate(_SUPERSCRIPT_TRANSLATE),
         expr,
     )
+
+
+# Biogeochem-tracer-tag pattern — context-anchored per the design
+# (``permissive-unit-lexer.md`` §3.9, plan §"Tracer-tag biogeochem
+# strip"). Match requires the ``(`` to be preceded by an
+# identifier-like unit token, optionally with an exponent suffix
+# (``^N``, ``**N``, or bare ``-N``). The captured groups are
+# ``\1`` = identifier-plus-suffix and ``\2`` = parens content.
+# Substitution drops the parens content entirely, keeping just
+# ``\1`` — lossy by design (species + spatial-domain metadata
+# discarded; the future polymorphic-units work is the
+# non-lossy replacement).
+#
+# ``[^()]+`` ensures the inner content has no nested parens —
+# nested tags like ``mol(C(stable))`` reduce in two steps within
+# the same single ``re.sub`` call (inner ``C(stable)`` matches
+# first → ``mol(C)`` → second match → ``mol``), per the design.
+_BIOGEOCHEM_TAG_RE = re.compile(
+    r"([A-Za-z][A-Za-z0-9]*(?:\^[-+]?\d+|\*\*[-+]?\d+|-\d+)?)"
+    r"\(([^()]+)\)"
+)
+
+
+def _apply_biogeochem_tag_strip(
+    expr: str, exceptions: tuple[str, ...] = (),
+) -> str:
+    """Strip ``mol(C)``-style biogeochem tracer tags from ``expr``.
+
+    Context-anchored: matches only when ``(`` follows an
+    identifier-like unit token (with optional exponent suffix). A
+    parenthesised content appearing after operators or whitespace
+    (math grouping like ``(m*s)``, citation parens like
+    ``(see X)``) does NOT match — those leading characters fail
+    the look-behind on identifier.
+
+    Iterates to a fixed point so nested tags
+    (``mol(C(stable))`` → ``mol(C)`` → ``mol``) collapse to the
+    outermost identifier per the design. Termination is trivial:
+    every substitution strictly shortens the string by at least
+    two characters (the matched parens), so the loop runs at most
+    ``O(|expr|/2)`` times. In practice 0 or 1 iteration handles
+    every observed real-world input.
+
+    Args:
+        expr: Source expression text.
+        exceptions: Inner-paren-content strings to preserve even
+            when the pattern matches. Forward-looking knob for
+            future ambiguity (e.g., ``"K"`` for Kelvin vs the
+            potassium tracer); empty by default.
+
+    Returns:
+        ``expr`` with every qualifying ``<unit>(<tag>)`` rewritten
+        to ``<unit>``, applied to fixed point.
+    """
+    if exceptions:
+        exc = set(exceptions)
+
+        def _repl(match: re.Match[str]) -> str:
+            if match.group(2) in exc:
+                return match.group(0)
+            return match.group(1)
+
+        replacement = _repl
+    else:
+        replacement = r"\1"  # type: ignore[assignment]
+
+    while True:
+        new = _BIOGEOCHEM_TAG_RE.sub(replacement, expr)
+        if new == expr:
+            return expr
+        expr = new
 
 
 # 14-symbol known-unit prefix list for ``allow_bare_digit_exp``
@@ -1453,6 +1529,7 @@ def _tokenize(
     expr: str,
     *,
     lexer: UnitLexerConfig | None = None,
+    preprocess: UnitPreprocessConfig | None = None,
 ) -> list[tuple[str, str]]:
     """Tokenize a unit expression.
 
@@ -1473,11 +1550,20 @@ def _tokenize(
     - ``allow_latex_braces`` rewrites ``^{<content>}`` to
       ``^(<content>)`` before tokenization.
 
+    ``[parser.unit_preprocess]`` runs before the lexer flags:
+
+    - ``strip_biogeochem_tags`` removes ``<unit>(<tag>)`` species /
+      spatial-domain metadata (``mol(C)/m^2(canopy)`` → ``mol/m^2``).
+      Lossy by design.
+
     Args:
         expr: Source expression text.
         lexer: Optional :class:`UnitLexerConfig` selecting which
             permissive rules apply. ``None`` means strict default
             (all flags OFF).
+        preprocess: Optional :class:`UnitPreprocessConfig` selecting
+            which pre-tokenization transforms apply. ``None`` means
+            no preprocessing.
 
     Returns:
         List of ``(kind, lexeme)`` pairs.
@@ -1489,6 +1575,19 @@ def _tokenize(
     """
     if lexer is None:
         lexer = UnitLexerConfig()
+    if preprocess is None:
+        preprocess = UnitPreprocessConfig()
+
+    # Pre-processing pass — runs before any lexer-flag rewrite so
+    # the lexer never sees the stripped tags. Biogeochem-tag strip
+    # is the only preprocessing transform today; the regex is
+    # context-anchored (identifier-with-optional-exponent before
+    # the ``(``) so math grouping ``(m*s)`` and citation parens
+    # ``(see X)`` survive untouched.
+    if preprocess.strip_biogeochem_tags:
+        expr = _apply_biogeochem_tag_strip(
+            expr, preprocess.biogeochem_tag_exceptions,
+        )
 
     # Pre-tokenization rewrites. Pipeline order per design §4.3:
     #   1. codepoint pass: unicode superscripts → middot
@@ -2094,6 +2193,7 @@ def parse(
     table: UnitTable | None = None,
     *,
     lexer: UnitLexerConfig | None = None,
+    preprocess: UnitPreprocessConfig | None = None,
 ) -> UnitExpr:
     """Parse a unit-expression string against a :class:`UnitTable`.
 
@@ -2106,6 +2206,10 @@ def parse(
             lexer rules. ``None`` (the default) means strict
             baseline — every flag OFF. The flag set is documented
             on :class:`UnitLexerConfig`.
+        preprocess: Optional :class:`UnitPreprocessConfig` toggling
+            pre-tokenization transforms. ``None`` (the default)
+            means no preprocessing. Documented on
+            :class:`UnitPreprocessConfig`.
 
     Returns:
         The parsed :class:`UnitExpr`.
@@ -2124,7 +2228,9 @@ def parse(
         # Fall back to the session-active default set by CLI / LSP
         # entry points. None means strict baseline.
         lexer = DEFAULT_LEXER
-    tokens = _tokenize(expr, lexer=lexer)
+    if preprocess is None:
+        preprocess = DEFAULT_PREPROCESS
+    tokens = _tokenize(expr, lexer=lexer, preprocess=preprocess)
     p = _Parser(tokens, table)
     u = p.parse_unit()
     if p.peek()[0] != "END":

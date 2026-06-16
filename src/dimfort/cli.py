@@ -397,6 +397,7 @@ def _run_check(args: argparse.Namespace) -> int:
                 config.unit_comments.nonunit_affine
             ),
             unit_lexer=config.unit_lexer,
+            unit_preprocess=config.unit_preprocess,
         )
 
     if cache_obj is not None and cache_mode == "read-write":
@@ -538,6 +539,7 @@ def _run_interactions(args: argparse.Namespace) -> int:
             config.unit_comments.nonunit_affine
         ),
         unit_lexer=config.unit_lexer,
+        unit_preprocess=config.unit_preprocess,
     )
 
     report = collect_interactions(
@@ -682,6 +684,7 @@ def _run_coverage(args: argparse.Namespace) -> int:
             config.unit_comments.nonunit_affine
         ),
         unit_lexer=config.unit_lexer,
+        unit_preprocess=config.unit_preprocess,
     )
 
     rows: list[FileCoverage] = []

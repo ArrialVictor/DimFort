@@ -183,6 +183,35 @@ class UnitLexerConfig:
 
 
 @dataclass(frozen=True)
+class UnitPreprocessConfig:
+    """Resolved ``[parser.unit_preprocess]`` section.
+
+    Pre-tokenization transforms applied to extracted unit text
+    before the lexer (and before any ``[parser.unit_lexer]`` flag-
+    triggered rewrite). Separate config namespace from the lexer
+    flags because these are pre-processing passes, not token-
+    recognition rules — keeps the 8-flag lexer composition law
+    clean.
+
+    Attributes:
+        strip_biogeochem_tags: Strip parenthesised species /
+            spatial-domain tags following identifier-like unit
+            tokens (``mol(C)/m^2(canopy)`` → ``mol/m^2``). Lossy
+            by design — the metadata is discarded. Empirical
+            target: biogeochem tracer tags in coupled-Earth-
+            system codes (~240 sites in one surveyed corpus).
+        biogeochem_tag_exceptions: Tuple of inner-paren content
+            strings to preserve even when the strip would
+            otherwise match. Forward-looking knob — no observed
+            ambiguity today, but documents the case (e.g., ``"K"``
+            for the Kelvin unit vs the potassium tracer).
+    """
+
+    strip_biogeochem_tags: bool = False
+    biogeochem_tag_exceptions: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class UnitCommentsConfig:
     r"""Resolved ``[parser.unit_comments]`` section.
 
@@ -300,6 +329,13 @@ class DimfortConfig:
     # ``docs/design/shipped/permissive-unit-lexer.md`` for the
     # per-flag empirical case + false-positive characterization.
     unit_lexer: UnitLexerConfig = field(default_factory=UnitLexerConfig)
+
+    # [parser.unit_preprocess] — pre-tokenization transforms
+    # applied before the lexer (and any ``[parser.unit_lexer]``
+    # flag rewrites). Currently houses the biogeochem-tag strip.
+    unit_preprocess: UnitPreprocessConfig = field(
+        default_factory=UnitPreprocessConfig
+    )
 
     # [cache] max_entries — FIFO cap on the in-memory tree / module-exports
     # / projection caches. ``None`` (default, or ``"auto"`` in TOML) means
@@ -478,6 +514,7 @@ def _from_raw(raw: dict[str, Any], path: Path) -> DimfortConfig:
 
     unit_comments = _parse_unit_comments_section(parser_section, path)
     unit_lexer = _parse_unit_lexer_section(parser_section, path)
+    unit_preprocess = _parse_unit_preprocess_section(parser_section, path)
 
     return DimfortConfig(
         config_path=path,
@@ -491,6 +528,7 @@ def _from_raw(raw: dict[str, Any], path: Path) -> DimfortConfig:
         scale_mode=scale_mode,
         unit_comments=unit_comments,
         unit_lexer=unit_lexer,
+        unit_preprocess=unit_preprocess,
         cache_max_entries=cache_max_entries,
     )
 
@@ -552,6 +590,68 @@ def _parse_unit_lexer_section(
             continue
         kwargs[key] = value
     return UnitLexerConfig(**kwargs)
+
+
+def _parse_unit_preprocess_section(
+    parser_section: dict[str, Any], path: Path
+) -> UnitPreprocessConfig:
+    """Parse ``[parser.unit_preprocess]`` into a :class:`UnitPreprocessConfig`.
+
+    Args:
+        parser_section: The ``[parser]`` table dict from
+            ``dimfort.toml`` (possibly empty).
+        path: Path to the config file, used in log messages.
+
+    Returns:
+        Resolved :class:`UnitPreprocessConfig` — every option
+        defaults to OFF / empty unless explicitly set.
+    """
+    section = parser_section.get("unit_preprocess")
+    if section is None:
+        return UnitPreprocessConfig()
+    if not isinstance(section, dict):
+        log.error(
+            "%s: [parser.unit_preprocess] must be a table — falling "
+            "back to default", path,
+        )
+        return UnitPreprocessConfig()
+
+    strip_raw = section.get("strip_biogeochem_tags", False)
+    if not isinstance(strip_raw, bool):
+        log.error(
+            "%s: [parser.unit_preprocess].strip_biogeochem_tags must "
+            "be a boolean — got %r, falling back to false.",
+            path, strip_raw,
+        )
+        strip = False
+    else:
+        strip = strip_raw
+
+    exceptions_raw = section.get("biogeochem_tag_exceptions", [])
+    if not isinstance(exceptions_raw, list):
+        log.error(
+            "%s: [parser.unit_preprocess].biogeochem_tag_exceptions "
+            "must be an array of strings — got %r, falling back to "
+            "empty.", path, exceptions_raw,
+        )
+        exceptions: tuple[str, ...] = ()
+    else:
+        exceptions = tuple(
+            v for v in exceptions_raw if isinstance(v, str) and v
+        )
+
+    known = {"strip_biogeochem_tags", "biogeochem_tag_exceptions"}
+    for key in section:
+        if key not in known:
+            log.warning(
+                "%s: [parser.unit_preprocess].%s is not a known "
+                "option — ignored.", path, key,
+            )
+
+    return UnitPreprocessConfig(
+        strip_biogeochem_tags=strip,
+        biogeochem_tag_exceptions=exceptions,
+    )
 
 
 # Pre-0.2.7 flat keys lived directly under ``[parser]``. They were

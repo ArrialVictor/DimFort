@@ -442,6 +442,7 @@ def _run_workspace_check(ls: LanguageServer) -> WorksetResult | None:
                     state.project_config.unit_comments.nonunit_affine
                 ),
                 unit_lexer=state.project_config.unit_lexer,
+                unit_preprocess=state.project_config.unit_preprocess,
                 tree_cache=state.tree_cache,
                 exports_cache=state.exports_cache,
                 projection_cache=state.projection_cache,
