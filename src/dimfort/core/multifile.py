@@ -608,11 +608,13 @@ def _attachment_diags(
     att: AttachmentResult,
     assignment_line_ranges: tuple[tuple[int, int], ...] = (),
 ) -> list[Diagnostic]:
-    """Surface attach-time issues (orphan annotations, conflicts, U010).
+    """Surface attach-time issues (orphans, conflicts, U024, U025).
 
     When an ``@unit{}`` orphan lands on an assignment statement, that
     is a wrong-statement-kind situation (spec §8.3 → U023) rather than
-    a plain orphan (U006).
+    a plain orphan (U006). U024 fires for PRE unit annotations above
+    multi-line declarations (refuse under the per-line attach rule);
+    U025 (info) flags the per-line migration footgun.
 
     Args:
         file: Stringified path of the file owning ``att``.
@@ -622,8 +624,8 @@ def _attachment_diags(
             of those ranges from U006 to U023.
 
     Returns:
-        Diagnostics for every orphan, attach-time conflict, and
-        intermediate-continuation error (U010) found.
+        Diagnostics for every orphan, attach-time conflict, U024
+        refusal, and U025 migration-detection finding.
     """
     out: list[Diagnostic] = []
     for orph in att.orphans:
@@ -675,15 +677,26 @@ def _attachment_diags(
                 ),
             )
         )
-    for inter in att.intermediate_continuations:
+    for pre_ml in att.pre_on_multiline:
         out.append(
             Diagnostic(
                 file=file,
-                start=Position(inter.line, inter.column),
-                end=Position(inter.line, inter.column),
-                severity=Severity.ERROR,
-                code="U010",
-                message=inter.reason,
+                start=Position(pre_ml.line, pre_ml.column),
+                end=Position(pre_ml.line, pre_ml.column),
+                severity=Severity.WARNING,
+                code="U024",
+                message=pre_ml.reason,
+            )
+        )
+    for mig in att.migration_detections:
+        out.append(
+            Diagnostic(
+                file=file,
+                start=Position(mig.line, mig.column),
+                end=Position(mig.line, mig.column),
+                severity=Severity.INFO,
+                code="U025",
+                message=mig.reason,
             )
         )
     return out

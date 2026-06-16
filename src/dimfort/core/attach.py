@@ -5,29 +5,39 @@ produced both unattached ``@unit{...}`` occurrences and a list of
 :class:`DeclarationSite` records covering every Fortran declaration
 statement. This module joins them.
 
-Why source-side declarations: LFortran 0.63 has a position-tracking
-bug where each ``&``-continued statement collapses to 2 reported lines
-internally, shifting subsequent declarations' ``type_line`` backward.
-That makes ASR's positions unsuitable as the source of truth for
-annotation matching. We compute declaration extents from the source
-text itself; ASR is reserved for semantic work (type inference,
-intrinsic resolution) that needs proper compiler understanding.
+Why source-side declarations: LFortran 0.63 had a position-tracking
+bug where each ``&``-continued statement collapsed to 2 reported
+lines internally, shifting subsequent declarations' ``type_line``
+backward. That made ASR's positions unsuitable as the source of
+truth for annotation matching. We compute declaration extents from
+the source text itself; ASR is reserved for semantic work (type
+inference, intrinsic resolution) that needs proper compiler
+understanding.
 
-Attachment rules:
+Attachment rules (0.2.7 per-line rule — see
+``docs/design/shipped/per-variable-continuation-attach.md``):
 
-- POST (``!<``) on any physical line in
-  ``[decl.line_start, decl.line_end]`` attaches to all of ``decl.names``.
-- PRE (``!>`` / ``!!``): walk forward through the contiguous
-  ``pre_block_lines`` set; the annotation attaches to the declaration
-  whose ``line_start`` equals ``block_end + 1``.
+- POST (``!<``) on physical line N attaches to the variables whose
+  declaration tokens *end* on line N (read from
+  :attr:`DeclarationSite.name_spans`). On a single-line declaration
+  every name ends on the same line, so the rule degenerates to
+  today's "attach to all of ``decl.names``" behaviour.
+- PRE (``!>`` / ``!!``) on a single-line declaration: attaches to
+  all of ``decl.names`` (unambiguous). On a *multi-line*
+  declaration: refused with :class:`PreOnMultiLineDeclaration`
+  (U024), with a hint to move the annotation to inline POST per-
+  line form.
 
-Diagnostic **U010** fires when a POST annotation sits on an
-*intermediate* line of a ``&``-continued declaration (strictly between
-``line_start`` and ``line_end``). The annotation is rejected — the
-target variables are *not* assigned — because the position suggests a
-per-variable scope that we do not support. Users must move the
-annotation to either the first or the last line of the continuation,
-or split the declaration.
+Diagnostic **U025** (info, permanent migration-detection) fires
+when an annotation sits on a non-last continuation line and later
+continuation lines have no annotation and their names are
+unannotated. The pattern is the recurring footgun of the per-line
+migration: an author wrote one annotation thinking it would attach
+to the whole declaration, and half the names ended up U005.
+
+Diagnostic **U010** retired in 0.2.7 — its only failure mode
+(POST on an intermediate continuation line) is now a successful
+attach under the per-line rule.
 """
 from __future__ import annotations
 
@@ -38,6 +48,10 @@ from dimfort.core.annotations import (
     DeclarationSite,
     ScanResult,
 )
+
+# Forward declaration to keep ``RawAnnotationView``'s annotation
+# satisfied when used inside ``attach``; the real definition lives
+# at module bottom alongside the U025 post-pass helpers.
 
 
 @dataclass(frozen=True)
@@ -98,35 +112,79 @@ class ConflictingAnnotation:
 
 
 @dataclass(frozen=True)
-class IntermediateContinuationAnnotation:
-    """U010: ``!<`` on a continuation line that is neither first nor last.
+class PreOnMultiLineDeclaration:
+    """U024: PRE unit annotation above a ``&``-continued declaration.
 
-    The annotation is *not* applied — the user must move it to the
-    first or the last line of the continuation.
+    The PRE block contains a real unit annotation but the
+    declaration spans multiple physical lines. Under the per-line
+    rule the annotation's intent is ambiguous (does it apply to
+    every name, or only the first?), so the annotation is refused
+    and the author is asked to switch to inline POST per-line form.
 
     Attributes:
-        line: 1-based source line of the rejected annotation.
+        line: 1-based source line of the PRE annotation comment.
         column: 1-based column of the annotation's leading delimiter.
         unit_text: Raw text inside the annotation's delimiters.
-        declaration_line_start: 1-based first line of the declaration
-            the annotation sat strictly inside.
-        declaration_line_end: 1-based last line of that declaration.
+        decl_line_start: 1-based first line of the target declaration.
+        decl_line_end: 1-based last line of the target declaration.
     """
 
     line: int
     column: int
     unit_text: str
-    declaration_line_start: int
-    declaration_line_end: int
+    decl_line_start: int
+    decl_line_end: int
 
     @property
     def reason(self) -> str:
-        """Human-readable U010 message naming the surrounding declaration span."""
+        """Human-readable U024 message with the inline-POST suggestion."""
         return (
-            f"'!<' on an intermediate continuation line (declaration spans "
-            f"lines {self.declaration_line_start}-{self.declaration_line_end}); "
-            f"move the annotation to line {self.declaration_line_start} or "
-            f"line {self.declaration_line_end}"
+            f"PRE annotation on a multi-line declaration "
+            f"(lines {self.decl_line_start}-{self.decl_line_end}) is "
+            "ambiguous under the per-line attach rule. Move to inline "
+            "POST annotations on each continuation line, or collapse "
+            "the declaration to a single line."
+        )
+
+
+@dataclass(frozen=True)
+class MigrationDetectionAnnotation:
+    """U025 (info): annotation on a non-last continuation line whose later names are unannotated.
+
+    The pattern catches the recurring migration footgun: an author
+    wrote one annotation thinking it would attach to the whole
+    declaration, but under the per-line rule only the names ending
+    on the annotation's line received it; names ending on later
+    continuation lines remained unannotated. Severity is info, not
+    warning — the code is correct as written (partial annotation
+    may be intentional); U025 just surfaces the asymmetry.
+
+    Attributes:
+        line: 1-based source line of the original annotation.
+        column: 1-based column of the annotation's leading delimiter.
+        unit_text: Raw text of the annotation's unit content.
+        decl_line_start: 1-based first line of the declaration.
+        decl_line_end: 1-based last line of the declaration.
+        unannotated_names: Names whose declaration tokens end on
+            later continuation lines and remain unannotated.
+    """
+
+    line: int
+    column: int
+    unit_text: str
+    decl_line_start: int
+    decl_line_end: int
+    unannotated_names: tuple[str, ...]
+
+    @property
+    def reason(self) -> str:
+        """Human-readable U025 message naming the still-unannotated variables."""
+        joined = ", ".join(repr(n) for n in self.unannotated_names)
+        return (
+            f"This annotation attaches to names on its line under the "
+            f"per-line attach rule. Variables on later continuation "
+            f"lines ({joined}) are unannotated; if you intended to "
+            f"cover them, add per-line annotations on each line."
         )
 
 
@@ -152,7 +210,11 @@ class AttachmentResult:
             ``"intrinsic_default"``.
         orphans: Annotations that did not match any declaration.
         conflicts: Same-scope re-declarations with disagreeing units.
-        intermediate_continuations: U010 rejections.
+        pre_on_multiline: U024 — PRE unit annotation above a
+            multi-line declaration (the design's conditional refuse).
+        migration_detections: U025 — annotation on a non-last
+            continuation line whose later names remain unannotated
+            (info-level pattern detector).
     """
 
     # Flat first-seen-wins view, kept for callers that don't care about
@@ -191,7 +253,10 @@ class AttachmentResult:
     )
     orphans: list[OrphanAnnotation] = field(default_factory=list)
     conflicts: list[ConflictingAnnotation] = field(default_factory=list)
-    intermediate_continuations: list[IntermediateContinuationAnnotation] = field(
+    pre_on_multiline: list[PreOnMultiLineDeclaration] = field(
+        default_factory=list
+    )
+    migration_detections: list[MigrationDetectionAnnotation] = field(
         default_factory=list
     )
 
@@ -340,8 +405,12 @@ def attach(scan: ScanResult) -> AttachmentResult:
       "missing annotation" signal focused on REAL variables, where unit
       mismatches actually matter. A user who needs a unit-bearing
       integer (epoch seconds, say) writes the annotation explicitly.
-    - ``IntermediateContinuationAnnotation`` (U010) — POST annotations
-      landing strictly inside a multi-line declaration continuation.
+    - ``PreOnMultiLineDeclaration`` (U024) — PRE unit annotation
+      above a ``&``-continued declaration is refused under the
+      per-line rule; the author is asked to switch to inline POST.
+    - ``MigrationDetectionAnnotation`` (U025, info) — annotation on
+      a non-last continuation line whose later names remain
+      unannotated; surfaces the per-line migration footgun.
     - ``OrphanAnnotation`` (U023 rerouting) — annotations that don't
       attach to any declaration, carrying ``target_line`` /
       ``end_column`` so the LSP can re-point the squiggle.
@@ -359,6 +428,14 @@ def attach(scan: ScanResult) -> AttachmentResult:
         The fully populated :class:`AttachmentResult`.
     """
     result = AttachmentResult(routine_scopes=scan.routine_scopes)
+
+    # Track ``(decl, ann)`` pairs whose annotation landed on a
+    # non-last continuation line — input to the post-pass that
+    # surfaces the U025 migration-detection pattern. Keyed by
+    # ``id(decl)`` so duplicate decls (impossible in practice but
+    # possible under hand-built test fixtures) don't merge.
+    pending_u025: dict[int, tuple[DeclarationSite, list[RawAnnotationView]]] = {}
+
     for ann in scan.annotations:
         target_line: int
         if ann.kind is AnnotationKind.POST:
@@ -367,21 +444,6 @@ def attach(scan: ScanResult) -> AttachmentResult:
                 "no declaration spans this line" if decl is None else ""
             )
             target_line = ann.line
-            # U010: POST on a strictly-interior continuation line is rejected.
-            if (
-                decl is not None
-                and decl.line_start < ann.line < decl.line_end
-            ):
-                result.intermediate_continuations.append(
-                    IntermediateContinuationAnnotation(
-                        line=ann.line,
-                        column=ann.column,
-                        unit_text=ann.unit_text,
-                        declaration_line_start=decl.line_start,
-                        declaration_line_end=decl.line_end,
-                    )
-                )
-                continue
         else:
             target = _block_end(ann.line, scan.pre_block_lines) + 1
             decl = _decl_starting_at_line(target, scan.declarations)
@@ -405,19 +467,106 @@ def attach(scan: ScanResult) -> AttachmentResult:
                 )
             )
             continue
+
+        if ann.kind is AnnotationKind.POST:
+            # Per-line attach: names whose tokens end on ann.line.
+            attaching = [
+                s for s in decl.name_spans if s.end_line == ann.line
+            ]
+            if not attaching:
+                # The annotation is inside the decl's range but no
+                # name's tokens end on this line — silent no-op. The
+                # U025 post-pass picks up the broader pattern if it
+                # fits; today this was the U010-reject case.
+                continue
+            for span in attaching:
+                _assign(
+                    result, span.name, ann.unit_text,
+                    ann.line, ann.column, ann.end_column,
+                    enclosing_type=decl.enclosing_type,
+                    scope=decl.scope,
+                )
+            # Stash for the U025 post-pass when the annotation is on
+            # a non-last continuation line of a multi-line decl.
+            if (
+                decl.line_start < decl.line_end
+                and ann.line < decl.line_end
+            ):
+                entry = pending_u025.setdefault(
+                    id(decl), (decl, []),
+                )
+                entry[1].append(
+                    RawAnnotationView(
+                        line=ann.line,
+                        column=ann.column,
+                        unit_text=ann.unit_text,
+                    )
+                )
+            continue
+
+        # PRE branch.
+        if decl.line_start < decl.line_end:
+            # Multi-line decl + PRE unit annotation: U024 refuse.
+            result.pre_on_multiline.append(
+                PreOnMultiLineDeclaration(
+                    line=ann.line,
+                    column=ann.column,
+                    unit_text=ann.unit_text,
+                    decl_line_start=decl.line_start,
+                    decl_line_end=decl.line_end,
+                )
+            )
+            continue
+        # Single-line decl: PRE attaches to all names (unambiguous).
         for name in decl.names:
             _assign(
-                result,
-                name,
-                ann.unit_text,
-                ann.line,
-                ann.column,
-                ann.end_column,
+                result, name, ann.unit_text,
+                ann.line, ann.column, ann.end_column,
                 enclosing_type=decl.enclosing_type,
                 scope=decl.scope,
             )
+
+    # U025 post-pass: for each multi-line decl with a non-last-line
+    # attach, surface the names that end on later continuation lines
+    # and remain unannotated.
+    for decl, anns in pending_u025.values():
+        # Use the latest non-last attach line as the diagnostic anchor.
+        anns.sort(key=lambda a: a.line)
+        anchor = anns[-1]
+        later_unannotated = tuple(
+            s.name for s in decl.name_spans
+            if s.end_line > anchor.line
+            and (decl.scope, s.name) not in result.var_units_by_scope
+        )
+        if not later_unannotated:
+            continue
+        result.migration_detections.append(
+            MigrationDetectionAnnotation(
+                line=anchor.line,
+                column=anchor.column,
+                unit_text=anchor.unit_text,
+                decl_line_start=decl.line_start,
+                decl_line_end=decl.line_end,
+                unannotated_names=later_unannotated,
+            )
+        )
+
     _apply_intrinsic_defaults(result, scan.declarations)
     return result
+
+
+@dataclass(frozen=True)
+class RawAnnotationView:
+    """Compact ``RawAnnotation`` view kept inside the attach pass.
+
+    The full :class:`RawAnnotation` carries extra fields the U025
+    post-pass doesn't need (``end_column``, ``kind``); the view
+    keeps only the trio used to anchor the diagnostic.
+    """
+
+    line: int
+    column: int
+    unit_text: str
 
 
 # Intrinsic Fortran types whose declared variables are dim'less by

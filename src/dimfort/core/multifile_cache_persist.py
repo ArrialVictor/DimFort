@@ -43,6 +43,7 @@ from dimfort.core.annotations import (
     AnnotationKind,
     DeclarationSite,
     MalformedAnnotation,
+    NameSpan,
     PatternConflict,
     RawAffineConv,
     RawAnnotation,
@@ -53,8 +54,9 @@ from dimfort.core.annotations import (
 from dimfort.core.attach import (
     AttachmentResult,
     ConflictingAnnotation,
-    IntermediateContinuationAnnotation,
+    MigrationDetectionAnnotation,
     OrphanAnnotation,
+    PreOnMultiLineDeclaration,
 )
 from dimfort.core.multifile_cache import (
     CachedProjection,
@@ -141,7 +143,16 @@ def _dump_declaration(d: DeclarationSite) -> dict[str, Any]:
     return {
         "line_start": d.line_start,
         "line_end": d.line_end,
-        "names": list(d.names),
+        "name_spans": [
+            {
+                "name": s.name,
+                "start_line": s.start_line,
+                "start_col": s.start_col,
+                "end_line": s.end_line,
+                "end_col": s.end_col,
+            }
+            for s in d.name_spans
+        ],
         "enclosing_type": d.enclosing_type,
         "scope": d.scope,
         "intrinsic_type": d.intrinsic_type,
@@ -168,13 +179,24 @@ def _dump_conflict(c: ConflictingAnnotation) -> dict[str, Any]:
     }
 
 
-def _dump_intermediate(i: IntermediateContinuationAnnotation) -> dict[str, Any]:
+def _dump_pre_on_multiline(p: PreOnMultiLineDeclaration) -> dict[str, Any]:
     return {
-        "line": i.line,
-        "column": i.column,
-        "unit_text": i.unit_text,
-        "declaration_line_start": i.declaration_line_start,
-        "declaration_line_end": i.declaration_line_end,
+        "line": p.line,
+        "column": p.column,
+        "unit_text": p.unit_text,
+        "decl_line_start": p.decl_line_start,
+        "decl_line_end": p.decl_line_end,
+    }
+
+
+def _dump_migration_detection(m: MigrationDetectionAnnotation) -> dict[str, Any]:
+    return {
+        "line": m.line,
+        "column": m.column,
+        "unit_text": m.unit_text,
+        "decl_line_start": m.decl_line_start,
+        "decl_line_end": m.decl_line_end,
+        "unannotated_names": list(m.unannotated_names),
     }
 
 
@@ -229,8 +251,11 @@ def _dump_attachment(a: AttachmentResult) -> dict[str, Any]:
         ],
         "orphans": [_dump_orphan(o) for o in a.orphans],
         "conflicts": [_dump_conflict(c) for c in a.conflicts],
-        "intermediate_continuations": [
-            _dump_intermediate(i) for i in a.intermediate_continuations
+        "pre_on_multiline": [
+            _dump_pre_on_multiline(p) for p in a.pre_on_multiline
+        ],
+        "migration_detections": [
+            _dump_migration_detection(m) for m in a.migration_detections
         ],
     }
 
@@ -307,7 +332,14 @@ def _load_declaration(d: dict[str, Any]) -> DeclarationSite:
     return DeclarationSite(
         line_start=d["line_start"],
         line_end=d["line_end"],
-        names=tuple(d["names"]),
+        name_spans=tuple(
+            NameSpan(
+                name=s["name"],
+                start_line=s["start_line"], start_col=s["start_col"],
+                end_line=s["end_line"], end_col=s["end_col"],
+            )
+            for s in d["name_spans"]
+        ),
         enclosing_type=d.get("enclosing_type"),
         scope=d.get("scope"),
         intrinsic_type=d.get("intrinsic_type"),
@@ -334,13 +366,24 @@ def _load_conflict(d: dict[str, Any]) -> ConflictingAnnotation:
     )
 
 
-def _load_intermediate(d: dict[str, Any]) -> IntermediateContinuationAnnotation:
-    return IntermediateContinuationAnnotation(
+def _load_pre_on_multiline(d: dict[str, Any]) -> PreOnMultiLineDeclaration:
+    return PreOnMultiLineDeclaration(
         line=d["line"],
         column=d["column"],
         unit_text=d["unit_text"],
-        declaration_line_start=d["declaration_line_start"],
-        declaration_line_end=d["declaration_line_end"],
+        decl_line_start=d["decl_line_start"],
+        decl_line_end=d["decl_line_end"],
+    )
+
+
+def _load_migration_detection(d: dict[str, Any]) -> MigrationDetectionAnnotation:
+    return MigrationDetectionAnnotation(
+        line=d["line"],
+        column=d["column"],
+        unit_text=d["unit_text"],
+        decl_line_start=d["decl_line_start"],
+        decl_line_end=d["decl_line_end"],
+        unannotated_names=tuple(d["unannotated_names"]),
     )
 
 
@@ -394,8 +437,12 @@ def _load_attachment(d: dict[str, Any]) -> AttachmentResult:
         },
         orphans=[_load_orphan(o) for o in d["orphans"]],
         conflicts=[_load_conflict(c) for c in d["conflicts"]],
-        intermediate_continuations=[
-            _load_intermediate(i) for i in d["intermediate_continuations"]
+        pre_on_multiline=[
+            _load_pre_on_multiline(p) for p in d.get("pre_on_multiline", [])
+        ],
+        migration_detections=[
+            _load_migration_detection(m)
+            for m in d.get("migration_detections", [])
         ],
     )
 

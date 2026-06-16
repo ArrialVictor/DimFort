@@ -31,7 +31,7 @@ delimiters are project-configurable):
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
@@ -730,15 +730,51 @@ def _select_affine(
 
 
 @dataclass(frozen=True)
+class NameSpan:
+    """Per-name source-token span inside a multi-name declaration.
+
+    A multi-name continuation declaration like ``REAL :: foo(N), &
+    bar, qux`` carries three names whose declaration tokens end on
+    different physical lines. The 0.2.7 per-line attach rule
+    (``docs/design/shipped/per-variable-continuation-attach.md``)
+    needs per-name end-line resolution to decide which variables a
+    given annotation targets; ``NameSpan`` carries that information.
+
+    All positions are 1-based and follow the same convention as
+    :func:`dimfort.core.ts_parser.position_for`.
+
+    Attributes:
+        name: Variable name as scanned (case preserved).
+        start_line: First source-token line.
+        start_col: First source-token column (1-based).
+        end_line: Last source-token line — the line whose annotation
+            attaches to this name under the per-line rule.
+        end_col: One past the last source-token column.
+    """
+
+    name: str
+    start_line: int
+    start_col: int
+    end_line: int
+    end_col: int
+
+
+@dataclass(frozen=True)
 class DeclarationSite:
     """A single Fortran declaration (possibly continued across lines).
+
+    The authoritative per-name information lives in ``name_spans``;
+    the convenience ``names`` property derives the flat name tuple
+    that most call sites still consume.
 
     Attributes:
         line_start: 1-based physical line carrying the type-spec.
         line_end: 1-based physical line of the last line of the
             statement (after any ``&``-continuations).
-        names: Variable names declared on the statement, in source
-            order.
+        name_spans: Per-name spans in source order — the source of
+            truth for per-name resolution. The 0.2.7 attach rule
+            consults ``end_line`` per span; older call sites that
+            only need the flat list of names read :attr:`names`.
         enclosing_type: Name of the enclosing ``type :: …`` block when
             this declaration is a field of a derived type, else
             ``None``.
@@ -757,23 +793,66 @@ class DeclarationSite:
             consistency actually matters.
     """
 
-    line_start: int            # 1-based: the line containing the type-spec
-    line_end: int              # 1-based: the last physical line of the statement
-    names: tuple[str, ...]     # variable names declared, in source order
-    enclosing_type: str | None = None  # type-block name, if inside `type :: …`
-    # Lower-cased name of the innermost enclosing ``subroutine`` /
-    # ``function``. ``None`` for declarations at module or file top
-    # level. Used by stage 2 (``attach``) to key annotations per scope
-    # so same-named arguments in two routines don't collide.
+    line_start: int
+    line_end: int
+    # ``compare=False`` keeps per-name column positions out of
+    # ``__eq__`` / ``__hash__`` so equality reflects the semantic
+    # shape of the declaration (line range, names, flags) rather
+    # than the byte-level layout. Tests that care about the layout
+    # read ``name_spans`` directly. The ``names`` property below
+    # captures the equality-relevant view.
+    name_spans: tuple[NameSpan, ...] = field(compare=False)
+    enclosing_type: str | None = None
     scope: str | None = None
-    # Lower-cased intrinsic type qualifier (``real``, ``integer``,
-    # ``logical``, ``character``, ``complex``, ``double precision``,
-    # ``type``). ``None`` if not detected. Used by ``attach`` to inject
-    # an implicit dim'less default for unannotated ``integer``
-    # declarations (counts / indices / loop iterators) so the U005
-    # firehose is restricted to REAL variables where unit consistency
-    # actually matters.
     intrinsic_type: str | None = None
+    # Derived flat view of ``name_spans`` — included in ``__eq__``
+    # so equality covers "what names did the scanner find" while
+    # excluding the layout columns. Computed once in
+    # ``__post_init__`` to avoid per-access tuple allocation on the
+    # checker's hot path (where ``decl.names`` is read repeatedly).
+    names: tuple[str, ...] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        """Derive ``names`` from ``name_spans`` once at construction."""
+        object.__setattr__(
+            self, "names", tuple(s.name for s in self.name_spans),
+        )
+
+    @classmethod
+    def for_test(
+        cls,
+        line_start: int,
+        line_end: int,
+        names: tuple[str, ...],
+        *,
+        enclosing_type: str | None = None,
+        scope: str | None = None,
+        intrinsic_type: str | None = None,
+    ) -> DeclarationSite:
+        """Construct a :class:`DeclarationSite` with degenerate per-name spans.
+
+        Test helper for fixtures that don't exercise the new per-name
+        attach behavior — every name's span is
+        ``[line_start, line_end]``, matching pre-0.2.7 attach
+        semantics where all names of a multi-line decl received any
+        annotation on any of its lines. Production callers populate
+        real per-name spans via the source scanner.
+        """
+        name_spans = tuple(
+            NameSpan(
+                name=n,
+                start_line=line_start, start_col=1,
+                end_line=line_end, end_col=1,
+            )
+            for n in names
+        )
+        return cls(
+            line_start=line_start, line_end=line_end,
+            name_spans=name_spans,
+            enclosing_type=enclosing_type,
+            scope=scope,
+            intrinsic_type=intrinsic_type,
+        )
 
 
 @dataclass(frozen=True)
@@ -1132,27 +1211,70 @@ def _classify_plain_comment(
 _NAME_WRAPPERS = {"sized_declarator", "init_declarator"}
 
 
-def _ts_decl_names(decl_node: Node) -> list[str]:
-    """Return the variable names declared by a ``variable_declaration``.
+def _ts_decl_name_spans(decl_node: Node) -> list[NameSpan]:
+    """Return per-name spans for a ``variable_declaration``, in source order.
+
+    Each declarator child carries its own tree-sitter span — bare
+    ``identifier`` children for simple ``REAL :: x`` shapes;
+    ``sized_declarator`` wrappers for ``REAL :: foo(SIZE_A, SIZE_B)``
+    where the wrapper's ``end_point`` correctly sits one past the
+    closing ``)`` (including across an embedded ``&``-continuation
+    inside the bounds); ``init_declarator`` wrappers for
+    ``REAL :: x = 1.0`` initializer shapes. Reading positions from
+    the wrapper nodes gives the 0.2.7 attach rule its paren-aware
+    per-name end-line for free — no manual paren tokenizer needed.
 
     Args:
         decl_node: A tree-sitter ``variable_declaration`` node.
 
     Returns:
-        Names of the declared entities, in source order. Identifiers
-        inside attribute expressions (the ``n`` in ``real, dimension(n)
-        :: arr``) are not included.
+        Spans of the declared entities, in source order. Identifiers
+        inside attribute expressions (the ``n`` in
+        ``real, dimension(n) :: arr``) are not included — those live
+        under ``type_qualifier`` siblings, not under the declarator
+        wrappers walked here.
     """
-    names: list[str] = []
+    spans: list[NameSpan] = []
     for c in decl_node.children:
         if c.type == "identifier":
-            names.append((c.text or b"").decode("utf-8", "replace"))
+            bare_name = (c.text or b"").decode("utf-8", "replace")
+            spans.append(_name_span_for(c, bare_name))
             continue
         if c.type in _NAME_WRAPPERS:
-            inner = _ts_declarator_name(c)
-            if inner is not None:
-                names.append(inner)
-    return names
+            inner_name = _ts_declarator_name(c)
+            if inner_name is not None:
+                spans.append(_name_span_for(c, inner_name))
+    return spans
+
+
+def _name_span_for(node: Node, name: str) -> NameSpan:
+    """Build a :class:`NameSpan` from a declarator-or-identifier node.
+
+    Args:
+        node: Tree-sitter node whose source range covers the name's
+            full declaration tokens (the bare identifier, or its
+            enclosing ``sized_declarator`` / ``init_declarator``).
+        name: Already-decoded identifier text.
+
+    Returns:
+        A :class:`NameSpan` carrying the 1-based span. If the node
+        ends at column 0 of the next line (tree-sitter's
+        include-trailing-newline shape), the end is rolled back one
+        line so the recorded ``end_line`` is the physical line whose
+        author would see the declaration tokens land — the line that
+        the per-line attach rule keys on.
+    """
+    start = _ts.position_for(node)
+    end = _ts.end_position_for(node)
+    end_line = end.line
+    end_col = end.column
+    if end_line > start.line and node.end_point[1] == 0:
+        end_line -= 1
+    return NameSpan(
+        name=name,
+        start_line=start.line, start_col=start.column,
+        end_line=end_line, end_col=end_col,
+    )
 
 
 def _ts_declarator_name(node: Node) -> str | None:
@@ -1316,8 +1438,8 @@ def _scan_declarations(
     for n in _ts.walk(root):
         if n.type != "variable_declaration":
             continue
-        names = _ts_decl_names(n)
-        if not names:
+        spans = _ts_decl_name_spans(n)
+        if not spans:
             continue  # e.g. a malformed half-declaration we shouldn't attach to
         start = _ts.position_for(n).line
         end = _ts.end_position_for(n).line
@@ -1332,7 +1454,7 @@ def _scan_declarations(
             DeclarationSite(
                 line_start=start,
                 line_end=end,
-                names=tuple(names),
+                name_spans=tuple(spans),
                 enclosing_type=enclosing_type_at(n.start_byte),
                 scope=enclosing_routine_at(n.start_byte),
                 intrinsic_type=_ts_decl_intrinsic_type(n),

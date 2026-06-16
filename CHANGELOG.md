@@ -18,6 +18,19 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
   is a one-line rewrite per project; the design rationale and old →
   new examples live in the migration doc.
 
+- **Per-variable continuation-line attach.** An `@unit{}` annotation on
+  physical line *N* now attaches to the variables whose declaration
+  tokens *end* on line *N*, not to every name in the surrounding
+  multi-line declaration. Hard switch (no opt-in flag); affects every
+  `&`-continued declaration carrying an annotation. The new rule
+  matches author intent for the per-line POST convention (~1,700 net
+  annotations become attachable across the surveyed corpora) and
+  enables per-variable units on a single declaration. Two new
+  diagnostics (U024, U025) cover the migration; one diagnostic (U010)
+  is retired. Full design at
+  `docs/design/shipped/per-variable-continuation-attach.md`; migration
+  cookbook at `docs/troubleshooting/continuation-attach-migration.md`.
+
 ### Added
 
 - **`nonunit` / `nonunit_assume` / `nonunit_affine` drop filters.** New
@@ -32,12 +45,43 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
   on a `nonunit` entry filters only the matching inner content; the
   predicate is matched against the full delimited content
   (whitespace-stripped for plain `nonunit`).
+- **U024 (warning)** — PRE unit annotation above a multi-line
+  declaration. Refused under the per-line attach rule; the author is
+  asked to switch to inline POST per-line. Empirically fires on 0
+  sites in the surveyed corpora; kept as a safety net.
+- **U025 (info)** — annotation on a non-last continuation line whose
+  later names remain unannotated. Permanent migration-detection
+  diagnostic surfacing the recurring per-line footgun. The 0.2.7
+  migration step is `dimfort check --only=U025`.
+
+### Changed
+
+- **U006 narrowed.** Spec-text update only: U006 fires for true orphan
+  annotations (no matching declaration), which under the per-line
+  attach rule no longer includes the pre-0.2.7 noise from
+  intermediate-continuation rejections. No behaviour change for
+  genuine orphans.
+
+### Removed
+
+- **U010 retired.** Its specific failure mode (POST on an intermediate
+  continuation line) is now a successful per-line attach. Code is
+  reserved; not reused.
 
 ### Internal
 
-- `CHECKER_OUTPUT_VERSION` bumped 9 → 10. Pre-0.2.7 cache entries are
-  invalidated naturally; the new shipped `nonunit` defaults would
-  otherwise replay stale captures that the new pipeline now drops.
+- `CHECKER_OUTPUT_VERSION` bumped 9 → 11. Pre-0.2.7 cache entries are
+  invalidated naturally so the new attach rule + nonunit defaults
+  don't replay stale diagnostics. The intermediate +10 bump shipped
+  alongside the unit-comments namespace migration; +11 covers the
+  `DeclarationSite` data-shape change (`names` flat tuple →
+  `name_spans` per-name positions) and the attach-rule swap.
+- `DeclarationSite` data model: per-name `NameSpan` records (with
+  paren-aware tree-sitter positions) replace the flat `names` tuple
+  as the source of truth; `names` is preserved as a derived
+  attribute populated in `__post_init__`. The `for_test` classmethod
+  is the test-fixture constructor for code that doesn't exercise
+  per-name positions.
 
 ## [0.2.6] — 2026-06-13
 
