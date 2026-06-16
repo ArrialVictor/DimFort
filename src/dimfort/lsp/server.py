@@ -623,6 +623,7 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
                 state.project_config.unit_comments.nonunit_affine
             ),
             unit_lexer=state.project_config.unit_lexer,
+            unit_preprocess=state.project_config.unit_preprocess,
             tree_cache=state.tree_cache,
             exports_cache=state.exports_cache,
             projection_cache=state.projection_cache,
@@ -2121,6 +2122,7 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
                     state.project_config.unit_comments.nonunit_affine
                 ),
                 unit_lexer=state.project_config.unit_lexer,
+                unit_preprocess=state.project_config.unit_preprocess,
                 tree_cache=state.tree_cache,
                 exports_cache=state.exports_cache,
                 projection_cache=state.projection_cache,

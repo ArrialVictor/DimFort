@@ -143,7 +143,14 @@ from dimfort import __version__ as _dimfort_version
 #      shadowing entry, so pre-v14 cache entries would replay
 #      diagnostic sets that are missing the new HINT. Bump
 #      invalidates so the next check rebuilds with U026 emitted.
-CHECKER_OUTPUT_VERSION = 14
+# v15: 0.2.7 added the [parser.unit_preprocess] section with
+#      strip_biogeochem_tags + biogeochem_tag_exceptions. Toggling
+#      the strip changes which unit-string content reaches the
+#      lexer (mol(C)/m^2 → mol/m^2), so cached parse outputs from
+#      a pre-v15 lexer would replay unstripped content under the
+#      new strip-on regime. Bump invalidates so the next check
+#      rebuilds with the preprocessing applied.
+CHECKER_OUTPUT_VERSION = 15
 
 
 # Keys from a workspace config that affect a *file's* output and
@@ -187,6 +194,7 @@ PER_FILE_CONFIG_KEYS: tuple[str, ...] = (
     "unit_comments.nonunit_assume",
     "unit_comments.nonunit_affine",
     "unit_lexer.flags",
+    "unit_preprocess",
 )
 
 
@@ -229,7 +237,7 @@ def _config_bytes(config: dict[str, object]) -> bytes:
         "unit_comments.nonunit_affine",
         "unit_lexer.flags",
     }
-    dict_keys = {"diagnostic_severities"}
+    dict_keys = {"diagnostic_severities", "unit_preprocess"}
     str_keys = {"units_file_hash"}
     bool_keys = {"scale_mode"}
     subset: dict[str, object] = {}

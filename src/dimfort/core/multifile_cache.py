@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from tree_sitter import Tree
 
-    from dimfort.config import UnitLexerConfig
+    from dimfort.config import UnitLexerConfig, UnitPreprocessConfig
     from dimfort.core.annotations import ScanResult
     from dimfort.core.attach import AttachmentResult
     from dimfort.core.symbols import FuncSig, ModuleExports
@@ -353,6 +353,7 @@ def patterns_fingerprint(
     nonunit_assume_patterns: tuple[NonStructuredPattern, ...] = (),
     nonunit_affine_patterns: tuple[NonStructuredPattern, ...] = (),
     unit_lexer: UnitLexerConfig | None = None,
+    unit_preprocess: UnitPreprocessConfig | None = None,
 ) -> str:
     """Stable short hash of the configured annotation patterns.
 
@@ -424,6 +425,17 @@ def patterns_fingerprint(
         h.update(f"imp={int(unit_lexer.allow_implicit_product)};".encode())
         h.update(f"isx={int(unit_lexer.allow_integer_suffix_exp)};".encode())
         h.update(f"bdx={int(unit_lexer.allow_bare_digit_exp)};".encode())
+    h.update(b"||P|")
+    if unit_preprocess is not None:
+        h.update(
+            f"strip={int(unit_preprocess.strip_biogeochem_tags)};".encode()
+        )
+        # Exceptions list: sort for determinism (the config may
+        # have any order). Each entry separated by NUL so commas
+        # in entries don't collide with the separator.
+        for entry in sorted(unit_preprocess.biogeochem_tag_exceptions):
+            h.update(entry.encode("utf-8"))
+            h.update(b"\0")
     return h.hexdigest()[:16]
 
 

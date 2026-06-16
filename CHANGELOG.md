@@ -93,6 +93,25 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
   history footnote and the §3.6 default-OFF deviation are
   preserved.
 
+- **`[parser.unit_preprocess].strip_biogeochem_tags` — biogeochem
+  tracer-tag strip (Track B.3).** Pre-tokenization rewrite that
+  removes parenthesised species / spatial-domain tags following
+  identifier-like unit tokens: `mol(C)/m^2(canopy)` → `mol/m^2`.
+  Context-anchored — math grouping (`(m*s)`), citation parens
+  (`(see X)`), year-only (`(2002)`) all survive. Pre-pass runs
+  BEFORE the 8 lexer flags (kept in a separate
+  `[parser.unit_preprocess]` namespace to preserve the lexer
+  composition contract). Empirical target: ~240 tracer-tag sites
+  in one surveyed corpus where parenthesised tags follow unit
+  identifiers heavily. Default OFF; lossy by design — the future
+  polymorphic-units work (`mol('a)` over species) is the
+  non-lossy replacement.
+- **`biogeochem_tag_exceptions` config knob** — list of inner-
+  paren-content strings to preserve even when the strip pattern
+  matches. Forward-looking; no observed real-world ambiguity
+  today but documented for cases like the Kelvin-vs-potassium
+  collision (`(K)`).
+
 - **U026 (hint) — symbolic exponent variable shadows a known unit.**
   Closes the residual edge case identified during PR #102 review:
   with the 0.2.7 symbolic-exponent surface, an annotation like
