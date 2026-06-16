@@ -93,6 +93,17 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
   history footnote and the §3.6 default-OFF deviation are
   preserved.
 
+- **U026 (hint) — symbolic exponent variable shadows a known unit.**
+  Closes the residual edge case identified during PR #102 review:
+  with the 0.2.7 symbolic-exponent surface, an annotation like
+  `@unit{Pa^m}` parses as `Pa^Exponent({m: 1}, 0)` with `m` as a
+  symbolic exponent variable — but `m` is also the meter unit, and
+  the natural reading is incoherent. U026 fires at check time when
+  any symbolic-exponent generator name in a parsed unit matches an
+  entry in the active unit table. Hint severity (the code may be
+  intentional); the message suggests renaming to `kappa`, `lambda`,
+  `n` etc. — names that don't collide with unit symbols.
+
 ### Breaking changes
 
 - **`m**2` no longer parses by default.** Pre-0.2.7 the tokenizer
