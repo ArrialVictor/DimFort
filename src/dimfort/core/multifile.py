@@ -36,6 +36,7 @@ from typing import Any
 
 from tree_sitter import Tree
 
+from dimfort.config import UnitLexerConfig
 from dimfort.core import multifile_cache as _mfc
 from dimfort.core import ts_checker
 from dimfort.core import ts_parser as _ts
@@ -421,6 +422,7 @@ def _load_one(
         fp = patterns_fp or patterns_fingerprint(
             unit_patterns, assume_patterns, affine_patterns,
             nonunit_patterns, nonunit_assume_patterns, nonunit_affine_patterns,
+            unit_lexer=_units_mod.DEFAULT_LEXER,
         )
         proj_key = ProjectionKey(src_hash, fp)
         proj_hit = projection_cache.get(proj_key)
@@ -865,6 +867,7 @@ def _build_cache_config_view(
     nonunit_patterns: tuple[NonUnitPattern, ...] = (),
     nonunit_assume_patterns: tuple[NonStructuredPattern, ...] = (),
     nonunit_affine_patterns: tuple[NonStructuredPattern, ...] = (),
+    unit_lexer: UnitLexerConfig | None = None,
 ) -> dict[str, object]:
     """Assemble the per-file-affecting config dict for the cache key.
 
@@ -904,6 +907,15 @@ def _build_cache_config_view(
             [p.open, p.close, p.sep or "", p.regex.pattern if p.regex else ""]
             for p in nonunit_affine_patterns
         ],
+        "unit_lexer.flags": (
+            [
+                int(unit_lexer.allow_unicode_superscripts),
+                int(unit_lexer.allow_middot_multiplication),
+                int(unit_lexer.allow_fortran_star_star),
+                int(unit_lexer.allow_latex_braces),
+            ]
+            if unit_lexer is not None else [0, 0, 0, 0]
+        ),
     }
 
 
@@ -1048,6 +1060,7 @@ def check_files(
     nonunit_patterns: tuple[NonUnitPattern, ...] = DEFAULT_NONUNIT_PATTERNS,
     nonunit_assume_patterns: tuple[NonStructuredPattern, ...] = DEFAULT_NONUNIT_ASSUME_PATTERNS,
     nonunit_affine_patterns: tuple[NonStructuredPattern, ...] = DEFAULT_NONUNIT_AFFINE_PATTERNS,
+    unit_lexer: UnitLexerConfig | None = None,
     tree_cache: TreeCache | None = None,
     exports_cache: ModuleExportsCache | None = None,
     projection_cache: ProjectionCache | None = None,
@@ -1097,6 +1110,13 @@ def check_files(
             ``assume_patterns``.
         nonunit_affine_patterns: Drop-filter patterns paired with
             ``affine_patterns``.
+        unit_lexer: Optional :class:`UnitLexerConfig` carrying the
+            project's permissive-lexer flag set
+            (``[parser.unit_lexer]``). Installed into the session-
+            level ``units.DEFAULT_LEXER`` for the duration of the
+            ``check_files`` call so every downstream ``units.parse``
+            invocation sees the configured flags. ``None`` (the
+            default) leaves the existing session lexer in place.
         tree_cache: Optional session-scoped
             :class:`~dimfort.core.multifile_cache.TreeCache`; when set,
             unchanged files skip tree-sitter parsing entirely. ``None``
@@ -1136,6 +1156,18 @@ def check_files(
             have imported :mod:`dimfort.core.unit_config` to install
             ``DEFAULT_TABLE``).
     """
+    # Session-install the permissive-lexer config so downstream
+    # ``units.parse`` calls (in this module and ``ts_checker``)
+    # honour the project's ``[parser.unit_lexer]`` flags without
+    # threading a parameter through every call site. Same pattern
+    # as ``DEFAULT_TABLE``. The LSP serves one project per process
+    # and the CLI runs one command then exits, so the install
+    # naturally scopes to the active session — no try/finally
+    # restore needed. When ``unit_lexer`` is ``None`` (caller did
+    # not pass a config) we leave ``DEFAULT_LEXER`` untouched.
+    if unit_lexer is not None:
+        _units_mod.DEFAULT_LEXER = unit_lexer
+
     abs_sources = [Path(p).resolve() for p in sources]
     overrides_map = {Path(p).resolve(): t for p, t in (overrides or {}).items()}
     active_table = table if table is not None else _units_mod.DEFAULT_TABLE
@@ -1154,6 +1186,7 @@ def check_files(
         patterns_fingerprint(
             unit_patterns, assume_patterns, affine_patterns,
             nonunit_patterns, nonunit_assume_patterns, nonunit_affine_patterns,
+            unit_lexer=unit_lexer,
         )
         if projection_cache is not None
         else ""
@@ -1390,6 +1423,7 @@ def check_files(
         nonunit_patterns=nonunit_patterns,
         nonunit_assume_patterns=nonunit_assume_patterns,
         nonunit_affine_patterns=nonunit_affine_patterns,
+        unit_lexer=unit_lexer,
     )
     # Session-scoped memo when an exports_cache is wired in (LSP path);
     # per-call dict otherwise. Both forms still help within one call —

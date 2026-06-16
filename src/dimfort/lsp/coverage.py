@@ -441,6 +441,7 @@ def _run_workspace_check(ls: LanguageServer) -> WorksetResult | None:
                 nonunit_affine_patterns=compile_nonstructured_patterns(
                     state.project_config.unit_comments.nonunit_affine
                 ),
+                unit_lexer=state.project_config.unit_lexer,
                 tree_cache=state.tree_cache,
                 exports_cache=state.exports_cache,
                 projection_cache=state.projection_cache,

@@ -33,6 +33,47 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ### Added
 
+- **`[parser.unit_lexer]` — permissive-lexer rewrite-subsystem
+  flags (4 of the planned 8).** New config table with four
+  independent booleans, all default OFF. Each flag opts the project
+  into a specific permissive lexer rule on top of the strict
+  baseline:
+    - **`allow_unicode_superscripts`** — accept `⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺` as
+      exponent characters (`m·s⁻¹`, `kg m⁻³`). Codepoint
+      substitution at tokenization.
+    - **`allow_middot_multiplication`** — accept `·` (U+00B7) as a
+      multiplication operator alias (`m·s`, `kg·m⁻³`). SI
+      typographical convention.
+    - **`allow_fortran_star_star`** — accept `**` as an alias for
+      `^` (`m**2`, `m**(2*kappa-1)`). Default OFF aligns with the
+      uniform strict-baseline posture; projects that wrote `**` in
+      `@unit{}` annotations pre-0.2.7 either set the flag or rewrite
+      to `^`.
+    - **`allow_latex_braces`** — accept `^{<content>}` as a grouping
+      form (`m^{-1}`, `Pa^{kappa-1/3}`). Pre-tokenization rewrite to
+      `^(<content>)` which the post-§3.0 strict grammar accepts
+      uniformly.
+- **Pipeline order** (per design §4.3) — codepoint substitutions
+  first (Unicode superscripts → middot), then operator-token alias
+  (`**` → `^`), then post-token brace rewrite. The four rewrite-
+  subsystem flags compose deterministically; sample compositions
+  covered in `tests/unit/test_unit_lexer_flags.py`.
+- **Recognition-subsystem flags** (`allow_implicit_product`,
+  `allow_integer_suffix_exp`, `allow_bare_digit_exp`,
+  `allow_dot_multiplication`) — designed in
+  `docs/design/future/permissive-unit-lexer.md` §3.2-§3.5; ship in
+  the Track B.2b follow-up alongside the 28-pair composition audit.
+
+### Breaking changes
+
+- **`m**2` no longer parses by default.** Pre-0.2.7 the tokenizer
+  accepted `**` unconditionally as an alias for `^`; 0.2.7's
+  uniform flag-default-OFF posture moves `**` behind
+  `allow_fortran_star_star`, which defaults `false`. Migration: add
+  `[parser.unit_lexer]` `allow_fortran_star_star = true` to
+  `dimfort.toml`, or rewrite `**` to `^` in the project's `@unit{}`
+  annotations. The rejection message names the flag explicitly.
+
 - **`parse_exp` widening — integer and symbolic exponents.** The
   annotation-surface exponent parser now accepts every shape the
   shipped `Exponent` algebra represents:

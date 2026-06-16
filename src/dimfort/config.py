@@ -125,6 +125,44 @@ DEFAULT_NONUNIT_AFFINE_PATTERNS: tuple[NonStructuredPatternEntry, ...] = ()
 
 
 @dataclass(frozen=True)
+class UnitLexerConfig:
+    """Resolved ``[parser.unit_lexer]`` section.
+
+    Independent boolean flags toggling permissive lexer rules on
+    top of the strict default grammar. Every flag defaults to
+    ``False`` — strict, conservative, no out-of-box silent
+    misparses. See ``docs/design/future/permissive-unit-lexer.md``
+    §3.1-§3.8 for per-flag empirical case + false-positive
+    characterization.
+
+    The flag set is structurally split (§4.2) into the rewrite
+    subsystem (codepoint subs / token aliases / post-token
+    rewrites — landed here in Track B.2a) and the recognition
+    subsystem (grammar extensions — landing in Track B.2b).
+    Additional flag fields will join this dataclass when B.2b
+    ships; users get only the flags whose behaviour is actually
+    wired today.
+
+    Attributes:
+        allow_unicode_superscripts: Accept ``⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺`` as
+            exponent characters (``m·s⁻¹``, ``kg m⁻³``).
+        allow_middot_multiplication: Accept ``·`` (U+00B7) as a
+            multiplication operator alias (``m·s``, ``kg·m⁻³``).
+        allow_fortran_star_star: Accept ``**`` as an alias for
+            ``^`` (``m**2``, ``m**-1``). Default OFF: the strict
+            lexer has a single canonical exponent operator.
+        allow_latex_braces: Accept ``^{...}`` as a grouping form
+            (``m^{-1}``, ``Pa^{kappa-1/3}``); rewritten to the
+            strict-grammar paren'd shape.
+    """
+
+    allow_unicode_superscripts: bool = False
+    allow_middot_multiplication: bool = False
+    allow_fortran_star_star: bool = False
+    allow_latex_braces: bool = False
+
+
+@dataclass(frozen=True)
 class UnitCommentsConfig:
     r"""Resolved ``[parser.unit_comments]`` section.
 
@@ -236,6 +274,12 @@ class DimfortConfig:
     unit_comments: UnitCommentsConfig = field(
         default_factory=UnitCommentsConfig
     )
+
+    # [parser.unit_lexer] — independent boolean flags toggling
+    # permissive lexer rules. All default OFF; see
+    # ``docs/design/future/permissive-unit-lexer.md`` for the
+    # per-flag empirical case + false-positive characterization.
+    unit_lexer: UnitLexerConfig = field(default_factory=UnitLexerConfig)
 
     # [cache] max_entries — FIFO cap on the in-memory tree / module-exports
     # / projection caches. ``None`` (default, or ``"auto"`` in TOML) means
@@ -413,6 +457,7 @@ def _from_raw(raw: dict[str, Any], path: Path) -> DimfortConfig:
         cache_max_entries = None
 
     unit_comments = _parse_unit_comments_section(parser_section, path)
+    unit_lexer = _parse_unit_lexer_section(parser_section, path)
 
     return DimfortConfig(
         config_path=path,
@@ -425,8 +470,64 @@ def _from_raw(raw: dict[str, Any], path: Path) -> DimfortConfig:
         diagnostic_severities=diagnostic_severities,
         scale_mode=scale_mode,
         unit_comments=unit_comments,
+        unit_lexer=unit_lexer,
         cache_max_entries=cache_max_entries,
     )
+
+
+def _parse_unit_lexer_section(
+    parser_section: dict[str, Any], path: Path
+) -> UnitLexerConfig:
+    """Parse ``[parser.unit_lexer]`` into a :class:`UnitLexerConfig`.
+
+    Unknown keys warn and are ignored — newer DimFort versions may
+    add flag fields, and silently dropping unrecognised keys keeps
+    older configs forward-compatible.
+
+    Args:
+        parser_section: The ``[parser]`` table dict from
+            ``dimfort.toml`` (possibly empty).
+        path: Path to the config file, used in log messages.
+
+    Returns:
+        Resolved :class:`UnitLexerConfig` — all flags default
+        ``False`` unless explicitly set.
+    """
+    section = parser_section.get("unit_lexer")
+    if section is None:
+        return UnitLexerConfig()
+    if not isinstance(section, dict):
+        log.error(
+            "%s: [parser.unit_lexer] must be a table — falling back "
+            "to default (all flags OFF)", path,
+        )
+        return UnitLexerConfig()
+
+    known = {
+        "allow_unicode_superscripts",
+        "allow_middot_multiplication",
+        "allow_fortran_star_star",
+        "allow_latex_braces",
+    }
+    kwargs: dict[str, bool] = {}
+    for key, value in section.items():
+        if key not in known:
+            log.warning(
+                "%s: [parser.unit_lexer].%s is not a known flag — "
+                "ignored. See docs/design/future/permissive-unit-lexer.md "
+                "for the supported set.",
+                path, key,
+            )
+            continue
+        if not isinstance(value, bool):
+            log.error(
+                "%s: [parser.unit_lexer].%s must be a boolean — "
+                "got %r, falling back to default (false).",
+                path, key, value,
+            )
+            continue
+        kwargs[key] = value
+    return UnitLexerConfig(**kwargs)
 
 
 # Pre-0.2.7 flat keys lived directly under ``[parser]``. They were

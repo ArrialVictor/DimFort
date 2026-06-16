@@ -418,6 +418,66 @@ nonunit_assume = [
     )
 
 
+# ---------------------------------------------------------------------------
+# [parser.unit_lexer] — Track B.2a rewrite-subsystem flags
+# ---------------------------------------------------------------------------
+
+
+def test_unit_lexer_default_all_flags_off(tmp_path):
+    """No section → every flag defaults False."""
+    (tmp_path / CONFIG_FILENAME).write_text("[parser]\n")
+    cfg = load_config(tmp_path)
+    assert cfg.unit_lexer.allow_unicode_superscripts is False
+    assert cfg.unit_lexer.allow_middot_multiplication is False
+    assert cfg.unit_lexer.allow_fortran_star_star is False
+    assert cfg.unit_lexer.allow_latex_braces is False
+
+
+def test_unit_lexer_explicit_settings(tmp_path):
+    (tmp_path / CONFIG_FILENAME).write_text("""
+[parser.unit_lexer]
+allow_fortran_star_star = true
+allow_unicode_superscripts = true
+""")
+    cfg = load_config(tmp_path)
+    assert cfg.unit_lexer.allow_fortran_star_star is True
+    assert cfg.unit_lexer.allow_unicode_superscripts is True
+    # Untouched flags stay False.
+    assert cfg.unit_lexer.allow_middot_multiplication is False
+    assert cfg.unit_lexer.allow_latex_braces is False
+
+
+def test_unit_lexer_unknown_flag_warns_and_ignored(tmp_path, caplog):
+    """Forward-compat: unknown flags warn but don't break loading."""
+    import logging
+    (tmp_path / CONFIG_FILENAME).write_text("""
+[parser.unit_lexer]
+allow_fortran_star_star = true
+allow_imaginary_future_flag = true
+""")
+    with caplog.at_level(logging.WARNING, logger="dimfort.config"):
+        cfg = load_config(tmp_path)
+    assert cfg.unit_lexer.allow_fortran_star_star is True
+    assert any(
+        "allow_imaginary_future_flag" in r.message for r in caplog.records
+    )
+
+
+def test_unit_lexer_non_boolean_value_warns(tmp_path, caplog):
+    import logging
+    (tmp_path / CONFIG_FILENAME).write_text("""
+[parser.unit_lexer]
+allow_fortran_star_star = "yes"
+""")
+    with caplog.at_level(logging.ERROR, logger="dimfort.config"):
+        cfg = load_config(tmp_path)
+    # Falls back to default False on bad value.
+    assert cfg.unit_lexer.allow_fortran_star_star is False
+    assert any(
+        "must be a boolean" in r.message for r in caplog.records
+    )
+
+
 def test_legacy_flat_keys_warn_and_ignored(tmp_path, caplog):
     """Pre-0.2.7 ``unit_comment_delimiters`` at ``[parser]`` warns; new defaults apply."""
     import logging

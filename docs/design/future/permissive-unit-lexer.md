@@ -583,6 +583,20 @@ unit string: `m**2`, `kg**2/m**3`, `s**(-1)`.
 Programmer-natural carry-over from Fortran expression syntax.
 Always orthogonal to other flags.
 
+**Pre-0.2.7 history.** The tokenizer (`src/dimfort/core/units.py`)
+accepted `**` *unconditionally* as an alias for `^` since at least
+the test fixtures were written — `**` was not a separate parse
+path, the tokenizer rewrote it to `^` before the parser saw it.
+The 0.2.7 design adopts the uniform "all 8 flags default OFF"
+posture for predictability + lexer cleanliness, which means
+`m**2` stops parsing in the default config. The migration cost is
+bounded (beta line + no external users; ~5 internal test fixtures
+switched to `^` since precedence is identical; any project that
+wrote `**` adds a one-line `[parser.unit_lexer]
+allow_fortran_star_star = true` to opt back in). The flag's
+**empirical case is real, but its post-0.2.7 default-OFF posture
+is a uniformity choice, not a soundness one.**
+
 **Lexer scope:** treat `**` as a pure operator alias for `^`. After
 the §3.0 grammar widening, strict `^` accepts all four integer-
 exponent shapes; this flag simply makes `**` interchangeable with
