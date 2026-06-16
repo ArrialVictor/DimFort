@@ -872,6 +872,31 @@ Formally, the guarantee splits along the structural divide of §4.2:
 Confluence of the rewrites composed with non-ambiguity of the
 grammar gives the end-to-end Guarantee 1.
 
+**Implementation note — pipeline vs term-rewriting.** The framing
+above describes an abstract rewriting system (apply any applicable
+rule until no redex remains). The implementation in
+``src/dimfort/core/units.py`` is a *fixed-order pipeline*: 8
+rewrites applied once each via single-pass ``re.sub`` (or
+``str.replace``, or a single-pass walk for the brace rewrite), in
+the order documented in §4.3. The pipeline reaches the same normal
+form the term-rewriting system would *because* of the properties
+this section claims — orthogonal LHS + no critical pairs +
+RHS-doesn't-match-any-LHS — so a single deterministic pass per
+rule is sufficient. The pipeline is O(8·|expr|); the rewriting-
+system approach would be at best O(|expr|) per pass times an
+unbounded number of passes until fixpoint, in practice much
+slower. We rely on the design's claimed properties to justify the
+efficient implementation; any future rule whose LHS does match
+some other rule's RHS would need either a rule-precision fix or
+a switch to fixpoint iteration. The Track B.2b correctness fix
+(``integer_suffix_exp`` known-unit guard, commit ``970c43a``) is
+exactly the rule-precision repair — its LHS was broader than
+intended and overlapped with arithmetic in symbolic-exponent
+linear forms (``kappa-1``); both pipeline and fixpoint strategies
+would have exhibited the same bug. The fix tightens the LHS to
+match the design's stated specification (§3.4: "the identifier
+must be in the known-unit set"), restoring orthogonality.
+
 **Guarantee 2: Pattern composition.** An input that combines
 features from N flags parses correctly when all N flags are ON.
 Concrete: `J.kg^{-1}.K^{-1}` exercises `allow_dot_multiplication` +
