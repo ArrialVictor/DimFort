@@ -209,3 +209,112 @@ def test_pattern_match_equality():
     a = PatternMatch(unit_text="m/s", payload=None, start=0, end=10)
     b = PatternMatch(unit_text="m/s", payload=None, start=0, end=10)
     assert a == b
+
+
+# ---------------------------------------------------------------------------
+# 0.2.7 nonunit / nonunit_assume / nonunit_affine filter patterns
+# ---------------------------------------------------------------------------
+
+
+def test_nonunit_pattern_no_regex_matches_every_pair():
+    from dimfort.core.unit_patterns import NonUnitPattern
+    pat = NonUnitPattern(open="@nonunit{", close="}")
+    hits = pat.find("foo @nonunit{[m]} bar")
+    assert len(hits) == 1
+    assert hits[0].unit_text == "[m]"
+    assert hits[0].start == 4
+
+
+def test_nonunit_pattern_regex_filters_inner():
+    import re
+
+    from dimfort.core.unit_patterns import NonUnitPattern
+    pat = NonUnitPattern(open="(", close=")", regex=re.compile(r"^\d{4}$"))
+    hits = pat.find("see (2002) and (m/s)")
+    assert [m.unit_text for m in hits] == ["2002"]
+
+
+def test_nonunit_pattern_regex_no_match_drops():
+    import re
+
+    from dimfort.core.unit_patterns import NonUnitPattern
+    pat = NonUnitPattern(open="(", close=")", regex=re.compile(r"^\d{4}$"))
+    hits = pat.find("(kg)")
+    assert hits == []
+
+
+def test_nonstructured_pattern_sep_none_degenerates_to_pair():
+    from dimfort.core.unit_patterns import NonStructuredPattern
+    pat = NonStructuredPattern(open="@unit_assume{", close="}")
+    # sep=None means "drop all matching {open, close}" regardless of
+    # what's inside — including when there's no `:` separator.
+    hits = pat.find("foo @unit_assume{anything_at_all}")
+    assert len(hits) == 1
+    assert hits[0].unit_text == "anything_at_all"
+
+
+def test_nonstructured_pattern_sep_required_when_set():
+    from dimfort.core.unit_patterns import NonStructuredPattern
+    pat = NonStructuredPattern(open="@unit_assume{", close="}", sep=":")
+    # sep=":" means "drop only triples whose inner contains ':'".
+    no_sep = pat.find("@unit_assume{no_separator}")
+    assert no_sep == []
+    with_sep = pat.find("@unit_assume{kg : legacy}")
+    assert len(with_sep) == 1
+
+
+def test_dead_ranges_combines_multiple_patterns_sorted():
+    from dimfort.core.unit_patterns import (
+        NonUnitPattern,
+        dead_ranges,
+    )
+    patterns = (
+        NonUnitPattern(open="@nonunit{", close="}"),
+        NonUnitPattern(open="(see ", close=")"),
+    )
+    body = "(see foo) text @nonunit{bar}"
+    ranges = dead_ranges(body, patterns)
+    assert ranges == ((0, 9), (15, 28))
+
+
+def test_overlaps_any_basic_cases():
+    from dimfort.core.unit_patterns import overlaps_any
+    ranges = ((10, 20), (30, 40))
+    assert overlaps_any(5, 15, ranges)         # crosses left edge
+    assert overlaps_any(15, 25, ranges)        # crosses right edge
+    assert overlaps_any(12, 18, ranges)        # contained
+    assert overlaps_any(5, 45, ranges)         # encloses
+    assert not overlaps_any(0, 5, ranges)      # left of all
+    assert not overlaps_any(20, 30, ranges)    # in gap (half-open: 20 == start of nothing)
+    assert not overlaps_any(45, 50, ranges)    # right of all
+
+
+def test_compile_nonunit_patterns_preserves_order_and_regex():
+    from dimfort.config import NonUnitPatternEntry
+    from dimfort.core.unit_patterns import compile_nonunit_patterns
+    entries = (
+        NonUnitPatternEntry(open="(", close=")", regex=r"^\d{4}$"),
+        NonUnitPatternEntry(open="@nonunit{", close="}"),
+    )
+    compiled = compile_nonunit_patterns(entries)
+    assert compiled[0].open == "("
+    assert compiled[0].regex is not None
+    assert compiled[0].regex.pattern == r"^\d{4}$"
+    assert compiled[1].regex is None
+
+
+def test_compile_nonstructured_patterns_handles_optional_sep_and_regex():
+
+    from dimfort.config import NonStructuredPatternEntry
+    from dimfort.core.unit_patterns import compile_nonstructured_patterns
+    entries = (
+        NonStructuredPatternEntry(open="@x{", close="}"),
+        NonStructuredPatternEntry(
+            open="@y{", close="}", sep=":", regex=r"^0\s*:",
+        ),
+    )
+    compiled = compile_nonstructured_patterns(entries)
+    assert compiled[0].sep is None
+    assert compiled[0].regex is None
+    assert compiled[1].sep == ":"
+    assert compiled[1].regex.pattern == r"^0\s*:"

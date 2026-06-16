@@ -72,7 +72,12 @@ from dimfort.core.symbols import (
 from dimfort.core.unit_patterns import (
     DEFAULT_AFFINE_PATTERNS,
     DEFAULT_ASSUME_PATTERNS,
+    DEFAULT_NONUNIT_AFFINE_PATTERNS,
+    DEFAULT_NONUNIT_ASSUME_PATTERNS,
+    DEFAULT_NONUNIT_PATTERNS,
     DEFAULT_UNIT_PATTERNS,
+    NonStructuredPattern,
+    NonUnitPattern,
     StructuredPattern,
     UnitPattern,
 )
@@ -304,6 +309,9 @@ def _load_one(
     unit_patterns: tuple[UnitPattern, ...] = DEFAULT_UNIT_PATTERNS,
     assume_patterns: tuple[StructuredPattern, ...] = DEFAULT_ASSUME_PATTERNS,
     affine_patterns: tuple[StructuredPattern, ...] = DEFAULT_AFFINE_PATTERNS,
+    nonunit_patterns: tuple[NonUnitPattern, ...] = DEFAULT_NONUNIT_PATTERNS,
+    nonunit_assume_patterns: tuple[NonStructuredPattern, ...] = DEFAULT_NONUNIT_ASSUME_PATTERNS,
+    nonunit_affine_patterns: tuple[NonStructuredPattern, ...] = DEFAULT_NONUNIT_AFFINE_PATTERNS,
     tree_cache: TreeCache | None = None,
     projection_cache: ProjectionCache | None = None,
     patterns_fp: str = "",
@@ -332,6 +340,13 @@ def _load_one(
         assume_patterns: Configured ``@unit_assume{...}`` delimiters.
         affine_patterns: Configured ``@unit_affine_conversion{...}``
             delimiters.
+        nonunit_patterns: Drop-filter patterns paired with
+            ``unit_patterns``; captures silently dropped when their
+            span overlaps a match.
+        nonunit_assume_patterns: Drop-filter patterns paired with
+            ``assume_patterns``.
+        nonunit_affine_patterns: Drop-filter patterns paired with
+            ``affine_patterns``.
         tree_cache: Optional session-scoped tree cache; on a hit the
             parse step is skipped entirely and the cached
             tree-sitter outputs replay into ``_Loaded``.
@@ -405,6 +420,7 @@ def _load_one(
     if projection_cache is not None:
         fp = patterns_fp or patterns_fingerprint(
             unit_patterns, assume_patterns, affine_patterns,
+            nonunit_patterns, nonunit_assume_patterns, nonunit_affine_patterns,
         )
         proj_key = ProjectionKey(src_hash, fp)
         proj_hit = projection_cache.get(proj_key)
@@ -417,6 +433,9 @@ def _load_one(
                 unit_patterns=unit_patterns,
                 assume_patterns=assume_patterns,
                 affine_patterns=affine_patterns,
+                nonunit_patterns=nonunit_patterns,
+                nonunit_assume_patterns=nonunit_assume_patterns,
+                nonunit_affine_patterns=nonunit_affine_patterns,
                 tree=source_tree,
             )
             attachment = attach(scan)
@@ -429,6 +448,9 @@ def _load_one(
             unit_patterns=unit_patterns,
             assume_patterns=assume_patterns,
             affine_patterns=affine_patterns,
+            nonunit_patterns=nonunit_patterns,
+            nonunit_assume_patterns=nonunit_assume_patterns,
+            nonunit_affine_patterns=nonunit_affine_patterns,
             tree=source_tree,
         )
         attachment = attach(scan)
@@ -827,6 +849,9 @@ def _build_cache_config_view(
     unit_patterns: tuple[UnitPattern, ...],
     assume_patterns: tuple[StructuredPattern, ...],
     affine_patterns: tuple[StructuredPattern, ...],
+    nonunit_patterns: tuple[NonUnitPattern, ...] = (),
+    nonunit_assume_patterns: tuple[NonStructuredPattern, ...] = (),
+    nonunit_affine_patterns: tuple[NonStructuredPattern, ...] = (),
 ) -> dict[str, object]:
     """Assemble the per-file-affecting config dict for the cache key.
 
@@ -845,14 +870,26 @@ def _build_cache_config_view(
         "units_file_hash": _hash_file(units_file) if units_file else "",
         "diagnostic_severities": dict(diagnostic_severities or {}),
         "scale_mode": scale_mode,
-        "unit_comment_delimiters": [
+        "unit_comments.unit": [
             [p.open, p.close] for p in unit_patterns
         ],
-        "unit_assume_comment_delimiters": [
+        "unit_comments.unit_assume": [
             [p.open, p.close, p.sep] for p in assume_patterns
         ],
-        "unit_affine_comment_delimiters": [
+        "unit_comments.unit_affine": [
             [p.open, p.close, p.sep] for p in affine_patterns
+        ],
+        "unit_comments.nonunit": [
+            [p.open, p.close, p.regex.pattern if p.regex else ""]
+            for p in nonunit_patterns
+        ],
+        "unit_comments.nonunit_assume": [
+            [p.open, p.close, p.sep or "", p.regex.pattern if p.regex else ""]
+            for p in nonunit_assume_patterns
+        ],
+        "unit_comments.nonunit_affine": [
+            [p.open, p.close, p.sep or "", p.regex.pattern if p.regex else ""]
+            for p in nonunit_affine_patterns
         ],
     }
 
@@ -995,6 +1032,9 @@ def check_files(
     unit_patterns: tuple[UnitPattern, ...] = DEFAULT_UNIT_PATTERNS,
     assume_patterns: tuple[StructuredPattern, ...] = DEFAULT_ASSUME_PATTERNS,
     affine_patterns: tuple[StructuredPattern, ...] = DEFAULT_AFFINE_PATTERNS,
+    nonunit_patterns: tuple[NonUnitPattern, ...] = DEFAULT_NONUNIT_PATTERNS,
+    nonunit_assume_patterns: tuple[NonStructuredPattern, ...] = DEFAULT_NONUNIT_ASSUME_PATTERNS,
+    nonunit_affine_patterns: tuple[NonStructuredPattern, ...] = DEFAULT_NONUNIT_AFFINE_PATTERNS,
     tree_cache: TreeCache | None = None,
     exports_cache: ModuleExportsCache | None = None,
     projection_cache: ProjectionCache | None = None,
@@ -1037,6 +1077,13 @@ def check_files(
         assume_patterns: Configured ``@unit_assume{...}`` delimiters.
         affine_patterns: Configured ``@unit_affine_conversion{...}``
             delimiters.
+        nonunit_patterns: Drop-filter patterns paired with
+            ``unit_patterns``; captures silently dropped when their
+            span overlaps a match.
+        nonunit_assume_patterns: Drop-filter patterns paired with
+            ``assume_patterns``.
+        nonunit_affine_patterns: Drop-filter patterns paired with
+            ``affine_patterns``.
         tree_cache: Optional session-scoped
             :class:`~dimfort.core.multifile_cache.TreeCache`; when set,
             unchanged files skip tree-sitter parsing entirely. ``None``
@@ -1091,7 +1138,10 @@ def check_files(
     # ProjectionKey reuses the same string (cheap; the patterns rarely
     # change between calls but we don't want per-file recomputation).
     patterns_fp = (
-        patterns_fingerprint(unit_patterns, assume_patterns, affine_patterns)
+        patterns_fingerprint(
+            unit_patterns, assume_patterns, affine_patterns,
+            nonunit_patterns, nonunit_assume_patterns, nonunit_affine_patterns,
+        )
         if projection_cache is not None
         else ""
     )
@@ -1139,6 +1189,9 @@ def check_files(
                 unit_patterns=unit_patterns,
                 assume_patterns=assume_patterns,
                 affine_patterns=affine_patterns,
+                nonunit_patterns=nonunit_patterns,
+                nonunit_assume_patterns=nonunit_assume_patterns,
+                nonunit_affine_patterns=nonunit_affine_patterns,
                 tree_cache=tree_cache,
                 projection_cache=projection_cache,
                 patterns_fp=patterns_fp,
@@ -1321,6 +1374,9 @@ def check_files(
         unit_patterns=unit_patterns,
         assume_patterns=assume_patterns,
         affine_patterns=affine_patterns,
+        nonunit_patterns=nonunit_patterns,
+        nonunit_assume_patterns=nonunit_assume_patterns,
+        nonunit_affine_patterns=nonunit_affine_patterns,
     )
     # Session-scoped memo when an exports_cache is wired in (LSP path);
     # per-call dict otherwise. Both forms still help within one call —

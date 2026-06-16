@@ -89,6 +89,8 @@ from dimfort.core.multifile_exports_cache_persist import (
     save_persistent_exports_cache,
 )
 from dimfort.core.unit_patterns import (
+    compile_nonstructured_patterns,
+    compile_nonunit_patterns,
     compile_structured_patterns,
     compile_unit_patterns,
 )
@@ -603,13 +605,22 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
             diagnostic_severities=state.project_config.diagnostic_severities,
             scale_mode=state.scale_mode,
             unit_patterns=compile_unit_patterns(
-                state.project_config.unit_comment_delimiters
+                state.project_config.unit_comments.unit
             ),
             assume_patterns=compile_structured_patterns(
-                state.project_config.unit_assume_comment_delimiters
+                state.project_config.unit_comments.unit_assume
             ),
             affine_patterns=compile_structured_patterns(
-                state.project_config.unit_affine_comment_delimiters
+                state.project_config.unit_comments.unit_affine
+            ),
+            nonunit_patterns=compile_nonunit_patterns(
+                state.project_config.unit_comments.nonunit
+            ),
+            nonunit_assume_patterns=compile_nonstructured_patterns(
+                state.project_config.unit_comments.nonunit_assume
+            ),
+            nonunit_affine_patterns=compile_nonstructured_patterns(
+                state.project_config.unit_comments.nonunit_affine
             ),
             tree_cache=state.tree_cache,
             exports_cache=state.exports_cache,
@@ -2091,13 +2102,22 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
                 diagnostic_severities=state.project_config.diagnostic_severities,
                 scale_mode=state.scale_mode,
                 unit_patterns=compile_unit_patterns(
-                    state.project_config.unit_comment_delimiters
+                    state.project_config.unit_comments.unit
                 ),
                 assume_patterns=compile_structured_patterns(
-                    state.project_config.unit_assume_comment_delimiters
+                    state.project_config.unit_comments.unit_assume
                 ),
                 affine_patterns=compile_structured_patterns(
-                    state.project_config.unit_affine_comment_delimiters
+                    state.project_config.unit_comments.unit_affine
+                ),
+                nonunit_patterns=compile_nonunit_patterns(
+                    state.project_config.unit_comments.nonunit
+                ),
+                nonunit_assume_patterns=compile_nonstructured_patterns(
+                    state.project_config.unit_comments.nonunit_assume
+                ),
+                nonunit_affine_patterns=compile_nonstructured_patterns(
+                    state.project_config.unit_comments.nonunit_affine
                 ),
                 tree_cache=state.tree_cache,
                 exports_cache=state.exports_cache,

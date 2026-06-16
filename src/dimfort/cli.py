@@ -291,6 +291,8 @@ def _run_check(args: argparse.Namespace) -> int:
     from dimfort.core._source_io import FORTRAN_EXTS, discover_fortran_files
     from dimfort.core.multifile import check_files
     from dimfort.core.unit_patterns import (
+        compile_nonstructured_patterns,
+        compile_nonunit_patterns,
         compile_structured_patterns,
         compile_unit_patterns,
     )
@@ -378,12 +380,21 @@ def _run_check(args: argparse.Namespace) -> int:
             units_file=config.units_file,
             diagnostic_severities=config.diagnostic_severities,
             scale_mode=getattr(args, "scale", False) or config.scale_mode,
-            unit_patterns=compile_unit_patterns(config.unit_comment_delimiters),
+            unit_patterns=compile_unit_patterns(config.unit_comments.unit),
             assume_patterns=compile_structured_patterns(
-                config.unit_assume_comment_delimiters
+                config.unit_comments.unit_assume
             ),
             affine_patterns=compile_structured_patterns(
-                config.unit_affine_comment_delimiters
+                config.unit_comments.unit_affine
+            ),
+            nonunit_patterns=compile_nonunit_patterns(
+                config.unit_comments.nonunit
+            ),
+            nonunit_assume_patterns=compile_nonstructured_patterns(
+                config.unit_comments.nonunit_assume
+            ),
+            nonunit_affine_patterns=compile_nonstructured_patterns(
+                config.unit_comments.nonunit_affine
             ),
         )
 
@@ -469,6 +480,8 @@ def _run_interactions(args: argparse.Namespace) -> int:
     from dimfort.core.interactions import collect_interactions
     from dimfort.core.multifile import check_files
     from dimfort.core.unit_patterns import (
+        compile_nonstructured_patterns,
+        compile_nonunit_patterns,
         compile_structured_patterns,
         compile_unit_patterns,
     )
@@ -507,12 +520,21 @@ def _run_interactions(args: argparse.Namespace) -> int:
         external_modules=frozenset(config.external_modules),
         units_file=config.units_file,
         scale_mode=args.scale or config.scale_mode,
-        unit_patterns=compile_unit_patterns(config.unit_comment_delimiters),
+        unit_patterns=compile_unit_patterns(config.unit_comments.unit),
         assume_patterns=compile_structured_patterns(
-            config.unit_assume_comment_delimiters
+            config.unit_comments.unit_assume
         ),
         affine_patterns=compile_structured_patterns(
-            config.unit_affine_comment_delimiters
+            config.unit_comments.unit_affine
+        ),
+        nonunit_patterns=compile_nonunit_patterns(
+            config.unit_comments.nonunit
+        ),
+        nonunit_assume_patterns=compile_nonstructured_patterns(
+            config.unit_comments.nonunit_assume
+        ),
+        nonunit_affine_patterns=compile_nonstructured_patterns(
+            config.unit_comments.nonunit_affine
         ),
     )
 
@@ -600,6 +622,8 @@ def _run_coverage(args: argparse.Namespace) -> int:
     )
     from dimfort.core.multifile import check_files
     from dimfort.core.unit_patterns import (
+        compile_nonstructured_patterns,
+        compile_nonunit_patterns,
         compile_structured_patterns,
         compile_unit_patterns,
     )
@@ -639,12 +663,21 @@ def _run_coverage(args: argparse.Namespace) -> int:
         units_file=config.units_file,
         diagnostic_severities=config.diagnostic_severities,
         scale_mode=config.scale_mode,
-        unit_patterns=compile_unit_patterns(config.unit_comment_delimiters),
+        unit_patterns=compile_unit_patterns(config.unit_comments.unit),
         assume_patterns=compile_structured_patterns(
-            config.unit_assume_comment_delimiters
+            config.unit_comments.unit_assume
         ),
         affine_patterns=compile_structured_patterns(
-            config.unit_affine_comment_delimiters
+            config.unit_comments.unit_affine
+        ),
+        nonunit_patterns=compile_nonunit_patterns(
+            config.unit_comments.nonunit
+        ),
+        nonunit_assume_patterns=compile_nonstructured_patterns(
+            config.unit_comments.nonunit_assume
+        ),
+        nonunit_affine_patterns=compile_nonstructured_patterns(
+            config.unit_comments.nonunit_affine
         ),
     )
 

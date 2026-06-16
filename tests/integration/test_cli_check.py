@@ -97,8 +97,8 @@ def test_bracket_pattern_attaches_to_all_multivar_names(tmp_path, capsys):
     """End-to-end (spec §6, Q1-unified): a configured `[`/`]` pattern
     on a multi-variable declaration attaches to every name; no U022."""
     (tmp_path / "dimfort.toml").write_text(
-        '[parser]\n'
-        'unit_comment_delimiters = [\n'
+        '[parser.unit_comments]\n'
+        'unit = [\n'
         '  { open = "@unit{", close = "}" },\n'
         '  { open = "[",      close = "]" },\n'
         ']\n'
@@ -119,8 +119,8 @@ def test_u021_fires_on_disagreeing_pattern_captures(tmp_path, capsys):
     different capture text → U021 WARNING; the first-listed capture
     is the one that attaches."""
     (tmp_path / "dimfort.toml").write_text(
-        '[parser]\n'
-        'unit_comment_delimiters = [\n'
+        '[parser.unit_comments]\n'
+        'unit = [\n'
         '  { open = "@unit{", close = "}" },\n'
         '  { open = "[",      close = "]" },\n'
         ']\n'
@@ -142,8 +142,8 @@ def test_u021_silent_on_identical_captures(tmp_path, capsys):
     """Spec §8.2: identical captures across patterns produce no
     diagnostic."""
     (tmp_path / "dimfort.toml").write_text(
-        '[parser]\n'
-        'unit_comment_delimiters = [\n'
+        '[parser.unit_comments]\n'
+        'unit = [\n'
         '  { open = "@unit{", close = "}" },\n'
         '  { open = "[",      close = "]" },\n'
         ']\n'

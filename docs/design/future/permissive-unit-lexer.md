@@ -56,7 +56,7 @@ The other half of the adoption story —
 (0.2.2) — already lets a team tell DimFort *which substring* in a
 comment is the unit. This note covers one orthogonal half: **how
 DimFort parses the substring once extracted**. A sibling note
-[unit-comment-skip-delimiters](unit-comment-skip-delimiters.md)
+[unit-comment-markers](../shipped/unit-comment-markers.md)
 covers the other half — **how DimFort decides which parens not to
 extract at all** (citation / qualifier / year-only patterns).
 
@@ -773,11 +773,11 @@ properly **not lexer concerns**:
   extract-a-unit-from-a-comment heuristics, not unit-string lexer.
 - **Year-only `(2002)`** (Corpus A 260 / B 175 / C 690 / D 140 /
   E 110 / F absent) — citation false positives. Belong in
-  [skip delimiters](unit-comment-skip-delimiters.md) — author-declared
+  [skip delimiters](../shipped/unit-comment-markers.md) — author-declared
   non-unit parens, not unit-string lexer.
 - **`(see Schmidt et al., 2002)`** (Corpus A 52 / B 43 / C 596 /
   D 27 / E 75) — prefix-marked citations. Same —
-  [skip delimiters](unit-comment-skip-delimiters.md).
+  [skip delimiters](../shipped/unit-comment-markers.md).
 - **`(STATIC,OMP_CHUNK)`-style uppercase OMP/threading tags** —
   Corpus A 365 + Corpus D 53 (profiling-framework threading
   handles). Content-regex skip delimiter on uppercase-comma
