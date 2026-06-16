@@ -28,7 +28,7 @@ def _scan(
 def test_post_attaches_to_declaration_on_same_line():
     scan = _scan(
         annotations=[RawAnnotation(AnnotationKind.POST, 3, 12, "m/s")],
-        declarations=[DeclarationSite(3, 3, ("v",))],
+        declarations=[DeclarationSite.for_test(3, 3, ("v",))],
     )
     res = attach(scan)
     assert res.var_units == {"v": "m/s"}
@@ -38,7 +38,7 @@ def test_post_attaches_to_declaration_on_same_line():
 def test_post_applies_to_every_name_in_declaration_list():
     scan = _scan(
         annotations=[RawAnnotation(AnnotationKind.POST, 5, 20, "m")],
-        declarations=[DeclarationSite(5, 5, ("a", "b", "c"))],
+        declarations=[DeclarationSite.for_test(5, 5, ("a", "b", "c"))],
     )
     res = attach(scan)
     assert res.var_units == {"a": "m", "b": "m", "c": "m"}
@@ -50,7 +50,7 @@ def test_post_on_last_line_of_continuation_attaches():
     #          density   !< @unit{Pa}`
     scan = _scan(
         annotations=[RawAnnotation(AnnotationKind.POST, 18, 30, "Pa")],
-        declarations=[DeclarationSite(16, 18, ("pressure", "temperature", "density"))],
+        declarations=[DeclarationSite.for_test(16, 18, ("pressure", "temperature", "density"))],
     )
     res = attach(scan)
     assert res.var_units == {
@@ -60,19 +60,33 @@ def test_post_on_last_line_of_continuation_attaches():
     }
 
 
-def test_post_on_first_line_of_continuation_attaches():
+def test_post_on_first_line_of_continuation_attaches_to_first_line_names():
+    """0.2.7 per-line rule: annotation on line N attaches to names
+    whose declaration tokens end on line N. With real per-name spans
+    where ``a1`` ends on line 21 and ``a2`` / ``a3`` end on later
+    lines, the POST on line 21 attaches to ``a1`` only."""
+    from dimfort.core.annotations import NameSpan
     scan = _scan(
         annotations=[RawAnnotation(AnnotationKind.POST, 21, 30, "kg")],
-        declarations=[DeclarationSite(21, 23, ("a1", "a2", "a3"))],
+        declarations=[
+            DeclarationSite(
+                line_start=21, line_end=23,
+                name_spans=(
+                    NameSpan("a1", 21, 1, 21, 1),
+                    NameSpan("a2", 22, 1, 22, 1),
+                    NameSpan("a3", 23, 1, 23, 1),
+                ),
+            ),
+        ],
     )
     res = attach(scan)
-    assert res.var_units == {"a1": "kg", "a2": "kg", "a3": "kg"}
+    assert res.var_units == {"a1": "kg"}
 
 
 def test_post_outside_any_declaration_is_orphan():
     scan = _scan(
         annotations=[RawAnnotation(AnnotationKind.POST, 7, 1, "kg")],
-        declarations=[DeclarationSite(3, 3, ("v",))],
+        declarations=[DeclarationSite.for_test(3, 3, ("v",))],
     )
     res = attach(scan)
     assert res.var_units == {}
@@ -87,7 +101,7 @@ def test_pre_single_line_block_attaches_to_next_declaration():
     scan = _scan(
         annotations=[RawAnnotation(AnnotationKind.PRE, 3, 1, "m/s")],
         pre_block_lines=[3],
-        declarations=[DeclarationSite(4, 4, ("v",))],
+        declarations=[DeclarationSite.for_test(4, 4, ("v",))],
     )
     res = attach(scan)
     assert res.var_units == {"v": "m/s"}
@@ -97,27 +111,35 @@ def test_pre_multi_line_block_attaches_after_block_end():
     scan = _scan(
         annotations=[RawAnnotation(AnnotationKind.PRE, 2, 1, "kg*m/s^2")],
         pre_block_lines=[1, 2, 3],
-        declarations=[DeclarationSite(4, 4, ("f",))],
+        declarations=[DeclarationSite.for_test(4, 4, ("f",))],
     )
     res = attach(scan)
     assert res.var_units == {"f": "kg*m/s^2"}
 
 
-def test_pre_block_before_continued_declaration_attaches():
+def test_pre_block_before_continued_declaration_emits_u024():
+    """0.2.7: PRE unit annotation above a multi-line declaration is
+    refused. The author is asked to switch to inline POST per-line."""
     scan = _scan(
         annotations=[RawAnnotation(AnnotationKind.PRE, 1, 1, "1")],
         pre_block_lines=[1],
-        declarations=[DeclarationSite(2, 4, ("alpha", "beta", "gamma"))],
+        declarations=[DeclarationSite.for_test(2, 4, ("alpha", "beta", "gamma"))],
     )
     res = attach(scan)
-    assert res.var_units == {"alpha": "1", "beta": "1", "gamma": "1"}
+    assert res.var_units == {}
+    assert len(res.pre_on_multiline) == 1
+    rec = res.pre_on_multiline[0]
+    assert rec.line == 1
+    assert rec.decl_line_start == 2
+    assert rec.decl_line_end == 4
+    assert "multi-line" in rec.reason
 
 
 def test_pre_without_following_declaration_is_orphan():
     scan = _scan(
         annotations=[RawAnnotation(AnnotationKind.PRE, 3, 1, "m")],
         pre_block_lines=[3],
-        declarations=[DeclarationSite(10, 10, ("v",))],
+        declarations=[DeclarationSite.for_test(10, 10, ("v",))],
     )
     res = attach(scan)
     assert res.var_units == {}
@@ -135,62 +157,108 @@ def test_pre_and_post_matching_unit_is_fine():
             RawAnnotation(AnnotationKind.POST, 4, 20, "m"),
         ],
         pre_block_lines=[3],
-        declarations=[DeclarationSite(4, 4, ("v",))],
+        declarations=[DeclarationSite.for_test(4, 4, ("v",))],
     )
     res = attach(scan)
     assert res.var_units == {"v": "m"}
     assert res.conflicts == []
 
 
-# ---------- U010 — intermediate continuation line --------------------------
+# ---------- 0.2.7 per-line attach (replaces the retired U010) -------------
 
 
-def test_post_on_intermediate_continuation_line_is_rejected():
-    # `real :: a, &
-    #          b, &      !<  HERE — interior of the continuation
-    #          c`
+def test_post_on_intermediate_continuation_line_attaches_per_line():
+    """0.2.7: POST on a continuation line attaches to the names whose
+    declaration tokens end on that line. Replaces the retired U010
+    reject — the annotation is now applied, not refused."""
+    from dimfort.core.annotations import NameSpan
+    # `real :: a, &       (line 1 — a ends here)
+    #          b, &       (line 2 — b ends here, annotation lands here)
+    #          c`         (line 3 — c ends here)
     scan = _scan(
         annotations=[RawAnnotation(AnnotationKind.POST, 2, 30, "m")],
-        declarations=[DeclarationSite(1, 3, ("a", "b", "c"))],
+        declarations=[
+            DeclarationSite(
+                line_start=1, line_end=3,
+                name_spans=(
+                    NameSpan("a", 1, 1, 1, 1),
+                    NameSpan("b", 2, 1, 2, 1),
+                    NameSpan("c", 3, 1, 3, 1),
+                ),
+            ),
+        ],
     )
     res = attach(scan)
-    assert res.var_units == {}, "U010 must NOT apply the annotation"
-    assert len(res.intermediate_continuations) == 1
-    rec = res.intermediate_continuations[0]
-    assert rec.line == 2
-    assert rec.declaration_line_start == 1
-    assert rec.declaration_line_end == 3
-    assert "intermediate" in rec.reason
+    assert res.var_units == {"b": "m"}
+    # U025 fires: annotation on a non-last line; later names (c)
+    # remain unannotated.
+    assert len(res.migration_detections) == 1
+    mig = res.migration_detections[0]
+    assert mig.unannotated_names == ("c",)
 
 
-def test_post_on_first_line_of_continuation_is_not_u010():
-    scan = _scan(
-        annotations=[RawAnnotation(AnnotationKind.POST, 1, 30, "kg")],
-        declarations=[DeclarationSite(1, 3, ("a", "b", "c"))],
-    )
-    res = attach(scan)
-    assert res.var_units == {"a": "kg", "b": "kg", "c": "kg"}
-    assert res.intermediate_continuations == []
-
-
-def test_post_on_last_line_of_continuation_is_not_u010():
+def test_post_on_last_line_of_continuation_attaches_to_last_line_names():
+    """POST on the last line of a continuation attaches to the names
+    ending on that line."""
+    from dimfort.core.annotations import NameSpan
     scan = _scan(
         annotations=[RawAnnotation(AnnotationKind.POST, 3, 30, "Pa")],
-        declarations=[DeclarationSite(1, 3, ("a", "b", "c"))],
+        declarations=[
+            DeclarationSite(
+                line_start=1, line_end=3,
+                name_spans=(
+                    NameSpan("a", 1, 1, 1, 1),
+                    NameSpan("b", 2, 1, 2, 1),
+                    NameSpan("c", 3, 1, 3, 1),
+                ),
+            ),
+        ],
     )
     res = attach(scan)
-    assert res.var_units == {"a": "Pa", "b": "Pa", "c": "Pa"}
-    assert res.intermediate_continuations == []
+    assert res.var_units == {"c": "Pa"}
+    # No U025: the annotation is on the last continuation line; no
+    # names sit on later lines, so the migration-detection pattern
+    # doesn't fire.
+    assert res.migration_detections == []
 
 
-def test_single_line_declaration_is_not_u010():
+def test_single_line_declaration_post_attaches_to_all():
+    """Single-line decl: every name's span ends on the same line as
+    the annotation, so the per-line rule degenerates to today's
+    attach-all-on-this-line behaviour."""
     scan = _scan(
         annotations=[RawAnnotation(AnnotationKind.POST, 5, 20, "m")],
-        declarations=[DeclarationSite(5, 5, ("v",))],
+        declarations=[DeclarationSite.for_test(5, 5, ("v",))],
     )
     res = attach(scan)
     assert res.var_units == {"v": "m"}
-    assert res.intermediate_continuations == []
+    assert res.migration_detections == []
+
+
+def test_post_inside_decl_range_with_no_name_ending_silently_noops():
+    """The pre-0.2.7 U010 case where the annotation is inside a
+    continuation but no name's tokens end on that line: under the
+    per-line rule the annotation attaches to nothing (silent
+    no-op). The variables remain unannotated."""
+    from dimfort.core.annotations import NameSpan
+    # An annotation on line 2 — but no name ends on line 2. Both
+    # ``foo`` and ``bar`` end on line 3 (their declaration tokens
+    # finish at the closing paren of ``bar(:,:)``).
+    scan = _scan(
+        annotations=[RawAnnotation(AnnotationKind.POST, 2, 30, "kg")],
+        declarations=[
+            DeclarationSite(
+                line_start=1, line_end=3,
+                name_spans=(
+                    NameSpan("foo", 1, 11, 3, 22),
+                    NameSpan("bar", 3, 24, 3, 32),
+                ),
+            ),
+        ],
+    )
+    res = attach(scan)
+    assert res.var_units == {}
+    assert res.orphans == []
 
 
 # ---------- derived-type field annotations ---------------------------------
@@ -200,7 +268,7 @@ def test_field_annotation_goes_into_field_units_not_var_units():
     scan = _scan(
         annotations=[RawAnnotation(AnnotationKind.POST, 2, 20, "kg")],
         declarations=[
-            DeclarationSite(2, 2, ("m",), enclosing_type="particle"),
+            DeclarationSite.for_test(2, 2, ("m",), enclosing_type="particle"),
         ],
     )
     res = attach(scan)
@@ -215,8 +283,8 @@ def test_field_and_local_with_same_name_dont_collide():
             RawAnnotation(AnnotationKind.POST, 5, 20, "m"),     # local
         ],
         declarations=[
-            DeclarationSite(2, 2, ("m",), enclosing_type="particle"),
-            DeclarationSite(5, 5, ("m",), enclosing_type=None),
+            DeclarationSite.for_test(2, 2, ("m",), enclosing_type="particle"),
+            DeclarationSite.for_test(5, 5, ("m",), enclosing_type=None),
         ],
     )
     res = attach(scan)
@@ -231,7 +299,7 @@ def test_pre_and_post_disagree_records_conflict():
             RawAnnotation(AnnotationKind.POST, 4, 20, "kg"),
         ],
         pre_block_lines=[3],
-        declarations=[DeclarationSite(4, 4, ("v",))],
+        declarations=[DeclarationSite.for_test(4, 4, ("v",))],
     )
     res = attach(scan)
     assert res.var_units == {"v": "m"}
@@ -331,7 +399,7 @@ def test_var_units_span_uses_raw_annotation_end_column():
                 end_column=17,  # custom: 12 + len("[m/s]") - non-canonical span
             ),
         ],
-        declarations=[DeclarationSite(3, 3, ("v",))],
+        declarations=[DeclarationSite.for_test(3, 3, ("v",))],
     )
     res = attach(scan)
     assert res.var_units_span["v"] == (3, 12, 17)

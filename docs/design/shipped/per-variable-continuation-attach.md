@@ -1,17 +1,18 @@
 # Per-variable continuation-line attachment
 
-**Status:** **0.2.7 design pass complete; implementation pending.**
-Drafted 2026-06-15 from the late-cycle method-triangulation finding
-that surfaced an attach-rule issue larger in empirical payoff than
-any single lexer-flag work. File stays in `future/` until
-implementation lands and is promoted to `shipped/`.
+**Status:** **Shipped in 0.2.7.** Drafted 2026-06-15 from the
+late-cycle method-triangulation finding that surfaced an
+attach-rule issue larger in empirical payoff than any single
+lexer-flag work; landed 2026-06-16 alongside the unit-comment
+namespace migration. Promoted to `shipped/` on the day the
+implementation merged.
 
 Sibling notes:
-- [`permissive-unit-lexer.md`](permissive-unit-lexer.md) — the
+- [`../future/permissive-unit-lexer.md`](../future/permissive-unit-lexer.md) — the
   lexer flags ship in the same release; without this attach-rule
   change, one corpus's adoption caps at ~60 % regardless of lexer
   perfection.
-- [`../shipped/unit-comment-markers.md`](../shipped/unit-comment-markers.md)
+- [`unit-comment-markers.md`](unit-comment-markers.md)
   — the orthogonal extraction-side companion.
 
 ## 1. Problem

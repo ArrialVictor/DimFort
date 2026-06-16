@@ -107,7 +107,18 @@ from dimfort import __version__ as _dimfort_version
 #      Pre-v10 entries replayed under the new default would serve
 #      diagnostics for content the new pipeline silently drops; bump
 #      invalidates so the next check rebuilds with the filter applied.
-CHECKER_OUTPUT_VERSION = 10
+# v11: 0.2.7 per-variable continuation-attach landed. The
+#      ``DeclarationSite`` data shape changed (``names`` flat tuple →
+#      ``name_spans`` per-name positions), the attach rule swapped
+#      from "POST on any line of decl attaches to all names" to
+#      "POST on line N attaches to names ending on line N", U010 was
+#      retired, and two new diagnostics shipped (U024 PRE-on-multi-
+#      line refuse, U025 migration-detection info). Pre-v11 cache
+#      entries replay the old attach behaviour against unchanged
+#      source bytes — producing diagnostic sets that the new code
+#      wouldn't emit. Bump invalidates so the next check rebuilds
+#      under the per-line rule.
+CHECKER_OUTPUT_VERSION = 11
 
 
 # Keys from a workspace config that affect a *file's* output and

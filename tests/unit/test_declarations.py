@@ -26,19 +26,19 @@ def _decls(src: str) -> list[DeclarationSite]:
 def test_single_real():
     """A bare ``real :: v`` produces one site with the name and 1-based line."""
     decls = _decls("real :: v\n")
-    assert decls == [DeclarationSite(1, 1, ("v",))]
+    assert decls == [DeclarationSite.for_test(1, 1, ("v",))]
 
 
 def test_declaration_list():
     """Comma-separated names on one line come out in source order."""
     decls = _decls("real :: a, b, c\n")
-    assert decls == [DeclarationSite(1, 1, ("a", "b", "c"))]
+    assert decls == [DeclarationSite.for_test(1, 1, ("a", "b", "c"))]
 
 
 def test_integer_with_attributes():
     """A ``, parameter`` qualifier and ``= 10`` initializer don't hide the name."""
     decls = _decls("integer, parameter :: N = 10\n")
-    assert decls == [DeclarationSite(1, 1, ("N",))]
+    assert decls == [DeclarationSite.for_test(1, 1, ("N",))]
 
 
 def test_continuation_two_lines():
@@ -52,7 +52,7 @@ def test_continuation_two_lines():
         "        b\n"
     )
     decls = _decls(src)
-    assert decls == [DeclarationSite(1, 2, ("a", "b"))]
+    assert decls == [DeclarationSite.for_test(1, 2, ("a", "b"))]
 
 
 def test_continuation_three_lines():
@@ -63,7 +63,7 @@ def test_continuation_three_lines():
         "        density\n"
     )
     decls = _decls(src)
-    assert decls == [DeclarationSite(1, 3, ("pressure", "temperature", "density"))]
+    assert decls == [DeclarationSite.for_test(1, 3, ("pressure", "temperature", "density"))]
 
 
 def test_continuation_with_trailing_post_comment_on_first_line():
@@ -74,7 +74,7 @@ def test_continuation_with_trailing_post_comment_on_first_line():
         "        a3\n"
     )
     decls = _decls(src)
-    assert decls == [DeclarationSite(1, 3, ("a1", "a2", "a3"))]
+    assert decls == [DeclarationSite.for_test(1, 3, ("a1", "a2", "a3"))]
 
 
 def test_continuation_with_trailing_post_comment_on_last_line():
@@ -85,7 +85,7 @@ def test_continuation_with_trailing_post_comment_on_last_line():
         "        density   !< @unit{Pa}\n"
     )
     decls = _decls(src)
-    assert decls == [DeclarationSite(1, 3, ("pressure", "temperature", "density"))]
+    assert decls == [DeclarationSite.for_test(1, 3, ("pressure", "temperature", "density"))]
 
 
 def test_type_with_dimension_attribute():
@@ -95,25 +95,25 @@ def test_type_with_dimension_attribute():
     a *use* of an existing name and lives under ``type_qualifier``.
     """
     decls = _decls("real, dimension(3) :: v\n")
-    assert decls == [DeclarationSite(1, 1, ("v",))]
+    assert decls == [DeclarationSite.for_test(1, 1, ("v",))]
 
 
 def test_derived_type_var():
     """``type(particle) :: p`` declares ``p`` (no enclosing type scope opened)."""
     decls = _decls("type(particle) :: p\n")
-    assert decls == [DeclarationSite(1, 1, ("p",))]
+    assert decls == [DeclarationSite.for_test(1, 1, ("p",))]
 
 
 def test_initializer_not_in_name():
     """``real :: g = 9.81`` yields one name ``g`` — the literal is not collected."""
     decls = _decls("real :: g = 9.81\n")
-    assert decls == [DeclarationSite(1, 1, ("g",))]
+    assert decls == [DeclarationSite.for_test(1, 1, ("g",))]
 
 
 def test_initializer_array_with_commas():
     """Commas inside ``(/1,2,3/)`` are array-constructor separators, not entity separators."""
     decls = _decls("integer :: v(3) = (/1, 2, 3/)\n")
-    assert decls == [DeclarationSite(1, 1, ("v",))]
+    assert decls == [DeclarationSite.for_test(1, 1, ("v",))]
 
 
 def test_non_declaration_lines_are_ignored():
@@ -129,7 +129,7 @@ def test_non_declaration_lines_are_ignored():
         "end program\n"
     )
     decls = _decls(src)
-    assert decls == [DeclarationSite(3, 3, ("v",))]
+    assert decls == [DeclarationSite.for_test(3, 3, ("v",))]
 
 
 def test_multiple_declarations_in_order():
@@ -156,8 +156,8 @@ def test_amp_inside_string_does_not_continue():
     )
     decls = _decls(src)
     assert decls == [
-        DeclarationSite(1, 1, ("s",)),
-        DeclarationSite(2, 2, ("v",)),
+        DeclarationSite.for_test(1, 1, ("s",)),
+        DeclarationSite.for_test(2, 2, ("v",)),
     ]
 
 
@@ -192,7 +192,7 @@ def test_type_block_with_attributes():
         "end type\n"
     )
     decls = _decls(src)
-    assert decls == [DeclarationSite(2, 2, ("temp",), enclosing_type="state")]
+    assert decls == [DeclarationSite.for_test(2, 2, ("temp",), enclosing_type="state")]
 
 
 def test_type_declaration_as_use_is_not_a_block_open():
@@ -203,7 +203,7 @@ def test_type_declaration_as_use_is_not_a_block_open():
     """
     src = "type(particle) :: b\n"
     decls = _decls(src)
-    assert decls == [DeclarationSite(1, 1, ("b",), enclosing_type=None)]
+    assert decls == [DeclarationSite.for_test(1, 1, ("b",), enclosing_type=None)]
 
 
 def test_declarations_recover_around_syntax_errors():
