@@ -872,6 +872,22 @@ Formally, the guarantee splits along the structural divide of §4.2:
 Confluence of the rewrites composed with non-ambiguity of the
 grammar gives the end-to-end Guarantee 1.
 
+**Residual edge case.** The known-unit guard on
+`allow_integer_suffix_exp` (and `allow_bare_digit_exp`) covers the
+14 canonical-unit prefixes. A construction like `Pa^{m-1}` — where
+the author *intends* `m` as a symbolic exponent variable, not the
+meter unit — would mis-trigger the rule because `m` is in the
+guard list. The output `Pa^(m^-1)` fails to parse and surfaces
+`UnitError` rather than a silently wrong dimensional answer, so
+the failure mode is loud, not silent. The case is practically
+unreachable: physicists use Greek letters (`kappa`, `lambda`,
+`mu`) or short math vars (`n`, `p`, `q`) for symbolic exponents —
+none of which collide with the unit list. Documented here so a
+future maintainer hitting this knows it's a known limitation
+rather than a bug. Fix path if it ever bites: track paren-depth
+inside `^(...)` exponent contexts and skip the recognition rules
+there.
+
 **Implementation note — pipeline vs term-rewriting.** The framing
 above describes an abstract rewriting system (apply any applicable
 rule until no redex remains). The implementation in
