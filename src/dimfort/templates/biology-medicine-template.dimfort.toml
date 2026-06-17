@@ -1,0 +1,37 @@
+# DimFort biology / medicine template
+# ============================================================================
+#
+# Discovery surface. Every entry is commented out; uncomment what your
+# project actually uses.
+#
+# Schema: see `default_units.toml` header.
+# Sources: BIPM SI 9th ed., IUPAC Gold Book, DimFort catalog §6.22.
+
+[derived]
+
+# --- Enzymology ---
+# U = { dim = "N*T^-1", factor = "1.667e-8", quantitykind = "CatalyticActivity", aliases = ["enzyme_unit"] }   # μmol/min ≈ 16.67 nkat
+# katal — already in default_units.toml as `kat`.
+
+# --- Genetics / molecular biology ---
+# bp = { dim = "1", quantitykind = "BasePairs" }   # base pair (nucleotide count)
+
+# --- Sedimentation ---
+# svedberg_unit = { dim = "T", factor = "1e-13", quantitykind = "SedimentationCoefficient", aliases = ["Sv_sedim"] }   # 10^-13 s
+# Note: symbol `S` collides with siemens (already in defaults); use
+# `svedberg_unit` as the canonical name.
+
+# --- Body composition / metabolism ---
+# BMI = { dim = "M*L^-2", quantitykind = "BodyMassIndex" }   # kg/m^2
+
+# --- Insulation / thermal comfort ---
+# clo = { dim = "Theta*T^3*M^-1", factor = "0.155", quantitykind = "ThermalInsulance" }                     # 0.155 m^2·K/W
+# RSI = { dim = "Theta*T^3*M^-1",                  quantitykind = "ThermalInsulance" }                     # 1 m^2·K/W
+
+# ============================================================================
+# Scale / varies — not in dimensional algebra
+# ============================================================================
+# IU (international unit, substance-specific), MET (metabolic equivalent,
+# substance-specific), centimorgan (cM, genetic distance scale), Mohs
+# hardness — these are operational scales or vary by substance. Future
+# doctor lint will surface them as [scale] / [varies].

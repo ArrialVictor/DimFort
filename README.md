@@ -135,12 +135,20 @@ CPP `#`-directives DimFort shells out to the system `cpp` if
 ## Usage
 
 ```bash
+dimfort init -t climate              # generate dimfort.toml from a discipline template
 dimfort check path/to/file.f90       # check a single file
 dimfort check path/to/project/       # walk a directory recursively
 dimfort check path/...  --summary    # also print a per-file H/U count table
 dimfort interactions <var> path/...  # cross-site unit report for one variable
 dimfort lsp                          # start the language server (stdio)
 ```
+
+`dimfort init` writes a project `dimfort.toml` that opens with the SI core
+(inherited from the shipped defaults) and includes all five discipline
+templates — selected ones uncommented and ready to use, the rest commented
+out in the same file for in-file discovery. Pass `-t climate,astronomy`
+to activate multiple, `--bare` to skip templates entirely, or `--dry-run`
+to print the result without writing.
 
 `interactions` is an on-demand query: for a single variable it lists every
 site that reads or writes it across the workset — grouped into Declaration /

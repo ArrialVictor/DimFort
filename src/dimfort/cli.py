@@ -257,6 +257,54 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON instead of the human-readable table.",
     )
 
+    init = sub.add_parser(
+        "init",
+        help="Generate a project's dimfort.toml from discipline templates.",
+        description=(
+            "Generate a project dimfort.toml that opens with the SI core "
+            "(inherited from the shipped default_units.toml) and includes "
+            "all discipline templates — selected templates uncommented and "
+            "ready to use, unselected templates commented for in-file "
+            "discovery."
+        ),
+    )
+    init.add_argument(
+        "--templates", "-t",
+        default="",
+        help=(
+            "Comma-separated list of discipline templates to activate "
+            "(climate, astronomy, geosciences, biology-medicine, legacy). "
+            "Unselected templates are included in the output, commented "
+            "out, for in-file discovery."
+        ),
+    )
+    init.add_argument(
+        "--output", "-o",
+        type=Path,
+        default=Path("dimfort.toml"),
+        help=(
+            "Output path for the generated config (default: ./dimfort.toml)."
+        ),
+    )
+    init.add_argument(
+        "--bare",
+        action="store_true",
+        help=(
+            "Skip discipline templates entirely. Generate just the SI core "
+            "scaffolding with a project-local-additions section."
+        ),
+    )
+    init.add_argument(
+        "--force", "-f",
+        action="store_true",
+        help="Overwrite an existing dimfort.toml without prompting.",
+    )
+    init.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the generated config to stdout instead of writing.",
+    )
+
     return parser
 
 
@@ -833,6 +881,173 @@ def _run_show_defaults(args: argparse.Namespace) -> int:
     return 2
 
 
+_AVAILABLE_TEMPLATES = (
+    "climate", "astronomy", "geosciences", "biology-medicine", "legacy",
+)
+
+
+def _load_template(name: str) -> str:
+    """Read a discipline template's contents from the shipped package."""
+    from importlib import resources
+
+    return (
+        resources.files("dimfort.templates")
+        .joinpath(f"{name}-template.dimfort.toml")
+        .read_text(encoding="utf-8")
+    )
+
+
+def _activate_template_block(content: str) -> str:
+    """Strip the leading '# ' from commented entry lines in a template.
+
+    Section comments like ``# --- Ocean transport ---`` and header text
+    are preserved. Only lines that look like commented TOML entries
+    (``# foo = { dim = "..."`` etc.) get uncommented.
+    """
+    out: list[str] = []
+    for line in content.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("# ") and "=" in stripped and (
+            "dim =" in stripped or "expr =" in stripped
+        ):
+            # Strip the leading "# " (the lstrip handles any leading spaces).
+            indent = line[: len(line) - len(stripped)]
+            out.append(indent + stripped[2:])
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
+def _extract_derived_section(content: str) -> str:
+    """Strip the header and ``[derived]`` line, return the entries body.
+
+    Each template starts with a docstring header and a single ``[derived]``
+    line, then the body. We strip both so we can compose multiple templates
+    into a single ``[derived]`` section.
+    """
+    lines = content.splitlines()
+    # Find the [derived] line; keep everything AFTER it.
+    for i, line in enumerate(lines):
+        if line.strip() == "[derived]":
+            return "\n".join(lines[i + 1 :]).lstrip("\n")
+    # If no [derived] section (shouldn't happen), return as-is.
+    return content
+
+
+def _run_init(args: argparse.Namespace) -> int:
+    """Generate a project ``dimfort.toml`` from discipline templates.
+
+    Combines:
+
+    1. A header block naming the active templates.
+    2. A ``[derived]`` section that absorbs every discipline template's
+       ``[derived]`` body. Active templates get their entries uncommented;
+       unselected templates stay commented for in-file discovery.
+    3. A project-local-additions footer.
+
+    Args:
+        args: Parsed argparse namespace for the ``init`` subcommand.
+
+    Returns:
+        ``0`` on success; ``1`` on bad template name or write failure;
+        ``2`` if the output exists and ``--force`` wasn't supplied.
+    """
+    # Parse template list
+    if args.bare:
+        active: set[str] = set()
+    else:
+        active = {t.strip() for t in args.templates.split(",") if t.strip()}
+        unknown = active - set(_AVAILABLE_TEMPLATES)
+        if unknown:
+            print(
+                f"dimfort init: unknown templates: {sorted(unknown)}. "
+                f"Available: {', '.join(_AVAILABLE_TEMPLATES)}",
+                file=sys.stderr,
+            )
+            return 1
+
+    # Check output path
+    if not args.dry_run and args.output.exists() and not args.force:
+        print(
+            f"dimfort init: {args.output} already exists. Use --force to "
+            f"overwrite, --dry-run to preview, or pick another --output path.",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Assemble the output
+    out_lines: list[str] = []
+    out_lines.append("# DimFort project unit configuration")
+    out_lines.append("# Generated by `dimfort init`")
+    if active:
+        out_lines.append(f"# Active templates: {', '.join(sorted(active))}")
+    else:
+        out_lines.append("# No active templates (SI core only)")
+    out_lines.append(
+        "# Inherits base + prefixes + SI derived from DimFort's shipped "
+        "default_units.toml."
+    )
+    out_lines.append(
+        "# Schema and provenance: see docs/reference/units-source-citations.md"
+    )
+    out_lines.append(
+        "# " + "=" * 75
+    )
+    out_lines.append("")
+
+    if not args.bare:
+        out_lines.append("[derived]")
+        out_lines.append("")
+        for tmpl in _AVAILABLE_TEMPLATES:
+            try:
+                raw = _load_template(tmpl)
+            except (FileNotFoundError, OSError) as exc:
+                print(
+                    f"dimfort init: cannot read {tmpl} template: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            body = _extract_derived_section(raw)
+            if tmpl in active:
+                body = _activate_template_block(body)
+                state = "ACTIVE"
+            else:
+                state = "commented; uncomment to activate"
+            header = f"=== {tmpl.upper()} template ({state}) ==="
+            out_lines.append("# " + "=" * 75)
+            out_lines.append("# " + header)
+            out_lines.append("# " + "=" * 75)
+            out_lines.append("")
+            out_lines.append(body.rstrip("\n"))
+            out_lines.append("")
+
+    out_lines.append("# " + "=" * 75)
+    out_lines.append("# Project-local additions")
+    out_lines.append("# " + "=" * 75)
+    out_lines.append("")
+    out_lines.append("# Add your project-specific units below this line.")
+    out_lines.append("")
+    output = "\n".join(out_lines)
+
+    if args.dry_run:
+        sys.stdout.write(output)
+        return 0
+
+    try:
+        args.output.write_text(output, encoding="utf-8")
+    except OSError as exc:
+        print(f"dimfort init: cannot write {args.output}: {exc}", file=sys.stderr)
+        return 1
+    n_active = len(active)
+    n_lines = len(output.splitlines())
+    print(
+        f"dimfort init: wrote {args.output} "
+        f"({n_active} active template{'s' if n_active != 1 else ''}, "
+        f"{n_lines} lines)."
+    )
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Top-level dispatch
 # ---------------------------------------------------------------------------
@@ -863,6 +1078,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_coverage(args)
     if args.command == "show-defaults":
         return _run_show_defaults(args)
+    if args.command == "init":
+        return _run_init(args)
     if args.command == "lsp":
         from dimfort.lsp.server import run_stdio
         from dimfort.lsp.state import state
