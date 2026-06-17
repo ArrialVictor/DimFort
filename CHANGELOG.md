@@ -6,6 +6,16 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ### Added
 
+- **Flag-paired rewrite suggestions for U002.** When a unit string
+  fails to parse because a permissive-lexer flag is OFF, the
+  `suggested_rewrite` payload now carries the canonical form: `m**2`
+  → `m^2`, `J.kg^{-1}` → `J*kg^(-1)`, `kg m-3` → `kg*m^-3`, `m·s⁻¹`
+  → `m*s^-1`, etc. One rewrite rule per permissive-lexer flag (§3.1–
+  §3.8 of `docs/design/shipped/permissive-unit-lexer.md`), ordered
+  per the §4.3 pipeline. The post-rewrite parse against the project
+  unit table filters unknown identifiers, so suggestions only fire
+  when the canonical form actually parses.
+
 - **Curated unit vocabulary with discipline templates.** The shipped
   `default_units.toml` is restructured around a hand-curated unit list
   drawn from BIPM SI Brochure 9th ed. (2019, rev 2026), CODATA 2022,
