@@ -24,6 +24,14 @@ import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from dimfort.core.units import (
+    _DOT_MULT_RE,
+    _IMPLICIT_PRODUCT_RE,
+    _INTEGER_SUFFIX_EXP_RE,
+    _apply_latex_brace_rewrite,
+    _apply_unicode_superscript_rewrite,
+)
+
 if TYPE_CHECKING:
     from dimfort.core.units import UnitTable
 
@@ -32,7 +40,10 @@ if TYPE_CHECKING:
 # only on alphabetic-followed-by-digit substrings, so ``m^2`` is
 # untouched and ``kg/m3`` becomes ``kg/m^3``. Idempotent — applying
 # it twice yields the same string (the ``^`` between the groups
-# prevents re-match).
+# prevents re-match). Broader than the flag-paired
+# ``allow_bare_digit_exp`` recogniser (no 14-symbol guard, no
+# digits-9 cap) — the post-rewrite parse against ``UnitTable``
+# filters unknown identifiers (``zz9`` → ``zz^9`` → no suggestion).
 _DIGIT_SUFFIX_RE = re.compile(r"([a-zA-Z]+)(\d+)")
 
 
@@ -42,20 +53,82 @@ def _digit_suffix_to_caret(s: str) -> str:
     Implements the spec §12.2 rule. ``kg/m3`` becomes ``kg/m^3``;
     already-correct strings like ``m^2`` are untouched. Idempotent —
     applying twice yields the same result.
-
-    Args:
-        s: Candidate unit string captured from a comment.
-
-    Returns:
-        Rewritten string with caret-separated exponents.
     """
     return _DIGIT_SUFFIX_RE.sub(r"\1^\2", s)
 
 
+# Layer 3a flag-paired rewrite rules — for each permissive-lexer
+# flag (``permissive-unit-lexer.md`` §3) that's OFF, suggest the
+# canonical form so a U002 emitted on permissive input carries a
+# usable "did you mean ...?" payload. All rules produce strict-
+# canonical output that parses regardless of which flags are on
+# (design principle §2.3 — reading permissive, writing canonical).
+
+
+def _unicode_superscripts_to_caret(s: str) -> str:
+    """``m⁻¹`` → ``m^-1`` (paired with ``allow_unicode_superscripts``)."""
+    return _apply_unicode_superscript_rewrite(s)
+
+
+def _middot_to_star(s: str) -> str:
+    """``m·s`` → ``m*s`` (paired with ``allow_middot_multiplication``)."""
+    return s.replace("·", "*")
+
+
+def _star_star_to_caret(s: str) -> str:
+    """``m**2`` → ``m^2`` (paired with ``allow_fortran_star_star``)."""
+    return s.replace("**", "^")
+
+
+def _latex_braces_to_parens(s: str) -> str:
+    """``m^{-1}`` → ``m^(-1)`` (paired with ``allow_latex_braces``).
+
+    Runs after ``_star_star_to_caret`` so ``m**{2}`` reaches this
+    pass as ``m^{2}`` — matches the tokenizer pipeline order in
+    ``units.py`` (design §4.3).
+    """
+    return _apply_latex_brace_rewrite(s)
+
+
+def _integer_suffix_exp_to_caret(s: str) -> str:
+    """``kg m-3`` → ``kg m^-3`` (paired with ``allow_integer_suffix_exp``).
+
+    Uses the same 14-symbol known-unit guard as the lexer rule
+    (design §3.4), so symbolic-exponent linear forms like
+    ``kappa-1`` are left untouched.
+    """
+    return _INTEGER_SUFFIX_EXP_RE.sub(r"\1^\2", s)
+
+
+def _dot_mult_to_star(s: str) -> str:
+    """``J.kg`` → ``J*kg`` (paired with ``allow_dot_multiplication``).
+
+    Decimal literals (``0.5``, ``1.380658E-23``) are preserved
+    because the lookbehind/ahead require letters on both sides.
+    """
+    return _DOT_MULT_RE.sub("*", s)
+
+
+def _implicit_product_to_star(s: str) -> str:
+    """``kg m`` → ``kg*m`` (paired with ``allow_implicit_product``)."""
+    return _IMPLICIT_PRODUCT_RE.sub("*", s)
+
+
 # In list order; the pipeline runs each rule on the previous rule's
-# output. Add new rules only after the spec §12.5 review.
+# output. The Layer 3a additions follow the design §4.3 pipeline
+# order (codepoint → operator alias → brace rewrite → recognition-
+# subsystem rewrites). The pre-existing ``_digit_suffix_to_caret``
+# (spec §12.2) sits first for backward compatibility and is
+# disjoint from every Layer 3a rule.
 RULES: tuple[Callable[[str], str], ...] = (
     _digit_suffix_to_caret,
+    _unicode_superscripts_to_caret,
+    _middot_to_star,
+    _star_star_to_caret,
+    _latex_braces_to_parens,
+    _integer_suffix_exp_to_caret,
+    _dot_mult_to_star,
+    _implicit_product_to_star,
 )
 
 
