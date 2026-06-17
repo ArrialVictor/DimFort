@@ -13,21 +13,38 @@ TOML schema::
     name = <int> | "p/q"            # exact rational
 
     [derived]
-    name = { expr = "<unit-expr>", prefixable = false }
+    # Catalog form (preferred):
+    name = {
+      dim          = "<SI slot product>",       # "M*L^-1*T^-2"
+      factor       = <int> or "<p/q>",          # scale to base SI; default 1
+      offset       = <num>,                     # affine offset; default 0
+      quantitykind = "<vocabulary>",            # semantic tag; ignored at load
+      aliases      = ["<name>", ...],           # alternate names
+      prefixable   = false,                     # opt-in to prefix expansion
+    }
+    # Compact form (project-local convenience; same semantics):
+    name = { expr = "<existing-unit-expr>", factor = <n>, offset = <n> }
 
 Construction order:
 
 1. Build base units (one slot each).
 2. Build prefix table.
-3. Resolve derived units by repeatedly parsing each ``expr`` against the
-   table-in-progress; defer entries whose dependencies aren't yet defined.
-   The loop terminates when nothing changes; any remaining entry is an error.
-4. Expand ``prefix × prefixable`` and check no resulting name collides with
-   an existing entry.
+3. Resolve derived units. Catalog-form (``dim``) entries resolve immediately
+   without dependency; ``expr``-form entries iterate until convergence.
+4. Register declared aliases as additional names pointing at the same
+   :class:`Unit` instance.
+5. Expand ``prefix × prefixable`` and check no resulting name collides with
+   an existing entry, prefix name, or registered alias.
+
+Override gate: project TOML rejected if it attempts to redefine an existing
+``[base]`` or ``[prefixes]`` entry. Adding new entries to ``[prefixes]`` and
+``[derived]`` is permitted. ``[base]`` may not be extended (the seven SI base
+units are fixed by the standard).
 """
 from __future__ import annotations
 
 import tomllib
+import warnings
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -37,6 +54,7 @@ from dimfort.core.units import (
     DIM_LEN,
     Exponent,
     Unit,
+    UnitAmbiguityWarning,
     UnitError,
     UnitTable,
     UnknownUnitError,
@@ -45,6 +63,12 @@ from dimfort.core.units import (
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("default_units.toml")
 
 _DIM_SLOT = {"M": 0, "L": 1, "T": 2, "Theta": 3, "I": 4, "N": 5, "J": 6}
+_DIM_SLOT_NAMES = tuple(_DIM_SLOT.keys())  # for error messages
+
+# Recognised optional keys on a [derived] entry (catalog form).
+_DERIVED_KEYS = {
+    "expr", "dim", "factor", "offset", "quantitykind", "aliases", "prefixable",
+}
 
 
 def _coerce_factor(value: object) -> Fraction:
@@ -130,15 +154,124 @@ def _build_prefixes(data: dict[str, Any]) -> dict[str, Fraction]:
     return {name: _coerce_factor(value) for name, value in data.items()}
 
 
+def _parse_dim_string(s: str, entry_name: str) -> tuple[Exponent, ...]:
+    """Parse a ``dim`` string like ``"M*L^-1*T^-2"`` into a SI slot tuple.
+
+    Empty product ``"1"`` denotes the dimensionless unit. Other forms
+    are ``*``-joined slot terms; each term is ``<slot>`` or
+    ``<slot>^<int>``. Slot symbols are ``M L T Theta I N J``.
+
+    Args:
+        s: The dim string.
+        entry_name: Name of the entry being parsed (for error messages).
+
+    Returns:
+        Seven-tuple of :class:`Exponent` over the SI base slots in
+        canonical order.
+
+    Raises:
+        UnitError: Unknown slot symbol, malformed exponent, or duplicate
+            slot in the product.
+    """
+    s = s.strip()
+    exponents: list[int] = [0] * DIM_LEN
+    if s in ("1", ""):
+        return tuple(Exponent.from_value(0) for _ in range(DIM_LEN))
+    seen: set[str] = set()
+    for raw_term in s.split("*"):
+        term = raw_term.strip()
+        if not term:
+            raise UnitError(
+                f"derived unit {entry_name!r}: empty term in dim {s!r}"
+            )
+        if "^" in term:
+            slot, _, exp_str = term.partition("^")
+            slot = slot.strip()
+            exp_str = exp_str.strip()
+            try:
+                exp = int(exp_str)
+            except ValueError as exc:
+                raise UnitError(
+                    f"derived unit {entry_name!r}: non-integer exponent "
+                    f"in dim {s!r} term {term!r}"
+                ) from exc
+        else:
+            slot = term
+            exp = 1
+        if slot not in _DIM_SLOT:
+            raise UnitError(
+                f"derived unit {entry_name!r}: unknown slot {slot!r} in "
+                f"dim {s!r}; valid slots: {', '.join(_DIM_SLOT_NAMES)}"
+            )
+        if slot in seen:
+            raise UnitError(
+                f"derived unit {entry_name!r}: slot {slot!r} appears more "
+                f"than once in dim {s!r}; combine into a single term"
+            )
+        seen.add(slot)
+        exponents[_DIM_SLOT[slot]] = exp
+    return tuple(Exponent.from_value(e) for e in exponents)
+
+
+def _build_unit_from_dim(name: str, spec: dict[str, Any]) -> Unit:
+    """Construct a :class:`Unit` from a catalog-form ``dim`` spec.
+
+    No parser dependency; the entry stands alone. Applies optional
+    ``factor`` and ``offset``.
+
+    Args:
+        name: Entry name (for error messages).
+        spec: TOML dict with at least ``dim``; optional ``factor``, ``offset``.
+
+    Returns:
+        The constructed :class:`Unit`.
+
+    Raises:
+        UnitError: Malformed dim or factor/offset spec.
+    """
+    dim_str = spec["dim"]
+    if not isinstance(dim_str, str):
+        raise UnitError(
+            f"derived unit {name!r}: 'dim' must be a string, got {dim_str!r}"
+        )
+    dim = _parse_dim_string(dim_str, name)
+    factor = _coerce_factor(spec["factor"]) if "factor" in spec else Fraction(1)
+    offset = _coerce_factor(spec["offset"]) if "offset" in spec else Fraction(0)
+    return Unit(dim, factor, offset)
+
+
+def _validate_derived_spec(name: str, spec: dict[str, Any]) -> None:
+    """Reject unknown keys on a [derived] entry; surface typos early."""
+    unknown = set(spec.keys()) - _DERIVED_KEYS
+    if unknown:
+        raise UnitError(
+            f"derived unit {name!r}: unknown keys {sorted(unknown)}; "
+            f"valid keys: {sorted(_DERIVED_KEYS)}"
+        )
+    has_dim = "dim" in spec
+    has_expr = "expr" in spec
+    if has_dim and has_expr:
+        raise UnitError(
+            f"derived unit {name!r}: cannot specify both 'dim' and 'expr'"
+        )
+    if not has_dim and not has_expr:
+        raise UnitError(
+            f"derived unit {name!r}: must specify either 'dim' or 'expr'"
+        )
+
+
 def _build_derived(
     data: dict[str, Any], base: dict[str, Unit], prefixes: dict[str, Fraction]
-) -> tuple[dict[str, Unit], frozenset[str]]:
+) -> tuple[dict[str, Unit], frozenset[str], dict[str, list[str]]]:
     """Resolve the ``[derived]`` TOML table against an in-progress table.
 
-    Repeatedly parses each derived entry's ``expr`` against the
-    table-so-far, deferring entries whose dependencies aren't yet
-    defined. The loop terminates when nothing changes; any remaining
-    entry is reported as unresolved (cycle or unknown reference).
+    Each entry uses either the catalog form (``dim`` string, resolved
+    immediately) or the compact form (``expr`` string, resolved through
+    the parser against the table-so-far). ``expr`` entries iterate until
+    convergence; any cyclic / unresolved entry is reported.
+
+    After construction, declared ``aliases`` are registered as additional
+    names pointing at the same :class:`Unit` instance.
 
     Args:
         data: The parsed ``[derived]`` subtable.
@@ -146,20 +279,38 @@ def _build_derived(
         prefixes: Already-built prefix map.
 
     Returns:
-        A pair ``(derived_units, prefixable_names)``: the resolved
-        derived-unit map and the frozen set of unit names that are
-        prefixable (base units plus derived entries flagged
-        ``prefixable = true``).
+        A triple ``(derived_units, prefixable_names, alias_origins)``:
+
+        - ``derived_units`` — name → Unit (includes alias entries pointing
+          at the same Unit instance as their canonical name)
+        - ``prefixable_names`` — base units plus derived entries flagged
+          ``prefixable = true``
+        - ``alias_origins`` — canonical name → list of registered aliases
+          (for diagnostics / hover; aliases don't have their own entry)
 
     Raises:
-        UnitError: A derived entry has no ``expr``, parses to a
-            non-:class:`Unit`, or cannot be resolved (cyclic or
-            unknown references).
+        UnitError: An entry is malformed, parses to a non-:class:`Unit`,
+            an alias collides with another entry, or an ``expr`` entry
+            cannot be resolved (cyclic or unknown references).
     """
+    for name, spec in data.items():
+        _validate_derived_spec(name, spec)
+
     derived: dict[str, Unit] = {}
     prefixable: set[str] = set(base)  # base units always prefixable
+    alias_origins: dict[str, list[str]] = {}
 
-    pending: dict[str, dict[str, Any]] = dict(data)
+    # Pass 1: build catalog-form (``dim``) entries — no dependencies.
+    pending: dict[str, dict[str, Any]] = {}
+    for name, spec in data.items():
+        if "dim" in spec:
+            derived[name] = _build_unit_from_dim(name, spec)
+            if spec.get("prefixable", False):
+                prefixable.add(name)
+        else:
+            pending[name] = spec  # expr-form, deferred
+
+    # Pass 2: iterate over ``expr`` entries until convergence.
     while pending:
         progressed = False
         partial = UnitTable(
@@ -169,30 +320,19 @@ def _build_derived(
             prefixes=prefixes,
         )
         for name, spec in list(pending.items()):
-            expr = spec.get("expr")
+            expr = spec["expr"]
             if not isinstance(expr, str):
-                raise UnitError(f"derived unit {name!r}: missing 'expr'")
+                raise UnitError(f"derived unit {name!r}: 'expr' must be a string")
             try:
                 parsed = _units_mod.parse(expr, partial)
             except UnknownUnitError:
                 continue
-            # Unit-table entries are always plain units; LOG()/EXP() wrappers
-            # only arise from user annotations, never a table definition.
             if not isinstance(parsed, Unit):
                 raise UnitError(
                     f"derived unit {name!r}: expression {expr!r} is not a plain unit"
                 )
             u = parsed
-            # Optional scalar ``factor`` multiplies the parsed unit's
-            # factor. Used for non-SI units whose value can't be
-            # expressed by combining symbols (mbar = 100 Pa, atm =
-            # 101325 Pa, etc.). Without this the only way to introduce
-            # a scale was via the prefix table.
             factor_spec = spec.get("factor")
-            # Optional affine ``offset`` (Phase 2 / scale). Relative to the
-            # base unit; ``x_base = factor*x + offset``. Marks an absolute
-            # affine unit (e.g. degC offset 273.15). Specify as a STRING
-            # ("273.15") so the Fraction is exact, not the inexact float.
             offset_spec = spec.get("offset")
             if factor_spec is not None or offset_spec is not None:
                 new_factor = (
@@ -215,7 +355,46 @@ def _build_derived(
                 f"derived units could not be resolved (cyclic or unknown "
                 f"references): {unresolved}"
             )
-    return derived, frozenset(prefixable)
+
+    # Pass 3: register aliases. Each alias is added to ``derived`` pointing
+    # at the same Unit instance as its canonical entry. Aliases inherit the
+    # canonical's prefixable flag implicitly through name lookup at parse
+    # time — we don't add them to ``prefixable`` (would multiply the prefix-
+    # expansion namespace unnecessarily).
+    for name, spec in data.items():
+        aliases = spec.get("aliases")
+        if aliases is None:
+            continue
+        if not isinstance(aliases, list):
+            raise UnitError(
+                f"derived unit {name!r}: 'aliases' must be a list, got {aliases!r}"
+            )
+        canonical_unit = derived[name]
+        for alias in aliases:
+            if not isinstance(alias, str):
+                raise UnitError(
+                    f"derived unit {name!r}: alias entries must be strings, "
+                    f"got {alias!r}"
+                )
+            if alias in derived:
+                raise UnitError(
+                    f"alias collision: {alias!r} (declared as alias of "
+                    f"{name!r}) is already a derived unit"
+                )
+            if alias in base:
+                raise UnitError(
+                    f"alias collision: {alias!r} (declared as alias of "
+                    f"{name!r}) is already a base unit"
+                )
+            if alias in prefixes:
+                raise UnitError(
+                    f"alias collision: {alias!r} (declared as alias of "
+                    f"{name!r}) is already a prefix"
+                )
+            derived[alias] = canonical_unit
+            alias_origins.setdefault(name, []).append(alias)
+
+    return derived, frozenset(prefixable), alias_origins
 
 
 def _check_collisions(table: UnitTable) -> None:
@@ -250,12 +429,71 @@ def _check_collisions(table: UnitTable) -> None:
             add(p + unit_name, f"prefix '{p}' + '{unit_name}'")
 
 
-def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    """Recursively merge ``override`` onto ``base``.
+def _check_override_gate(
+    defaults: dict[str, Any], user_data: dict[str, Any]
+) -> None:
+    """Reject project overrides of base / prefix entries; warn on derived.
 
-    Dict values are merged key-by-key; non-dict values from ``override``
-    replace their counterparts in ``base``. Neither argument is
-    mutated.
+    The 7 SI base units and the 20 SI prefixes are foundational; user
+    projects must not silently redefine them. Re-declaring a base or prefix
+    in the project TOML is a hard error. Adding NEW base entries is also
+    rejected (DimFort's algebra is fixed at the 7 SI dimensions; new base
+    units would require a wider rewrite). Adding new prefixes is permitted.
+
+    Derived units may be overridden; users sometimes have project-specific
+    conventions. We warn so silent shadowing is impossible.
+
+    Args:
+        defaults: The shipped defaults' parsed TOML data.
+        user_data: The project's parsed TOML data.
+
+    Raises:
+        UnitError: A user entry redefines a shipped base or prefix, or
+            adds a new base entry.
+    """
+    user_base = user_data.get("base", {})
+    for name in user_base:
+        if name in defaults.get("base", {}):
+            raise UnitError(
+                f"project config cannot redefine base unit {name!r}; the seven "
+                "SI base units are fixed by the standard"
+            )
+        # Adding new base units is also rejected — algebra is fixed at 7 slots.
+        raise UnitError(
+            f"project config cannot add new base unit {name!r}; DimFort's "
+            "dimensional algebra is fixed at the 7 SI base units"
+        )
+    user_prefixes = user_data.get("prefixes", {})
+    for name in user_prefixes:
+        if name in defaults.get("prefixes", {}):
+            raise UnitError(
+                f"project config cannot redefine prefix {name!r}; the SI "
+                "prefixes are fixed by the standard"
+            )
+        # Adding new prefixes is allowed (e.g. binary prefixes Ki/Mi/Gi).
+    user_derived = user_data.get("derived", {})
+    default_derived_names = set(defaults.get("derived", {}).keys())
+    overridden = sorted(set(user_derived.keys()) & default_derived_names)
+    if overridden:
+        warnings.warn(
+            f"project config redefines shipped derived units: {overridden}. "
+            "Project-local values override the defaults; this may shadow "
+            "values the doctor lint expects.",
+            UnitAmbiguityWarning,
+            stacklevel=3,
+        )
+
+
+def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Merge ``override`` onto ``base`` with section-aware semantics.
+
+    At the top level (``[base]`` / ``[prefixes]`` / ``[derived]``), entries
+    from ``override`` are merged INTO the section dict — i.e. an override's
+    `Pa` entry overrides the default's `Pa` entry ATOMICALLY (no recursive
+    merging of the entry's own keys). This prevents the new dim/expr schema
+    from producing entries with both fields after partial overrides.
+
+    Neither argument is mutated.
 
     Args:
         base: Lower-precedence TOML data (the shipped defaults).
@@ -267,7 +505,11 @@ def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     out = {k: dict(v) if isinstance(v, dict) else v for k, v in base.items()}
     for k, v in override.items():
         if isinstance(v, dict) and isinstance(out.get(k), dict):
-            out[k] = _merge(out[k], v)
+            # Merge sections key-by-key; atomic at the entry level.
+            section_out = dict(out[k])
+            for sub_k, sub_v in v.items():
+                section_out[sub_k] = sub_v
+            out[k] = section_out
         else:
             out[k] = v
     return out
@@ -286,21 +528,28 @@ def load_config(user_path: Path | None = None) -> UnitTable:
         already run.
 
     Raises:
-        UnitError: A name collision, an unresolved derived entry, or
-            a malformed scalar was encountered.
+        UnitError: A name collision, an unresolved derived entry, a
+            malformed scalar, or a project override of a shipped base /
+            prefix entry.
         OSError: ``user_path`` cannot be opened.
         tomllib.TOMLDecodeError: ``user_path`` is not valid TOML.
     """
     with DEFAULT_CONFIG_PATH.open("rb") as f:
-        data = tomllib.load(f)
+        defaults_data = tomllib.load(f)
+    data: dict[str, Any] = dict(defaults_data)
     if user_path is not None:
         with user_path.open("rb") as f:
             user_data = tomllib.load(f)
-        data = _merge(data, user_data)
+        # Reject project overrides of base / prefixes before merge; warn on
+        # derived overrides so silent shadowing is impossible.
+        _check_override_gate(defaults_data, user_data)
+        data = _merge(defaults_data, user_data)
 
     base = _build_base(data.get("base", {}))
     prefixes = _build_prefixes(data.get("prefixes", {}))
-    derived, prefixable = _build_derived(data.get("derived", {}), base, prefixes)
+    derived, prefixable, _aliases = _build_derived(
+        data.get("derived", {}), base, prefixes
+    )
     table = UnitTable(base=base, derived=derived, prefixable=prefixable, prefixes=prefixes)
     _check_collisions(table)
     return table

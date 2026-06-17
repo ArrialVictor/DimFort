@@ -1,10 +1,29 @@
-# Standard unit table for DimFort.
-# Shipped with the tool. Users may extend it via a project-local config
-# following the same schema; user entries are merged on top of these defaults
-# and a collision-detection pass runs at load time.
+# DimFort default unit table
+# ============================================================================
+#
+# Schema (every [derived] entry):
+#   <name> = {
+#     dim          = "<SI slot product>"   # e.g. "M*L^-1*T^-2"
+#     factor       = <int> or "<p/q>"      # scale to base SI; default 1
+#     offset       = <num>                 # affine offset (degC only); default 0
+#     quantitykind = "<vocabulary>"        # semantic tag (QUDT / ISO 80000)
+#     aliases      = [...]                 # alternate names for this unit
+#   }
+#
+# Alternate compact form for project-local convenience:
+#   <name> = { expr = "<existing-unit>", factor = <scale> }
+#
+# Slot symbols: M=mass L=length T=time Theta=temperature
+#               I=current N=amount-of-substance J=luminous-intensity
+#
+# Sources: BIPM SI Brochure 9th ed. (2019, rev 2026), CODATA 2022
+# Cross-references: QUDT 3.3.0 (CC BY 4.0), Pint default_en.txt (BSD-3-Clause)
+# Per-entry provenance: docs/reference/units-source-citations.md
 
-# Base units: each maps to exactly one of the 7 SI dimension slots.
-# Slot names: M, L, T, Theta, I, N, J.
+# ============================================================================
+# Base units (BIPM Brochure §2.3)
+# ============================================================================
+
 [base]
 kg  = "M"
 m   = "L"
@@ -14,37 +33,99 @@ A   = "I"
 mol = "N"
 cd  = "J"
 
-# SI prefixes. Values are exact: ints or rational strings "p/q".
-[prefixes]
-G = 1_000_000_000
-M = 1_000_000
-k = 1_000
-d = "1/10"
-c = "1/100"
-m = "1/1000"
-u = "1/1000000"
-n = "1/1000000000"
-p = "1/1000000000000"
+# ============================================================================
+# SI prefixes (BIPM Brochure Table 7)
+# ============================================================================
 
-# Derived units. `expr` is parsed against the table being built (in
-# dependency order). `prefixable = true` opts in to prefix expansion.
+[prefixes]
+Y  = 1_000_000_000_000_000_000_000_000
+Z  = 1_000_000_000_000_000_000_000
+E  = 1_000_000_000_000_000_000
+P  = 1_000_000_000_000_000
+T  = 1_000_000_000_000
+G  = 1_000_000_000
+M  = 1_000_000
+k  = 1_000
+h  = 100
+da = 10
+d  = "1/10"
+c  = "1/100"
+m  = "1/1000"
+u  = "1/1000000"
+n  = "1/1000000000"
+p  = "1/1000000000000"
+f  = "1/1000000000000000"
+a  = "1/1000000000000000000"
+z  = "1/1000000000000000000000"
+y  = "1/1000000000000000000000000"
+
+# ============================================================================
+# SI derived units (BIPM Brochure Tables 3-4)
+# ============================================================================
+
 [derived]
-N   = { expr = "kg*m/s^2" }
-J   = { expr = "N*m" }
-W   = { expr = "J/s" }
-Pa  = { expr = "N/m^2" }
-bar = { expr = "Pa", factor = 100_000 }
-mbar = { expr = "Pa", factor = 100 }
-hPa = { expr = "Pa", factor = 100 }
-# Absolute Celsius — same dimension and factor as K, shifted zero point.
-# Offset is a string so the Fraction is exact (273.15 = 5463/20), not the
-# inexact binary float. A temperature *difference* in Celsius is offset-0
-# and so identical to K; named delta units (Cdeg) are a Phase-2b addition.
-degC = { expr = "K", offset = "273.15" }
-Hz  = { expr = "1/s" }
-C   = { expr = "A*s" }
-V   = { expr = "W/A" }
-Ohm = { expr = "V/A" }
-T   = { expr = "kg/(s^2*A)" }
-rad = { expr = "1" }
-sr  = { expr = "1" }
+
+# --- Plane / solid angles (BIPM Table 3) ---
+rad = { dim = "1",     quantitykind = "Angle",      aliases = ["radian"] }
+sr  = { dim = "1",     quantitykind = "SolidAngle", aliases = ["steradian"] }
+
+# --- SI derived with special names (BIPM Table 4) ---
+Hz   = { dim = "T^-1",              quantitykind = "Frequency",          aliases = ["hertz"] }
+N    = { dim = "M*L*T^-2",          quantitykind = "Force",              aliases = ["newton"] }
+Pa   = { dim = "M*L^-1*T^-2",       quantitykind = "Pressure",           aliases = ["pascal"] }
+J    = { dim = "M*L^2*T^-2",        quantitykind = "Energy",             aliases = ["joule"] }
+W    = { dim = "M*L^2*T^-3",        quantitykind = "Power",              aliases = ["watt"] }
+C    = { dim = "T*I",               quantitykind = "ElectricCharge",     aliases = ["coulomb"] }
+V    = { dim = "M*L^2*T^-3*I^-1",   quantitykind = "ElectricPotential",  aliases = ["volt"] }
+F    = { dim = "M^-1*L^-2*T^4*I^2", quantitykind = "Capacitance",        aliases = ["farad"] }
+Ohm  = { dim = "M*L^2*T^-3*I^-2",   quantitykind = "Resistance",         aliases = ["ohm"] }
+S    = { dim = "M^-1*L^-2*T^3*I^2", quantitykind = "Conductance",        aliases = ["siemens"] }
+Wb   = { dim = "M*L^2*T^-2*I^-1",   quantitykind = "MagneticFlux",       aliases = ["weber"] }
+T    = { dim = "M*T^-2*I^-1",       quantitykind = "MagneticFluxDensity", aliases = ["tesla"] }
+H    = { dim = "M*L^2*T^-2*I^-2",   quantitykind = "Inductance",         aliases = ["henry"] }
+degC = { dim = "Theta", offset = "273.15", quantitykind = "Temperature", aliases = ["celsius"] }
+lm   = { dim = "J",                 quantitykind = "LuminousFlux",       aliases = ["lumen"] }
+lx   = { dim = "J*L^-2",            quantitykind = "Illuminance",        aliases = ["lux"] }
+Bq   = { dim = "T^-1",              quantitykind = "Activity",           aliases = ["becquerel"] }
+Gy   = { dim = "L^2*T^-2",          quantitykind = "AbsorbedDose",       aliases = ["gray"] }
+kat  = { dim = "N*T^-1",            quantitykind = "CatalyticActivity",  aliases = ["katal"] }
+
+# Sievert (dose equivalent) reserved for sverdrup in the climate template;
+# Np / B / dB and pH require log-units algebra not yet shipped.
+
+# ============================================================================
+# Non-SI accepted for use with SI (BIPM Tables 8-9)
+# ============================================================================
+
+# SI symbols h/d/a collide with prefixes hecto/deci/atto; full names only.
+min  = { dim = "T", factor = 60,       quantitykind = "Time", aliases = ["minute"] }
+hour = { dim = "T", factor = 3600,     quantitykind = "Time" }
+day  = { dim = "T", factor = 86400,    quantitykind = "Time" }
+year = { dim = "T", factor = 31557600, quantitykind = "Time", aliases = ["yr"] }   # Julian, 365.25 d
+
+deg = { dim = "1", factor = "0.017453292519943295", quantitykind = "Angle", aliases = ["degree"] }
+
+ha = { dim = "L^2", factor = 10000,    quantitykind = "Area",   aliases = ["hectare"] }
+L  = { dim = "L^3", factor = "1/1000", quantitykind = "Volume", aliases = ["liter", "litre", "l"] }
+t  = { dim = "M",   factor = 1000,     quantitykind = "Mass",   aliases = ["tonne", "metric_ton"] }
+
+eV = { dim = "M*L^2*T^-2", factor = "1.602176634e-19",   quantitykind = "Energy", aliases = ["electronvolt"] }
+Da = { dim = "M",          factor = "1.66053906892e-27", quantitykind = "Mass",   aliases = ["dalton"] }
+
+# Pressure non-SI. Explicit climate / atmospheric / engineering spellings.
+bar  = { dim = "M*L^-1*T^-2", factor = 100000, quantitykind = "Pressure" }
+mbar = { dim = "M*L^-1*T^-2", factor = 100,    quantitykind = "Pressure", aliases = ["mb"] }
+hPa  = { dim = "M*L^-1*T^-2", factor = 100,    quantitykind = "Pressure", aliases = ["hectopascal"] }
+atm  = { dim = "M*L^-1*T^-2", factor = 101325, quantitykind = "Pressure", aliases = ["atmosphere"] }
+
+# ============================================================================
+# Informal ratio family
+# ============================================================================
+
+percent  = { dim = "1", factor = "1/100",               quantitykind = "Ratio" }
+permille = { dim = "1", factor = "1/1000",              quantitykind = "Ratio" }
+ppm      = { dim = "1", factor = "1/1000000",           quantitykind = "Ratio" }
+ppb      = { dim = "1", factor = "1/1000000000",        quantitykind = "Ratio" }
+ppt      = { dim = "1", factor = "1/1000000000000",     quantitykind = "Ratio" }
+ppmv     = { dim = "1", factor = "1/1000000",           quantitykind = "MoleFraction" }
+ppbv     = { dim = "1", factor = "1/1000000000",        quantitykind = "MoleFraction" }

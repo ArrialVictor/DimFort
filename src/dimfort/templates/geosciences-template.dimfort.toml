@@ -1,0 +1,28 @@
+# DimFort geology / petroleum / hydrology template
+# ============================================================================
+#
+# Discovery surface. Every entry is commented out; uncomment what your
+# project actually uses.
+#
+# Schema: see `default_units.toml` header.
+# Sources: BIPM SI 9th ed., ISO 7027 (turbidity), DimFort catalog §6.21a.
+
+[derived]
+
+# --- Permeability ---
+# darcy = { dim = "L^2", factor = "9.869233e-13", quantitykind = "Permeability", aliases = ["D_darcy"] }
+# mD    = { dim = "L^2", factor = "9.869233e-16", quantitykind = "Permeability" }   # millidarcy
+
+# --- Erosion rate ---
+# bubnoff = { dim = "L*T^-1", factor = "3.169e-14", quantitykind = "ErosionRate" }   # 1 μm/year
+
+# ============================================================================
+# Scale / categorical (not in dimensional algebra)
+# ============================================================================
+# NTU (nephelometric turbidity unit), FTU (formazin turbidity unit),
+# FNU (formazin nephelometric unit, ISO 7027), FFU (fluorescein
+# fluorescence unit) — these are operational scales, not numeric units in
+# DimFort's algebra. Future doctor lint will surface them as [scale].
+
+# --- Sediment grain size (log scale, parked) ---
+# phi (sediment grain size) — requires log-units algebra; parked.

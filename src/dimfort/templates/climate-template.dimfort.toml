@@ -1,0 +1,57 @@
+# DimFort climate / atmospheric / oceanography template
+# ============================================================================
+#
+# Discovery surface. Every entry is commented out; uncomment what your
+# project actually uses. Visible categories help locate the right group.
+#
+# Schema: see `default_units.toml` header.
+# Sources: BIPM SI 9th ed., CF Conventions 1.10, DimFort catalog §6.20a + §11.
+
+[derived]
+
+# --- Ocean transport ---
+# sverdrup = { dim = "L^3*T^-1", factor = 1000000, quantitykind = "VolumeTransport", aliases = ["Sv"] }   # 10^6 m^3/s
+
+# --- Salinity ---
+# psu = { dim = "1", quantitykind = "Salinity", aliases = ["PSU"] }   # PSS-78 practical salinity
+# S_A = { dim = "1", quantitykind = "AbsoluteSalinity" }              # TEOS-10 absolute salinity, g/kg
+
+# --- Atmospheric chemistry: ozone column ---
+# DU = { dim = "N*L^-2", factor = "4.4615e-4", quantitykind = "ColumnAmount", aliases = ["dobson"] }   # Dobson Unit
+
+# --- Solar / radiation flux integrals ---
+# langley = { dim = "M*T^-2", factor = 41840,   quantitykind = "IrradianceIntegral", aliases = ["Ly"] }   # 1 cal/cm^2
+# PSH     = { dim = "M*T^-2", factor = 3600000, quantitykind = "IrradianceIntegral" }                    # peak sun hour = 1 kWh/m^2
+
+# --- Atmospheric spectroscopy ---
+# kayser = { dim = "L^-1", factor = 100, quantitykind = "Wavenumber", aliases = ["Ky"] }   # 1 cm^-1
+
+# --- Snow / ice / hydrology: water-equivalent depths ---
+# mWE  = { dim = "L",                    quantitykind = "WaterEquivalentHeight" }   # meter water equivalent
+# mmWE = { dim = "L", factor = "1/1000", quantitykind = "WaterEquivalentHeight" }   # millimeter water equivalent
+
+# --- NWP / meteorology: geopotential height ---
+# `dam` (dekameter, NWP upper-air height) is provided by the default `da` prefix on `m`.
+# gpm = { dim = "L", quantitykind = "GeopotentialHeight", aliases = ["geopotential_meter"] }
+
+# --- Soil suction / ocean depth-as-pressure ---
+# cbar = { dim = "M*L^-1*T^-2", factor = 1000, quantitykind = "Pressure" }   # centibar
+
+# --- HVAC / climate statistics ---
+# degree_day = { dim = "Theta*T", factor = 86400, quantitykind = "DegreeDay", aliases = ["DD", "HDD", "CDD"] }   # K·day
+
+# --- CF Conventions: NetCDF metadata spellings (rare in source code) ---
+# degrees_north = { dim = "1", factor = "0.017453292519943295", quantitykind = "Latitude" }
+# degrees_east  = { dim = "1", factor = "0.017453292519943295", quantitykind = "Longitude" }
+# degrees_true  = { dim = "1", factor = "0.017453292519943295", quantitykind = "Bearing" }
+
+# --- Paleoclimate calendar (AD 1950 epoch) ---
+# yr_BP = { dim = "T", factor = 31557600,         quantitykind = "TimeBeforePresent" }   # years before present
+# ka_BP = { dim = "T", factor = 31557600000,      quantitykind = "TimeBeforePresent" }   # thousand years BP
+# Ma_BP = { dim = "T", factor = 31557600000000,   quantitykind = "TimeBeforePresent" }   # million years BP
+
+# ============================================================================
+# Log-family climate units — not shippable until log-units feature lands
+# ============================================================================
+# pH (seawater scale), dBZ (radar reflectivity), Np / B / dB — require
+# log-unit algebra DimFort doesn't yet model.

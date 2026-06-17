@@ -4,6 +4,61 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+### Added
+
+- **Curated unit vocabulary with discipline templates.** The shipped
+  `default_units.toml` is restructured around a hand-curated unit list
+  drawn from BIPM SI Brochure 9th ed. (2019, rev 2026), CODATA 2022,
+  IAU 2012/2015, UNESCO PSS-78, IOC/UNESCO TEOS-10, and CF Conventions
+  1.10. Five discipline templates ship alongside the defaults at
+  `src/dimfort/templates/` — `climate`, `astronomy`, `geosciences`,
+  `biology-medicine`, and `legacy` (imperial / CGS, archaeological-code
+  use only). Templates ship with every entry commented out for in-file
+  discovery; users uncomment what their project needs. Per-entry
+  provenance lives at `docs/reference/units-source-citations.md`.
+
+- **`[derived]` schema extension: `dim`, `quantitykind`, `aliases`.**
+  Catalog form for unit entries uses an explicit SI slot product
+  (`dim = "M*L^-1*T^-2"`) rather than the legacy `expr` string. This
+  decouples each entry from the parser's dependency-resolution loop and
+  removes the need for entries to reference one another by name. New
+  optional fields:
+  - `quantitykind` — semantic tag from the QUDT vocabulary
+    (`"Pressure"`, `"Frequency"`, `"Activity"`, etc.). Loader treats it
+    as metadata in 0.2.7; the future soft-units lint will consume it to
+    distinguish dim-identical units (Hz vs Bq, Sv vs Gy, lm vs cd).
+  - `aliases = [...]` — alternate names registered as additional entries
+    pointing at the same `Unit` instance. Single-source-of-truth per
+    canonical name; aliases inherit factor, offset, and dimension.
+  Compact form (`expr = "<existing-unit>", factor = <scale>`) remains
+  supported for project-local convenience. Either form is accepted per
+  entry; both forms in one entry is a load-time error.
+
+- **`dimfort init` — project config generator.** New CLI subcommand that
+  composes a project's `dimfort.toml` from the shipped discipline
+  templates. Selected templates land uncommented and ready to use;
+  unselected templates ship in the same file commented out, providing
+  in-file discovery of what's available. Flags: `--templates` /
+  `-t climate,astronomy`, `--bare` (SI core only, no templates),
+  `--force` (overwrite existing), `--dry-run` (print to stdout), and
+  `--output` / `-o` (default `./dimfort.toml`).
+
+- **Unit-table override gate.** Project `dimfort.toml` files now have
+  layered override semantics:
+  - `[base]` — overrides REJECTED (hard error). The seven SI base units
+    are fixed by the standard; redefinition would silently invalidate
+    every downstream entry. Adding new base entries is also rejected
+    (DimFort's algebra is fixed at 7 SI dimensions).
+  - `[prefixes]` — overrides REJECTED. Adding new prefixes (e.g. binary
+    `Ki`/`Mi`/`Gi`) is permitted.
+  - `[derived]` — overrides allowed with a `UnitAmbiguityWarning` at
+    load. Silent shadowing of shipped values is now impossible.
+
+- **Alias-collision rejection.** Aliases declared via the new `aliases`
+  field are checked at load time against base names, derived names,
+  other aliases, and prefix names. Collisions produce a clear load-time
+  `UnitError`.
+
 ### Breaking changes
 
 - **Unit-comment delimiter config moved into a nested namespace.** The

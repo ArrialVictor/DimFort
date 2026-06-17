@@ -53,6 +53,36 @@ today; anything not listed should be treated as unimplemented.
   `[diagnostics] P001 = "off"` in `dimfort.toml`. See
   [design/shipped/unparsed-regions.md](design/shipped/unparsed-regions.md).
 
+## Generating a project config
+
+`dimfort init` scaffolds a `dimfort.toml` from the shipped discipline
+templates. The output opens with the SI core (inherited from the
+shipped defaults) and includes all five discipline templates —
+selected ones uncommented, the rest commented out for in-file
+discovery of what's available.
+
+```bash
+dimfort init -t climate              # activate the climate template
+dimfort init -t climate,astronomy    # activate multiple
+dimfort init --bare                  # SI core only, no templates
+dimfort init --dry-run               # print to stdout without writing
+dimfort init -o configs/my.toml      # write somewhere other than ./dimfort.toml
+```
+
+The five templates are `climate`, `astronomy`, `geosciences`,
+`biology-medicine`, and `legacy` (imperial / CGS — archaeological
+code only). Templates live in-tree at
+[`src/dimfort/templates/`](https://github.com/ArrialVictor/DimFort/tree/main/src/dimfort/templates),
+each entry annotated with its source citation. Refuses to overwrite
+an existing `dimfort.toml` unless you pass `--force`.
+
+The override gate enforced at load time: the seven SI base units and
+the SI prefix table cannot be redefined (hard error). New `[derived]`
+entries are accepted, and redefinitions of shipped derived units emit
+`UnitAmbiguityWarning` rather than silently shadowing. Per-entry
+provenance for the shipped defaults lives at
+[`docs/reference/units-source-citations.md`](reference/units-source-citations.md).
+
 ## Content-hash cache
 
 On large worksets DimFort can cache per-file check results so

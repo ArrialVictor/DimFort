@@ -1,0 +1,76 @@
+# DimFort legacy / imperial / CGS template
+# ============================================================================
+#
+# Archaeological-code compatibility surface. Every entry is commented out;
+# uncomment ONLY what your project genuinely uses.
+#
+# DimFort's identity is "scientific dimensional analysis for Fortran." The
+# entries here exist for users porting or maintaining pre-SI / CGS / imperial
+# code. They are NOT recommended for new development.
+#
+# Schema: see `default_units.toml` header.
+# Sources: BIPM SI 9th ed. (Tables 9-10 conversions), DimFort catalog §5 + §6.X(b).
+
+[derived]
+
+# ============================================================================
+# CGS (Centimeter-Gram-Second) — catalog §5
+# ============================================================================
+
+# --- Mechanical ---
+# erg   = { dim = "M*L^2*T^-2", factor = "1e-7", quantitykind = "Energy" }                                          # 10^-7 J
+# dyn   = { dim = "M*L*T^-2",   factor = "1e-5", quantitykind = "Force",            aliases = ["dyne"] }            # 10^-5 N
+# barye = { dim = "M*L^-1*T^-2", factor = "0.1", quantitykind = "Pressure",         aliases = ["Ba"] }              # 0.1 Pa
+# Gal   = { dim = "L*T^-2",     factor = "0.01", quantitykind = "Acceleration",    aliases = ["galileo"] }         # 10^-2 m/s^2 (gravimetry)
+# poise = { dim = "M*L^-1*T^-1", factor = "0.1", quantitykind = "DynamicViscosity" }                                # 0.1 Pa·s (symbol "P" collides with peta prefix)
+# stokes = { dim = "L^2*T^-1",   factor = "1e-4", quantitykind = "KinematicViscosity", aliases = ["St"] }          # 10^-4 m^2/s
+
+# --- Electromagnetic (CGS-EMU) ---
+# gauss   = { dim = "M*T^-2*I^-1", factor = "1e-4", quantitykind = "MagneticFluxDensity" }                          # 10^-4 T (symbol "Gs" would collide with G+s)
+# oersted = { dim = "L^-1*I",       factor = "79.5774715459", quantitykind = "MagneticFieldStrength", aliases = ["Oe"] }   # (10^3/4π) A/m
+# maxwell = { dim = "M*L^2*T^-2*I^-1", factor = "1e-8", quantitykind = "MagneticFlux", aliases = ["Mx"] }          # 10^-8 Wb
+
+# --- Photometric (CGS) ---
+# stilb   = { dim = "J*L^-2", factor = "10000", quantitykind = "Luminance", aliases = ["sb"] }                     # 10^4 cd/m^2
+# phot    = { dim = "J*L^-2", factor = "10000", quantitykind = "Illuminance", aliases = ["ph"] }                   # 10^4 lx
+# lambert = { dim = "J*L^-2", factor = "3183.0989", quantitykind = "Luminance" }                                   # (10^4/π) cd/m^2
+
+# ============================================================================
+# Imperial / US customary — catalog §6.X(b)
+# ============================================================================
+
+# --- Length ---
+# inch    = { dim = "L", factor = "0.0254",  quantitykind = "Length", aliases = ["in"] }                           # exact
+# foot    = { dim = "L", factor = "0.3048",  quantitykind = "Length", aliases = ["ft"] }
+# yard    = { dim = "L", factor = "0.9144",  quantitykind = "Length", aliases = ["yd"] }
+# mile    = { dim = "L", factor = "1609.344", quantitykind = "Length", aliases = ["mi"] }
+# nmi     = { dim = "L", factor = "1852",     quantitykind = "Length", aliases = ["nautical_mile"] }               # exact
+# fathom  = { dim = "L", factor = "1.8288",   quantitykind = "Length", aliases = ["ftm"] }
+
+# --- Mass ---
+# lb      = { dim = "M", factor = "0.45359237", quantitykind = "Mass", aliases = ["pound"] }
+# oz      = { dim = "M", factor = "0.028349523125", quantitykind = "Mass", aliases = ["ounce"] }
+# slug    = { dim = "M", factor = "14.5939",     quantitykind = "Mass" }
+# st_mass = { dim = "M", factor = "6.35029318",  quantitykind = "Mass", aliases = ["stone"] }                      # 14 lb
+# ton_long  = { dim = "M", factor = "1016.0469088", quantitykind = "Mass" }                                        # 2240 lb
+# ton_short = { dim = "M", factor = "907.18474",    quantitykind = "Mass" }                                        # 2000 lb
+
+# --- Force ---
+# lbf  = { dim = "M*L*T^-2", factor = "4.4482216152605", quantitykind = "Force" }
+# kgf  = { dim = "M*L*T^-2", factor = "9.80665",         quantitykind = "Force" }
+
+# --- Pressure ---
+# psi  = { dim = "M*L^-1*T^-2", factor = "6894.757293168361", quantitykind = "Pressure" }
+# Torr = { dim = "M*L^-1*T^-2", factor = "133.322387415",     quantitykind = "Pressure" }
+# mmHg = { dim = "M*L^-1*T^-2", factor = "133.322387415",     quantitykind = "Pressure" }
+# inHg = { dim = "M*L^-1*T^-2", factor = "3386.388",          quantitykind = "Pressure" }
+
+# --- Energy ---
+# cal_th = { dim = "M*L^2*T^-2", factor = "4.184",   quantitykind = "Energy", aliases = ["calorie_th"] }           # thermochemical, exact
+# cal_IT = { dim = "M*L^2*T^-2", factor = "4.1868",  quantitykind = "Energy", aliases = ["calorie_IT"] }           # international table
+# kcal   = { dim = "M*L^2*T^-2", factor = "4184",    quantitykind = "Energy" }                                    # food calorie
+# Btu    = { dim = "M*L^2*T^-2", factor = "1055.05585",  quantitykind = "Energy" }                                # International Table BTU
+
+# --- Power ---
+# hp     = { dim = "M*L^2*T^-3", factor = "745.6998715822702", quantitykind = "Power" }                            # mechanical horsepower
+# hp_metric = { dim = "M*L^2*T^-3", factor = "735.49875", quantitykind = "Power" }

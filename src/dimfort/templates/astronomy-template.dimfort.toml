@@ -1,0 +1,49 @@
+# DimFort astronomy / astrophysics template
+# ============================================================================
+#
+# Discovery surface. Every entry is commented out; uncomment what your
+# project actually uses.
+#
+# Schema: see `default_units.toml` header.
+# Sources: BIPM SI 9th ed., IAU 2012/2015 resolutions, DimFort catalog §6.19a.
+
+[derived]
+
+# --- Astronomical distances ---
+# au   = { dim = "L", factor = "1.495978707e11", quantitykind = "Length", aliases = ["AU"] }   # IAU 2012 exact
+# ly   = { dim = "L", factor = "9.4607e15",      quantitykind = "Length", aliases = ["lightyear"] }
+# pc   = { dim = "L", factor = "3.0857e16",      quantitykind = "Length", aliases = ["parsec"] }
+# kpc  = { dim = "L", factor = "3.0857e19",      quantitykind = "Length" }
+# Mpc  = { dim = "L", factor = "3.0857e22",      quantitykind = "Length" }
+# Gpc  = { dim = "L", factor = "3.0857e25",      quantitykind = "Length" }
+# lsec = { dim = "L", factor = "2.998e8",        quantitykind = "Length" }   # light-second
+
+# --- Solar / planetary masses + radii (IAU 2015 nominal values) ---
+# M_sun = { dim = "M", factor = "1.98892e30", quantitykind = "Mass" }     # solar mass
+# R_sun = { dim = "L", factor = "6.957e8",    quantitykind = "Length" }   # solar radius
+# L_sun = { dim = "M*L^2*T^-3", factor = "3.828e26", quantitykind = "Power" }   # solar luminosity
+# M_earth = { dim = "M", factor = "5.9722e24", quantitykind = "Mass" }
+# R_earth = { dim = "L", factor = "6.371e6",   quantitykind = "Length" }
+# M_jup = { dim = "M", factor = "1.898e27",   quantitykind = "Mass" }     # jupiter mass
+# R_jup = { dim = "L", factor = "6.9911e7",   quantitykind = "Length" }   # jupiter radius
+
+# --- Flux density ---
+# Jy  = { dim = "M*T^-2", factor = "1e-26", quantitykind = "FluxDensity", aliases = ["jansky"] }    # 10^-26 W/(m^2·Hz)
+# sfu = { dim = "M*T^-2", factor = "1e-22", quantitykind = "FluxDensity" }                          # solar flux unit
+# AB  = { dim = "M*T^-2", factor = "3.631e-23", quantitykind = "FluxDensity" }                      # AB magnitude zero-point in Jy
+
+# --- Energy / luminosity ---
+# bethe = { dim = "M*L^2*T^-2", factor = "1e44", quantitykind = "Energy", aliases = ["foe"] }       # supernova energy
+# L_bol = { dim = "M*L^2*T^-3", factor = "3.0128e28", quantitykind = "Power" }                      # IAU 2015 bolometric luminosity
+
+# --- X-ray astronomy ---
+# crab = { dim = "M*T^-3", factor = "2.4e-11", quantitykind = "XrayFlux" }   # 1 Crab ≈ 2.4·10^-11 erg/cm^2/s in 2-10 keV
+
+# --- Solid angle (rare) ---
+# spat = { dim = "1", factor = "12.566370614359172", quantitykind = "SolidAngle" }   # 4π sr, whole sphere
+
+# ============================================================================
+# Log-family astronomical units — not shippable until log-units feature lands
+# ============================================================================
+# stellar magnitude (mag), AB magnitude, ST magnitude, maggie (mgy) —
+# log-unit algebra DimFort doesn't yet model.
