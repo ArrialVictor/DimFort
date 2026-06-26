@@ -82,10 +82,13 @@ that sends the request is not (see "Out of scope" below).
 - Concurrency under load: rapid `didChange` burst correctness
   across hover / panelInfo / diagnostics (not just inlay).
 - Multi-folder posture pinning: the documented behavior is
-  *partial support* — config loaded from the first folder only,
+  *partial support* — config loaded from the first folder only
+  (`src/dimfort/cli.py:232,386`, `src/dimfort/lsp/server.py:923-932`),
   additional folders accepted but secondary, no
-  `workspace/didChangeWorkspaceFolders` registration. Test
-  asserts this posture so it stays intentional, not accidental.
+  `workspace/didChangeWorkspaceFolders` registration. **This is an
+  intentionally-documented limitation**, not a bug-in-waiting; full
+  multi-folder support is parked pre-0.3.0. The test pins this
+  posture so it stays intentional.
 
 **Out of scope.** Anything past the wire:
 
@@ -361,3 +364,52 @@ release-day script, but the integration suite is not the right home.
    smoke walk that wasn't caught by handler tests gets an
    integration test, not a handler test. Handler tests stay for
    logic-only assertions where the wire layer adds nothing.
+5. **`$/cancelRequest` semantics.** When a client cancels an
+   in-flight request, does the server *stop work* immediately
+   (interrupt the handler, return a cancellation error) or
+   *complete and discard* (let the handler finish, drop the
+   result before sending)? Two distinct contracts; the
+   `test_lifecycle.py` cancellation test pins one. Recommend
+   complete-and-discard for v1 — the handler doesn't currently
+   poll for cancellation, and interrupting mid-tree-walk risks
+   leaving `state.last_result` partially populated.
+6. **Burst-test threshold.** "Rapid `didChange` burst" needs a
+   number. Suggested starting point: 10 events over 100 ms with
+   the inlay-refresh-throttle window already documented as the
+   reference. Assertion: only the final state's result is
+   returned, no interleaved partials. Tune up if real-world
+   editor burst rates exceed this.
+7. **"Safe partial" contract for pre-`workspaceCheckCompleted`
+   requests.** When a `hover` / `panelInfo` arrives before the
+   workspace check finishes, what does the server return?
+   Options: (a) empty payload (`null` contents, empty arrays);
+   (b) LSP `ContentModified` error code (-32801); (c) wait for
+   completion (blocking). Recommend (a) — clients render an
+   empty popup, no error UI, no hang. Test pins the chosen
+   shape.
+8. **Watched-files glob inventory.** The auto-reload test needs
+   to know what the server actually watches via
+   `workspace/didChangeWatchedFiles`. Inventory before writing:
+   `dimfort.toml`? Project unit-table file? Source `*.f90`?
+   Whichever globs are registered become the test surface.
+9. **Two adjacent server-tuning items.** Open TODOs at
+   `src/dimfort/lsp/server.py:730` (didOpen/didSave debounce
+   reuse) and `src/dimfort/lsp/server.py:1070` (`check_lock`
+   release for publish loop) sit adjacent to this work and
+   touch areas the integration tests exercise (cache
+   invalidation, `publishDiagnostics` ordering). Order
+   question: do those land *before* the integration tests
+   (cleaner — tests assert the fixed behavior) or *after*
+   (tests pin current behavior, then adjust)? Recommend
+   *before* if either can land in 0.2.7's window, otherwise
+   *after* with explicit comments at the affected tests.
+10. **Multi-folder full-support timeline.** The posture-pin
+    test (§2 in-scope) captures the documented partial-support
+    posture. Full support (load every folder's `dimfort.toml`,
+    handle `workspace/didChangeWorkspaceFolders`) is parked
+    pre-0.3.0. Open question: ship a `# TODO(pre-0.3.0)`
+    marker on the posture-pin test so the test gets revisited
+    when the feature lands, or rely on the release-planning
+    docs to track it? Recommend the test-local marker — keeps
+    the cross-reference where someone touching the test will
+    see it.
