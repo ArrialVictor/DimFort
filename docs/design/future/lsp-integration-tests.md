@@ -118,6 +118,15 @@ that sends the request is not (see "Out of scope" below).
 - Cross-editor display consistency. Each companion renders LSP
   payloads its own way; the test only asserts the server's
   contribution is correct.
+- Companion-side UX chains layered on top of wire responses.
+  Example: after the `Add @unit{}` code-action snippet inserts,
+  VSCompanion chains `editor.action.triggerSuggest` on its own
+  (`extension.ts:402-406`) to auto-open the unit-name completion
+  popup. The server's `dimfort.insertSnippet` command carries
+  no such instruction; the popup is a VSCompanion-local
+  enhancement, not a wire instruction the other companions drop.
+  Integration tests assert the snippet payload; companion-side
+  chains are out of scope and stay in QA.
 
 ## 3. Tooling — `pytest-lsp`
 
@@ -363,99 +372,73 @@ These remain release-procedure items, not test-suite items, because
 each requires a clean install environment. Could be automated as a
 release-day script, but the integration suite is not the right home.
 
-## 8. Open questions
+## 8. Decisions
 
-1. **Async test framework.** `pytest-lsp` is async-native. DimFort's
-   existing test suite is sync. Add `pytest-asyncio` or
-   `pytest-anyio`? Either works; preference noted at
-   implementation time.
-2. **Per-test fixture isolation.** Each test currently restarts
-   the server (~1s overhead). Could share a session-scoped server
-   across tests for speed — at the cost of leaking state. Default
-   to per-test until a real perf problem appears.
-3. **Wire-format fixtures vs hand-coded payloads.** Some tests
-   would benefit from a recorded `.jsonrpc` golden file rather
-   than constructing payloads in Python. Defer the recording
-   harness to a follow-up; initial suite uses hand-coded payloads.
-4. **What goes into the existing handler-level tests vs the new
-   integration tests?** Suggested rule: a bug found by the
-   smoke walk that wasn't caught by handler tests gets an
-   integration test, not a handler test. Handler tests stay for
-   logic-only assertions where the wire layer adds nothing.
-5. **`$/cancelRequest` semantics.** When a client cancels an
-   in-flight request, does the server *stop work* immediately
-   (interrupt the handler, return a cancellation error) or
-   *complete and discard* (let the handler finish, drop the
-   result before sending)? Two distinct contracts; the
-   `test_lifecycle.py` cancellation test pins one. Recommend
-   complete-and-discard for v1 — the handler doesn't currently
-   poll for cancellation, and interrupting mid-tree-walk risks
-   leaving `state.last_result` partially populated.
-6. **Burst-test threshold.** "Rapid `didChange` burst" needs a
-   number. Suggested starting point: 10 events over 100 ms with
-   the inlay-refresh-throttle window already documented as the
-   reference. Assertion: only the final state's result is
-   returned, no interleaved partials. Tune up if real-world
-   editor burst rates exceed this.
+The 14 open questions surfaced during this note's drafting were
+walked through 2026-06-18 and decided. Captured here as the
+implementation contract; deviations want an explicit reason.
+
+1. **Async test framework — `pytest-anyio`.** Either works;
+   `pytest-anyio` keeps the door open if the suite ever wants
+   `trio` later. Adopt at the suite's `conftest.py`.
+2. **Per-test fixture isolation — per-test server.** ~1 s
+   overhead per test is acceptable for ~30 tests; state leakage
+   from a session-scoped server is harder to debug than the
+   second of wall-time. Revisit only if the full-suite runtime
+   exceeds the ~60 s ceiling.
+3. **Wire-format fixtures vs hand-coded payloads — hand-coded
+   for v1.** Recorded `.jsonrpc` golden files would help once
+   the suite grows past ~50 tests; defer the recording harness
+   to a follow-up.
+4. **Existing handler-level tests vs new integration tests —
+   additive, not replacement.** Handler tests stay for logic-
+   only assertions. New work goes into integration tests when
+   the bug class is wire-shaped; handler tests when the bug is
+   pure logic. Smoke-walk regressions land in integration tests.
+5. **`$/cancelRequest` semantics — complete-and-discard.** The
+   handler doesn't poll for cancellation today; interrupting
+   mid-tree-walk risks leaving `state.last_result` partially
+   populated. Test asserts the server completes the request
+   and drops the result before sending; client sees no late
+   response.
+6. **Burst-test threshold — 10 events over 100 ms.** Matches
+   the documented inlay-refresh-throttle window. Assertion:
+   only the final state's result is returned, no interleaved
+   partials. Tune up if real-world editor burst rates exceed
+   this; not before.
 7. **"Safe partial" contract for pre-`workspaceCheckCompleted`
-   requests.** When a `hover` / `panelInfo` arrives before the
-   workspace check finishes, what does the server return?
-   Options: (a) empty payload (`null` contents, empty arrays);
-   (b) LSP `ContentModified` error code (-32801); (c) wait for
-   completion (blocking). Recommend (a) — clients render an
-   empty popup, no error UI, no hang. Test pins the chosen
-   shape.
-8. **Watched-files glob inventory.** The auto-reload test needs
-   to know what the server actually watches via
-   `workspace/didChangeWatchedFiles`. Inventory before writing:
-   `dimfort.toml`? Project unit-table file? Source `*.f90`?
-   Whichever globs are registered become the test surface.
-9. **Two adjacent server-tuning items.** Open TODOs at
-   `src/dimfort/lsp/server.py:730` (didOpen/didSave debounce
-   reuse) and `src/dimfort/lsp/server.py:1070` (`check_lock`
-   release for publish loop) sit adjacent to this work and
-   touch areas the integration tests exercise (cache
-   invalidation, `publishDiagnostics` ordering). Order
-   question: do those land *before* the integration tests
-   (cleaner — tests assert the fixed behavior) or *after*
-   (tests pin current behavior, then adjust)? Recommend
-   *before* if either can land in 0.2.7's window, otherwise
-   *after* with explicit comments at the affected tests.
-10. **Multi-folder full-support timeline.** The posture-pin
-    test (§2 in-scope) captures the documented partial-support
-    posture. Full support (load every folder's `dimfort.toml`,
-    handle `workspace/didChangeWorkspaceFolders`) is parked
-    pre-0.3.0. Open question: ship a `# TODO(pre-0.3.0)`
-    marker on the posture-pin test so the test gets revisited
-    when the feature lands, or rely on the release-planning
-    docs to track it? Recommend the test-local marker — keeps
-    the cross-reference where someone touching the test will
-    see it.
-11. **Per-test timeout strategy.** LSP requests can hang
-    (server bug, race condition, deadlock). What's the default
-    timeout per test? Recommend 10 s per await, with a
-    `pytest.mark.slow` carve-out for the burst tests that may
-    legitimately need 30+ s. Without a timeout a hung test
-    blocks the whole CI run.
-12. **Log capture.** The DimFort LSP server logs to stderr;
-    `pytest-lsp` captures it on the client object. Do tests
-    routinely assert on log lines (e.g., "this `didClose`
-    triggered a cache eviction message"), or only on wire
-    payloads? Recommend assertions-on-wire-only by default;
-    log capture stays available for debugging failures but
-    isn't a test-level contract. Avoids brittle string-match
-    coupling to log message wording.
-13. **Windows CI.** DimFort, pygls, and `pytest-lsp` all claim
-    cross-platform support, but pytest-lsp + subprocess + Windows
-    has historic path / CRLF / process-spawn quirks. Run the
-    integration suite on Linux + macOS only, or include Windows?
-    Recommend Linux-only initially — matches the existing
-    workflow's effective coverage, defers Windows debugging
-    until a user reports a Windows-specific LSP bug.
-14. **Flaky-test policy.** If a subprocess-timing test
-    intermittently fails (burst correctness, debounced
-    notification ordering), retry-once vs hard-fail? Recommend
-    hard-fail with manual `pytest.mark.flaky(reruns=1)` only
-    on demonstrated-flaky tests, never a blanket retry.
-    Blanket retries mask real race-condition bugs — exactly
-    the bug class these tests exist to catch.
+   requests — (a) empty payload.** `null` contents, empty
+   arrays — no error UI, no client hang. Test pins this shape.
+8. **Watched-files glob inventory — deferred to implementation
+   time.** Inventory the server's `client/registerCapability`
+   call for `workspace/didChangeWatchedFiles` before writing
+   the auto-reload test; whichever globs are registered become
+   the test surface. Not a decision to make in the note.
+9. **Two adjacent server-tuning items — *before* if they fit
+   the 0.2.7 window, otherwise *after* with comments.** The
+   open TODOs at `src/dimfort/lsp/server.py:730` (didOpen/didSave
+   debounce reuse) and `src/dimfort/lsp/server.py:1070`
+   (`check_lock` release for publish loop) should land before
+   the integration tests if either can; otherwise tests pin
+   current behavior with explicit `# TODO(post-0.2.7)` comments
+   at the affected tests for the eventual fix to update.
+10. **Multi-folder full-support timeline — test-local TODO
+    marker.** The posture-pin test carries `# TODO(pre-0.3.0):
+    revisit when full multi-folder support lands` so the future
+    maintainer touching the test sees the cross-reference.
+11. **Per-test timeout — 10 s default per await, `pytest.mark.slow`
+    carve-out at 30 s for burst tests.** Hung test blocking the
+    whole CI run is the failure mode this prevents.
+12. **Log capture — assertions on wire only, not on log
+    strings.** Server logs stay available on the client object
+    for debugging failures, but tests never assert on log
+    message wording. Avoids brittle string-match coupling.
+13. **Windows CI — Linux-only initially.** Matches the existing
+    workflow's effective coverage. Defer Windows debugging
+    until a user reports a Windows-specific LSP bug. macOS
+    handled by local-dev only (existing pattern).
+14. **Flaky-test policy — hard-fail, no blanket retries.**
+    `pytest.mark.flaky(reruns=1)` allowed only on individually
+    justified, demonstrated-flaky tests. Blanket retries would
+    mask the race-condition bug class these tests exist to
+    catch.
