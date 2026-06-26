@@ -41,35 +41,74 @@ responses.
 
 ## 2. What's in scope vs out of scope
 
+This scope was set against a 2026-06-18 audit of the three
+companion `MANUAL_QA.md` files (~705 distinct checkable assertions
+across ~3,700 lines). Every assertion was classified W/B/D/N
+(wire / binding / display / gap); the scope below absorbs every
+**W** item plus every **N** gap surfaced by the audit, so the
+manual QA residue becomes purely B + D with no wire holes.
+
 **In scope.** The JSON-RPC contract between the DimFort server and
-any LSP client:
+any LSP client. *Server effect* is in scope; *user-trigger binding*
+that sends the request is not (see "Out of scope" below).
 
 - Capability negotiation (`initialize` response shape).
-- Document lifecycle (`didOpen` → `publishDiagnostics`; `didChange`
-  → recompute → updated diagnostics).
-- Request/response: `textDocument/hover`, `textDocument/definition`,
-  `textDocument/codeAction`, `textDocument/inlayHint`,
-  `textDocument/completion`.
+- Document lifecycle: `didOpen` → `publishDiagnostics`; `didChange`
+  → recompute → updated diagnostics; `didSave` re-check;
+  `didClose` per-URI resource release.
+- Request/response: `textDocument/hover`,
+  `textDocument/definition`, `textDocument/codeAction`,
+  `textDocument/inlayHint`, `textDocument/completion`.
 - DimFort-custom requests: `dimfort/panelInfo`,
   `dimfort/interactions`, `dimfort/lineStatus`,
   `dimfort/coverageStats`.
-- Notification ordering and timing — does
-  `dimfort/workspaceCheckCompleted` fire after the workspace
-  check, do `publishDiagnostics` reach the client in the expected
-  order, do debounced features (inlay refresh throttle) behave
-  under tight `didChange` sequences?
+- Workspace commands: `workspace/executeCommand`
+  (`dimfort/checkWorkspace`) — that the server performs the
+  effect, and that the duplicate-trigger guard works. The
+  companion-side binding that *sends* the command is out of
+  scope (see below).
+- Notification ordering and timing —
+  `dimfort/workspaceCheckCompleted` arrives after the workspace
+  check, `publishDiagnostics` reach the client in the expected
+  order, debounced features (inlay refresh throttle) behave
+  under tight `didChange` sequences,
+  `dimfort/coverageStats` Project segment stale-after-edit
+  semantics, `workDoneProgress` `[N/5]` format.
 - Cache invalidation across edit sequences — the v7→v9 class.
+- LSP lifecycle robustness: `$/cancelRequest` handling on
+  in-flight slow requests, request-before-`workspaceCheckCompleted`
+  returns a safe partial response (no crash, no stale data),
+  `workspace/didChangeWatchedFiles` triggers config auto-reload.
+- Concurrency under load: rapid `didChange` burst correctness
+  across hover / panelInfo / diagnostics (not just inlay).
+- Multi-folder posture pinning: the documented behavior is
+  *partial support* — config loaded from the first folder only,
+  additional folders accepted but secondary, no
+  `workspace/didChangeWorkspaceFolders` registration. Test
+  asserts this posture so it stays intentional, not accidental.
 
 **Out of scope.** Anything past the wire:
 
 - Companion rendering (panel layout, hover popup styling, inlay
-  positioning). Stays in the manual smoke walk.
+  positioning, color tiers, decoration overlays). Stays in the
+  manual smoke walk.
 - Cursor-following behavior (the panel updating as the user moves).
   An LSP test can verify *that* a panel request returns the right
   payload at a given position; whether the companion *fires* a
   panel request as the cursor moves is companion-side.
-- Companion code paths (TypeScript / Lua / Elisp). These remain
-  un-automated per the [GUI-test-automation decision](#) — the
+- **Command/keybinding bindings** — whether the companion's
+  command palette entry, keybinding, context menu, or panel-row
+  click actually fires the right LSP request. The integration
+  tests assert the server's *response* to the request; the
+  companion's *trigger* of the request is companion-side and
+  remains in QA. Concretely: tests verify `workspace/executeCommand`
+  `dimfort/checkWorkspace` does a re-check; the QA verifies
+  `:DimFortCheckWorkspace` / `M-x dimfort-check-workspace` /
+  "DimFort: Check Workspace" command-palette entries actually
+  send that command. The audit counted ~130 such binding checks
+  across the three companions; they all stay manual.
+- Companion code paths (TypeScript / Lua / Elisp). Remain
+  un-automated per the GUI-test-automation decision — the
   industry baseline for non-VSCode companions is user bug reports
   + community maintainers + the LSP wire contract this note tests.
 - Cross-editor display consistency. Each companion renders LSP
@@ -132,17 +171,21 @@ async def test_hover_after_didchange_returns_updated_unit(client):
 
 ## 4. Initial-suite scope
 
-A new `tests/lsp_integration/` directory, ~15-20 tests across the
-following test files. Each test ~20-40 lines, total ~600 lines.
+A new `tests/lsp_integration/` directory, ~30 tests across the
+following test files. Each test ~20-40 lines, total ~900 lines.
+The scope absorbs the 15-gap audit (§2 audit) plus 5 lifecycle-
+robustness additions (cancellation, init race, didClose, burst,
+multi-folder posture).
 
 | File | Tests | Coverage |
 |---|---|---|
-| `test_lifecycle.py` | 2-3 | `initialize` capability shape, `shutdown` cleanup. |
-| `test_diagnostics.py` | 3-4 | `didOpen` → expected diagnostic codes; `didChange` updates; multi-file `publishDiagnostics` ordering. |
-| `test_hover.py` | 3-4 | Hover content at known positions; hover after `didChange` (the v7→v9 class). |
-| `test_inlay_and_panel.py` | 3-4 | `inlayHint` request returns expected hints; `dimfort/panelInfo` shape matches the spec; debounce / throttle behavior under rapid `didChange`. |
-| `test_code_actions.py` | 2-3 | `textDocument/codeAction` returns suggested-rewrite for a U002; quick-fix applies correctly. |
-| `test_workspace.py` | 2-3 | `dimfort/checkWorkspace` command triggers a full re-check; `dimfort/coverageStats` notification arrives after completion. |
+| `test_lifecycle.py` | 6-7 | `initialize` capability shape; `shutdown` cleanup; `$/cancelRequest` on in-flight slow requests; request-before-`workspaceCheckCompleted` returns safe partial; `didClose` releases per-URI resources; `workspace/didChangeWatchedFiles` triggers config auto-reload; multi-folder posture pinning (config from first folder only). |
+| `test_diagnostics.py` | 5-6 | `didOpen` → expected codes (H001, U002, U005, H010, P001); `didChange` updates incl. U005 propagation; multi-file `publishDiagnostics` ordering; `[diagnostics]` severity override via config; `@unit_assume` U020 INFO + assumed-marker payload field; polymorphism H020/H021/H022/H023 wire payloads; rapid `didChange` burst — latest diagnostics, no interleave. |
+| `test_hover.py` | 5-6 | Hover content at known positions; hover after `didChange` (v7→v9 class); detailed-vs-short verbosity differs by setting; LOG/EXP tree-shape parity with user calls; cross-file `textDocument/definition` jump; scale-mode payload difference (`100×kg·m⁻¹·s⁻²` vs `kg·m⁻¹·s⁻²`); function-definition pure-signature single-line format vs call-site tree. |
+| `test_inlay_and_panel.py` | 4-5 | `inlayHint` request returns expected hints; `dimfort/panelInfo` shape matches spec; inlay refresh throttle under rapid `didChange`; `dimfort/interactions` X001 + Declaration/Read grouping; Imports transitive re-export shape (`via phys_base`, mixed kinds, `density : ? 🟡`). |
+| `test_code_actions.py` | 3 | `textDocument/codeAction` returns suggested-rewrite for U002; quick-fix `WorkspaceEdit` applies correctly; snippet `$0` cursor placement on Add-`@unit{}` action. |
+| `test_workspace.py` | 5 | `dimfort/checkWorkspace` command triggers a full re-check; `dimfort/coverageStats` notification arrives after completion; Project segment stale-after-edit semantics; duplicate-trigger guard (second `dimfort/checkWorkspace` returns ack without spawning); `workDoneProgress` `[N/5]` format. |
+| `test_completion.py` | 1-2 | `textDocument/completion` for unit names after typing `!< @unit{` returns expected entries. |
 
 **Fixtures.** A handful of `.f90` files under
 `tests/lsp_integration/fixtures/` — small, narrowly-scoped per
@@ -191,25 +234,113 @@ either.
 
 ## 7. What this enables on the QA side
 
-Once the integration suite is in, the manual smoke walk per
-companion can shrink to display-only:
+The audit (§2) classified ~705 distinct assertions across the
+three companion `MANUAL_QA.md` files. The reduction this work
+enables is summarized below; each companion's residue covers
+display rendering + companion-side bindings + the few items the
+audit explicitly recommended leaving manual.
+
+| Companion | Current QA lines | Projected residue | Reduction |
+|---|---|---|---|
+| VSCompanion | ~1,304 | ~530-580 | ~55% |
+| EmacsCompanion | ~1,244 | ~500-550 | ~55% |
+| NvimCompanion | ~1,174 | ~480-520 | ~55% |
+
+The three residue categories:
+
+**(D) Display rendering — must stay manual.** The walker checks
+the *appearance* of the wire payloads the integration tests
+asserted:
 
 - Hover popup renders the wire payload's `contents.value`
-  legibly (Markdown formatting, line wrapping, color).
-- Panel sections render the `dimfort/panelInfo` payload — the
-  *content* of each section is wire-asserted; the walker checks
-  layout, scroll, collapse state.
-- Inlay hints appear at the right *visual* positions (the LSP
-  test already asserted the offsets).
-- Coverage bar renders the `dimfort/coverageStats` payload — the
-  values are wire-asserted; the walker checks color tiers, %
-  formatting.
-- Diagnostic squiggles render the `publishDiagnostics` payload
-  at the right line — content asserted upstream.
+  legibly (Markdown formatting, line wrapping, tree characters
+  `├──`/`└──`, circle glyphs 🟢🟡🔴🔵, `🔵 assumed:` placement,
+  `(expected …)` trailer).
+- Panel sections render the `dimfort/panelInfo` payload —
+  section order, collapsible headers, dividers, sub-section
+  indent, column alignment, stacked-scope indent.
+- Inlay hints appear at the right visual positions and weight
+  (full-weight `'a`, not dimmed).
+- Coverage decorations match the wire-asserted tier (gutter-dot
+  color, background-tint alpha, gutter-vs-background mutual
+  exclusion, multi-pane paint, reload persistence).
+- Coverage footer / status-bar item formatting (kilo-formatted
+  counts, hover-tooltip File/Project table, Project-dim-on-stale
+  codicon, 200 ms tab-switch debounce, Braille spinner).
+- Diagnostic styling (squiggle colors, fringe styling, sign-column
+  letters, faint blue P001 underline distinct from H001 red).
+- Progress UI rendering (`[N/5]` mode-line / status-bar / fidget).
 
-Concretely: a release-time smoke walk should become "5 minutes
-per companion, no spec to follow because the spec-faithful checks
-already ran in CI." That's the 0.2.7 outcome this work targets.
+**(B) Companion-side command bindings — must stay manual.** The
+walker confirms each user-facing trigger fires the right LSP
+request. The integration tests assert the server's *response* to
+the request; the companion's *trigger* is companion-specific.
+
+- Command palette / `:Cmd` / `M-x` entries for every documented
+  command: `CheckWorkspace`, `Restart`, `ClearCache`, `CycleCache`,
+  `OpenConfig`, `Status`, `CycleHover`, `ToggleInlayHints`,
+  `TogglePanel`, `CycleScale`, `CycleCoverage`, `CycleSortMode`,
+  `CycleUnitDisplay`, `CoverageReport`, `ToggleCursor/Scope/Imports`,
+  `ScopeFilter`, `ImportsFilter`. ~17 commands × 3 companions.
+- Native LSP bindings the companion wires up: `Cmd+.` / `gra`
+  code-action shortcut, `K` / `Cmd+K Cmd+I` hover, `F12` / `M-.`
+  go-to-definition, `<C-x><C-o>` / `ESC TAB` completion,
+  context-menu entries, activity-bar icon, settings-UI enum
+  picker.
+- Panel-internal bindings: click-to-navigate / RET on row,
+  sort-icon click, per-View drag/dock/hide.
+- Settings-persistence bindings: companion-specific config keys
+  reflecting in toggles.
+
+Total: ~130 binding checks across the three companions
+(~40-50 per companion). Cheap to walk — most reduce to "open
+command palette, check entry is present, invoke it, observe
+behavior matches the documented effect."
+
+**(M) Manual residue beyond B + D — small.** A handful of items
+the audit recommended leaving manual rather than absorbing into
+the integration suite, because the wire isn't the right surface:
+
+- Cache-mode-at-restart drift (companion-side restart logic;
+  covered upstream by existing `tests/unit/` cache tests +
+  Track D Ring 2's RSS churn gate).
+- Companion-side restart UX after server crash recovery.
+- Any check that fundamentally needs an editor process to
+  exercise (e.g., webview HTML rendering correctness in
+  VSCompanion).
+
+Concretely: a release-time smoke walk per companion should be
+~5-10 minutes — open the fixture, walk the B trigger list, eyeball
+the D rendering, no spec-faithful content assertions because those
+all ran in CI. That's the 0.2.7 outcome this work targets.
+
+## 7a. Release-procedure QA — not replaced by this work
+
+Three release-time checks remain a release-procedure concern,
+unchanged by the integration suite. Flagged here so they don't get
+silently dropped during the QA rewrite:
+
+- **Pre-publish install smoke.** `pipx install dimfort==<candidate>`
+  on a clean shell — does the wheel install, does the `dimfort`
+  entrypoint resolve, does `pipx install 'dimfort[lsp]'` pull
+  pygls. Same for the VSCode `.vsix` (`vsce package` → install
+  into a fresh VSCode → server boots). Has bitten release-day in
+  other projects (PyPI metadata issues, missing wheel entries,
+  optional-dep wheels).
+- **Cross-version companion compatibility.** Run the *previous*
+  companion version against the *new* server. If a wire-format
+  bump silently breaks the prev-companion's parse, every user
+  with auto-update-off sees crashes after a server bump. Semver
+  discipline check; should land in the release procedure as a
+  one-line gate.
+- **Companion `.vsix` / `ovsx` / Open VSX publish parity.**
+  After publish, install from each marketplace and boot — catches
+  packaging-pipeline drift between publish targets (per the
+  documented dual-registry posture).
+
+These remain release-procedure items, not test-suite items, because
+each requires a clean install environment. Could be automated as a
+release-day script, but the integration suite is not the right home.
 
 ## 8. Open questions
 
