@@ -26,6 +26,16 @@ Schema invariants:
 * ``_PROJECTION_SCHEMA_VERSION`` is bumped whenever any of the serialised
   dataclasses changes shape. Mismatch → silent drop + warm rebuild.
 
+Bound
+~~~~~
+On disk: one file per workspace (``<cache_root>/projection-cache.json``);
+size mirrors the in-memory cache's entry count at save time. No on-disk
+cap; the in-memory :class:`~dimfort.core.multifile_cache.ProjectionCache`
+is bounded by its ``max_entries`` FIFO and that bound carries forward
+into the persisted file (load → in-memory cap → next save reflects the
+post-cap state). One file per session by construction (path is
+session-deterministic).
+
 The codec is a hand-rolled set of ``_dump_*`` / ``_load_*`` helpers per
 dataclass — JSON-friendly dicts only, no pickle. ``StrEnum`` values
 serialise to their string form. ``frozenset[int]`` becomes a sorted

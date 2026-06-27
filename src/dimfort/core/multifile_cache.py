@@ -129,6 +129,10 @@ class TreeCache:
     set, FIFO eviction on overflow. Header-file edits are NOT detected
     (the CPP ``parse_mode`` fingerprint hashes config, not included-file
     contents) — opt out with ``--no-tree-cache`` if that bites.
+    The LSP layer sets a concrete cap via
+    :func:`dimfort.lsp.server._apply_cache_max_entries` (sized to the
+    discovered workset on initialize) — that's where the sizing
+    strategy lives; this class is policy-agnostic.
 
     **didClose:** N/A — content-keyed, not URI-keyed.
 
@@ -243,9 +247,15 @@ class ModuleExportsCache:
     **Bound:** ``max_entries`` (default ``None`` = unbounded). When
     set, FIFO eviction on overflow. The three sub-memos below
     (``digest_memo``, ``parsed_units_memo``, ``extract_uses_memo``)
-    are NOT capped: they grow with the number of distinct
-    ``ModuleExports`` / unit-table / file-text objects observed in the
-    session — small per entry, bounded in practice by ``_entries``.
+    are NOT capped directly — their bound is structural:
+    ``digest_memo`` keys on ``id(ModuleExports)``, and the only
+    ``ModuleExports`` instances ever produced come from ``_entries``,
+    so ``_entries`` eviction makes prior digest entries unreachable
+    (collected at next major GC). ``parsed_units_memo`` keys on
+    ``id(UnitTable)`` and bounds to the live table-identity count
+    (typically 1, peaks at 2 around config reload). ``extract_uses_memo``
+    keys on ``id(file_text)`` strings whose lifetimes track the same
+    ``_entries`` cycle. None can outgrow ``_entries`` in steady state.
 
     **didClose:** N/A — content-keyed, not URI-keyed.
 

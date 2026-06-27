@@ -6,21 +6,37 @@ through the ts_checker resolver so the rendered unit matches what the
 diagnostic pipeline computes. ``server.py`` registers the LSP feature and —
 holding ``state.ts_handler_lock`` — delegates the traversal here.
 
-Per-URI table cache (audit #4)
-------------------------------
+Per-URI table cache
+-------------------
+``_tables_cache``: ``uri → (version, var_types, parameter_values,
+type_field_types)``. Replaces the three full tree walks
+(``collect_var_types``, ``collect_parameter_values``,
+``collect_type_field_types``) on every cursor-scroll
+``textDocument/inlayHint`` request — ~30-150 ms saved per scroll on a
+5000-line file under ``state.ts_handler_lock``.
 
-Every ``textDocument/inlayHint`` request used to re-run three full tree
-walks (``collect_var_types``, ``collect_parameter_values``,
-``collect_type_field_types``) — ~30-150 ms per scroll on a 5000-line
-file under ``state.ts_handler_lock``. The tables only change when the
-buffer changes, so we memoise them by ``(uri, doc_version)``: a
-cursor-scroll burst reuses the previous build for free.
+Invalidation
+~~~~~~~~~~~~
+Entry replaced in place when the cached ``version`` differs from the
+URI's current ``state.doc_versions`` entry. Every ``didChange``
+notification bumps that counter, so a stale entry never survives an
+edit — the next ``inlayHint`` after an edit rebuilds.
 
-Cache contract: key = ``uri``; value = ``(version, var_types,
-parameter_values, type_field_types)``. Bound: O(open buffers).
-Invalidated naturally by ``state.doc_versions`` bumping on every
-``didChange``. Evicted on ``didClose`` via :func:`forget_uri`,
-called from ``server._forget_uri`` so closed buffers don't accumulate.
+Bound
+~~~~~
+One entry per open buffer (``O(open buffers)``). Eviction on
+``didClose`` via :func:`forget_uri`, called from
+``server._forget_uri`` — without that hook closed buffers would
+persist for the LSP session. No explicit numerical cap; the bound is
+the editor's open-file count, which is the natural ceiling.
+
+Thread safety
+~~~~~~~~~~~~~
+``_tables_cache_lock`` guards every read and write — ``inlayHint``
+fires concurrently with other handlers that don't hold
+``state.ts_handler_lock``, and ``forget_uri`` runs on the
+``didClose`` path. Lock is held only for the dict op, not the
+underlying tree walk.
 """
 from __future__ import annotations
 

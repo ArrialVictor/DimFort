@@ -11,21 +11,51 @@ spec.
 Module-level caches
 -------------------
 
-Three coexisting caches:
+Three coexisting caches, each with its own contract.
 
-* ``_ws_cache`` — session-scoped tempdir-backed :class:`CacheStore`,
-  lazily created. Independent of ``state.cache`` so a coverage refresh
-  always has read-write access. One singleton; lifetime = LSP session.
-  Not URI-keyed.
-* ``_ws_result_cache`` — single-entry latched :class:`WorksetResult`
-  from the most recent manual workspace refresh. Read by ``stats()``,
-  written by :func:`seed_workspace_cache`. Stays put on file changes
-  by design — user re-triggers explicitly.
-* ``_cache_files`` / ``_cache_statuses`` — per-file coverage projection
-  keyed by ``(WorksetResult identity, Path)``. Cleared when
-  ``state.last_result`` swaps to a new identity; grows with workset
-  size during a single result's lifetime. Not URI-keyed; didClose has
-  no effect.
+``_ws_cache`` — workspace content-hash store
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Tempdir-backed :class:`CacheStore`, lazily created on the first
+coverage request. Independent of ``state.cache`` so a coverage
+refresh always has read-write access — without it every edit
+triggers a full re-check of every workspace file.
+
+**Invalidation:** delegated to :class:`CacheStore`'s content-hash
+policy (entry survives until its key changes or pruning evicts it).
+**Bound:** :class:`CacheStore`'s own ``size_limit_bytes`` / ``max_age_days``
+(500 MB / 30 days defaults). One singleton per LSP session; the OS
+reaps the tempdir at boot.
+
+``_ws_result_cache`` — latched workset result
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Single-entry slot holding the most recent manual workspace refresh's
+:class:`WorksetResult`. Read by ``stats()``, written by
+:func:`seed_workspace_cache`.
+
+**Invalidation:** explicit only — user re-triggers
+``dimfort/checkWorkspace`` (or any code path that calls
+:func:`seed_workspace_cache`). Stays put on file changes by design;
+that's the cache's purpose.
+**Bound:** one entry. Replacing the slot drops the previous result
+to garbage collection.
+
+``_cache_files`` / ``_cache_statuses`` — per-file projection
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Per-file coverage projection memoised by
+``(WorksetResult identity, Path)``. Avoids recomputing the
+per-line status colouring on every ``dimfort/lineStatus`` request
+while the same workset result is active.
+
+**Invalidation:** identity-keyed on ``WorksetResult``. When
+``state.last_result`` swaps to a new identity, the next access
+detects the mismatch and clears both dicts in one pass.
+**Bound:** at most the workset's file count (``O(N_workset)``)
+during one result's lifetime, then reset to zero on the next swap.
+Not URI-keyed — ``didClose`` has no effect because coverage's
+unit-of-work is the workset, not the open buffer set.
 """
 from __future__ import annotations
 

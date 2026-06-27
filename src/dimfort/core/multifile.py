@@ -809,7 +809,13 @@ def _parse_var_units(
         table: Unit table the strings parse against.
         memo: Optional ``(text_digest, id(table)) → parsed`` dict.
             When supplied, identical inputs return the cached parsed
-            table instead of re-parsing every string.
+            table instead of re-parsing every string. The caller owns
+            the memo's lifetime: when sourced from
+            :class:`~dimfort.core.multifile_cache.ModuleExportsCache.parsed_units_memo`,
+            its bound matches that cache's structural bound (entries
+            keyed on ``id(UnitTable)`` — typically 1 live table, peaks
+            at 2 around config reload — so the memo can't outgrow the
+            exports cache it rides on). Session-scoped otherwise.
     """
     key: tuple[str, int] | None = None
     if memo is not None:
