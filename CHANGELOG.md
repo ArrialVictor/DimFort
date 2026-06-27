@@ -6,6 +6,19 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ### Added
 
+- **Cache audit completion + CI gate.** Every cache module now carries
+  a formal `Invalidation` + `Bound` docstring subsection matching
+  `CacheStore`'s rigor — `lsp/inlay.py`, `lsp/decl_scan.py`,
+  `lsp/completion.py`, `lsp/coverage.py` upgraded; 5 already-passing
+  caches got tightened cross-link notes (`TreeCache`,
+  `ModuleExportsCache`, M4 / M5 persist codecs, parsed-unit-table
+  memo). `scripts/cache_memory_churn.py` promoted to
+  `tests/integration/test_cache_memory_churn.py`: per-iteration RSS
+  growth must stay under 50 KB across 200 unique-content files. Runs
+  in default `pytest`, gates every PR via CI. The interactive script
+  lives on for diagnosing *where* in the loop growth starts.
+  Deliverable: `docs/contributor/cache-audit-0-2-7.md`.
+
 - **Flag-paired rewrite suggestions for U002.** When a unit string
   fails to parse because a permissive-lexer flag is OFF, the
   `suggested_rewrite` payload now carries the canonical form: `m**2`

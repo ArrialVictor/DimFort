@@ -27,6 +27,15 @@ as a round-trip codec — we serialize the structure directly.
 
 ``_EXPORTS_SCHEMA_VERSION`` is bumped whenever any of the serialised
 dataclasses changes shape. Mismatch → silent drop + warm rebuild.
+
+Bound
+~~~~~
+On disk: one file per workspace (``<cache_root>/exports-cache.json``);
+size mirrors the in-memory :class:`~dimfort.core.multifile_cache.ModuleExportsCache`
+entry count at save time. No on-disk cap; the in-memory cache's
+``max_entries`` FIFO bound carries forward into the persisted file
+(load → in-memory cap → next save reflects the post-cap state). One
+file per session by construction.
 """
 from __future__ import annotations
 

@@ -5,11 +5,36 @@ unsaved) editor buffer when available, else from disk — so the panel's scope
 section and the code-action provider can see which declarations still lack a
 ``@unit{}`` annotation. Thin wrappers over ``dimfort.core.annotations``.
 
-Audit #7: scan_text was being re-run from scratch on every cursor-move
-panelInfo request (the panel's debounce only limits LSP traffic, not
-per-event server-side cost). Added a small ``(uri, version)`` →
-declarations cache so a typing session over the same buffer pays for
-``scan_text`` at most once per edit.
+Per-URI scan cache
+------------------
+``_uri_scan_cache``: ``uri → (version, declarations)``. Single entry
+per URI; replaces re-running ``scan_text`` from scratch on every
+cursor-move ``dimfort/panelInfo`` request (the panel's debounce
+limits LSP traffic, not per-event server-side cost). A typing
+session over the same buffer pays the scan cost at most once per
+edit.
+
+Invalidation
+~~~~~~~~~~~~
+Entry replaced in place when the cached ``version`` differs from the
+caller-supplied document version. Every ``didChange`` bumps the
+version on the call site, so a stale entry never reaches a consumer.
+There is no separate invalidation API — version comparison is the
+sole correctness gate.
+
+Bound
+~~~~~
+One entry per open buffer (``O(open buffers)``). Eviction on
+``didClose`` via :func:`forget_uri`, called from
+``server._forget_uri`` — without that hook closed buffers would
+persist for the LSP session. No explicit numerical cap; bound is
+the editor's open-file count.
+
+Thread safety
+~~~~~~~~~~~~~
+``_uri_scan_cache_lock`` guards every read and write — ``panelInfo``
+and ``codeAction`` can invoke the scan path concurrently. Lock is
+held only for the dict op, not the underlying scan.
 """
 from __future__ import annotations
 

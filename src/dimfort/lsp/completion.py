@@ -4,6 +4,29 @@ Suggests base units, derived units, and SI prefixes from the active unit
 table, but only when the cursor sits inside an unclosed ``@unit{…}`` — so it
 never intrudes on ordinary Fortran editing. Pure of LSP server state and
 tree-sitter; ``server.py`` registers the LSP feature and delegates here.
+
+Sorted-names cache
+------------------
+``_sorted_names_cache``: ``id(table) → (base, derived, prefixes)``.
+Memoises the three ``sorted()`` passes over the unit table's name
+lists. A keystroke burst inside ``@unit{…}`` would otherwise pay
+three full sorts per request; the cache reduces that to a single
+``id()`` lookup for the steady state.
+
+Invalidation
+~~~~~~~~~~~~
+Keyed by ``id(table)`` — identity change is the invalidation
+signal. The unit table is rebuilt at startup and on ``dimfort.toml``
+reload (a fresh ``UnitTable`` instance); both produce a new
+``id()`` and miss the cache. The miss handler clears the dict
+before inserting so only the latest table identity ever survives.
+
+Bound
+~~~~~
+At most one entry. The cache is force-cleared on every miss
+before the new entry lands, so older table identities can never
+accumulate even if the underlying ``UnitTable`` object outlives a
+reload (which it shouldn't — but the bound holds either way).
 """
 from __future__ import annotations
 
