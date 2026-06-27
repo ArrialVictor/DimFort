@@ -13,9 +13,13 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
   checks, etc.) reachable for the audience that needs them — companion
   users debugging an LSP issue, not just developers willing to edit
   `server.py`. Invalid values warn and fall back to `INFO`. Valid
-  values emit a one-line confirmation at server start
-  (`LSP log level set to <LEVEL> via DIMFORT_LSP_LOG_LEVEL`) so the
-  env var's effect is observable without threshold-effect inference.
+  values emit a one-line confirmation to the client's Output
+  channel during `initialize`
+  (`DimFort: LSP log level set to <LEVEL> via DIMFORT_LSP_LOG_LEVEL`)
+  so the env var's effect is observable without threshold-effect
+  inference. Routed via `window/logMessage` (the same path the
+  "DimFort LSP initialised" line uses) so the confirmation
+  surfaces regardless of the resolved threshold.
   Mirrors the existing `DIMFORT_CRASH_LOG` pattern. Documented at
   `docs/usage.md` under "LSP server tuning (env vars)".
 

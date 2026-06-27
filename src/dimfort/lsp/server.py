@@ -1021,6 +1021,26 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
         f"{config_note}",
     )
 
+    # Positive confirmation when DIMFORT_LSP_LOG_LEVEL was set validly.
+    # Emitted via ``_notify`` (not ``log.info``) because pygls filters
+    # ``log.info`` below WARNING out of the client Output channel by
+    # default — the same reason the "DimFort LSP initialised" line
+    # above uses ``_notify``. Skipped when the env var is unset so
+    # the default INFO path stays silent. The invalid-value warning
+    # rides ``log.warning`` from ``run_stdio`` instead (WARNING is
+    # above pygls's filter).
+    import os
+    raw_log_level = os.environ.get("DIMFORT_LSP_LOG_LEVEL")
+    if raw_log_level is not None:
+        resolved_level, log_level_invalid = _resolve_log_level(raw_log_level)
+        if log_level_invalid is None:
+            _notify(
+                ls,
+                "DimFort: LSP log level set to "
+                f"{logging.getLevelName(resolved_level)} via "
+                "DIMFORT_LSP_LOG_LEVEL",
+            )
+
     # Surface workspace-less state as a toast: without folders, the
     # background scan never runs (the ``initialized`` handler early-
     # returns), so workspace-scope features — ``dimfort/checkWorkspace``,
@@ -2331,22 +2351,20 @@ def run_stdio() -> None:
     level, invalid = _resolve_log_level(raw)
     logging.getLogger("dimfort").setLevel(level)
     if invalid is not None:
+        # Surface via log.warning so pygls's WARNING+ pass-through
+        # routes it to the client's Output channel before any handler
+        # runs — this is a startup-time misconfiguration, not a
+        # handler-context concern. Companion-side rendering shows it
+        # as a WARNING line in the Output channel.
         log.warning(
             "DIMFORT_LSP_LOG_LEVEL=%r is not a recognized logging level; "
             "falling back to INFO. Accepted: DEBUG, INFO, WARNING, ERROR, "
             "CRITICAL.",
             invalid,
         )
-    elif raw is not None:
-        # Positive confirmation that the env var was read — otherwise
-        # the only way to verify the override worked was an indirect
-        # "this DEBUG line now appears" or "that INFO line now doesn't"
-        # observation. Skipped when the env var is unset so the
-        # default INFO path stays silent.
-        log.info(
-            "LSP log level set to %s via DIMFORT_LSP_LOG_LEVEL",
-            logging.getLevelName(level),
-        )
+    # Positive confirmation of a valid env var deferred to ``_initialize``
+    # so it routes via ``_notify`` → ``window/logMessage`` (pygls filters
+    # ``log.info`` below WARNING out of the Output channel by default).
     _install_crash_trace_hook()
     server.start_io()
 

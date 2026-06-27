@@ -163,12 +163,13 @@ variables. Both are optional and used mainly for debugging.
   set to `DEBUG` to surface cache hits/misses, derive-root
   decisions, and other audit-trail messages that don't show at
   `INFO`. Invalid values warn and fall back to `INFO`. When set
-  validly, the server logs a one-line confirmation at server
-  start (`LSP log level set to <LEVEL> via DIMFORT_LSP_LOG_LEVEL`)
+  validly, the server posts a one-line confirmation to the
+  client's Output channel during `initialize`
+  (`DimFort: LSP log level set to <LEVEL> via DIMFORT_LSP_LOG_LEVEL`)
   so you can verify the env var was read without relying on
-  threshold-effect observation. The confirmation is silent at
-  `WARNING` or higher thresholds — if you asked for a quiet
-  server, you get a quiet server.
+  threshold-effect observation. The confirmation rides on the
+  same `window/logMessage` path as the "DimFort LSP initialised"
+  line — surfaces regardless of the resolved threshold.
 
   Pass to the companion-spawned server via your shell's env
   mechanism — for VSCode, `DIMFORT_LSP_LOG_LEVEL=debug code .`
