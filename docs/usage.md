@@ -150,3 +150,33 @@ trims to a 500 MB ceiling at the end of each run.
 
 Full wire-format reference for the cache:
 [design/shipped/content-hash-cache.md](design/shipped/content-hash-cache.md).
+
+## LSP server tuning (env vars)
+
+The language server (`dimfort lsp`) reads two environment
+variables. Both are optional and used mainly for debugging.
+
+- **`DIMFORT_LSP_LOG_LEVEL`** — override the default `INFO`
+  log threshold. Accepted: `DEBUG`, `INFO`, `WARNING`, `ERROR`,
+  `CRITICAL` (case-insensitive). Useful when filing a bug report
+  or investigating why a workspace-scope feature isn't firing —
+  set to `DEBUG` to surface cache hits/misses, derive-root
+  decisions, and other audit-trail messages that don't show at
+  `INFO`. Invalid values warn and fall back to `INFO`. When set
+  validly, the server posts a one-line confirmation to the
+  client's Output channel during `initialize`
+  (`DimFort: LSP log level set to <LEVEL> via DIMFORT_LSP_LOG_LEVEL`)
+  so you can verify the env var was read without relying on
+  threshold-effect observation. The confirmation rides on the
+  same `window/logMessage` path as the "DimFort LSP initialised"
+  line — surfaces regardless of the resolved threshold.
+
+  Pass to the companion-spawned server via your shell's env
+  mechanism — for VSCode, `DIMFORT_LSP_LOG_LEVEL=debug code .`
+  works because VSCode inherits the launching shell's
+  environment. For Nvim/Emacs, set it in your shell's rc file
+  or wrap the launch.
+
+- **`DIMFORT_CRASH_LOG`** — path for the crash-trace file the
+  server writes when stdio goes silent. Defaults to
+  `/tmp/dimfort-lsp.crash`. Set to an empty string to disable.
