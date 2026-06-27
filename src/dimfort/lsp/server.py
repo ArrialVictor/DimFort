@@ -931,6 +931,27 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
             folders.append(p)
     state.workspace_folders = folders
 
+    # Workspace-root derivation audit (Track D Ring 2). If the client
+    # sent neither ``workspace_folders`` nor ``root_uri``, the companion
+    # didn't implement derive-root — every workspace-scope feature will
+    # silently fail. Companions are expected to walk up from the open
+    # file looking for ``dimfort.toml`` and substitute the result into
+    # ``workspace_folders`` before ``initialize``. The user-facing
+    # toast for this case lives in the workspace-handler path
+    # (``_workset_for``); this log line surfaces in any LSP client's
+    # Output channel (DimFort's namespace ships at INFO threshold so
+    # the line reaches users who only ever interact with the server
+    # via a companion — they never type ``dimfort lsp`` and would
+    # never enable DEBUG).
+    if not folders:
+        log.info(
+            "DimFort: workspace root not provided by client — every "
+            "workspace-scope feature will be disabled until the client "
+            "implements derive-root (substitute a folder into "
+            "workspaceFolders before initialize, typically by walking "
+            "up from the open file looking for dimfort.toml)",
+        )
+
     # Load dimfort.toml from the first workspace folder, if any.
     if folders:
         state.project_config = load_config(folders[0])
