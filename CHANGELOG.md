@@ -6,6 +6,18 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ### Added
 
+- **Friendly error when the `lsp` extra is missing.** A user typing
+  `pipx install dimfort` (without the `[lsp]` extra) gets a
+  successfully-installed CLI whose `dimfort lsp` subcommand previously
+  crashed on every invocation with a bare `ModuleNotFoundError`
+  visible only in the LSP client log. The CLI now wraps the lazy
+  import in `try/except ImportError`, detects the missing-pygls /
+  missing-lsprotocol shape, and prints an actionable
+  `dimfort lsp: the LSP server requires the 'lsp' extra. Reinstall
+  with: pipx install 'dimfort[lsp]'` message to stderr with exit
+  code 2. Unrelated `ImportError`s re-raise so genuine bugs in the
+  LSP modules aren't masked.
+
 - **`DIMFORT_LSP_LOG_LEVEL` env var** for overriding the LSP server's
   default `INFO` log threshold without editing source. Accepted:
   `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` (case-insensitive).

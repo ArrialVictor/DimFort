@@ -206,3 +206,51 @@ def test_u002_includes_suggested_rewrite_for_digit_suffix(tmp_path, capsys):
     assert "did you mean" in out
     assert "'m^2/s'" in out
     assert rc == 1
+
+
+def test_lsp_extra_missing_message_pygls():
+    """A missing-pygls ImportError yields a friendly install-fix message."""
+    from dimfort.cli import _lsp_extra_missing_message
+
+    exc = ImportError("No module named 'pygls'", name="pygls")
+    msg = _lsp_extra_missing_message(exc)
+    assert msg is not None
+    assert "pipx install 'dimfort[lsp]'" in msg
+    assert "pip install 'dimfort[lsp]'" in msg
+    assert "pygls" in msg
+
+
+def test_lsp_extra_missing_message_lsprotocol():
+    from dimfort.cli import _lsp_extra_missing_message
+
+    exc = ImportError("No module named 'lsprotocol'", name="lsprotocol")
+    assert _lsp_extra_missing_message(exc) is not None
+
+
+def test_lsp_extra_missing_message_nested_module_path():
+    """``from lsprotocol import types`` fails with name='lsprotocol.types'."""
+    from dimfort.cli import _lsp_extra_missing_message
+
+    exc = ImportError(
+        "No module named 'lsprotocol.types'", name="lsprotocol.types",
+    )
+    assert _lsp_extra_missing_message(exc) is not None
+
+
+def test_lsp_extra_missing_message_unrelated_returns_none():
+    """An unrelated ImportError (e.g., a real bug in our code) returns
+    None so the caller re-raises the bare traceback rather than masking
+    a genuine bug with a misleading install-fix message."""
+    from dimfort.cli import _lsp_extra_missing_message
+
+    exc = ImportError("No module named 'totally_unrelated'", name="totally_unrelated")
+    assert _lsp_extra_missing_message(exc) is None
+
+
+def test_lsp_extra_missing_message_no_name_attr_returns_none():
+    """Defensive: an ImportError without ``name`` set (uncommon) shouldn't
+    crash the helper, just decline to claim it's our case."""
+    from dimfort.cli import _lsp_extra_missing_message
+
+    exc = ImportError("something opaque")
+    assert _lsp_extra_missing_message(exc) is None
