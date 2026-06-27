@@ -40,6 +40,44 @@ def _color_enabled(no_color: bool) -> bool:
     return sys.stdout.isatty()
 
 
+def _lsp_extra_missing_message(exc: ImportError) -> str | None:
+    """Friendly install-fix message when the LSP server's deps are missing.
+
+    A user typing ``pipx install dimfort`` (no ``[lsp]`` extra) gets a
+    successfully-installed CLI whose ``dimfort lsp`` subcommand crashes
+    on every invocation with a bare
+    ``ModuleNotFoundError: No module named 'lsprotocol'`` (or
+    ``'pygls'``). The error surfaces in the LSP client log but never in
+    a user-visible channel — the companion just sees the server quit
+    with exit code 1 and gives up. This helper converts that case into
+    an actionable stderr message naming the fix.
+
+    Args:
+        exc: The ``ImportError`` raised when the ``dimfort lsp`` CLI
+            path lazy-imports the LSP modules.
+
+    Returns:
+        The friendly message string when ``exc`` is from a missing
+        ``pygls`` or ``lsprotocol`` (including nested module paths like
+        ``lsprotocol.types``). ``None`` for any other ``ImportError``,
+        signalling the caller to re-raise — silently swallowing a
+        genuine bug in the LSP modules would be worse than the bare
+        traceback.
+    """
+    if exc.name and (
+        exc.name in ("pygls", "lsprotocol")
+        or exc.name.startswith(("pygls.", "lsprotocol."))
+    ):
+        return (
+            "dimfort lsp: the LSP server requires the 'lsp' extra "
+            "(pygls + lsprotocol). Reinstall with:\n"
+            "    pipx install 'dimfort[lsp]'\n"
+            "    # or, in a venv: pip install 'dimfort[lsp]'\n"
+            f"\n(Underlying error: {exc})"
+        )
+    return None
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the top-level ``argparse`` parser.
 
@@ -1081,8 +1119,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "init":
         return _run_init(args)
     if args.command == "lsp":
-        from dimfort.lsp.server import run_stdio
-        from dimfort.lsp.state import state
+        try:
+            from dimfort.lsp.server import run_stdio
+            from dimfort.lsp.state import state
+        except ImportError as exc:
+            msg = _lsp_extra_missing_message(exc)
+            if msg is None:
+                raise
+            print(msg, file=sys.stderr)
+            return 2
 
         if args.no_tree_cache:
             state.tree_cache = None
