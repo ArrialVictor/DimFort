@@ -23,14 +23,20 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
   Mirrors the existing `DIMFORT_CRASH_LOG` pattern. Documented at
   `docs/usage.md` under "LSP server tuning (env vars)".
 
-- **Workspace-root derivation audit log.** Server now emits a DEBUG-level
-  log line when an `initialize` arrives with neither `workspaceFolders`
-  nor `root_uri` — that's the case where the companion didn't implement
-  derive-root and every workspace-scope feature will silently fail.
-  Companion-side derive-root (Nvim already has it; VSCompanion to land
-  this cycle; Emacs aligning to the unified `dimfort.toml`-only marker
-  policy) is the fix; the log is the audit trail when a future
-  companion regresses on the contract.
+- **Workspace-root derivation audit log.** Server now emits an
+  INFO-level log line when an `initialize` arrives with neither
+  `workspaceFolders` nor `root_uri` — that's the case where the
+  companion didn't implement derive-root and every workspace-scope
+  feature will silently fail. INFO-level so the line reaches users
+  who only ever interact with the server via a companion's Output
+  channel (the vast majority — they never type `dimfort lsp` and
+  would never enable DEBUG). The user-facing toast for this case
+  already exists (from PR #87); the log line adds a developer-facing
+  audit trail with actionable language (names the fix:
+  "substitute a folder into workspaceFolders before initialize").
+  Companion-side derive-root (Nvim already has it; VSCompanion to
+  land this cycle; Emacs aligning to the unified `dimfort.toml`-only
+  marker policy) prevents the log from firing.
 
 - **Cache audit completion + CI gate.** Every cache module now carries
   a formal `Invalidation` + `Bound` docstring subsection matching

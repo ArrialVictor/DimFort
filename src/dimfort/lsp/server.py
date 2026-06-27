@@ -938,12 +938,18 @@ def _initialize(ls: LanguageServer, params: lsp.InitializeParams) -> None:
     # file looking for ``dimfort.toml`` and substitute the result into
     # ``workspace_folders`` before ``initialize``. The user-facing
     # toast for this case lives in the workspace-handler path
-    # (``_workset_for``); this log line gives developers an audit trail
-    # without surfacing UI noise on every malformed initialize.
+    # (``_workset_for``); this log line surfaces in any LSP client's
+    # Output channel (DimFort's namespace ships at INFO threshold so
+    # the line reaches users who only ever interact with the server
+    # via a companion — they never type ``dimfort lsp`` and would
+    # never enable DEBUG).
     if not folders:
-        log.debug(
-            "DimFort: workspace root derived from file URI — no folder "
-            "provided (client did not implement derive-root)",
+        log.info(
+            "DimFort: workspace root not provided by client — every "
+            "workspace-scope feature will be disabled until the client "
+            "implements derive-root (substitute a folder into "
+            "workspaceFolders before initialize, typically by walking "
+            "up from the open file looking for dimfort.toml)",
         )
 
     # Load dimfort.toml from the first workspace folder, if any.
