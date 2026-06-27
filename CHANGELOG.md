@@ -6,6 +6,16 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ### Added
 
+- **`DIMFORT_LSP_LOG_LEVEL` env var** for overriding the LSP server's
+  default `INFO` log threshold without editing source. Accepted:
+  `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` (case-insensitive).
+  Makes DEBUG-level audit trails (cache invalidation, derive-root
+  checks, etc.) reachable for the audience that needs them — companion
+  users debugging an LSP issue, not just developers willing to edit
+  `server.py`. Invalid values warn and fall back to `INFO`. Mirrors
+  the existing `DIMFORT_CRASH_LOG` pattern. Documented at
+  `docs/usage.md` under "LSP server tuning (env vars)".
+
 - **Cache audit completion + CI gate.** Every cache module now carries
   a formal `Invalidation` + `Bound` docstring subsection matching
   `CacheStore`'s rigor — `lsp/inlay.py`, `lsp/decl_scan.py`,

@@ -2305,9 +2305,17 @@ def run_stdio() -> None:
     Raises DimFort's own log level to INFO so progress messages
     emitted via ``log.info`` reach handlers (pygls's root threshold
     is WARNING; without this, namespace-scoped INFO logs would be
-    silently dropped before reaching the client's output channel),
-    installs the crash-trace hook so silent stdio deaths leave a
-    file behind for the next debugging pass, and hands control to
+    silently dropped before reaching the client's output channel).
+
+    The ``DIMFORT_LSP_LOG_LEVEL`` env var overrides the INFO default
+    — useful when debugging via DEBUG-level audit trails (cache
+    invalidation, derive-root checks, etc.) without editing source.
+    Accepted: standard Python logging names (``DEBUG``, ``INFO``,
+    ``WARNING``, ``ERROR``, ``CRITICAL``); case-insensitive. Invalid
+    values warn and fall back to INFO.
+
+    Also installs the crash-trace hook so silent stdio deaths leave
+    a file behind for the next debugging pass, then hands control to
     pygls's ``start_io`` event loop.
 
     Returns:
@@ -2318,13 +2326,49 @@ def run_stdio() -> None:
         (``dimfort-lsp``). Should be the only public callable in
         this module.
     """
-    # Raise DimFort's own log level so progress messages emitted via
-    # ``log.info`` reach handlers. Pygls's root threshold is WARNING;
-    # without this, namespace-scoped INFO logs would be silently
-    # dropped before reaching the client's output channel.
-    logging.getLogger("dimfort").setLevel(logging.INFO)
+    import os
+    raw = os.environ.get("DIMFORT_LSP_LOG_LEVEL")
+    level, invalid = _resolve_log_level(raw)
+    logging.getLogger("dimfort").setLevel(level)
+    if invalid is not None:
+        log.warning(
+            "DIMFORT_LSP_LOG_LEVEL=%r is not a recognized logging level; "
+            "falling back to INFO. Accepted: DEBUG, INFO, WARNING, ERROR, "
+            "CRITICAL.",
+            invalid,
+        )
     _install_crash_trace_hook()
     server.start_io()
+
+
+def _resolve_log_level(raw: str | None) -> tuple[int, str | None]:
+    """Resolve a ``DIMFORT_LSP_LOG_LEVEL`` env-var value to a logging level.
+
+    The env var overrides the INFO default — useful when debugging
+    via DEBUG-level audit trails (cache invalidation, derive-root
+    checks, etc.) without editing source. Accepted: standard Python
+    logging names (``DEBUG``, ``INFO``, ``WARNING``, ``ERROR``,
+    ``CRITICAL``); case-insensitive. Companions pass the env var
+    through to the spawned server subprocess naturally; users set it
+    in their shell or in the companion's environment config.
+
+    Args:
+        raw: The raw env-var value, or ``None`` when unset.
+
+    Returns:
+        ``(level_int, invalid_token)``. ``invalid_token`` is ``None``
+        when the value was recognized (or unset — INFO default).
+        When non-``None``, it carries the rejected raw value so the
+        caller can log a clear "this token was unrecognized" message
+        without re-doing the parse.
+    """
+    if raw is None:
+        return logging.INFO, None
+    name = raw.upper()
+    candidate = getattr(logging, name, None)
+    if isinstance(candidate, int):
+        return candidate, None
+    return logging.INFO, raw
 
 
 def _install_crash_trace_hook() -> None:

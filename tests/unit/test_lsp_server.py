@@ -3,6 +3,7 @@
 The full LSP roundtrip needs a real client; we only test the
 conversion layer here.
 """
+import logging
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ from dimfort.core.diagnostics import (
 )
 from dimfort.lsp.server import (
     _initialize,
+    _resolve_log_level,
     _to_lsp_diagnostic,
 )
 from dimfort.lsp.tree_access import _uri_to_path
@@ -143,3 +145,39 @@ def test_initialize_applies_diagnostic_severity_overrides(tmp_path):
         assert _diagnostics._severity_overrides == {"S001": "error", "H001": "off"}
     finally:
         set_severity_overrides({})  # don't leak into other tests
+
+
+def test_resolve_log_level_unset_defaults_to_info():
+    level, invalid = _resolve_log_level(None)
+    assert level == logging.INFO
+    assert invalid is None
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("DEBUG", "DEBUG"),
+        ("info", "INFO"),  # case-insensitive
+        ("Warning", "WARNING"),
+        ("ERROR", "ERROR"),
+        ("CRITICAL", "CRITICAL"),
+    ],
+)
+def test_resolve_log_level_recognized_values(raw, expected):
+    level, invalid = _resolve_log_level(raw)
+    assert level == getattr(logging, expected)
+    assert invalid is None
+
+
+def test_resolve_log_level_invalid_falls_back_to_info():
+    level, invalid = _resolve_log_level("trace")
+    assert level == logging.INFO
+    assert invalid == "trace"  # caller logs the rejected token
+
+
+def test_resolve_log_level_empty_string_treated_as_invalid():
+    # Empty string is set but not a valid level name; warn rather than
+    # silently coerce.
+    level, invalid = _resolve_log_level("")
+    assert level == logging.INFO
+    assert invalid == ""
