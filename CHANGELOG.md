@@ -23,6 +23,15 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
   Mirrors the existing `DIMFORT_CRASH_LOG` pattern. Documented at
   `docs/usage.md` under "LSP server tuning (env vars)".
 
+- **Workspace-root derivation audit log.** Server now emits a DEBUG-level
+  log line when an `initialize` arrives with neither `workspaceFolders`
+  nor `root_uri` — that's the case where the companion didn't implement
+  derive-root and every workspace-scope feature will silently fail.
+  Companion-side derive-root (Nvim already has it; VSCompanion to land
+  this cycle; Emacs aligning to the unified `dimfort.toml`-only marker
+  policy) is the fix; the log is the audit trail when a future
+  companion regresses on the contract.
+
 - **Cache audit completion + CI gate.** Every cache module now carries
   a formal `Invalidation` + `Bound` docstring subsection matching
   `CacheStore`'s rigor — `lsp/inlay.py`, `lsp/decl_scan.py`,
