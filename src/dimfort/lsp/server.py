@@ -2337,6 +2337,16 @@ def run_stdio() -> None:
             "CRITICAL.",
             invalid,
         )
+    elif raw is not None:
+        # Positive confirmation that the env var was read — otherwise
+        # the only way to verify the override worked was an indirect
+        # "this DEBUG line now appears" or "that INFO line now doesn't"
+        # observation. Skipped when the env var is unset so the
+        # default INFO path stays silent.
+        log.info(
+            "LSP log level set to %s via DIMFORT_LSP_LOG_LEVEL",
+            logging.getLevelName(level),
+        )
     _install_crash_trace_hook()
     server.start_io()
 
