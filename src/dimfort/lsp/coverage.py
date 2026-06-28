@@ -479,7 +479,30 @@ def _run_workspace_check(ls: LanguageServer) -> WorksetResult | None:
                 outer_lock=state.check_lock,
             )
         except Exception:
+            # audited(0.2.7): error-surfacing — user-initiated
+            # refresh of workspace coverage stats. Returning None
+            # leaves stats() to render an empty payload that reads
+            # as "complete", masking the failure. log.warning
+            # surfaces in Output; mirror _notify's toast shape
+            # inline to avoid a circular import (server.py imports
+            # this module). Consolidating the toast helper into a
+            # shared lsp/notify module is a clean 0.2.8 follow-up
+            # if more handler modules grow toast needs.
             log.exception("workspace coverage stats check failed")
+            try:
+                from lsprotocol import types as lsp
+                ls.window_show_message(
+                    lsp.ShowMessageParams(
+                        type=lsp.MessageType.Warning,
+                        message=(
+                            "DimFort: workspace coverage refresh failed — "
+                            "see Output channel for the traceback."
+                        ),
+                    ),
+                )
+            except Exception:
+                log.debug("show_message for coverage failure failed",
+                          exc_info=True)
             return None
 
 

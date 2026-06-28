@@ -1421,6 +1421,12 @@ def check_files(
         try:
             result.merged_field_units[(tn, fn)] = _units_mod.parse(t, active_table)
         except UnitError:
+            # audited(0.2.7): silent-OK with caveat — bad ``@unit{}``
+            # on a derived-type field is dropped here. The parallel
+            # per-file pass already emits U002 on the same source
+            # text (see _parse_var_units), so the user sees the
+            # error there. The drop is to avoid double-counting; the
+            # signal isn't lost.
             continue
 
     # Expose per-file (tree, source_bytes) for the LSP to reuse on

@@ -16,6 +16,7 @@ Three quick-fixes:
 """
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,8 @@ from dimfort.core import ts_parser as _ts
 from dimfort.lsp.decl_scan import _scan_declarations_for_uri
 from dimfort.lsp.state import state
 from dimfort.lsp.tree_access import _trees_for, _uri_to_path
+
+log = logging.getLogger("dimfort.lsp")
 
 
 def resolve(ls: LanguageServer, params: lsp.CodeActionParams) -> list[lsp.CodeAction] | None:
@@ -73,6 +76,17 @@ def resolve(ls: LanguageServer, params: lsp.CodeActionParams) -> list[lsp.CodeAc
     try:
         doc = ls.workspace.get_text_document(params.text_document.uri)
     except Exception:
+        # audited(0.2.7): error-surfacing — code-action is user-
+        # triggered (cursor position request from the editor). A
+        # silent None here renders as "no actions available", masking
+        # a real document-lookup failure. log.warning surfaces to
+        # the Output channel; no toast (code-action fires per cursor
+        # event; toasting would carpet the user).
+        log.warning(
+            "code_action: failed to fetch text document for %s",
+            params.text_document.uri,
+            exc_info=True,
+        )
         return None
 
     # Decide which DeclarationSites overlap the cursor / selection.

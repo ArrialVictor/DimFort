@@ -38,11 +38,14 @@ held only for the dict op, not the underlying scan.
 """
 from __future__ import annotations
 
+import logging
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pygls.lsp.server import LanguageServer
+
+log = logging.getLogger("dimfort.lsp")
 
 if TYPE_CHECKING:
     from dimfort.core.annotations import DeclarationSite
@@ -157,6 +160,10 @@ def _scan_declarations_for_uri(
     try:
         doc = ls.workspace.get_text_document(uri)
     except Exception:
+        # audited(0.2.7): silent-OK — pygls raises when the document
+        # isn't open (yet); the disk fallback is the correct path.
+        # No log: this is reachable from background paths that
+        # legitimately query closed files, and would carpet the log.
         return _last_scan_declarations(resolved)
     # Audit #7: avoid re-scanning the full buffer text on every
     # panelInfo / codeAction request that lands on the same buffer
@@ -171,6 +178,19 @@ def _scan_declarations_for_uri(
     try:
         decls = scan_text(doc.source).declarations
     except Exception:
+        # audited(0.2.7): error-surfacing — scan_text raising on a
+        # live buffer is the canonical "silent stale-disk fallback"
+        # bug class: panel renders the on-disk state with no
+        # indication the live buffer scan failed. Could hide a
+        # parser regression for days. log.warning surfaces to the
+        # Output channel for diagnosis; no toast (this path runs on
+        # every panel-info request; toasting would carpet the user).
+        log.warning(
+            "decl_scan: scan_text failed on live buffer for %s; "
+            "falling back to last-known disk scan",
+            uri,
+            exc_info=True,
+        )
         return _last_scan_declarations(resolved)
     _store_cached_uri(uri, version, decls)
     return decls
