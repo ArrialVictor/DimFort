@@ -134,6 +134,11 @@ def _diags_for_ctx(ctx: ts_checker.Ctx) -> tuple[Diagnostic, ...]:
         try:
             p = Path(ctx.file).resolve()
         except (OSError, TypeError, ValueError):
+            # audited(0.2.7): silent-OK — narrow exception set,
+            # called per hover/panel render. None-tree return
+            # renders as "no expression tree at this position",
+            # which is the documented contract. Logging would carpet
+            # the Output channel on transient I/O errors during edits.
             return ()
         # frozen/slotted ctx — skip the cache, correctness unaffected.
         # ``_resolved_file`` is an optional render-time cache, not a declared

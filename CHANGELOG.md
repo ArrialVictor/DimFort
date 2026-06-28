@@ -6,6 +6,34 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ### Added
 
+- **Silent-failure audit (server side).** Exhaustive walk of
+  `src/dimfort/lsp/` against 10 silent-failure-shaped patterns
+  (`_notify` calls, `log.exception/warning/error` on user-handler
+  paths, bare `except: return None`, daemon-thread targets without
+  exception capture, etc.). 9 NEEDS-FIX sites resolved + 13
+  `_notify` registry sites annotated. Concretely:
+  - User-triggered pipeline crashes (didOpen / didSave / didChange
+    debounce / workspace check) now `_notify(toast=True)` in addition
+    to `log.exception`. Previously the "silent diagnostics stale"
+    failure mode was visible only in the Output channel, which users
+    don't watch during editing.
+  - Handler-module silent fallbacks (`completion.py`, `code_action.py`,
+    `decl_scan.py`) now `log.warning` to the Output channel —
+    previously every exception was swallowed with `return None`,
+    making a real failure indistinguishable from "no result."
+  - Workspace-coverage refresh failure now toasts (inline
+    `window/showMessage`) rather than silently returning an empty
+    payload.
+  - Cache-save daemon failures are now caught + log.warning'd locally,
+    de-conflating "best-effort cache write failed" from "LSP crashed"
+    in the crash-trace file.
+  - Deliverable: `docs/contributor/silent-failure-audit.md` —
+    exhaustive registry with file:line + classification + verdict
+    for every silent-failure site. Future audits diff against this.
+  - Annotation convention: `# audited(0.2.7): <classification>` —
+    enables a CI grep gate (separate PR) that flags any new silent
+    pattern added without an annotation.
+
 - **Friendly error when the `lsp` extra is missing.** A user typing
   `pipx install dimfort` (without the `[lsp]` extra) gets a
   successfully-installed CLI whose `dimfort lsp` subcommand previously

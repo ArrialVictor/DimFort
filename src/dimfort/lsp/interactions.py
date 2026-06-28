@@ -204,6 +204,11 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
             source_bytes = doc.source.encode("utf-8")
             tree = _ts.parse_text(source_bytes)
         except Exception:
+            # audited(0.2.7): silent-OK — interactions fires on
+            # explicit user gesture but ALSO on unparseable buffers
+            # during normal editing transients. Same rationale as
+            # panel.py's equivalent except — None render is the
+            # documented behaviour; logging would carpet Output.
             return None
         line = _get(position, "line")
         character = _get(position, "character")

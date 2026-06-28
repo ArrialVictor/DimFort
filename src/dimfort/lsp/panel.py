@@ -154,6 +154,12 @@ def resolve(ls: LanguageServer, params: Any) -> dict[str, Any] | None:
         source_bytes = doc.source.encode("utf-8")
         tree = _ts.parse_text(source_bytes)
     except Exception:
+        # audited(0.2.7): silent-OK — panelInfo fires per cursor
+        # event; unparseable-buffer / closed-document cases produce
+        # an empty panel, which is the documented behaviour. log.warning
+        # here would carpet the Output channel during normal editing
+        # (every typed character through a syntactically-broken
+        # transient state hits this path).
         return None
 
     line_1based = int(line) + 1

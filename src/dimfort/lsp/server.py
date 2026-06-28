@@ -629,7 +629,19 @@ def _publish_for_uri(ls: LanguageServer, uri: str, *, override_text: str | None 
             projection_cache=state.projection_cache,
         )
     except Exception:
+        # audited(0.2.7): error-surfacing — user-triggered (didOpen/
+        # didSave/didChange land here). log.exception alone reaches
+        # the Output channel but users don't watch it during editing;
+        # toast so the silent-diagnostics-stale failure mode becomes
+        # observable. Active URI included so the user knows which
+        # file's pipeline broke.
         log.exception("dimfort pipeline crashed on %s", active)
+        _notify(
+            ls,
+            f"DimFort: checker crashed on {Path(active).name} — diagnostics "
+            f"may be stale. See the DimFort Output channel for details.",
+            toast=True,
+        )
         return
 
     # Audit #12: populate the workset-wide goto-def index before the
@@ -1248,12 +1260,25 @@ def _build_initial_index(ls: LanguageServer, roots: tuple[Path, ...]) -> None:
             roots, progress_cb=on_progress, prior_index=prior_index,
         )
     except Exception:
+        # audited(0.2.7): error-surfacing — user-facing degradation.
+        # Index-build failure leaves state.workspace_index = None;
+        # _workset_for silently degrades to single-file mode, hiding
+        # every cross-file diagnostic. progress.end(message="failed")
+        # is unreliable (suppressed; dropped by clients without
+        # progress widgets). Toast so the silent degradation is
+        # observable.
         log.exception("workspace index build failed")
         if progress_started:
             try:
                 progress.end(token, lsp.WorkDoneProgressEnd(message="failed"))
             except Exception:
                 log.debug("workDoneProgress end failed", exc_info=True)
+        _notify(
+            ls,
+            "DimFort: workspace index build failed — cross-file analysis "
+            "disabled. See the DimFort Output channel for the traceback.",
+            toast=True,
+        )
         return
     scan_elapsed = time.monotonic() - scan_started_at
 
@@ -1398,7 +1423,20 @@ def _did_open(ls: LanguageServer, params: lsp.DidOpenTextDocumentParams) -> None
             try:
                 _publish_for_uri(ls, uri)
             except Exception:
+                # audited(0.2.7): error-surfacing — user-triggered
+                # (didOpen). Inner pipeline crashes already toast in
+                # _publish_for_uri; this catches post-pipeline
+                # failures (symbols index build, cache cap apply,
+                # etc.) that escape the inner try. Toast so the
+                # daemon-thread silent-death failure mode is
+                # observable.
                 log.exception("didOpen check failed for %s", uri)
+                _notify(
+                    ls,
+                    f"DimFort: post-check failure on {Path(uri).name} — "
+                    f"see Output channel for details.",
+                    toast=True,
+                )
 
     threading.Thread(target=worker, daemon=True, name="dimfort-open").start()
 
@@ -1444,7 +1482,16 @@ def _did_save(ls: LanguageServer, params: lsp.DidSaveTextDocumentParams) -> None
             try:
                 _publish_for_uri(ls, uri)
             except Exception:
+                # audited(0.2.7): error-surfacing — user-triggered
+                # (didSave). See _did_open's worker for the
+                # rationale; same shape.
                 log.exception("didSave check failed for %s", uri)
+                _notify(
+                    ls,
+                    f"DimFort: post-save check failure on {Path(uri).name} — "
+                    f"see Output channel for details.",
+                    toast=True,
+                )
 
     threading.Thread(target=worker, daemon=True, name="dimfort-save").start()
 
@@ -1559,7 +1606,19 @@ def _did_change(ls: LanguageServer, params: lsp.DidChangeTextDocumentParams) -> 
                     _update_index_for(active.resolve(), new_text=text)
                 _publish_for_uri(ls, uri, override_text=text)
             except Exception:
+                # audited(0.2.7): error-surfacing — user-triggered
+                # (debounced didChange — every keystroke pause).
+                # Highest-frequency worker exception path; toast so
+                # an editing-time pipeline regression surfaces
+                # immediately rather than silently disabling
+                # diagnostics until the user notices.
                 log.exception("debounced check failed for %s", uri)
+                _notify(
+                    ls,
+                    f"DimFort: live-check failure on {Path(uri).name} — "
+                    f"diagnostics may be stale. See Output channel.",
+                    toast=True,
+                )
 
     threading.Thread(target=delayed, daemon=True).start()
 
@@ -2170,12 +2229,24 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
                 outer_lock=state.check_lock,
             )
         except Exception:
+            # audited(0.2.7): error-surfacing — user-invoked
+            # (workspace/executeCommand dimfort/checkWorkspace).
+            # progress.end(message="failed") is unreliable
+            # (suppressed; dropped by clients without progress
+            # widgets), so the user staring at the spinner sees no
+            # signal it died. Toast so the failure mode is loud.
             log.exception("workspace check failed")
             if progress_started:
                 with contextlib.suppress(Exception):
                     progress.end(
                         token, lsp.WorkDoneProgressEnd(message="failed")
                     )
+            _notify(
+                ls,
+                "DimFort: workspace check failed — see Output channel for "
+                "the traceback.",
+                toast=True,
+            )
             return None
 
         # Audit #12: build the goto-def name index before publishing
@@ -2321,8 +2392,13 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
         cache_root = state.cache.root
         proj_cache = state.projection_cache
         threading.Thread(
-            target=save_persistent_projection_cache,
-            args=(proj_cache, cache_root),
+            target=_cache_save_wrapped,
+            args=(
+                save_persistent_projection_cache,
+                "projection",
+                proj_cache,
+                cache_root,
+            ),
             name="dimfort-projection-cache-save",
             daemon=True,
         ).start()
@@ -2332,12 +2408,45 @@ def _check_whole_workspace(ls: LanguageServer) -> dict[str, Any] | None:
         cache_root = state.cache.root
         exp_cache = state.exports_cache
         threading.Thread(
-            target=save_persistent_exports_cache,
-            args=(exp_cache, cache_root),
+            target=_cache_save_wrapped,
+            args=(
+                save_persistent_exports_cache,
+                "exports",
+                exp_cache,
+                cache_root,
+            ),
             name="dimfort-exports-cache-save",
             daemon=True,
         ).start()
     return payload
+
+
+def _cache_save_wrapped(save_fn: Any, label: str, cache: Any, cache_root: Any) -> None:
+    """Run a cache-save target with local exception handling.
+
+    audited(0.2.7): silent-OK — cache-save failure is best-effort
+    by contract (the next session warms from scratch). Without this
+    wrapper, the target's exceptions hit ``threading.excepthook``
+    and trip ``_install_crash_trace_hook``'s ``_CrashFileHandler``,
+    conflating "cache write failed" (best-effort) with "LSP
+    crashed" (urgent) in the operator's crash-log file. log.warning
+    here distinguishes the two.
+
+    Args:
+        save_fn: One of the persistent cache save functions.
+        label: ``"projection"`` or ``"exports"`` for log context.
+        cache: Cache instance to persist.
+        cache_root: Workspace cache directory.
+    """
+    try:
+        save_fn(cache, cache_root)
+    except Exception:
+        log.warning(
+            "persistent %s-cache write failed (best-effort; "
+            "next session will warm from scratch)",
+            label,
+            exc_info=True,
+        )
 
 
 def run_stdio() -> None:

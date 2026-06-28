@@ -30,12 +30,15 @@ reload (which it shouldn't — but the bound holds either way).
 """
 from __future__ import annotations
 
+import logging
 import re
 
 from lsprotocol import types as lsp
 from pygls.lsp.server import LanguageServer
 
 from dimfort.core import units as _units_mod
+
+log = logging.getLogger("dimfort.lsp")
 
 # Fires only when the cursor sits inside an unclosed ``@unit{…}``
 # **inside an active Fortran comment** — without the comment guard the
@@ -174,6 +177,18 @@ def complete(
     try:
         doc = ls.workspace.get_text_document(params.text_document.uri)
     except Exception:
+        # audited(0.2.7): error-surfacing — completion is user-
+        # triggered (cursor in @unit{} pops the list). Returning None
+        # silently produces an empty popup that's indistinguishable
+        # from "no units defined", masking a real workspace-document
+        # lookup failure. log.warning surfaces to the Output channel
+        # for diagnosis; we don't toast (completion fires per
+        # keystroke; toasting on every miss would carpet the user).
+        log.warning(
+            "completion: failed to fetch text document for %s",
+            params.text_document.uri,
+            exc_info=True,
+        )
         return None
     line_text = (
         doc.lines[params.position.line]
