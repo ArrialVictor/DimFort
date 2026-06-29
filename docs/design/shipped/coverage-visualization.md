@@ -890,11 +890,10 @@ auto-refresh on every edit produced a deeply unsatisfying UX:
   Yielding the lock periodically (the M5 attempt) made
   responsiveness merely "less bad" rather than "fine."
 - For users editing constants modules (the typical DimFort
-  annotation workflow per
-  [[feedback-annotate-constants-modules-first]]), every save
-  invalidates ~all consumers via dep-digest ripple, so even
-  M2-style incremental aggregation doesn't reduce the cost
-  meaningfully.
+  annotation workflow, which prioritizes constants modules
+  first), every save invalidates ~all consumers via dep-digest
+  ripple, so even M2-style incremental aggregation doesn't
+  reduce the cost meaningfully.
 - The async state machine (dirty flags, debounce, in-flight
   guards, race-vs-edit handling) added significant code with
   little UX dividend.
