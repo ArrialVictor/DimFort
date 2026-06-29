@@ -20,6 +20,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Full history so the silent-failure gate's diff-aware
+          # check can resolve the merge base against origin/main.
+          # Shallow clones (default) lack the base ref and fail with
+          # "no merge base".
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
