@@ -20,6 +20,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Full history so the silent-failure gate's diff-aware
+          # check can resolve the merge base against origin/main.
+          # Shallow clones (default) lack the base ref and fail with
+          # "no merge base".
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -33,3 +39,16 @@ jobs:
         run: mypy
       - name: Test
         run: pytest --cov=dimfort --cov-fail-under=75
+      - name: Silent-failure regression gate
+        # Locks in the 0.2.7 silent-failure audit: hard-bans anti-pattern
+        # except blocks, requires `audited(0.2.X)` annotation on new
+        # `_notify(...)` and `contextlib.suppress(...)` additions in
+        # `src/dimfort/lsp/`. See docs/contributor/silent-failure-audit.md
+        # for the baseline this guards.
+        env:
+          BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+        run: |
+          if [ -n "$BASE_REF" ]; then
+            git fetch --quiet origin "${{ github.base_ref }}"
+          fi
+          python scripts/silent_failure_gate.py

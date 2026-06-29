@@ -168,9 +168,33 @@ All 11 sites reviewed:
 ## CI grep gate
 
 The audit annotations enable a regression-prevention gate. Future
-PRs that add a new `_notify(...)` or silent `except` without an
-`audited(...)` annotation fail the check. See `.github/workflows/`
-(separate PR — task #7 of the audit cycle).
+PRs that add a new `_notify(...)` or `contextlib.suppress(...)` in
+`src/dimfort/lsp/` without an `audited(0.2.X)` annotation within
+±5 lines fail the check. Anti-pattern `except` shapes — bare
+`except:`, `except Exception: pass`, `except Exception: return
+None` — are hard-banned in the same directory.
+
+The gate is implemented as `scripts/silent_failure_gate.py` and
+runs as a CI step in `.github/workflows/ci.yml`. Two modes:
+
+- **Hard bans** are always enforced (work on the current tree).
+- **Annotation requirements** are diff-aware: they fire only for
+  NEW occurrences added against the PR's base ref, so pre-audit
+  un-annotated calls don't block CI.
+
+Scope is intentionally limited to `src/dimfort/lsp/`. Core
+modules (`ts_checker`, `units`, `rewrite`, …) are 0.2.8
+carry-forward — they hold legitimate silent-fallback patterns
+(e.g., unit-parse failures returning `None` as a documented
+contract) that pre-date the audit's classification discipline
+and need their own focused review before joining the gate.
+
+Locally:
+
+```bash
+python scripts/silent_failure_gate.py            # hard bans only
+BASE_REF=origin/main python scripts/silent_failure_gate.py
+```
 
 ## See also
 

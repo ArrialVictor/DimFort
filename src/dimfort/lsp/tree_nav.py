@@ -454,4 +454,8 @@ def _normalized_unit(unit_text: str, *, scale_mode: bool = False) -> str | None:
     try:
         return format_unit(parse_unit(unit_text), show_factor=scale_mode)
     except Exception:
+        # audited(0.2.7): silent-OK — returning None on parse failure is
+        # the documented contract of this normalisation helper (see the
+        # `Returns` docstring entry above). Callers branch on None to
+        # render the raw unit_text; no diagnostic is appropriate here.
         return None
