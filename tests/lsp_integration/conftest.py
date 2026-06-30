@@ -126,3 +126,81 @@ async def client_uninitialized(lsp_client: LanguageClient):
     shutdown if they care about graceful teardown.
     """
     yield
+
+
+@pytest_lsp.fixture(
+    config=ClientServerConfig(
+        server_command=[sys.executable, "-m", "dimfort", "lsp"],
+        client_factory=_make_test_client,
+    ),
+)
+async def client_diagnostics(lsp_client: LanguageClient):
+    """A LanguageClient initialized against ``fixtures/diagnostics/``.
+
+    One .f90 file per bug class (bug_classes, keyword_args,
+    lhs_subscript, unit_assume, polymorphism, burst). Tests pick the
+    file they need; per-file diagnostics are isolated by construction
+    (no cross-file references in the fixtures).
+    """
+    workspace = FIXTURES_DIR / "diagnostics"
+    await lsp_client.initialize_session(
+        lsp.InitializeParams(
+            capabilities=lsp.ClientCapabilities(),
+            workspace_folders=[
+                lsp.WorkspaceFolder(uri=workspace.as_uri(), name="diagnostics"),
+            ],
+        )
+    )
+    yield
+    await lsp_client.shutdown_session()
+
+
+@pytest_lsp.fixture(
+    config=ClientServerConfig(
+        server_command=[sys.executable, "-m", "dimfort", "lsp"],
+        client_factory=_make_test_client,
+    ),
+)
+async def client_diagnostics_multifile(lsp_client: LanguageClient):
+    """A LanguageClient initialized against ``fixtures/diagnostics_multifile/``.
+
+    Two .f90 files in one workspace. Used by
+    ``test_multi_file_publishdiagnostics_ordering``.
+    """
+    workspace = FIXTURES_DIR / "diagnostics_multifile"
+    await lsp_client.initialize_session(
+        lsp.InitializeParams(
+            capabilities=lsp.ClientCapabilities(),
+            workspace_folders=[
+                lsp.WorkspaceFolder(uri=workspace.as_uri(), name="multifile"),
+            ],
+        )
+    )
+    yield
+    await lsp_client.shutdown_session()
+
+
+@pytest_lsp.fixture(
+    config=ClientServerConfig(
+        server_command=[sys.executable, "-m", "dimfort", "lsp"],
+        client_factory=_make_test_client,
+    ),
+)
+async def client_diagnostics_severity(lsp_client: LanguageClient):
+    """A LanguageClient initialized against ``fixtures/diagnostics_severity/``.
+
+    The workspace's ``dimfort.toml`` overrides H001 to ``"info"`` — the
+    0.2.3 #info-severity-override-silent-reject regression. Test asserts
+    the wire severity matches Information, not Error.
+    """
+    workspace = FIXTURES_DIR / "diagnostics_severity"
+    await lsp_client.initialize_session(
+        lsp.InitializeParams(
+            capabilities=lsp.ClientCapabilities(),
+            workspace_folders=[
+                lsp.WorkspaceFolder(uri=workspace.as_uri(), name="severity"),
+            ],
+        )
+    )
+    yield
+    await lsp_client.shutdown_session()
