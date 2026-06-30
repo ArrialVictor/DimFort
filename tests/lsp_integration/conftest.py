@@ -421,3 +421,24 @@ async def client_coverage(lsp_client: LanguageClient):
     )
     yield
     await lsp_client.shutdown_session()
+
+
+@pytest_lsp.fixture(
+    config=ClientServerConfig(
+        server_command=[sys.executable, "-m", "dimfort", "lsp"],
+        client_factory=_make_test_client,
+    ),
+)
+async def client_actions(lsp_client: LanguageClient):
+    """A LanguageClient initialized against ``fixtures/actions/``."""
+    workspace = FIXTURES_DIR / "actions"
+    await lsp_client.initialize_session(
+        lsp.InitializeParams(
+            capabilities=lsp.ClientCapabilities(),
+            workspace_folders=[
+                lsp.WorkspaceFolder(uri=workspace.as_uri(), name="actions"),
+            ],
+        )
+    )
+    yield
+    await lsp_client.shutdown_session()
