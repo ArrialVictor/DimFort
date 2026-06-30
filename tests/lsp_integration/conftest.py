@@ -43,14 +43,21 @@ def _make_test_client() -> LanguageClient:
     successful check (see LSP-surface inventory at server.py:790, 797).
     pytest-lsp's default ``make_test_lsp_client`` doesn't register a handler
     for it, so the server's request raises ``JsonRpcMethodNotFound`` and the
-    error bleeds into unrelated tests. We register a no-op so the request
-    succeeds silently — tests that specifically care about the refresh
-    semantics will inspect it explicitly.
+    error bleeds into unrelated tests. We register a counter-incrementing
+    handler — tests that specifically care about the refresh count read
+    ``client.inlay_refresh_count``. Tests that don't can ignore it; the
+    handler just succeeds silently.
+
+    The counter is attached to the client because pygls forbids
+    re-registering features after creation, so tests can't install
+    their own handler. Putting state on the client side-steps that.
     """
     client = make_test_lsp_client()
+    client.inlay_refresh_count = 0  # type: ignore[attr-defined]
 
     @client.feature("workspace/inlayHint/refresh")
     def _on_inlay_refresh(_params):
+        client.inlay_refresh_count += 1  # type: ignore[attr-defined]
         return None
 
     return client
@@ -304,6 +311,32 @@ async def client_hover_scale(lsp_client: LanguageClient):
                 lsp.WorkspaceFolder(uri=workspace.as_uri(), name="hover_scale"),
             ],
             initialization_options={"scaleMode": True},
+        )
+    )
+    yield
+    await lsp_client.shutdown_session()
+
+
+@pytest_lsp.fixture(
+    config=ClientServerConfig(
+        server_command=[sys.executable, "-m", "dimfort", "lsp"],
+        client_factory=_make_test_client,
+    ),
+)
+async def client_panel(lsp_client: LanguageClient):
+    """A LanguageClient initialized against ``fixtures/panel/``.
+
+    Used by inlay + dimfort/panelInfo + dimfort/interactions tests.
+    The workspace holds one .f90 per concern; each test picks the
+    file it needs.
+    """
+    workspace = FIXTURES_DIR / "panel"
+    await lsp_client.initialize_session(
+        lsp.InitializeParams(
+            capabilities=lsp.ClientCapabilities(),
+            workspace_folders=[
+                lsp.WorkspaceFolder(uri=workspace.as_uri(), name="panel"),
+            ],
         )
     )
     yield
