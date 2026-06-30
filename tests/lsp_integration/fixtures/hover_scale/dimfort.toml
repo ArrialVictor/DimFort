@@ -1,0 +1,5 @@
+# Scale-mode workspace. Enables S-series scale-aware checking +
+# adds the multiplicative scale factor to hover payloads
+# (regression: 0.2.1 #scale-mode-display-uniform).
+[scale]
+enabled = true

@@ -204,3 +204,107 @@ async def client_diagnostics_severity(lsp_client: LanguageClient):
     )
     yield
     await lsp_client.shutdown_session()
+
+
+@pytest_lsp.fixture(
+    config=ClientServerConfig(
+        server_command=[sys.executable, "-m", "dimfort", "lsp"],
+        client_factory=_make_test_client,
+    ),
+)
+async def client_hover_short(lsp_client: LanguageClient):
+    """A LanguageClient initialized against ``fixtures/hover/`` with hover='short'.
+
+    The default hover mode in the package.json contributions; tests that
+    don't specifically need detailed-mode behavior use this.
+    """
+    workspace = FIXTURES_DIR / "hover"
+    await lsp_client.initialize_session(
+        lsp.InitializeParams(
+            capabilities=lsp.ClientCapabilities(),
+            workspace_folders=[
+                lsp.WorkspaceFolder(uri=workspace.as_uri(), name="hover"),
+            ],
+            initialization_options={"hover": "short"},
+        )
+    )
+    yield
+    await lsp_client.shutdown_session()
+
+
+@pytest_lsp.fixture(
+    config=ClientServerConfig(
+        server_command=[sys.executable, "-m", "dimfort", "lsp"],
+        client_factory=_make_test_client,
+    ),
+)
+async def client_hover_detailed(lsp_client: LanguageClient):
+    """A LanguageClient initialized against ``fixtures/hover/`` with hover='detailed'.
+
+    Used by ``test_hover_detailed_vs_short_payload`` to assert the
+    detailed payload is structurally richer than the short one.
+    """
+    workspace = FIXTURES_DIR / "hover"
+    await lsp_client.initialize_session(
+        lsp.InitializeParams(
+            capabilities=lsp.ClientCapabilities(),
+            workspace_folders=[
+                lsp.WorkspaceFolder(uri=workspace.as_uri(), name="hover"),
+            ],
+            initialization_options={"hover": "detailed"},
+        )
+    )
+    yield
+    await lsp_client.shutdown_session()
+
+
+@pytest_lsp.fixture(
+    config=ClientServerConfig(
+        server_command=[sys.executable, "-m", "dimfort", "lsp"],
+        client_factory=_make_test_client,
+    ),
+)
+async def client_hover_cross_file(lsp_client: LanguageClient):
+    """A LanguageClient initialized against ``fixtures/hover_cross_file/``.
+
+    Used by ``test_definition_cross_file`` — goto-def from one file's
+    use site to another file's declaration.
+    """
+    workspace = FIXTURES_DIR / "hover_cross_file"
+    await lsp_client.initialize_session(
+        lsp.InitializeParams(
+            capabilities=lsp.ClientCapabilities(),
+            workspace_folders=[
+                lsp.WorkspaceFolder(uri=workspace.as_uri(), name="cross_file"),
+            ],
+        )
+    )
+    yield
+    await lsp_client.shutdown_session()
+
+
+@pytest_lsp.fixture(
+    config=ClientServerConfig(
+        server_command=[sys.executable, "-m", "dimfort", "lsp"],
+        client_factory=_make_test_client,
+    ),
+)
+async def client_hover_scale(lsp_client: LanguageClient):
+    """A LanguageClient initialized against ``fixtures/hover_scale/`` with scale on.
+
+    The workspace's ``dimfort.toml`` enables ``[scale]``. Test asserts
+    the hover payload includes the multiplicative scale factor — the
+    0.2.1 #scale-mode-display-uniform regression.
+    """
+    workspace = FIXTURES_DIR / "hover_scale"
+    await lsp_client.initialize_session(
+        lsp.InitializeParams(
+            capabilities=lsp.ClientCapabilities(),
+            workspace_folders=[
+                lsp.WorkspaceFolder(uri=workspace.as_uri(), name="hover_scale"),
+            ],
+            initialization_options={"scaleMode": True},
+        )
+    )
+    yield
+    await lsp_client.shutdown_session()
