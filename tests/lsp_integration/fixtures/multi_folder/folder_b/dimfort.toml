@@ -1,0 +1,5 @@
+# Workspace folder B — used as the SECOND folder in the multi-folder
+# posture-pin test. The current contract is that the server uses only
+# the first folder's config; if this file's config were applied,
+# H001 would default to "error" and the test fixture in folder_a
+# would emit it.

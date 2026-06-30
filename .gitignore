@@ -234,6 +234,13 @@ __marimo__/
 # developer machines that haven't renamed their local copies.
 dimfort.toml
 .dimfort.toml
+# Exception: LSP integration test fixtures need their dimfort.toml
+# tracked — each test workspace pins a specific config so the tests
+# can verify the server applies it (severity overrides, multi-folder
+# posture). Without these, CI runs against default config and any
+# config-dependent test silently fails (or worse: silently passes
+# without exercising the contract).
+!tests/lsp_integration/fixtures/**/dimfort.toml
 
 # OS files
 .DS_Store

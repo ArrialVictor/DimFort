@@ -1,0 +1,6 @@
+# Severity override workspace — fires the 0.2.3 regression class
+# (info-level overrides previously silently rejected). Overrides H001
+# to "info" — test asserts the wire severity matches Information,
+# not Error (the default for H001).
+[diagnostics]
+H001 = "info"

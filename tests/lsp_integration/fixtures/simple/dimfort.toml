@@ -1,0 +1,2 @@
+# Minimal fixture workspace for LSP integration tests.
+# An empty config — server uses bundled defaults.

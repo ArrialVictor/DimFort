@@ -1,0 +1,5 @@
+# Workspace folder A — for multi-folder posture-pin test.
+# Tagged with a distinct config option so the test can verify the
+# server uses THIS config (the first folder's), not folder_b's.
+[diagnostics]
+H001 = "off"
