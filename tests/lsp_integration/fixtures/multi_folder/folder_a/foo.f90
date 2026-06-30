@@ -1,13 +1,13 @@
 module a_mod
   implicit none
-  real :: x  !< @unit{m}
-  real :: y  !< @unit{s}
+  real :: x   !< @unit{m}
+  real :: bad !< @unit{s}
 contains
   subroutine compute()
-    real :: bad
-    ! This would normally fire H001 (m + s mismatch), but folder_a's
-    ! dimfort.toml turns H001 off. The multi-folder posture-pin test
-    ! asserts the server uses THIS config, not folder_b's defaults.
-    bad = x + y
+    ! H001 site: `bad : s` assigned `x : m`. Without folder_a's
+    ! dimfort.toml override (H001 = off), this fires H001. The
+    ! multi-folder posture-pin test asserts H001 is NOT in the
+    ! diagnostics — only true when folder_a's config is applied.
+    bad = x
   end subroutine compute
 end module a_mod
