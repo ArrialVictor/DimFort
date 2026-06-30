@@ -48,17 +48,30 @@ def _make_test_client() -> LanguageClient:
     ``client.inlay_refresh_count``. Tests that don't can ignore it; the
     handler just succeeds silently.
 
-    The counter is attached to the client because pygls forbids
-    re-registering features after creation, so tests can't install
-    their own handler. Putting state on the client side-steps that.
+    Also adds a custom handler for ``dimfort/workspaceCheckCompleted``
+    (counter + last payload). ``$/progress`` and ``window/showMessage``
+    are NOT re-registered here — pytest-lsp's defaults already track
+    them on ``client.progress_reports`` and ``client.messages``
+    respectively.
+
+    State is attached to the client because pygls forbids re-registering
+    features after creation, so tests can't install their own handlers
+    in the test body. Putting state on the client side-steps that.
     """
     client = make_test_lsp_client()
     client.inlay_refresh_count = 0  # type: ignore[attr-defined]
+    client.workspace_check_completed_count = 0  # type: ignore[attr-defined]
+    client.workspace_check_completed_last = None  # type: ignore[attr-defined]
 
     @client.feature("workspace/inlayHint/refresh")
     def _on_inlay_refresh(_params):
         client.inlay_refresh_count += 1  # type: ignore[attr-defined]
         return None
+
+    @client.feature("dimfort/workspaceCheckCompleted")
+    def _on_workspace_check_completed(params):
+        client.workspace_check_completed_count += 1  # type: ignore[attr-defined]
+        client.workspace_check_completed_last = params  # type: ignore[attr-defined]
 
     return client
 
@@ -337,6 +350,52 @@ async def client_panel(lsp_client: LanguageClient):
             workspace_folders=[
                 lsp.WorkspaceFolder(uri=workspace.as_uri(), name="panel"),
             ],
+        )
+    )
+    yield
+    await lsp_client.shutdown_session()
+
+
+@pytest_lsp.fixture(
+    config=ClientServerConfig(
+        server_command=[sys.executable, "-m", "dimfort", "lsp"],
+        client_factory=_make_test_client,
+    ),
+)
+async def client_workspace_full(lsp_client: LanguageClient):
+    """A LanguageClient initialized against ``fixtures/workspace_full/``.
+
+    Three .f90 files for checkWorkspace fan-out + duplicate-trigger
+    coalescing + concurrent-request lock-release testing.
+    """
+    workspace = FIXTURES_DIR / "workspace_full"
+    await lsp_client.initialize_session(
+        lsp.InitializeParams(
+            capabilities=lsp.ClientCapabilities(),
+            workspace_folders=[
+                lsp.WorkspaceFolder(uri=workspace.as_uri(), name="workspace"),
+            ],
+        )
+    )
+    yield
+    await lsp_client.shutdown_session()
+
+
+@pytest_lsp.fixture(
+    config=ClientServerConfig(
+        server_command=[sys.executable, "-m", "dimfort", "lsp"],
+        client_factory=_make_test_client,
+    ),
+)
+async def client_no_folder(lsp_client: LanguageClient):
+    """A LanguageClient initialized WITHOUT workspace_folders.
+
+    Triggers the no-folder showMessage path. Used to verify the
+    server toasts when single-file mode is forced.
+    """
+    await lsp_client.initialize_session(
+        lsp.InitializeParams(
+            capabilities=lsp.ClientCapabilities(),
         )
     )
     yield
