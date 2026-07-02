@@ -95,4 +95,4 @@ Three independent toggles flipping `dimfort.show.{cursor,scope,imports}` (VS) / 
 - Add a row whenever a new user-facing command lands in any companion.
 - Drop a row only if **all three** companions remove the concept (e.g. a feature is deprecated upstream).
 - If a rename happens, **update all three columns** in the same PR — the table is the contract.
-- The per-companion `README.md` command listings should be kept in sync with their column here. The DimFort docs audit (see [pre-release docs audit checklist](../../../HANDOVER.md)) includes a cross-link check between this table and the per-repo READMEs.
+- The per-companion `README.md` command listings should be kept in sync with their column here. The [pre-release documentation audit](../release-process.md#pre-release-documentation-audit) includes a cross-link check between this table and the per-repo READMEs.

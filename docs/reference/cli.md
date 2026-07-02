@@ -46,6 +46,27 @@ fail-the-build signal — see [Exit codes](#exit-codes).
 | `--cache-dir D`  | Override the cache directory (default: `.dimfort-cache/` under the first path argument). |
 | `--clear-cache`  | Wipe the cache directory before running. Combine with `--cache read-write` to repopulate. |
 
+## `dimfort init`
+
+Generate a starter `dimfort.toml` for a project. The output opens
+with the SI core inherited from the shipped `default_units.toml`
+and includes every discipline template — selected templates are
+uncommented and ready to use; unselected templates are included
+in the output commented out, for in-file discovery.
+
+```
+dimfort init [--templates T] [--output PATH] [--bare]
+             [--force] [--dry-run]
+```
+
+| Flag | Effect |
+|---|---|
+| `--templates T`, `-t T` | Comma-separated list of discipline templates to activate. Available: `climate`, `astronomy`, `geosciences`, `biology-medicine`, `legacy`. Templates not listed are included commented-out so the user can discover them in-file. |
+| `--output PATH`, `-o PATH` | Output path for the generated config. Default: `./dimfort.toml`. |
+| `--bare` | Skip discipline templates entirely. Generate just the SI core scaffolding with a project-local-additions section. |
+| `--force`, `-f` | Overwrite an existing `dimfort.toml` without prompting. |
+| `--dry-run` | Print the generated config to stdout instead of writing to disk. |
+
 ## `dimfort interactions`
 
 ```bash

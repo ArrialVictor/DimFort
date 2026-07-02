@@ -98,7 +98,7 @@ incoherent.)
 ### 2.3 Reading is permissive; canonical writing is strict
 
 DimFort's rewriter (today: error-recovery suggestions; future:
-[`dimfort rewrite`](rewrite-rules.md)) always proposes one canonical
+[`dimfort rewrite`](../future/rewrite-rules.md)) always proposes one canonical
 target form, **independent of which flags are on**. The flags govern
 *what's accepted* as input; the rewriter target governs *what's
 preferred* as output.
@@ -1213,7 +1213,7 @@ Still open:
   `hours since 1970-01-01`) stays out of scope, matching the
   existing internal udunits2-parity scoping.
 - **The rewriter target.** Always canonical, regardless of flags.
-  See [rewrite-rules.md](rewrite-rules.md).
+  See [rewrite-rules.md](../future/rewrite-rules.md).
 - **Comment-extraction rules** (which substring of an inline
   comment is the unit). That's **relax-mode** (planned sibling
   design), not the lexer.

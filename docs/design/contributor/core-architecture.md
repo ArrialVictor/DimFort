@@ -58,7 +58,7 @@ A content-hash cache can short-circuit Phase D for unchanged files — see
 | Module | Owns |
 | --- | --- |
 | `annotations.py` | Stage 1: a string-aware comment scanner that extracts every `@unit{…}` (`RawAnnotation`) and a tree-sitter declaration scanner that finds every declaration (`DeclarationSite`). |
-| `attach.py` | Stage 2: joins annotations to declarations by physical line range (POST `!<` / PRE `!>`), producing an `AttachmentResult` (`var_units`, `field_units`, provenance, the U010 continuation rule). |
+| `attach.py` | Stage 2: joins annotations to declarations by physical line range (POST `!<` / PRE `!>`), producing an `AttachmentResult` (`var_units`, `field_units`, provenance, the per-variable continuation-attach rule shipped in 0.2.7). |
 
 ### Unit model
 | Module | Owns |

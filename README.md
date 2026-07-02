@@ -49,16 +49,17 @@ just to opt in.
 Add a few lines to `dimfort.toml`:
 
 ```toml
-[parser]
-unit_comment_delimiters = [
+[parser.unit_comments]
+unit = [
   { open = "@unit{", close = "}" },
   { open = "[",      close = "]" },
 ]
 ```
 
 Now `! [m/s]` is a first-class unit annotation, checked exactly
-like `@unit{m/s}`. The same mechanism handles `@unit_assume` and
-`@unit_affine_conversion`, each on its own list with its own
+like `@unit{m/s}`. The same table handles `unit_assume`,
+`unit_affine`, and their `nonunit` / `nonunit_assume` /
+`nonunit_affine` filter lists — each on its own key with its own
 opt-in. Full recipe in
 [Bringing DimFort to an existing codebase](docs/quickstart/bringing-to-existing-codebase.md).
 
