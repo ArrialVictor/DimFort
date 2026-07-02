@@ -50,10 +50,9 @@ declarations.
 
 See [Bringing DimFort to an existing codebase](../quickstart/bringing-to-existing-codebase.md)
 for the recipe, and
-[`dimfort.toml` reference](dimfort-toml.md#parser) for the three
-delimiter-list keys (`unit_comment_delimiters`,
-`unit_assume_comment_delimiters`,
-`unit_affine_comment_delimiters`).
+[`dimfort.toml` reference](dimfort-toml.md#parser) for the
+`[parser.unit_comments]` table (`unit`, `nonunit`, `unit_assume`,
+`nonunit_assume`, `unit_affine`, `nonunit_affine`).
 
 ## Where to put the annotation
 
@@ -124,20 +123,28 @@ real :: alpha, &   !< @unit{m/s}
 All three apply the unit to *every* variable in the declaration
 (`alpha`, `beta`, `gamma` above).
 
-### Forbidden: `!<` on an intermediate continuation line
+### Per-variable annotations on a continued declaration
 
-A trailing annotation on a *middle* line of a continued declaration is
-**rejected** with diagnostic **U010** and the unit is *not* applied:
+A trailing annotation on *any* line of a continued declaration attaches
+to the variables that end on that line. This is the natural way to
+document related variables with distinct units in a single statement:
 
 ```fortran
-real :: alpha, &
-        beta,  &  !< @unit{m/s}   ← U010 — neither first nor last
-        gamma
+real :: alpha, &    !< @unit{m/s}   ← attaches to alpha
+        beta,  &    !< @unit{Pa}    ← attaches to beta
+        gamma       !< @unit{K}     ← attaches to gamma
 ```
 
-The position suggests per-variable scope, which DimFort doesn't
-support. Move the annotation to the first or last line, or split the
-declaration into separate statements.
+If some continuation lines carry no annotation, the unannotated names
+surface as regular `U005` warnings for the missing unit; a follow-up
+`U025` INFO diagnostic hints that the declaration mixes annotated and
+unannotated variables, which is a common migration artefact.
+
+A **PRE** annotation block (`!>` / `!!`) above a multi-line declaration
+is rejected with `U024` — a PRE block describes the whole declaration,
+so its intent is ambiguous when the declaration lists variables with
+different units. Split the declaration or move the annotations to
+POST (trailing) form.
 
 ## Module constants
 
@@ -275,11 +282,12 @@ carries the directive — callers then get a clean typed `degC → K` signature.
 ## Diagnostics
 
 Annotation-time problems surface as **U-series** codes (`U001`
-malformed, `U006` orphan, `U-conflict` two annotations disagreeing,
-`U010` `!<` on an intermediate continuation line, `U020`
-`@unit_assume` audit note, …). The semantic checker adds the
-**H-series** (`H001`–`H004`, `H010`), and `scale_mode` adds the
-**S-series** (`S001`–`S003`).
+malformed, `U020` `@unit_assume` audit note, `U024` PRE annotation
+on a multi-line declaration, `U025` mixed annotated / unannotated
+variables on a continued declaration, `U026` unit-name shadow, …).
+The semantic checker adds the **H-series** (`H001`–`H004`, `H010`,
+`H020`–`H023`), and `scale_mode` adds the **S-series**
+(`S001`–`S003`).
 
 The full table — every code, severity, and trigger — lives at
 [reference/diagnostic-codes.md](diagnostic-codes.md). Per-code

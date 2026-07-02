@@ -26,19 +26,37 @@ external_modules = ["netcdf", "mpi"]
 cpp_defines   = ["WITH_NETCDF=1", "_OPENMP"]
 include_paths = ["include", "vendor/foo/include"]
 
-# Configurable comment delimiters (0.2.2). Each list REPLACES its
-# default; list both to keep the canonical form alongside a custom
-# one.
-unit_comment_delimiters = [
+# Comment-marker namespace (0.2.7). Six pattern lists — three
+# positive directive families and three `nonunit`-prefixed filters.
+# Each positive list REPLACES its default; list both to keep the
+# canonical form alongside a custom one.
+[parser.unit_comments]
+unit = [
   { open = "@unit{", close = "}" },
   { open = "[",      close = "]" },
 ]
-unit_assume_comment_delimiters = [
+unit_assume = [
   { open = "@unit_assume{", close = "}", sep = ":" },
 ]
-unit_affine_comment_delimiters = [
+unit_affine = [
   { open = "@unit_affine_conversion{", close = "}", sep = "->" },
 ]
+# Filter lists (default: three shipped `nonunit` patterns; empty
+# for the two others). Set to `[]` for an explicit opt-out.
+# nonunit         = [{ open = "@nonunit{", close = "}" }]
+# nonunit_assume  = []
+# nonunit_affine  = []
+
+# Permissive lexer flags (0.2.7). All eight default OFF; opt in
+# per corpus convention. See §parser.unit_lexer below.
+[parser.unit_lexer]
+allow_unicode_superscripts = true   # m·s⁻¹
+allow_middot_multiplication = true  # kg·m⁻³
+
+# Pre-tokenization transforms (0.2.7). Currently houses the
+# biogeochem-tag strip.
+[parser.unit_preprocess]
+strip_biogeochem_tags = false
 
 [units]
 file = "etc/project-units.toml"
@@ -81,14 +99,65 @@ conflict.
 |---|---|---|---|
 | `cpp_defines` | `list[string]` | `[]` | Each entry becomes a `cpp -D<entry>` flag. Use `"NAME"` or `"NAME=value"`. |
 | `include_paths` | `list[string]` | `[]` | Each entry becomes a `cpp -I<path>`. Paths are resolved relative to the config file. |
-| `unit_comment_delimiters` | `list[table]` | `[{open="@unit{", close="}"}]` | Comment patterns DimFort treats as `@unit{...}` unit-claim directives. Each entry is `{open = "...", close = "..."}`. Setting to `[]` is an error and falls back to the default. |
-| `unit_assume_comment_delimiters` | `list[table]` | `[{open="@unit_assume{", close="}", sep=":"}]` | Patterns for the `@unit_assume{...}` escape hatch (asserts an irreducible RHS unit). Each entry is `{open, close, sep}` — `sep` separates the asserted unit from the mandatory reason. |
-| `unit_affine_comment_delimiters` | `list[table]` | `[{open="@unit_affine_conversion{", close="}", sep="->"}]` | Patterns for verified affine conversions. Each entry is `{open, close, sep}` — `sep` separates source and target units. |
+
+Comment-marker patterns live under `[parser.unit_comments]`
+(nested table, 0.2.7). Permissive lexer flags live under
+`[parser.unit_lexer]`. Pre-tokenization transforms live under
+`[parser.unit_preprocess]`. Each is documented separately below.
+
+### `[parser.unit_comments]`
+
+Six pattern lists — three positive directive families and three
+`nonunit`-prefixed filters. Each positive list REPLACES its
+default (setting an empty positive list is an error and falls
+back to the default). Filter lists default to `[]` for
+`nonunit_assume` / `nonunit_affine` and to three shipped patterns
+for `nonunit`; an explicit `[]` opts out.
+
+| Key | Type | Default | Effect |
+|---|---|---|---|
+| `unit` | `list[table]` | `[{open="@unit{", close="}"}]` | Positive patterns DimFort treats as `@unit{...}` unit-claim directives. Each entry is `{open, close}`. |
+| `nonunit` | `list[table]` | three shipped patterns | Filter patterns that suppress a match from `unit`. Each entry is `{open, close, regex?}`. Handles per-site author markers (`@nonunit{...}`) and project-level citation-shaped noise. |
+| `unit_assume` | `list[table]` | `[{open="@unit_assume{", close="}", sep=":"}]` | Positive patterns for the `@unit_assume{...}` escape hatch. Each entry is `{open, close, sep}` — `sep` separates the asserted unit from the mandatory reason. |
+| `nonunit_assume` | `list[table]` | `[]` | Filter patterns for `unit_assume`. Same shape as `nonunit` plus optional `sep`. |
+| `unit_affine` | `list[table]` | `[{open="@unit_affine_conversion{", close="}", sep="->"}]` | Positive patterns for verified affine conversions. Each entry is `{open, close, sep}` — `sep` separates source and target units. |
+| `nonunit_affine` | `list[table]` | `[]` | Filter patterns for `unit_affine`. Same shape as `nonunit_assume`. |
 
 See [bringing DimFort to an existing codebase](../quickstart/bringing-to-existing-codebase.md)
 for the adoption recipe, and
-[design/shipped/unit-comment-delimiters.md](../design/shipped/unit-comment-delimiters.md)
+[design/shipped/unit-comment-markers.md](../design/shipped/unit-comment-markers.md)
 for the full spec.
+
+### `[parser.unit_lexer]`
+
+Eight independent boolean flags that toggle permissive lexer rules
+on top of the strict default grammar. Every flag defaults to
+`false` — strict, conservative, no out-of-box silent misparses.
+Opt in per corpus convention. See
+[design/shipped/permissive-unit-lexer.md](../design/shipped/permissive-unit-lexer.md)
+§3.1-§3.8 for per-flag empirical case + false-positive
+characterization, and §4.2 for the pairwise composition contract.
+
+| Flag | Default | Effect |
+|---|---|---|
+| `allow_unicode_superscripts` | `false` | Accept `⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺` as exponent characters (`m·s⁻¹`, `kg m⁻³`). |
+| `allow_middot_multiplication` | `false` | Accept `·` (U+00B7) as a multiplication operator alias (`m·s`, `kg·m⁻³`). |
+| `allow_fortran_star_star` | `false` | Accept `**` as an alias for `^` (`m**2`, `m**-1`). |
+| `allow_latex_braces` | `false` | Accept `^{...}` grouping (`m^{-1}`, `Pa^{kappa-1/3}`); rewritten to paren'd shape. |
+| `allow_dot_multiplication` | `false` | Accept `.` between identifiers as multiplication (`J.kg^-1`, `kgC.m^-2.s^-1`). Decimal literals unaffected. |
+| `allow_implicit_product` | `false` | Accept whitespace between identifiers as multiplication (`kg m`, `W m`). |
+| `allow_integer_suffix_exp` | `false` | Accept trailing **signed** integers on identifiers as exponents (`m s-1`, `kg m-3`, `J mol-1`). |
+| `allow_bare_digit_exp` | `false` | Accept bare **unsigned** digit suffixes on a guarded set of known-unit identifiers as exponents (`m2`, `m3`, `W/m2`). HIGH false-positive risk — see design §3.5. |
+
+### `[parser.unit_preprocess]`
+
+Pre-tokenization transforms applied before the lexer (and before
+any `[parser.unit_lexer]` flag rewrites).
+
+| Key | Type | Default | Effect |
+|---|---|---|---|
+| `strip_biogeochem_tags` | `bool` | `false` | Strip parenthesised species / tracer tags before the lexer runs (`(NO3)`, `(CO2)`, `(dust1)`). Target: biogeochem tracer tags in coupled-Earth-system codebases. |
+| `biogeochem_tag_exceptions` | `list[string]` | `[]` | Inner-paren content that must NOT be stripped. Escape hatch for tags that would collide with genuine unit content (e.g. `(1)` when the corpus writes `mol(NO3)/m^3` alongside `Pa^(1/2)`). |
 
 ## `[units]`
 

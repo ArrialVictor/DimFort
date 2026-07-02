@@ -91,10 +91,16 @@ Per-entry fields:
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `expr`         | string  | required | Unit expression in terms of already-defined units. Same grammar as `@unit{...}` bodies. |
-| `factor`       | int or `"p/q"` | `1` | Multiplicative scale relative to `expr`. Used by `S001` scale checking. |
-| `offset`       | string  | `"0"` | Zero-point shift relative to `expr`. Triggers affine handling (`S002`, `@unit_affine_conversion`). String to keep the rational exact. |
+| `expr`         | string  | required *(compact form)* | Unit expression in terms of already-defined units. Same grammar as `@unit{...}` bodies. Project-local convenience. |
+| `dim`          | string  | required *(catalog form)* | SI slot product form (e.g. `"M*L^-1*T^-2"`). Resolves immediately with no dependency on other units. Used by the shipped catalog. |
+| `factor`       | int or `"p/q"` | `1` | Multiplicative scale relative to `expr` / `dim`. Used by `S001` scale checking. |
+| `offset`       | string  | `"0"` | Zero-point shift relative to `expr` / `dim`. Triggers affine handling (`S002`, `@unit_affine_conversion`). String to keep the rational exact. |
+| `quantitykind` | string  | unset | Semantic-vocabulary tag (e.g. `"Pressure"`, `"ThermodynamicTemperature"`). Ignored at load; surfaces in future vocabulary tooling. |
+| `aliases`      | `list[string]` | `[]` | Alternate names registered as pointers to the same `Unit`. Useful for corpus spellings (`degC` / `celsius`, `Pa` / `pascal`). |
 | `prefixable`   | bool    | `false` | If `true`, the unit accepts standard SI prefixes (`khPa`, `mbar`, …). Most derived units do **not** want this. |
+
+An entry uses **either** `expr` (compact form) **or** `dim`
+(catalog form) — mixing the two on one entry is an error.
 
 Entries are resolved in **dependency order** — an entry can refer
 to any unit defined earlier in the merged catalog (the shipped
@@ -113,11 +119,19 @@ When DimFort loads `dimfort.toml` and finds `[units] file = ...`:
 
 1. The shipped `default_units.toml` loads first.
 2. Your project file loads on top.
-3. **Collisions are an error**: a user `[derived]` entry whose name
-   matches a shipped one is rejected at load time with a clear
-   message. To override a shipped definition, raise an issue —
-   silent override would make tracking unit drift across projects
-   impossible.
+3. **Layered-override gate.** The three sections are protected at
+   different levels:
+   - `[base]` — the seven SI base units are fixed by the standard
+     and cannot be extended or redefined. Any user entry here is
+     **rejected** at load with a clear message.
+   - `[prefixes]` — new entries are allowed; **redefining a shipped
+     prefix is rejected**. Prevents silent drift on the SI prefix
+     ladder.
+   - `[derived]` — a user entry whose name collides with a shipped
+     one **emits a warning and takes precedence** (compact `expr`
+     form's convenience over strict lockdown). To silence, either
+     rename the user entry or register the shipped name as an
+     `aliases` entry on the user's definition.
 4. References in `expr` strings resolve against the **merged**
    catalog, so user-defined units can compose with shipped ones
    freely.
