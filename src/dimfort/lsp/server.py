@@ -503,28 +503,56 @@ def _workset_for(ls: LanguageServer, active_uri: str) -> tuple[list[Path], Path 
 
     resolved_active = active.resolve()
 
+    # Include every currently-open Fortran buffer as a workset root.
+    # Rationale: read-side handlers (panel, hover, definition) read from
+    # ``state.last_result.attachments``. If we only seed the workset with
+    # the active file, then :e-ing between two open buffers overwrites
+    # ``state.last_result`` with a check that only covers the newly-active
+    # one — the previous file drops out of ``attachments`` and its panel
+    # goes silent until the user :DimFortRestart-s. Seeding with every
+    # open buffer keeps them all in the resolved workset (and therefore
+    # in ``attachments``) across active-file switches.
+    open_roots: list[Path] = [resolved_active]
+    try:
+        for open_uri in ls.workspace.text_documents:
+            open_path = _uri_to_path(open_uri)
+            if open_path is None or open_path.suffix not in _FORTRAN_EXTS:
+                continue
+            r = open_path.resolve()
+            if r != resolved_active and r not in open_roots:
+                open_roots.append(r)
+    except Exception:
+        # Defensive: pygls API change or a half-initialised workspace
+        # shouldn't take down the pipeline. Falls back to active-only.
+        pass
+
     if idx is not None:
         res = resolve_workset(
-            idx, [resolved_active], external_modules=state.external_modules
+            idx, open_roots, external_modules=state.external_modules
         )
         paths = list(res.compile_order)
-        # Belt-and-braces: ensure the active file is present even if it
-        # lives outside the indexed roots (e.g. a loose `.f90` outside
-        # any workspace folder).
-        if resolved_active not in paths:
-            paths.append(resolved_active)
-        # Pin the active file's direct dependencies (modules used,
+        # Belt-and-braces: ensure every open Fortran root is present even
+        # if some live outside the indexed roots (e.g. a loose `.f90`
+        # outside any workspace folder).
+        for r in open_roots:
+            if r not in paths:
+                paths.append(r)
+        # Pin every open buffer's direct dependencies (modules used,
         # procedures called) so the cap doesn't drop them. Without
         # this, an external callee can land mid-topo and get cut.
-        must_keep: set[Path] = set()
-        for use in idx.uses_by_file.get(resolved_active, ()):
-            tgt = idx.modules.get(use.module)
-            if tgt is not None:
-                must_keep.add(tgt)
-        for callee in idx.calls_by_file.get(resolved_active, ()):
-            tgt = idx.procedures.get(callee)
-            if tgt is not None:
-                must_keep.add(tgt)
+        # Applied per open root, not just the active one, so that the
+        # attachments needed by every open buffer's panel survive the
+        # cap.
+        must_keep: set[Path] = set(open_roots)
+        for root in open_roots:
+            for use in idx.uses_by_file.get(root, ()):
+                tgt = idx.modules.get(use.module)
+                if tgt is not None:
+                    must_keep.add(tgt)
+            for callee in idx.calls_by_file.get(root, ()):
+                tgt = idx.procedures.get(callee)
+                if tgt is not None:
+                    must_keep.add(tgt)
         # Cap to keep the LSP process alive on deep workspaces.
         capped = _cap_workset(
             paths, resolved_active, state.max_workset_size,
@@ -538,13 +566,15 @@ def _workset_for(ls: LanguageServer, active_uri: str) -> tuple[list[Path], Path 
             )
         return capped, active
 
-    # Fallback: index not ready yet, or no workspace folders. Just
-    # check the active file alone. Cross-file deps will surface as
-    # transient U007 errors until the index build finishes; that's
-    # strictly better than feeding every file in the workspace to
-    # the checker — at large scale (~2400 files) the old behaviour
-    # SIGKILLed the LSP via macOS jetsam.
-    return [resolved_active], active
+    # Fallback: index not ready yet, or no workspace folders. Return
+    # every open Fortran buffer so all their panels can populate on
+    # the first check — same rationale as the indexed branch above.
+    # Cross-file deps will still surface as transient U007 errors
+    # until the index build finishes; that's strictly better than
+    # feeding every file in the workspace to the checker — at large
+    # scale (~2400 files) the old behaviour SIGKILLed the LSP via
+    # macOS jetsam.
+    return open_roots, active
 
 
 # ---------------------------------------------------------------------------
