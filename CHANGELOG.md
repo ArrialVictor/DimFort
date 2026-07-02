@@ -4,6 +4,59 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
 
 ## [Unreleased]
 
+## [0.2.7] — 2026-07-02
+
+### Highlight
+
+Lexical-adoption + hygiene release. Four threads:
+
+1. **Permissive unit lexer.** Eight independent, default-OFF flags
+   under `[parser.unit_lexer]` opt the project into specific
+   annotation-surface conventions: Unicode superscripts, middot
+   multiplication, Fortran `**`, LaTeX braces, dot multiplication,
+   whitespace as implicit product, integer-suffix exponents, and
+   bare-digit exponents. Every pair composes deterministically
+   (28-pair audit). Ships with a companion vocabulary expansion,
+   Layer 3a flag-paired rewrite suggestions on U002, and the
+   `[parser.unit_preprocess].strip_biogeochem_tags` pre-pass.
+
+2. **Per-variable continuation-line attach.** An `@unit{}`
+   annotation on a `&`-continued declaration line now attaches to
+   the variables whose tokens end on that specific physical line,
+   not to every name in the surrounding statement. Enables
+   per-variable units on a single declaration; ~1,700 net
+   annotations become attachable across surveyed corpora. Retires
+   U010; introduces U024 (PRE on multi-line decl), U025
+   (migration hint), and U026 (symbolic-exponent name shadows a
+   unit).
+
+3. **Comment-marker namespace migration.** The three flat keys
+   under `[parser]` (`unit_comment_delimiters`,
+   `unit_assume_comment_delimiters`,
+   `unit_affine_comment_delimiters`) are replaced by a nested
+   `[parser.unit_comments]` table with six keys (`unit` /
+   `nonunit`, `unit_assume` / `nonunit_assume`, `unit_affine` /
+   `nonunit_affine`). Old flat keys warn and are ignored; migration
+   is one line per project.
+
+4. **Hygiene sweep.** Cache-audit completion (memory-churn CI
+   gate + formal invalidation docstrings on four remaining
+   caches), silent-failure audit (nine user-triggered failures now
+   surface via `window/showMessage`), and workspace-root detection
+   unified across companions around a `dimfort.toml`-only marker
+   policy with root-source provenance in `initialize` responses.
+   A new LSP integration test suite lands under
+   `tests/lsp_integration/` covering diagnostics, hover, panel,
+   workspace, coverage, code-actions, and completion.
+
+### Recommended companion versions
+
+Pair this server with VSCompanion **0.2.7+**, NvimCompanion
+**0.2.7+**, EmacsCompanion **0.2.7+**. Mixing this server with
+older companions works but loses the unified workspace-root
+detection and any commands that depend on the shared marker
+policy — see each companion's CHANGELOG.
+
 ### Added
 
 - **Silent-failure audit (server side).** Exhaustive walk of
@@ -77,6 +130,56 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
   Companion-side derive-root (Nvim already has it; VSCompanion to
   land this cycle; Emacs aligning to the unified `dimfort.toml`-only
   marker policy) prevents the log from firing.
+
+- **Workspace-root detection unification (server + companion
+  parity).** The server side of the cross-companion workspace-root
+  contract. Every companion now derives the root from the same
+  single marker file — `dimfort.toml` in the nearest ancestor of
+  the opened buffer — with an explicit fallback ladder (nearest
+  ancestor `dimfort.toml` → nearest ancestor `.git` → buffer's
+  own directory). `.dimfort.toml`, `pyproject.toml`, arbitrary
+  `.git` sibling files, and every other legacy marker are
+  intentionally excluded from the ladder: any of those becoming a
+  root implicitly is precisely the class of misdetection the
+  0.2.6 → 0.2.7 audit surfaced. The `initialize` response now
+  carries a `dimfort/rootSource` provenance field naming which
+  rung matched, so companion status lines can surface *why* a
+  given folder became the workset root. Pair this with a
+  0.2.7+ companion; older companions still work but keep their
+  pre-unification derive-root logic and won't show the
+  provenance.
+
+- **LSP integration test suite (`tests/lsp_integration/`).** A
+  new pytest-lsp-backed suite that drives the LSP server end-to-end
+  over a real stdio JSON-RPC transport, complementing the existing
+  unit-level coverage of individual handler modules. Seven files,
+  ~50 tests, wired into default `pytest`:
+    - `test_diagnostics.py` — didOpen / didChange / didSave paths
+      publish diagnostics with the expected code / severity /
+      range for the H- and U-series a client would actually
+      encounter.
+    - `test_hover.py` — hover payload shape (dimensional signature,
+      per-arg circles, provenance line) across variables,
+      parameters, function calls, and the intrinsic surface.
+    - `test_panel.py` — `dimfort/panel` request shape at the
+      cursor: scope table, imports table, expression breakdown,
+      per-name attach behaviour on continuation lines.
+    - `test_workspace.py` — `dimfort/checkWorkspace` request under
+      workspaceless, not-ready, and empty-workset conditions, plus
+      the happy path against a multi-file fixture.
+    - `test_coverage.py` — `dimfort/coverage` per-file and
+      per-workset payloads, including the async-completion
+      ordering guarantee.
+    - `test_code_actions.py` — textDocument/codeAction offerings
+      for the U-series, and the `dimfort.inferUnit` action's
+      workspace-edit shape.
+    - `test_completion.py` — `@unit{...}` inside-comment
+      completion trigger, candidate filtering, and the surrounding
+      trigger-character contract.
+  Five tests are marked `xfail` pending fixture-parity work
+  (documented at the top of each file) and one is a known
+  pre-existing xfail on the coverage-async ordering. The suite
+  runs in ~10 s locally and gates every PR via CI.
 
 - **Cache audit completion + CI gate.** Every cache module now carries
   a formal `Invalidation` + `Bound` docstring subsection matching
@@ -328,6 +431,21 @@ All notable changes to DimFort are documented here. Format inspired by [Keep a C
   later names remain unannotated. Permanent migration-detection
   diagnostic surfacing the recurring per-line footgun. The 0.2.7
   migration step is `dimfort check --only=U025`.
+
+### Fixed
+
+- **Panel attachments no longer drop across buffer switches.** When
+  a workspace check had already run and populated diagnostics for
+  file A, opening file B (still under the same workset) previously
+  reset the workset root list to `[B]`, evicting A's cached parse
+  and diagnostics from every workset-scoped structure the panel and
+  diagnostics reader depend on. Switching back to A showed a stale
+  panel with no scope table until the next save. The fix pins every
+  currently-open Fortran buffer as a workset root, so opening a new
+  buffer extends the workset instead of replacing it; existing
+  per-file caches survive the transition. Surfaced by the
+  panel-attachments regression report during 0.2.7 pre-release
+  manual QA.
 
 ### Changed
 
