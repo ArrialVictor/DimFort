@@ -21,13 +21,22 @@ went bad.
 from __future__ import annotations
 
 import gc
-import resource
 import sys
 from pathlib import Path
 
 import pytest
 
-from dimfort.core.multifile import check_files
+# ``resource`` is Unix-only. Windows doesn't ship it, so a bare
+# ``import resource`` at module top errors at collection time and
+# aborts the whole suite before pytest can honour any test-level
+# skipif marker. ``importorskip`` fails soft: the whole module is
+# skipped on platforms where the module can't be imported.
+resource = pytest.importorskip(
+    "resource",
+    reason="resource.getrusage not available on Windows",
+)
+
+from dimfort.core.multifile import check_files  # noqa: E402 -- after importorskip
 
 # Per Track D Ring 2 plan: 50 KB / iter with N>=200 is the regression
 # gate. Below ~10 KB indicates true bounded steady state; 10-50 KB is
@@ -41,7 +50,9 @@ def _rss_kb() -> int:
 
     macOS reports ``ru_maxrss`` in bytes, Linux in KB. Caller wants KB.
     """
-    raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # ``resource`` is loaded via ``importorskip`` so mypy sees ``Any``;
+    # ``ru_maxrss`` is an int on every platform where the field exists.
+    raw: int = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     if sys.platform == "darwin":
         return raw // 1024
     return raw
@@ -68,10 +79,6 @@ def _synth_file(out: Path, idx: int) -> None:
     )
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="resource.getrusage not available on Windows",
-)
 def test_cache_memory_churn_under_threshold(tmp_path: Path) -> None:
     """Per-iteration RSS growth must stay under 50 KB across 200 files."""
     files = [tmp_path / f"f{i:04d}.f90" for i in range(_N)]
